@@ -295,3 +295,220 @@ def test_no_recorded_counters_is_silence_not_a_pass():
     not be mistaken for one that was checked."""
     from robovast.results_processing import advice
     assert advice.throttle_advice([], []) == []
+
+
+# -- the counters beside the throttle ones ----------------------------------------------
+
+def test_cpu_usage_is_read_from_the_kernels_own_billing_not_summed_from_processes(
+        tmp_path, monkeypatch):
+    """``cpu_percent`` is psutil's sampled estimate and misses a process that lived and died
+    between two ticks; this is what the cgroup was billed. The sizing rule is a percentile of
+    that figure, and a percentile of an estimate is an estimate of a percentile."""
+    f = tmp_path / "cpu.stat"
+    f.write_text("usage_usec 900\nnr_periods 10\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "CPU_STAT_PATH", str(f))
+    monkeypatch.setattr(mon, "CPUACCT_USAGE_PATH", str(tmp_path / "missing"))
+    assert mon.cpu_usage_probe() == {"cpu_usage_usec": 900}
+
+
+def test_cpu_usage_falls_back_to_v1_in_the_same_unit(tmp_path, monkeypatch):
+    """v1 keeps it in a different controller and in NANOseconds. Same conversion-on-read rule
+    as the throttle counters: one column cannot mean two units across a campaign's nodes."""
+    monkeypatch.setattr(mon, "CPU_STAT_PATH", str(tmp_path / "missing"))
+    f = tmp_path / "cpuacct.usage"
+    f.write_text("900000\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "CPUACCT_USAGE_PATH", str(f))
+    assert mon.cpu_usage_probe() == {"cpu_usage_usec": 900}
+
+
+def test_usage_survives_a_cgroup_with_no_quota_at_all(tmp_path, monkeypatch):
+    """Split from ``cpu_stat_probe`` for exactly this: a cgroup with no CPU limit reports
+    usage and no throttle counters, and reading both from one probe would let the second's
+    absence suppress the first."""
+    f = tmp_path / "cpu.stat"
+    f.write_text("usage_usec 42\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "CPU_STAT_PATH", str(f))
+    monkeypatch.setattr(mon, "CPU_STAT_PATH_V1", str(tmp_path / "missing-v1"))
+    monkeypatch.setattr(mon, "CPUACCT_USAGE_PATH", str(tmp_path / "missing"))
+    assert mon.cpu_stat_probe() == {}
+    assert mon.cpu_usage_probe() == {"cpu_usage_usec": 42}
+
+
+def _psi(tmp_path, monkeypatch, **files):
+    """Point the pressure probe at written-out PSI files; a resource omitted is absent."""
+    entries = []
+    for prefix in ("cpu", "memory", "io"):
+        text = files.get(prefix)
+        path = tmp_path / f"{prefix}.pressure"
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+        entries.append((prefix, str(path)))
+    monkeypatch.setattr(mon, "PRESSURE_FILES", tuple(entries))
+
+
+def test_the_monotonic_total_is_taken_and_the_decaying_averages_are_not(tmp_path, monkeypatch):
+    """``avgN`` are averages over the last N seconds and cannot be aggregated over a run
+    window at all; ``total`` takes the same in-window delta as ``throttled_usec`` and so needs
+    no new machinery anywhere downstream."""
+    _psi(tmp_path, monkeypatch,
+         cpu="some avg10=12.34 avg60=5.00 avg300=1.00 total=42000\n"
+             "full avg10=1.00 avg60=0.50 avg300=0.10 total=7000\n")
+    assert mon.pressure_probe() == {"cpu_stall_some_usec": 42000,
+                                    "cpu_stall_full_usec": 7000}
+
+
+def test_memory_and_io_stalls_ride_along_on_the_same_format(tmp_path, monkeypatch):
+    """The other two ways a run is slow with nothing in the CPU counters to show for it: a
+    container in reclaim, and one waiting on a cold image layer or an asset load."""
+    _psi(tmp_path, monkeypatch,
+         cpu="some avg10=0.00 total=1\nfull avg10=0.00 total=2\n",
+         memory="some avg10=0.00 total=3\nfull avg10=0.00 total=4\n",
+         io="some avg10=0.00 total=5\nfull avg10=0.00 total=6\n")
+    assert mon.pressure_probe() == {
+        "cpu_stall_some_usec": 1, "cpu_stall_full_usec": 2,
+        "memory_stall_some_usec": 3, "memory_stall_full_usec": 4,
+        "io_stall_some_usec": 5, "io_stall_full_usec": 6}
+
+
+def test_a_kernel_reporting_only_some_still_contributes_the_column_it_has(
+        tmp_path, monkeypatch):
+    """cgroup-level ``full`` for CPU needs 5.13+. A partial answer is an answer; dropping it
+    would lose the older node entirely, and absence tracks nodes rather than randomness."""
+    _psi(tmp_path, monkeypatch, cpu="some avg10=0.00 avg60=0.00 avg300=0.00 total=99\n")
+    assert mon.pressure_probe() == {"cpu_stall_some_usec": 99}
+
+
+def test_no_psi_is_an_absent_column_rather_than_a_zero(tmp_path, monkeypatch):
+    """cgroup v1 has no PSI and v2 needs CONFIG_PSI. A zero would say "never stalled", which
+    is the fact this probe exists to establish and must not be fabricated."""
+    _psi(tmp_path, monkeypatch)
+    assert mon.pressure_probe() == {}
+    assert mon.start_probes([mon.pressure_probe]) == []
+
+
+def test_the_node_is_measured_too_because_it_decides_whose_problem_it_is(
+        tmp_path, monkeypatch):
+    """A container stalling on an idle machine asked for too little; one stalling on a
+    saturated machine is on an oversubscribed node. Same symptom, opposite remedies."""
+    f = tmp_path / "proc-pressure-cpu"
+    f.write_text("some avg10=3.00 avg60=2.00 avg300=1.00 total=123456\n"
+                 "full avg10=0.00 avg60=0.00 avg300=0.00 total=7\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "NODE_PRESSURE_PATH", str(f))
+    # ``full`` is dropped on purpose: the kernel documents it as undefined for CPU at the
+    # system level, and keeping it would invite a comparison it cannot support.
+    assert mon.node_pressure_probe() == {"node_cpu_stall_some_usec": 123456}
+
+
+def test_the_breakdown_separates_reserved_memory_from_reclaimable(tmp_path, monkeypatch):
+    """``memory.current`` includes page cache, so sizing a limit from it over-reserves -- worst
+    for the simulator, which is the container most worth shrinking. ``anon`` + ``shmem`` +
+    ``slab`` is what survives reclaim; ``file`` is recorded beside them so the difference is
+    visible rather than assumed."""
+    f = tmp_path / "memory.stat"
+    f.write_text("anon 100\nfile 900\nkernel_stack 8\nslab 30\nshmem 40\nsock 1\n",
+                 encoding="utf-8")
+    monkeypatch.setattr(mon, "MEMORY_PATH", str(tmp_path))
+    assert mon.memory_stat_probe() == {"memory_anon": 100, "memory_file": 900,
+                                       "memory_shmem": 40, "memory_slab": 30}
+    monkeypatch.setattr(mon, "MEMORY_PATH", str(tmp_path / "missing"))
+    assert mon.memory_stat_probe() == {}
+
+
+def test_memory_events_name_the_cause_of_a_death_that_otherwise_has_none(
+        tmp_path, monkeypatch):
+    """Memory is sized on the peak because exceeding it is a kill, not a slowdown --
+    ``memory.peak`` shows a container that came close, only this shows one the kernel acted
+    against."""
+    f = tmp_path / "memory.events"
+    f.write_text("low 0\nhigh 0\nmax 12\noom 2\noom_kill 1\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "MEMORY_EVENTS_PATH", str(f))
+    assert mon.memory_events_probe() == {"memory_events_max": 12, "memory_events_oom": 2,
+                                         "memory_events_oom_kill": 1}
+    monkeypatch.setattr(mon, "MEMORY_EVENTS_PATH", str(tmp_path / "missing"))
+    assert mon.memory_events_probe() == {}
+
+
+def test_every_probe_is_registered_so_the_csv_actually_carries_it():
+    """The one place adding a probe can be forgotten: the function exists, the tests pass, and
+    nothing is ever written."""
+    assert set(mon.PROBES) == {mon.cpu_stat_probe, mon.cpu_usage_probe, mon.memory_probe,
+                               mon.memory_stat_probe, mon.memory_events_probe,
+                               mon.pressure_probe, mon.node_pressure_probe}
+
+
+# -- the contention screen --------------------------------------------------------------
+
+def _contention_row(container, stalled, span=100_000_000, node_stalled=0,
+                    periods=100_000, throttled=0, runs=10, runs_stalled=3):
+    return {"container": container, "stalled": stalled, "span": span,
+            "node_stalled": node_stalled, "periods": periods, "throttled": throttled,
+            "runs": runs, "runs_stalled": runs_stalled}
+
+
+def test_a_crowded_out_sut_is_reported_where_no_throttle_counter_could_have_said_so():
+    """The blind spot this closes: the container was never throttled -- it never reached its
+    own quota -- so every existing signal reads clean while it was being starved."""
+    from robovast.results_processing import advice
+    out = advice.contention_advice([_contention_row("sut", 5_000_000)], [])
+    assert len(out) == 1 and out[0]["kind"] == "sut_contended"
+    assert out[0]["evidence"]["stall_ratio"] == 0.05
+    assert "NOT the container hitting its own limit" in out[0]["detail"]
+
+
+def test_the_node_decides_which_remedy_the_finding_names():
+    """A container starved on an idle machine has too small a REQUEST; one starved on a
+    saturated machine is on an oversubscribed node. The advice must not offer both."""
+    from robovast.results_processing import advice
+    mine, = advice.contention_advice(
+        [_contention_row("sut", 5_000_000, node_stalled=100_000)], [])
+    assert "resources.cpu" in mine["detail"] and "comparatively idle" in mine["detail"]
+    theirs, = advice.contention_advice(
+        [_contention_row("sut", 5_000_000, node_stalled=50_000_000)], [])
+    assert "oversubscribed" in theirs["detail"] and "admit fewer jobs" in theirs["detail"]
+
+
+def test_a_throttled_sut_is_left_to_the_throttle_finding():
+    """Throttling raises the stall counter too, so the two cannot be separated by
+    subtraction. Reporting both would hand the reader two remedies pointing opposite ways for
+    one number; the ceiling wins because its remedy is a line in their own .vast."""
+    from robovast.results_processing import advice
+    assert advice.contention_advice(
+        [_contention_row("sut", 5_000_000, periods=100_000, throttled=790)], []) == []
+
+
+def test_only_the_sut_is_reported_here_too():
+    """The simulator and scenario reserve below their limit on purpose; losing the burst to a
+    busy node is the deal, and the realtime factor says whether it cost anything."""
+    from robovast.results_processing import advice
+    assert advice.contention_advice([_contention_row("simulation", 50_000_000)], []) == []
+
+
+def test_a_quiet_node_is_silence_and_so_is_no_measurement():
+    from robovast.results_processing import advice
+    assert advice.contention_advice([_contention_row("sut", 100_000)], []) == []
+    assert advice.contention_advice([], []) == []
+    # A window with no span cannot produce a ratio, and must not produce a division either.
+    assert advice.contention_advice([_contention_row("sut", 5_000_000, span=0)], []) == []
+
+
+def test_an_unrecorded_node_is_said_to_be_unrecorded_not_assumed_idle():
+    """``/proc/pressure/cpu`` is masked in some runtimes while the cgroup's own PSI reads
+    fine. Treating the absence as an idle node would name a remedy from a number nobody
+    recorded -- and in the confident direction: "raise your request" is exactly wrong on an
+    oversubscribed node, where raising it makes the packing worse."""
+    from robovast.results_processing import advice
+    row = _contention_row("sut", 5_000_000)
+    row["node_stalled"] = None
+    out, = advice.contention_advice([row], [])
+    assert out["evidence"]["node_stall_ratio"] is None
+    assert "not recorded" in out["detail"]
+    assert "comparatively idle" not in out["detail"]
+
+
+def test_the_node_column_alone_cannot_take_the_whole_finding_down():
+    """Two SQL forms, because the two counters come from different files and fail
+    independently. The container's own stall is worth reporting without the node's."""
+    from robovast.results_processing import advice
+    assert "node_cpu_stall_some_usec" in advice.contention_sql()
+    assert "node_cpu_stall_some_usec" not in advice.contention_sql(with_node=False)
+    assert "cpu_stall_full_usec" in advice.contention_sql(with_node=False)

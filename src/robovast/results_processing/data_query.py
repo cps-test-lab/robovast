@@ -251,6 +251,20 @@ def _tables_in(conn: sqlite3.Connection, schema: str) -> set:
         return set()
 
 
+def _columns_in(conn: sqlite3.Connection, schema: str, table: str) -> set:
+    """Column names of one table in an attached *schema*, empty when it has none.
+
+    Needed beside :func:`_tables_in` because a probe may be added to the sampler at any time,
+    so ``system_usage`` does not have a fixed column set: two campaigns a month apart have
+    different ones, and a view naming a column the older store lacks is created happily and
+    then fails at query time -- taking the columns it COULD have answered down with it.
+    """
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA {schema}.table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
 def _campaign_view_sql(schema: str, have: set) -> dict:
     """``{view_name: SELECT}`` for the tables *schema* actually has.
 
@@ -337,20 +351,31 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
     return views
 
 
-def _main_view_sql(schema: str, have: set) -> dict:
+def _main_view_sql(schema: str, have: set, columns: set = frozenset()) -> dict:
     """Flat views over the metrics store, keyed by view name.
 
     One view so far: ``run_validity_view``, which turns the cgroup counters into the
     question a reader of a campaign actually has -- *was this run a clean observation of
     the system under test, or partly a measurement of its CPU quota?*
 
-    **What it measures is a container hitting its OWN ceiling, not competition.** CFS
+    **``quota_bound`` measures a container hitting its OWN ceiling, not competition.** CFS
     bandwidth control throttles a cgroup when it exhausts the quota its ``limits.cpu`` buys
     inside one ~100ms period; a busy neighbour does not cause that. Neighbours show up as
     scheduling *latency* instead, and the two point opposite ways -- on a contended node a
     container may never reach its quota, so it throttles less while running worse. Hence
     ``quota_bound`` rather than a name suggesting it was starved by other work: the remedy
     is a larger limit, not a quieter cluster.
+
+    **``contended`` is the other half, and it exists because that latency used to be
+    unmeasured.** Once a container may reserve less than its limit, "slow because of what it
+    asked for" and "slow because of what else was on the node" are different diagnoses with
+    different remedies, and the throttle counter answers only the first -- so a campaign could
+    report every container clean while the system under test was being crowded out. PSI
+    (``cpu.pressure``) is the counter that says so: ``full`` is time when EVERY task in the
+    cgroup was runnable and none was running. Throttling raises it too, which is why the flag
+    is the residue -- stall above the threshold *without* the container being quota_bound --
+    rather than a reading of the stall column alone. A container can be both; the ceiling is
+    attributed first because its remedy is a line in the campaign's own file.
 
     It exists because the raw form is a trap in three ways, and every consumer was
     re-deriving it. ``nr_throttled`` and ``nr_periods`` are **monotonic counters**, so a
@@ -375,25 +400,59 @@ def _main_view_sql(schema: str, have: set) -> dict:
     a squeezed simulator cost nothing (its realtime factor held) while a squeezed SUT cost
     runs.
     """
-    from .advice import THROTTLE_WARN_RATIO  # noqa: PLC0415 - avoids an import cycle
+    from .advice import STALL_WARN_RATIO, THROTTLE_WARN_RATIO  # noqa: PLC0415 - import cycle
 
     views = {}
     if "system_usage" in have:
+        # Selected as NULL when the sampler that recorded this campaign had no PSI probe --
+        # the same treatment ``_campaign_view_sql`` gives a missing ``job`` table, and for the
+        # same reason: the view keeps ONE column set across store versions, so a reader writes
+        # one query and an older campaign answers "not measured" instead of "no contention".
+        if "cpu_stall_full_usec" in columns:
+            stall_full = ("MAX(cpu_stall_full_usec) - MIN(cpu_stall_full_usec) "
+                          "AS stalled_full_usec")
+        else:
+            stall_full = "NULL AS stalled_full_usec"
+        stall_some = (("MAX(cpu_stall_some_usec) - MIN(cpu_stall_some_usec) "
+                       "AS stalled_some_usec") if "cpu_stall_some_usec" in columns
+                      else "NULL AS stalled_some_usec")
         views["run_validity_view"] = f"""
             WITH per_run AS (
                 SELECT config_name, run_id, container,
                        MAX(nr_periods) - MIN(nr_periods) AS periods,
                        MAX(nr_throttled) - MIN(nr_throttled) AS throttled,
-                       MAX(throttled_usec) - MIN(throttled_usec) AS throttled_usec
+                       MAX(throttled_usec) - MIN(throttled_usec) AS throttled_usec,
+                       {stall_some},
+                       {stall_full},
+                       -- The window's own wall span, and the only honest denominator for a
+                       -- stall total: a microsecond count means nothing without the time it
+                       -- was drawn from, exactly as a throttle count means nothing without
+                       -- nr_periods. CAST because the sampler writes the stamp formatted.
+                       (MAX(CAST(wall_ts AS REAL))
+                        - MIN(CAST(wall_ts AS REAL))) * 1000000.0 AS span_usec
                 FROM {schema}.system_usage
                 WHERE in_window = 1 AND nr_periods IS NOT NULL
                 GROUP BY config_name, run_id, container)
             SELECT config_name, run_id, container, periods, throttled, throttled_usec,
+                   stalled_some_usec, stalled_full_usec,
                    CASE WHEN periods > 0
                         THEN CAST(throttled AS REAL) / periods END AS throttle_ratio,
+                   CASE WHEN span_usec > 0 AND stalled_full_usec IS NOT NULL
+                        THEN stalled_full_usec / span_usec END AS stall_ratio,
                    CASE WHEN periods > 0
                              AND CAST(throttled AS REAL) / periods >= {THROTTLE_WARN_RATIO}
-                        THEN 1 ELSE 0 END AS quota_bound
+                        THEN 1 ELSE 0 END AS quota_bound,
+                   -- Contention is what is LEFT once the container's own ceiling is ruled
+                   -- out. Throttling raises the stall counter too, so the two cannot be
+                   -- separated by subtraction; the ceiling is attributed first because its
+                   -- remedy is a line in the campaign's own file, while this one is not.
+                   -- NULL, not 0, where the probe is absent: silence is not a pass.
+                   CASE WHEN stalled_full_usec IS NULL OR span_usec <= 0 THEN NULL
+                        WHEN stalled_full_usec / span_usec >= {STALL_WARN_RATIO}
+                             AND NOT (periods > 0
+                                      AND CAST(throttled AS REAL) / periods
+                                          >= {THROTTLE_WARN_RATIO})
+                        THEN 1 ELSE 0 END AS contended
             FROM per_run
         """
     return views
@@ -426,7 +485,8 @@ def _create_main_views(conn: sqlite3.Connection, schema: str, prefix: str = "") 
     Creating both from one call would tie a view over either store to the presence of the
     other, and the missing one is exactly when a reader most needs what is there.
     """
-    for name, body in _main_view_sql(schema, _tables_in(conn, schema)).items():
+    for name, body in _main_view_sql(schema, _tables_in(conn, schema),
+                                     _columns_in(conn, schema, "system_usage")).items():
         try:
             conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
         except sqlite3.Error as e:
@@ -546,8 +606,10 @@ _POSE_ORIENTATION = (
 _TABLE_DESCRIPTIONS = {
     ("temp", "run_validity_view"): (
         "WAS THIS RUN A CLEAN OBSERVATION? One row per (run, container) saying whether the "
-        "kernel capped it at its OWN CPU limit: config_name, run_id, container, periods, "
-        "throttled, throttled_usec, throttle_ratio, quota_bound. Query unqualified: FROM "
+        "kernel capped it at its OWN CPU limit, and whether it was crowded out by other "
+        "work: config_name, run_id, container, periods, throttled, throttled_usec, "
+        "stalled_some_usec, stalled_full_usec, throttle_ratio, stall_ratio, quota_bound, "
+        "contended. Query unqualified: FROM "
         "run_validity_view. Needs postprocessing (it reads system_usage). "
         "quota_bound=1 means the container exhausted the quota its limits.cpu buys, inside a "
         "~100ms enforcement period. It does NOT mean other campaigns crowded it out: a busy "
@@ -580,6 +642,20 @@ _TABLE_DESCRIPTIONS = {
         "What is missing: SELECT r.node_label, COUNT(*) FROM runs r LEFT JOIN "
         "run_validity_view v ON v.config_name=r.config_name AND v.run_id=r.run_id AND "
         "v.container='sut' WHERE v.run_id IS NULL GROUP BY 1. "
+        "contended=1 is the OPPOSITE diagnosis and the one quota_bound cannot make: the "
+        "container was runnable and got no CPU, without having hit its own ceiling -- other "
+        "work on the node crowded it out, and the remedy is a bigger request or a less full "
+        "node, not a bigger limit. It reads PSI cpu.pressure: stall_ratio is the fraction of "
+        "the trial window in which EVERY task in the cgroup was waiting for CPU. Throttling "
+        "raises that counter too, so contended is the residue -- high stall while NOT "
+        "quota_bound -- and a container can genuinely be both, in which case the ceiling is "
+        "reported because that remedy is in the .vast. "
+        "Whether a request-below-limit split cost anything: SELECT container, "
+        "AVG(stall_ratio) FROM run_validity_view GROUP BY 1 -- the sut is the one that "
+        "matters, since simulation and scenario are expected to lose their burst. "
+        "stall_ratio and contended are NULL, never 0, where the sampler had no PSI (cgroup "
+        "v1, or a kernel without CONFIG_PSI / cgroup-level full) -- silence, not a pass, and "
+        "it does not track the same nodes that lack the throttle counters. "
         "Empty for a campaign recorded before the probe existed, or on a host exposing "
         "neither cgroup layout -- which is silence, not a pass. "
         "Join on (config_name, run_id)."),
@@ -808,6 +884,17 @@ _TABLE_DESCRIPTIONS = {
         "place a capped run says so — throttling does not fail a run, it just makes it "
         "slower, so its results quietly become partly a measurement of the allocation "
         "rather than of the system under test. "
+        "Beside them, where the node could answer: cpu_usage_usec (the CPU time the kernel "
+        "billed the cgroup -- exact, where summing resource_usage.cpu_percent is an "
+        "estimate); cpu/memory/io_stall_some_usec and _full_usec (PSI: time tasks were "
+        "runnable but not running, i.e. CROWDED OUT, which the throttle counters cannot "
+        "show); node_cpu_stall_some_usec (the whole MACHINE's pressure -- a node fact "
+        "repeated on every row of every container, so never sum it across a pod); "
+        "memory_anon / _file / _shmem / _slab (what the memory is MADE OF -- anon+shmem+slab "
+        "survives reclaim, file is page cache, so sizing a limit from memory_current "
+        "reserves cache the container does not need); "
+        "memory_events_max / _oom (allocations the kernel refused) and _oom_kill "
+        "(processes it killed for it, the only place a mid-trial death names its cause). "
         "They are MONOTONIC COUNTERS, so read a delta (MAX-MIN) or the last value, never a "
         "SUM. nr_periods=0 means no CPU quota was enforced at all, which is different from "
         "a quota that was never hit — read the ratio nr_throttled/nr_periods, not the raw "
