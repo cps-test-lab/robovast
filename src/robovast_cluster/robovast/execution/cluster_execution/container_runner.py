@@ -178,14 +178,15 @@ class AuxDiscoveryError(RuntimeError):
 
 
 def required_container_specs(config_path):
-    """Collect the distinct auxiliary ContainerSpecs a campaign's variations need.
+    """Collect the distinct auxiliary ContainerSpecs a campaign needs while it composes.
 
-    Asks each declared variation (via ``get_required_container``) whether it needs a
-    helper image while it runs, and returns a list of ``ContainerSpec`` deduplicated
-    by container name. An empty list means the campaign genuinely declares no aux
-    container. Discovery never *silently* yields an empty list: any failure to load
-    the ``.vast``, resolve a variation, or run the discovery subprocess propagates,
-    so a launch that needs a helper image fails loudly instead of running without it.
+    Asks each declared variation **and each ``execution.generate`` input generator** (via
+    ``get_required_container``) whether it needs a helper image while it runs, and returns
+    a list of ``ContainerSpec`` deduplicated by container name. An empty list means the
+    campaign genuinely declares no aux container. Discovery never *silently* yields an
+    empty list: any failure to load the ``.vast``, resolve a variation or generator, or
+    run the discovery subprocess propagates, so a launch that needs a helper image fails
+    loudly instead of running without it.
 
     When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
     present), the variation names resolve only through the plugin's entry points, and
@@ -248,7 +249,47 @@ def _discover_specs(config_path):
             spec = variation_class.get_required_container(variation_parameters)
             if spec is not None:
                 specs.setdefault(spec.container_name(), spec)
+
+    # ``execution.generate`` asks for a helper image the same way a variation does, and for the
+    # same reason: a generator's tool is routinely absent from the process composing the campaign,
+    # which is the whole point of naming an image there. Omitting these left the caller creating no
+    # aux pod and installing no runner factory, so the campaign failed while composing -- on the
+    # very container it had declared.
+    for spec in _generator_container_specs(parameters, vast_dir):
+        specs.setdefault(spec.container_name(), spec)
     return list(specs.values())
+
+
+def _generator_container_specs(parameters, vast_dir):
+    """ContainerSpecs the campaign's ``execution.generate`` entries declare.
+
+    Resolution mirrors ``run_input_generators``: the same entry parsing, the same registry, and
+    the same ``./path.py:Class`` file references -- so a generator that will need a container at
+    composition time is the one discovered here. A generator that names no ``image`` returns None
+    and contributes nothing, which is the common case.
+
+    Called from :func:`_discover_specs`, so it inherits that function's process: in the subprocess
+    when the ``.vast`` declares ``plugins:``, in-process otherwise. That is the same treatment a
+    ``./path.py:Class`` VARIATION already gets, and the gate is deliberate -- what may not be
+    imported into the long-lived service is a packaged plugin, whose pinned dependencies would win
+    over the service's own.
+    """
+    from robovast.common.input_generation import (load_input_generators,
+                                                  parse_generate_entry,
+                                                  resolve_input_generator)
+
+    entries = (parameters.get("execution", {}) or {}).get("generate") or []
+    if not entries:
+        return []
+    generators = load_input_generators()
+    specs = []
+    for index, entry in enumerate(entries):
+        name, params = parse_generate_entry(entry, index)
+        generator_class = resolve_input_generator(name, vast_dir, generators)
+        spec = generator_class.get_required_container(params)
+        if spec is not None:
+            specs.append(spec)
+    return specs
 
 
 def _discover_specs_subprocess(config_path):
