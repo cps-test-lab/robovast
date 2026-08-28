@@ -815,39 +815,34 @@ def get_resource_usage() -> dict:
     """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
     Capacity **now** — what an executed run consumed is a table in its campaign's data
-    (``describe_campaign_data``), not here.
-
-    Also the way to confirm the lane is actually reachable — it reads the cluster's
-    nodes, so it fails when the cluster does, which ``get_service_info``'s reported
-    ``backend`` cannot tell you.
+    (``describe_campaign_data``), not here. It reads the cluster's nodes, so it also
+    confirms the lane is reachable, which ``get_service_info`` cannot.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
-    per-run reservations. Then ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
+    reservations, and ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
         Returns:
-        ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        cpu_reserved, memory_reserved_bytes, cpu_measured, memory_measured_bytes,
-        metrics_unavailable, parallel_runs, jobs_running, jobs_pending, disk, disk_node,
-        store, store_node, disk_unavailable}`` —
-        cores and bytes — or ``{error}``. **Size a sweep against ``*_reserved``, judge a
-        finished one against ``*_measured``**: reserved is what the scheduler committed
-        (what decides whether the next run fits), measured is what is actually being
-        consumed. ``cpu_used`` aliases whichever the lane leads with — the request sum on a
-        cluster, host utilization locally — so it is the one to read when you do not care
-        which. A ``null`` in either pair means the lane has no such reading (nothing
-        reserves locally; a cluster without metrics-server cannot measure, and says why in
-        ``metrics_unavailable``) — never zero. ``disk`` (what runs write into) and ``store``
-        (the results store) are ``{capacity_bytes, used_bytes}`` of measured bytes, or
-        **null meaning the lane does not report it — never an empty disk**. On a cluster
-        ``disk`` is ONE node's filesystem, not a sum: the node carrying the service pod,
-        named in ``disk_node``, since that is the disk the workspaces sit on.
-        ``store_node`` is often a different node.
-        ``jobs_running``/``jobs_pending`` are what the lane is *already* busy with across
-        every campaign (executing, and accepted-but-not-executing), so a lane with free
-        cores and a long pending queue is not as free as it looks. ``exec_container``
-        appears while an ``exec_in_container`` container is held: it can hold a stack's
-        worth of memory, so a full lane names it rather than leaving you to guess.
+        ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
+        memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
+        jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and
+        bytes — or ``{error}``.
+
+        **Size a sweep against ``*_reserved``, judge a finished one against
+        ``*_measured``**: reserved is what the scheduler committed, so it decides whether
+        the next run fits; measured is what is being consumed. ``cpu_used`` aliases
+        whichever the lane leads with. A ``null`` in either pair is "no such reading",
+        never zero — nothing reserves locally, and ``metrics_unavailable`` says why a
+        cluster could not measure.
+
+        ``disk`` (what runs write into) and ``store`` (the results store) are
+        ``{capacity_bytes, used_bytes}``, or **null meaning the lane does not report it —
+        never an empty disk**. On a cluster ``disk`` is ONE node's filesystem, not a sum:
+        ``disk_node``, which carries the service pod and the workspaces; ``store_node`` is
+        often another. ``jobs_running``/``jobs_pending`` is what the lane is *already* busy
+        with across every campaign, so free cores behind a long queue are not as free as
+        they look, and ``exec_container`` appears while an ``exec_in_container`` container
+        is held, which can hold a stack's worth of memory.
     """
     client = service_access.service_client()
     if client is None:
