@@ -969,8 +969,10 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 
 - ``cpu`` (Optional): Number of CPU cores — whole (``4``), fractional (``0.5``) or in the
   millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list. This is the
-  **reservation**: what the cluster packs by, and so what decides how many trials run at once
-- ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
+  **reservation**: what the cluster packs by, and so what decides how many trials run at once.
+  With no ``cpu_limit`` beside it, it is the ceiling as well
+- ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list —
+  and, with no ``memory_limit``, the ceiling too
 - ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
   reservation. Omitted — the default — the limit equals the request, which is what every
   campaign meant before these existed. See *Splitting the reservation from the ceiling* below

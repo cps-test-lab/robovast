@@ -142,17 +142,26 @@ class ResourcesConfig(BaseModel):
     # "4" to "4.0" for no reason.
     model_config = ConfigDict(extra='forbid')
 
+    #: The **reservation**: what the cluster packs by, and so what decides how many trials run
+    #: at once. With no :attr:`cpu_limit` beside it this is the ceiling as well -- the two are
+    #: stamped equal, which is what every campaign meant before that field existed.
     cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
+    #: The memory reservation, and -- with no :attr:`memory_limit` -- the ceiling too. The
+    #: shipped examples deliberately never split it: exceeding a CPU limit costs speed,
+    #: exceeding a memory limit is an OOM kill.
     memory: Optional[Union[str, list[dict[str, str]]]] = None
     #: The ceiling, when it should differ from the reservation above. Omitted -- the default,
     #: and what every campaign did before these existed -- the limit equals the request.
     #:
     #: **Splitting the two is a decision about the container's ROLE, not a tuning knob.**
     #:
-    #: * The **system under test** must keep ``requests == limits``, sized so it does not
-    #:   throttle. Its budget has to be identical in every run, or the allocation becomes a
-    #:   hidden independent variable and the runs stop being comparable -- which is a threat
-    #:   to the experiment rather than to throughput, and worth over-reserving for.
+    #: * The **system under test** keeps ``requests == limits``, sized so it does not
+    #:   throttle. The property that protects the result is that its ceiling never *binds*:
+    #:   an allocation the container never reaches cannot have shaped what the stack did, and
+    #:   equality is the conservative way to reach that while nothing measures what it
+    #:   actually got. Worth over-reserving for. The peak it is sized from comes from a pilot
+    #:   and clipping is not proportional, so a search proposing harder configurations can
+    #:   exceed it -- ``run_validity_view.quota_bound`` says when that happened.
     #: * The **simulator and scenario** are not under test and should split. The simulator's
     #:   peak-to-mean ratio is roughly 18 (measured: 0.34 cores sustained, 5.98 at its
     #:   startup burst), so there is no honest single number: reserving the peak costs more
