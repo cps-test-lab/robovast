@@ -146,7 +146,7 @@ def test_omitting_the_option_clears_a_previously_configured_pool(deploy_stubs):
     old pool in force and the command would stop being the whole truth about the cluster."""
     from robovast.execution.cluster_execution import service_deploy
 
-    setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
+    setup_server(config_name="rke2", namespace="default")
 
     assert service_deploy.deploy_service.call_args.kwargs["job_node_labels"] is None
 
