@@ -85,7 +85,7 @@ The manifest
 
    {
     "format": "robovast.run_capture",
-    "version": 1,
+    "version": 2,
     "complete": true,
     "frame": "world",
     "time": {"base": "sim", "t0": 0.002, "t1": 29.324,
@@ -106,7 +106,8 @@ The manifest
 
 ``format`` and ``version`` are required; a reader refuses an unknown format, and a *newer* version by
 name rather than guessing at it. Guessing would render something plausible and wrong, which is the
-failure this whole design exists to avoid.
+failure this whole design exists to avoid. What the versions are, and what a consumer owes them, is
+:ref:`below <run-capture-versions>`.
 
 ``frame`` is the frame pose tracks are expressed in. It must match the scene's geometry — for roqsim that is
 the simulator's **world** frame. This is not bookkeeping: a nav stack's ``base_link`` lives in a *map*
@@ -144,6 +145,59 @@ overrides it actually built with.
 world" is the diagnosis in nearly every such case. ``packages`` carries the producer's own library
 versions (for roqsim: ``roqsim``/``mujoco``/``numpy``), so a format or geometry mismatch across a version bump
 is legible rather than mysterious. ``seed`` may be ``null`` when the producer had none.
+
+.. _run-capture-versions:
+
+Format versions
+---------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 92
+
+   * - version
+     - what changed
+   * - 1
+     - The original.
+   * - 2
+     - ``overrides`` addresses components by **path** (``robot.lidar``) rather than by plugin name.
+       Under v1, ``{"components": {"robot": {"lidar": {"rays": 4}}}}`` merged ``{"lidar": {"rays": 4}}``
+       into the config of the component named ``robot``; under v2 it addresses the child component
+       ``robot.lidar`` and sets ``rays`` there. The document's *shape* is unchanged — which is exactly
+       why the version had to move rather than the format simply growing a field.
+
+That last point is the one to carry into any future version, because it is what makes a version more
+than a label. Two rules follow from it:
+
+**Refuse a version you do not implement, by name — and say what to do about it.** The fix is always the
+same one and it is never the capture's: the reader has to learn the version. A message that suggests
+re-exporting with an older producer asks for something nobody can do.
+
+**Key any cache on the version, wherever you key it on a field the version redefines.** The same
+``overrides`` document names a different world under v1 than under v2, so a cache keyed on the document
+alone serves geometry compiled for something else — and it looks perfectly fine. RoboVAST does this in
+``scene_cache.cache_key``; the rule exists because the failure is invisible, not because the cache is
+special.
+
+Adding a version
+~~~~~~~~~~~~~~~~
+
+Add a row above, bump ``FORMAT_VERSION`` in ``robovast/common/run_capture.py`` and ``CAPTURE_VERSION``
+in ``frontend/ui/src/lib/scene3d/runCapture.ts`` — the second only if the change touches something
+*that* reader reads, since the two consumers read different halves of the manifest and may legitimately
+sit at different versions (the lower one refuses, which is degraded but honest). Then ask the question
+that decides whether anything else is needed: does the new version change the **meaning** of a field a
+consumer keys an identity on? If so it must reach that key, as v2's does.
+
+**A purely additive change needs no version at all.** A new track ``kind`` is skipped by a reader that
+does not know it (see :ref:`below <run-capture-live>`), so bumping for one would refuse captures an
+older viewer replays perfectly well.
+
+**There is deliberately no migration machinery.** Nothing can rewrite a v1 override document into a v2
+one from the document alone: telling a config key from a child component requires resolving against the
+world, which lives in the producer's image. Nor is it needed — geometry is compiled in the campaign's
+own pinned image, by the producer that wrote the capture, so an old document is always resolved by the
+code whose convention it used.
 
 Tracks
 ------
@@ -298,8 +352,9 @@ For a simulator that is not roqsim:
    simulator ran — for an SDF world, ``roqsim scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``roqsim export web``
    already does this, and a campaign can run it as an ``execution.generate`` step so the descriptor is a
    frozen campaign input with a freshness manifest (see :ref:`its delivery section <scene-descriptor-delivery>`).
-#. **Motion.** Write ``capture.json`` + ``capture.bin`` per run, holding to the rules above. From ROS
-   data that is ``/joint_states`` for the joint tracks and ``/tf`` for the pose tracks — with the caveat
-   that the poses must be in the scene's frame, not a map frame.
+#. **Motion.** Write ``capture.json`` + ``capture.bin`` per run, holding to the rules above, and declare
+   the current ``version`` (:ref:`run-capture-versions`) — including addressing ``overrides`` by path.
+   From ROS data the tracks are ``/joint_states`` for the joint tracks and ``/tf`` for the pose tracks —
+   with the caveat that the poses must be in the scene's frame, not a map frame.
 #. **Declare it.** Add a ``scene3d`` panel with ``scene:`` and ``capture:`` paths. Nothing else in the
    campaign changes, and no panel code is involved.
