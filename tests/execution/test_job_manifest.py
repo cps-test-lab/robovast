@@ -323,7 +323,7 @@ def test_a_declared_gpu_lands_on_the_simulation_sidecar(monkeypatch):
     m = _job_manifest(r)
     sim = _sidecar(m, "simulation")
     assert sim["resources"]["limits"]["nvidia.com/gpu"] == "1"
-    # Both, because admission reads the pod TEMPLATE -- no pod exists yet for Kubernetes to
+    # Both, because admission sizes from the pod TEMPLATE -- no pod exists yet for Kubernetes to
     # default one from the other, so an empty request is accounted as zero GPUs.
     assert sim["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert _env_dict(sim)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
@@ -573,8 +573,8 @@ def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
 
 
 def test_the_toleration_is_not_duplicated(monkeypatch):
-    """Additive and idempotent: the toleration is appended rather than assigned, so
-    rendering twice must not accumulate copies."""
+    """Additive and idempotent: rendering twice must not accumulate copies of the same
+    toleration."""
     m = _job_manifest(_runner(monkeypatch))
     tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
     assert len(tolerations) == len({tuple(sorted(t.items())) for t in tolerations})

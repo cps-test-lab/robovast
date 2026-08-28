@@ -1113,9 +1113,7 @@ class BatchJobRunner:
         """Confine the pod to the operator's node pool, then to the node admission chose.
 
         Both, in that order, and both ANDed onto whatever the spec already carried. The pool
-        is ``execution.kubernetes.jobs.node_labels`` -- the setting whose only implementation
-        used to be Kueue's ResourceFlavor, and which the documentation always described as a
-        pod ``nodeSelector``. It is one now.
+        is ``execution.kubernetes.jobs.node_labels``, which is a pod ``nodeSelector``.
 
         The pool must reach the pod, not just the accounting: the budget provider counts only
         nodes inside it, so a pod free to land outside would be running on capacity nothing

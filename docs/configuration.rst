@@ -1176,9 +1176,7 @@ What it does is unchanged, and both halves are enforced: the admission controlle
 free capacity only on nodes inside the pool, so it never promises room on a machine the
 jobs may not use; and each pod carries the labels as a ``nodeSelector``, so kube-scheduler
 is bound by the same rule the accounting assumed. The per-run node pin is ANDed onto the
-pool, narrowing it rather than replacing it. Its previous implementation was the
-``nodeLabels`` of Kueue's ``ResourceFlavor``, and for one release after Kueue was retired
-``setup`` refused the setting outright. See :ref:`cluster-node-labels`.
+pool, narrowing it rather than replacing it. See :ref:`cluster-node-labels`.
 
 kubernetes.control.node_labels
 '''''''''''''''''''''''''''''''

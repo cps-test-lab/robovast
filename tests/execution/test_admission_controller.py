@@ -5,7 +5,8 @@
 Two of these tests are the reason the module is shaped the way it is. ``test_two_grants...``
 pins the in-flight ledger, without which a second job is handed cores the first already took
 but whose pod is not yet visible. ``test_an_older_campaigns_second_batch...`` pins the
-ordering: order by submission and an older campaign's later batches lose to a younger
+ordering, and is the regression guard for a bug this codebase has already had once in its
+priority class: order by submission and an older campaign's later batches lose to a younger
 campaign, so the two take turns instead of the older one finishing.
 """
 
@@ -318,7 +319,7 @@ def test_a_growable_cluster_does_not_create_the_whole_batch_at_once():
     A handful of unplaceable pods says "add nodes" as loudly as a thousand do; the thousand
     add unaccounted reservations, not signal.
     """
-    p = FakeProvider(per_node=[("a", 1.0, 10240 * MiB, 0)], growable=True)
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MIB, 0)], growable=True)
     c = _controller(p)
     made = _items(c, "a", node_admission.GROWTH_UNPINNED_LIMIT * 3, cpu=4.0)
     assert c.drain() == node_admission.GROWTH_UNPINNED_LIMIT
@@ -335,7 +336,7 @@ def test_growth_resumes_as_the_new_nodes_take_the_work():
     any other and its slot frees. A cap that did not release would stall a campaign at
     GROWTH_UNPINNED_LIMIT jobs forever on a cluster that grew for it.
     """
-    p = FakeProvider(per_node=[("a", 1.0, 10240 * MiB, 0)], growable=True)
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MIB, 0)], growable=True)
     c = _controller(p)
     made = _items(c, "a", node_admission.GROWTH_UNPINNED_LIMIT + 3, cpu=4.0)
     assert c.drain() == node_admission.GROWTH_UNPINNED_LIMIT
@@ -520,14 +521,14 @@ def test_the_sizing_callback_may_not_reenter_the_queue():
     """
     import threading
 
-    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MiB, 0)])
+    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MIB, 0)])
     c = _controller(p)
 
     def _reenters(node_id):
         c.node_ids()          # any public method: they all take the lock
         return None
 
-    c.submit("a", [("a-0", JobSizing(2.0, MiB), lambda n=None: None)],
+    c.submit("a", [("a-0", JobSizing(2.0, MIB), lambda n=None: None)],
              started_at=0.0, sizing_for_node=_reenters)
 
     done = threading.Event()
@@ -562,7 +563,7 @@ def test_a_create_that_keeps_failing_is_eventually_given_up_on():
     def _boom(_node=None):
         raise RuntimeError("admission webhook denied the request")
 
-    c.submit("a", [("a-0", JobSizing(1.0, MiB), _boom)], started_at=0.0)
+    c.submit("a", [("a-0", JobSizing(1.0, MIB), _boom)], started_at=0.0)
     for _ in range(node_admission.CREATE_ATTEMPT_LIMIT):
         assert c.drain() == 0
 
@@ -586,7 +587,7 @@ def test_a_transient_failure_does_not_count_against_a_later_success():
         if len(calls) == 1:
             raise RuntimeError("connection reset")
 
-    c.submit("a", [("a-0", JobSizing(1.0, MiB), _flaky)], started_at=0.0)
+    c.submit("a", [("a-0", JobSizing(1.0, MIB), _flaky)], started_at=0.0)
     assert c.drain() == 0
     assert c.drain() == 1
     assert c.states("a") == {"a-0": "created"}
@@ -594,7 +595,7 @@ def test_a_transient_failure_does_not_count_against_a_later_success():
 
 def test_the_refusal_is_per_owner():
     """One global slot meant campaign B read campaign A's job sizes as its own reason."""
-    p = FakeProvider(per_node=[("n1", 4.0, 4096 * MiB, 0)])
+    p = FakeProvider(per_node=[("n1", 4.0, 4096 * MIB, 0)])
     c = _controller(p)
     _items(c, "big", 1, cpu=99.0, started_at=1.0)
     _items(c, "small", 1, cpu=1.0, started_at=2.0)
@@ -617,7 +618,7 @@ def test_concurrent_drains_never_over_admit():
     import threading
 
     capacity = 40
-    p = FakeProvider(per_node=[("n1", float(capacity), 1_000_000 * MiB, 0)])
+    p = FakeProvider(per_node=[("n1", float(capacity), 1_000_000 * MIB, 0)])
     c = _controller(p)
 
     created = []
@@ -629,7 +630,7 @@ def test_concurrent_drains_never_over_admit():
 
     for owner in range(4):
         c.submit(f"c{owner}",
-                 [(f"c{owner}-{i}", JobSizing(1.0, MiB),
+                 [(f"c{owner}-{i}", JobSizing(1.0, MIB),
                    (lambda n=None, k=f"c{owner}-{i}": _record(n, k)))
                   for i in range(25)],
                  started_at=float(owner))
@@ -654,7 +655,7 @@ def test_a_callback_may_ask_the_queue_from_another_thread_while_a_drain_holds_it
     """
     import threading
 
-    p = FakeProvider(per_node=[("n1", 8.0, 8192 * MiB, 0)])
+    p = FakeProvider(per_node=[("n1", 8.0, 8192 * MIB, 0)])
     c = _controller(p)
     entered = threading.Event()
     release = threading.Event()
@@ -665,7 +666,7 @@ def test_a_callback_may_ask_the_queue_from_another_thread_while_a_drain_holds_it
         release.wait(timeout=5)
         return None
 
-    c.submit("a", [("a-0", JobSizing(1.0, MiB), lambda n=None: None)],
+    c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda n=None: None)],
              started_at=0.0, sizing_for_node=_sizing)
 
     asker = threading.Thread(target=lambda: answers.append(c.states("b")))
@@ -694,7 +695,7 @@ def test_the_refusal_names_the_filter_that_actually_blocked_it():
 
     c = _controller(FakeProvider(cpu=64.0))
     # Every node held: the calibration gate, or a node pool this campaign is outside.
-    c.submit("camp", [("j-0", JobSizing(4.25, MiB), lambda _n=None: None)],
+    c.submit("camp", [("j-0", JobSizing(4.25, MIB), lambda _n=None: None)],
              started_at=0.0, accepts_node=lambda node_id: False)
     assert c.drain() == 0
     message = c.refusal("camp")
@@ -709,7 +710,7 @@ def test_a_genuine_capacity_refusal_still_says_so():
     from robovast.execution.cluster_execution.node_admission import JobSizing
 
     c = _controller(FakeProvider(cpu=2.0))
-    c.submit("camp", [("j-0", JobSizing(99.0, MiB), lambda _n=None: None)], started_at=0.0)
+    c.submit("camp", [("j-0", JobSizing(99.0, MIB), lambda _n=None: None)], started_at=0.0)
     assert c.drain() == 0
     message = c.refusal("camp")
     assert "needs 99 cpu" in message and "usable" in message, message

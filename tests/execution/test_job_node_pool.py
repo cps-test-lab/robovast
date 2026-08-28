@@ -1,11 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``execution.kubernetes.jobs.node_labels``, repointed at the admission controller.
+"""``execution.kubernetes.jobs.node_labels``, as the admission controller applies it.
 
-The setting's only implementation used to be Kueue's ResourceFlavor nodeLabels; for one
-release after Kueue was retired it was refused outright. It now means what
-``docs/configuration.rst`` always claimed: a ``nodeSelector`` on each job pod, backed by an
-admission controller that counts capacity only inside the same pool.
+It is a ``nodeSelector`` on each job pod, backed by an admission controller that counts
+capacity only inside the same pool.
 """
 
 import types

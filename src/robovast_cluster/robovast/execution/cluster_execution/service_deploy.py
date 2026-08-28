@@ -221,9 +221,8 @@ def _service_rbac_manifests(namespace):
         # "used" figure across tenants. The ClusterRole name is namespaced so parallel
         # robovast deployments don't collide.
         #
-        # Entirely read-only. It briefly granted create/delete on cluster-scoped
-        # workloadpriorityclasses, back when Kueue ordered admission; admission is the
-        # in-process controller's now (node_admission.py), so the service writes nothing
+        # Entirely read-only. Admission is the in-process
+        # controller's (node_admission.py), so the service writes nothing
         # cluster-scoped. A deployment older than that removal still tries the create and
         # gets a 403 here -- upgrade it rather than restoring the grant.
         {

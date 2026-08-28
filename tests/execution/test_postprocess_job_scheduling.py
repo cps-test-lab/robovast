@@ -22,7 +22,8 @@ def _pod_spec(**kw):
 def test_the_conversion_job_tolerates_the_campaign_taint():
     """A deployment that dedicates nodes to campaigns has nowhere else to put this.
 
-    Kueue's flavor used to inject the toleration; when it was retired the job pods learned to
+    The job pods carry the toleration themselves; this Job is created outside the admission
+    path, so it is the one that
     carry it themselves and this Job -- created outside the admission path -- was missed. The
     symptom is not an error but a Pending pod that gives up after three hours.
     """

@@ -431,7 +431,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     generated the conversion command, so the driver/script version skew that produced
     the ``--output-root`` failure cannot occur on any exec variant. The scripts are
     self-contained (stdlib + ROS2 libs + one sibling, no ``robovast`` import) and small
-    (well under the 1 MIB ConfigMap limit), so a plain text ConfigMap suffices.
+    (well under the 1 MiB ConfigMap limit), so a plain text ConfigMap suffices.
     """
     from importlib.resources import files  # noqa: PLC0415
 
@@ -551,9 +551,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                     # Campaign nodes are where the bags already are and where this is
                     # allowed to run; without the toleration a deployment that dedicates
                     # its nodes to campaigns has nowhere to put this at all, and the Job
-                    # sits Pending until its three-hour timeout. The job pods learned to
-                    # carry it when Kueue's flavor stopped injecting it; this one was
-                    # missed, because it is created outside the admission path entirely.
+                    # sits Pending until its three-hour timeout. Easy to miss here, because
+                    # this Job is created outside the admission path entirely.
                     "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
                     **({"imagePullSecrets": [{"name": pull_secret_name}]}
                        if pull_secret_name else {}),

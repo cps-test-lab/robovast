@@ -353,8 +353,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # that whole class of accident is gone rather than guarded against.
     if jobs_node_labels:
         # The campaign job pool: counted by the admission controller and stamped on every
-        # job pod. This is what `docs/configuration.rst` always claimed the setting did;
-        # its previous implementation was Kueue's ResourceFlavor nodeLabels.
+        # job pod, which is what `docs/configuration.rst` describes.
         logger.info("Campaign job node pool (nodeSelector): %s", jobs_node_labels)
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
