@@ -57,9 +57,9 @@ def test_no_pool_configured_is_every_node(monkeypatch):
 
 
 def test_an_empty_value_clears_a_previous_pool(monkeypatch):
-    """Setup writes the var on every run, empty included. Without that, deleting the setting
-    from the .vast would leave the old pool in force and the operator's file would stop
-    describing the cluster it configures."""
+    """Setup writes the var on every run, empty included. Without that, omitting the option
+    would leave a previously configured pool in force, and the command would stop being the
+    whole truth about the cluster it configures."""
     assert _pin(monkeypatch, "", None) is None
 
 
