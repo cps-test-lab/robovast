@@ -4,12 +4,12 @@
 
 """The aux container's workspace mirroring: how it moves, and when it is skipped.
 
-The history matters, because these tests are what keep it from coming back. ``_copy_in``
-used to pipe a base64 tarball into ``base64 -d | tar xzf -`` and rely on stdin EOF to end
-it. The Kubernetes stream client can write stdin but cannot half-close it, so the receiver
-waited forever, the exec never returned, and ``run()`` hung -- observed against a live pod
-on an *empty* workspace, for 2m47s, before it was killed. It was fixed by framing the read
-with ``head -c <n>``.
+These tests are what keep one shape from coming back. Piping a base64 tarball into
+``base64 -d | tar xzf -`` and relying on stdin EOF to end it cannot work here: the
+Kubernetes stream client can write stdin but cannot half-close it, so the receiver waits
+forever, the exec never returns, and ``run()`` hangs -- measured against a live pod on an
+*empty* workspace at 2m47s before it was killed. Framing the read with ``head -c <n>``
+is what avoids it.
 
 The transfer now goes through the object store instead, the way a campaign Job and the
 container-exec lane already stage: no stdin in either direction, so that failure mode is
@@ -322,7 +322,7 @@ def test_no_s3_means_no_tooling_is_attached():
 
 @pytest.mark.parametrize("secret", ["", "harbor-pull"])
 def test_aux_pod_pull_secret_is_set_only_when_named(secret):
-    """Aux images used to be public; a spec naming the campaign's own image is not.
+    """A public aux image needs no secret; a spec naming the campaign's own image does.
 
     ``imagePullPolicy: IfNotPresent`` hides a missing secret on any node that already cached the
     image, so this fails first on a *fresh* node -- the worst place to discover it.
@@ -371,11 +371,11 @@ def test_the_exec_bound_is_passed_through_not_ignored(monkeypatch):
 
 
 def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
-    """A 409 used to mean "already exists -> reuse it".
+    """A 409 does not mean "already exists -> reuse it".
 
     The name is derived from the campaign id, so the pod it collides with is this
     campaign's previous one -- usually still ``Terminating``, and a Terminating pod never
-    becomes Running. Adopting it meant waiting out the full ready timeout for a corpse.
+    becomes Running. Adopting it means waiting out the full ready timeout for a corpse.
     """
     from kubernetes.client.rest import ApiException
 

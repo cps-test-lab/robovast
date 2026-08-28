@@ -147,9 +147,9 @@ class RoqsimBackend(SimulatorBackend):
     def containers(self, cfg, execution: dict) -> dict:
         # Both shapes name the SAME family member, symbolically: only that image carries
         # roqsim *and* the RoboVAST contract (/etc/robovast_compat_version,
-        # scenario-execution, the /out mount). The ROS shape used to name roqsim's own
-        # published image, which has the simulator but not the contract, so the runner
-        # rejected it -- and nothing published that tag anyway.
+        # scenario-execution, the /out mount). Not roqsim's own published image: that one
+        # has the simulator but not the contract, so the runner rejects it -- and nothing
+        # publishes that tag anyway.
         #
         # Symbolic, not resolved here: which project and tag it comes from is a property
         # of the campaign, and this runs before one exists.
@@ -228,10 +228,10 @@ class RoqsimBackend(SimulatorBackend):
             # from here. The scenario stays simulator-agnostic either way -- it never
             # learns that this simulator has a thing called a world.
             #
-            # Through `_config_in_container`, like the ROS shape. It used to be passed raw,
-            # so a stepped campaign whose world was a relative path had the simulator look
-            # beside its own working directory instead of at the mount -- the exact failure
-            # that function exists to prevent, avoided on one path and not the other.
+            # Through `_config_in_container`, like the ROS shape. Passed raw, a stepped
+            # campaign whose world is a relative path has the simulator look beside its own
+            # working directory instead of at the mount -- the exact failure that function
+            # exists to prevent, and it must not be avoided on one path only.
             env["ROQSIM_WORLD"] = _config_in_container(cfg.config)
             if cfg.overrides:
                 # The same document the ROS shape passes with --override, reached the way

@@ -17,8 +17,8 @@ def test_the_success_line_is_a_verdict():
 @pytest.mark.parametrize("failure_message", FAILURE_MESSAGES)
 def test_every_failure_message_on_scenario_shutdown_can_give_is_a_verdict(failure_message):
     """Enumerated from `on_scenario_shutdown`'s callers. Matching only the default
-    (`execution failed.`) is what the postprocessing matcher used to do, which left a
-    run that ended `Aborted` or `Run failed` with no recorded end at all."""
+    (`execution failed.`) leaves a run that ended `Aborted` or `Run failed` with no
+    recorded end at all."""
     assert verdict_of(f"test_scenario: {failure_message} <snapshot>") == "failed"
 
 

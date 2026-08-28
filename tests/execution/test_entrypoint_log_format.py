@@ -3,10 +3,10 @@
 """The entrypoints stamp their own lines, in the grammar the merged run log parses.
 
 This is the producer half of the run log. Every other source in a container stamps itself --
-rclpy does, scenario-execution's logger does -- and these two scripts are what made a non-ROS
-run unplaceable in time: 46 lines, 0 stamped, on a measured run. A capture pipeline used to
-give them a timestamp from outside (a helper mounted at /config, a second copy of every line
-on disk); stamping at the source deleted all of it.
+rclpy does, scenario-execution's logger does -- and unstamped, these two scripts leave a
+non-ROS run unplaceable in time: 46 lines, 0 stamped, on a measured run. A capture pipeline
+would give them a timestamp from outside (a helper mounted at /config, a second copy of
+every line on disk); stamping at the source needs none of it.
 
 The tests run the *shipped* helper through a real bash and parse the result with the *shipped*
 grammar, rather than asserting on a format string. A format that no longer matches the parser
@@ -90,9 +90,9 @@ def test_both_scripts_take_the_shared_helper(name):
 
 
 def test_the_redirect_precedes_the_first_line_logged():
-    """It used to sit after the X11 block, so everything above it -- the tool check, `Waiting
-    for X socket...DONE` -- reached the live log and never the durable file people read after
-    a failure. Only `log` lines were teed, and bare `echo`s were in neither."""
+    """After the X11 block, everything above it -- the tool check, `Waiting for X
+    socket...DONE` -- reaches the live log and never the durable file people read after a
+    failure. Only `log` lines would be teed, and bare `echo`s in neither."""
     rendered = render_entrypoint(cluster=False)
     redirect = rendered.index("exec > >(stdbuf -oL tee")
     first_log = rendered.index('log "Running as UID')

@@ -171,12 +171,12 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
 #: What every MCP client injects into the model's system prompt. This is the only text
 #: read before any tool is chosen, so it is where the server says what it is *for*.
 #:
-#: It used to read "This server provides access to the results created by RoboVAST" —
-#: true, and the reason agents kept running experiments by hand on the host and then
-#: coming here to read files. A server that introduces itself as an archive is not
-#: offered as a place to run anything; the execution half of the surface went unused
-#: while ``docker compose`` runs produced results with no pinned image, no recorded
-#: provenance and no repetitions, which cannot be compared with anything.
+#: Not "this server provides access to the results created by RoboVAST" — true, and the
+#: reason an agent runs experiments by hand on the host and then comes here to read
+#: files. A server that introduces itself as an archive is not offered as a place to run
+#: anything, so the execution half of the surface goes unused while ``docker compose``
+#: runs produce results with no pinned image, no recorded provenance and no repetitions,
+#: which cannot be compared with anything.
 _INSTRUCTIONS = """\
 RoboVAST runs robotics experiments and keeps what they produced.
 

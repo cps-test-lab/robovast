@@ -17,8 +17,8 @@
 """Best-effort `ntfy.sh <https://ntfy.sh>`_ push notifications for a campaign.
 
 The campaign driver pushes a notification for each lifecycle event (start, batch
-finished, finished, uploaded, failure) plus an hourly heartbeat, so detached cluster
-runs are no longer silent. The topic is configured per-user via ``ROBOVAST_NTFY_TOPIC``
+finished, finished, uploaded, failure) plus an hourly heartbeat, so a detached cluster
+run is not silent. The topic is configured per-user via ``ROBOVAST_NTFY_TOPIC``
 in the project ``.env``, so different users get their own topics. The driver runs
 in-process inside ``robovast-service``; for an in-cluster service the ntfy env is read
 from the host ``.env`` at setup and injected into the service pod via a Secret +

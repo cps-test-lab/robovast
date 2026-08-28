@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """``failure_detail`` must state a failure's reason exactly once.
 
-It writes the string the UI shows in the campaign's error box, and it used to
-build that string as ``message + format_exception(...)`` — whose last line *is*
-the message. Every recorded failure therefore printed its reason twice, and a
-long message (the version-1 config migration text runs some twenty lines) filled
-the whole ``tail_lines`` budget with the duplicate, leaving no room for the
-frames the tail exists to show.
+It writes the string the UI shows in the campaign's error box. Building that
+string as ``message + format_exception(...)`` — whose last line *is* the
+message — prints every recorded failure's reason twice, and a long message (the
+version-1 config migration text runs some twenty lines) fills the whole
+``tail_lines`` budget with the duplicate, leaving no room for the frames the
+tail exists to show.
 """
 
 import pytest

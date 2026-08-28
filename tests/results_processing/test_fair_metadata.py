@@ -153,7 +153,7 @@ def test_as_list_wraps_a_scalar_and_leaves_a_sequence(value, expected):
 def test_a_failed_contribution_is_recorded_in_the_graph(campaign, caplog, monkeypatch):
     """A provenance graph must declare its own gaps.
 
-    The hook used to be logged and skipped, which leaves a *published* record whose
+    Logging the hook's failure and skipping it leaves a *published* record whose
     incompleteness is invisible: nothing distinguishes a variation whose contribution failed
     from one that had nothing to contribute. Warning kept, gap added -- in the artifact, and
     in the message the postprocessing step reports.

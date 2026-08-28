@@ -253,11 +253,11 @@ export interface paths {
          *     objects from the store and tars them on the fly, the local lane tars its own
          *     directory into the response. Decisive for ~1TB campaigns.
          *
-         *     A local service used to refuse this with a 409 -- "the results are already on
-         *     this host's filesystem". True of a caller on that host, and false of everyone
-         *     else: a ``vast serve`` reached over the network could not be downloaded from at
-         *     all, and the web UI had to hide its own button on that lane. The lane is not
-         *     what decides whether a caller can read a file.
+         *     Refusing this on a local service with a 409 -- "the results are already on this
+         *     host's filesystem" -- asserts something true of a caller on that host and false
+         *     of everyone else: a ``vast serve`` reached over the network could not be
+         *     downloaded from at all, and the web UI would have to hide its own button on that
+         *     lane. The lane is not what decides whether a caller can read a file.
          */
         get: operations["download_campaign_archive_campaigns__campaign_id__archive_get"];
         put?: never;

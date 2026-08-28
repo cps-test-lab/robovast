@@ -380,9 +380,9 @@ Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container`
   **Producers stamp their own lines**, which is why ``stamp`` is the normal case rather than a
   ROS-only luxury: rclpy writes the stamp, and so do the entrypoints' ``log`` helper and
   scenario-execution's logger. There is no capture step anywhere — a helper mounted in every
-  container used to timestamp each line as it was read, which meant a second copy of every log
-  line on disk (119 KB against a 108 KB ``system.log``, measured) to describe output that was
-  RoboVAST's own and could simply say when it spoke.
+  container to timestamp each line as it is read means a second copy of every log line on disk
+  (119 KB against a 108 KB ``system.log``, measured) to describe output that is RoboVAST's own
+  and can simply say when it spoke.
 
   Third-party output that stamps nothing (a gz warning, a vanilla sidecar) is **never dropped**:
   it gets a row per line, inheriting from a neighboring event where one exists and reporting

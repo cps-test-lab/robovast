@@ -1,16 +1,16 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The commands that outlived the deleted ``--cluster`` flag.
+"""No command reads a ``cluster`` name its decorator does not bind.
 
-Removing ``--cluster`` (one way to reach the service, no per-call port-forward) left three
-call sites still reading a ``cluster`` name the decorator no longer bound. Python does not
-catch that at import time, and neither failure was loud in the right way:
+There is one way to reach the service and no per-call port-forward, so no ``--cluster``
+parameter. Python does not catch a leftover reference to one at import time, and neither
+failure is loud in the right way:
 
-* ``vast workspace world`` raised ``NameError`` on **every** invocation — the name was
+* ``vast workspace world`` raises ``NameError`` on **every** invocation — the name is
   simply absent from that module.
-* ``vast exec command`` and ``vast exec stop-container`` resolved ``cluster`` to the
+* ``vast exec command`` and ``vast exec stop-container`` resolve ``cluster`` to the
   module-level click ``Group`` of the same name, which is always truthy, so both silently
-  pinned the request to the cluster lane with no way to select another.
+  pin the request to the cluster lane with no way to select another.
 
 The second is the one worth a test: it never raised, so nothing pointed at it. These
 assert the *request* each command builds, because that — not the exit code — is where the
@@ -91,4 +91,4 @@ def test_exec_command_does_not_pin_the_cluster_lane(recorder):
 def test_stop_container_does_not_pin_the_cluster_lane(recorder):
     CliRunner().invoke(container_cli.container, ["stop"])
     assert recorder.calls.get("stop_exec_container"), (
-        "never reached the client -- or was called with a lane it no longer takes")
+        "never reached the client -- or was called with a lane it does not take")

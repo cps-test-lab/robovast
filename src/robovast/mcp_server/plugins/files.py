@@ -36,10 +36,11 @@ from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-#: The campaign layout, carried by ``list_files``. It is the discoverability the retired
-#: per-scope tool *names* used to provide — a tool called "list the campaign's transient
-#: files" told a reader that transient files exist and where. One table costs a fraction
-#: of the ten tool schemas it replaces, and unlike them it also covers what has no tool.
+#: The campaign layout, carried by ``list_files``. It is the discoverability a set of
+#: per-scope tool *names* would provide — a tool called "list the campaign's transient
+#: files" tells a reader that transient files exist and where. One table costs a fraction
+#: of the ten tool schemas it stands in for, and unlike them it also covers what has no
+#: tool.
 #:
 #: Attached to ``list_files`` alone, not to both discovery tools: every tool description
 #: is sent on every request, so a table repeated across two of them is paid for twice per

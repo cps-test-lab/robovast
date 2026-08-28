@@ -6,10 +6,10 @@
 
 The contract of the address space is that the string a caller passes **is** the URL
 that serves it, so these assert the client appends the address to the base URL and
-adds nothing to the path. That also retires an older bug class: the file path used to
-travel as a ``path`` query param, which collided with the request helpers' own first
-positional argument (``self._delete(route, path=path)`` → "multiple values for
-argument 'path'"). It is now a path segment, so there is nothing to collide with.
+adds nothing to the path. That also rules out a bug class: a file path travelling as a
+``path`` query param collides with the request helpers' own first positional argument
+(``self._delete(route, path=path)`` → "multiple values for argument 'path'"). As a path
+segment there is nothing to collide with.
 """
 
 import pytest
@@ -22,7 +22,7 @@ from robovast.service.interface import EditFileRequest, ServiceError, WriteFileR
 class _Resp:
     """A successful response, shaped like the ``requests`` one the client now inspects.
 
-    ``ok``/``status_code`` matter because the transport no longer delegates to
+    ``ok``/``status_code`` matter because the transport does not delegate to
     ``requests.Response.raise_for_status`` — it reads the status itself so it can carry
     the service's ``{detail}`` through instead of discarding it.
     """
@@ -141,12 +141,12 @@ def test_the_readiness_probe_keeps_the_default_timeout(monkeypatch):
 
 # -- what the service said must survive the trip -----------------------------
 #
-# The transport used to call ``requests.Response.raise_for_status()``, which reports the
-# status line and the URL and drops the body. Every refusal this service writes to be
-# acted on -- the binary-file advice, "stop it first", the address hint -- reached an MCP
-# tool or the CLI as ``"400 Client Error: Bad Request for url: ...?as=text&lines=200"``.
-# The web UI parses ``detail`` itself, so the two client families disagreed about what the
-# same call had said.
+# ``requests.Response.raise_for_status()`` reports the status line and the URL and drops
+# the body. Every refusal this service writes to be acted on -- the binary-file advice,
+# "stop it first", the address hint -- would reach an MCP tool or the CLI as
+# ``"400 Client Error: Bad Request for url: ...?as=text&lines=200"``. The web UI parses
+# ``detail`` itself, so the two client families would disagree about what the same call
+# said.
 
 
 def _refusing(monkeypatch, status: int, payload=None, text: str = ""):

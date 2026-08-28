@@ -155,8 +155,8 @@ def _service_rbac_manifests(namespace):
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "Role",
             "metadata": {"name": role_name, "namespace": namespace},
-            # The service drives campaigns in-process now (there is no controller
-            # pod), so it needs everything that pod's ServiceAccount used to hold.
+            # The service drives campaigns in-process (there is no controller pod), so it
+            # needs everything such a pod's ServiceAccount would hold.
             "rules": [
                 # Scenario runs and the rosbag→CSV postprocessing are Jobs the
                 # service creates, watches and reaps.
@@ -401,12 +401,12 @@ def _service_manifest(namespace, ingress_class=""):
 def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180.0):
     """Block until the service Deployment has a Ready replica, or say why it has not.
 
-    Setup used to return the moment the Deployment was *created* and print
-    "✓ Cluster setup completed successfully!", so an image that cannot be pulled
-    surfaced one command later as a connection failure — pointing at the network
-    rather than at the ImagePullBackOff that actually happened. The pod's own reason is
-    right there; reporting it here is the difference between a five-second fix and a
-    debugging session.
+    Returning the moment the Deployment is *created* and printing "✓ Cluster setup
+    completed successfully!" surfaces an image that cannot be pulled one command later,
+    as a connection failure — pointing at the network rather than at the
+    ImagePullBackOff that actually happened. The pod's own reason is right there;
+    reporting it here is the difference between a five-second fix and a debugging
+    session.
 
     Raises:
         RuntimeError: not Ready within *timeout_s*, carrying the pod's pending reason.
@@ -518,11 +518,11 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
     spec (``observedGeneration``), every replica is on the new template
     (``updatedReplicas``), and none of the old ones are left (``replicas``).
 
-    Those counters alone, however, cannot fail. This used to watch nothing else and return
-    False on timeout, so an incoming pod in ``ImagePullBackOff`` -- a reason the kubelet
-    already had -- was three minutes of silence followed by a caller that printed
-    "✓ upgraded and ready" anyway. So the incoming pod is watched too, and this raises
-    rather than returning a verdict a caller has to remember to check.
+    Those counters alone, however, cannot fail. Watching nothing else and returning False
+    on timeout turns an incoming pod in ``ImagePullBackOff`` -- a reason the kubelet already
+    has -- into three minutes of silence followed by a caller that prints "✓ upgraded and
+    ready" anyway. So the incoming pod is watched too, and this raises rather than returning
+    a verdict a caller has to remember to check.
 
     Args:
         report: optional ``callable(str)`` for progress lines. A callback rather than
@@ -815,11 +815,11 @@ def validate_ingress_options(ingress_host="", tls_secret="", issuer="",
                              insecure_http=False, have_token=True):
     """Refuse an unpublishable combination **before** anything is changed.
 
-    A pure argument check, so it belongs at the very start of setup. It used to live
-    only inside :func:`_ingress_manifest`, which runs after the cluster has been changed and
-    the cluster's storage deployed — so an operator who forgot ``--issuer`` discovered it
-    only once the cluster had already been modified. The check costs nothing; doing it
-    late costs a half-finished setup.
+    A pure argument check, so it belongs at the very start of setup. Inside
+    :func:`_ingress_manifest` instead -- which runs after the cluster has been changed and
+    the cluster's storage deployed -- an operator who forgot ``--issuer`` discovers it only
+    once the cluster has already been modified. The check costs nothing; doing it late
+    costs a half-finished setup.
 
     Raises:
         IngressRefused: naming which combination and why.
@@ -1495,34 +1495,32 @@ def service_manifests(namespace="default", image=None, env=None,
     image = image or resolve_controller_image()
     if env is None:
         env = _cluster_env(namespace, config_name, config_kwargs, kube_context)
-    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. It was carried in for the
-    # postprocessing Job, whose initContainer used to copy robovast out of the controller
-    # image -- but the conversion scripts come from a per-campaign ConfigMap built in the
-    # driver's own process now (postprocess_job.scripts_configmap_manifest, precisely so
-    # there is no controller-image version skew), and the conversion container runs the
-    # *campaign's* recorded execution image. Nothing in the pod reads the variable, so
-    # setting it there says something untrue about what this deployment uses.
+    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. Nothing in the pod reads
+    # it: the postprocessing Job's conversion scripts come from a per-campaign ConfigMap
+    # built in the driver's own process (postprocess_job.scripts_configmap_manifest,
+    # precisely so there is no controller-image version skew), and the conversion container
+    # runs the *campaign's* recorded execution image. Setting the variable there says
+    # something untrue about what this deployment uses.
     #
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build
     # base. So the project they resolve from has to be carried in, or an operator who
     # configured one gets it honoured everywhere except the place it is actually read.
     #
-    # That was the old bug, and it was worse than it sounds: of the five per-image
-    # variables that used to exist, only two were ever propagated, so `setup --force`
-    # appeared to move the images and moved only the controller. One variable for the
-    # whole family means there is one thing to carry rather than five to forget -- and
-    # this is the *site default*: a campaign may override it on its own request
+    # One variable for the whole family means there is one thing to carry rather than
+    # several to forget, and a per-image variable read in-pod but propagated nowhere is a
+    # setting that appears to take and does not: `setup --force` looks like it moved the
+    # images and moved only the controller. It is also the *site default*: a campaign may
+    # override it on its own request
     # (CreateCampaignRequest.image_project), which is what makes a dev run need no deploy.
     # Carried UNCONDITIONALLY, empty value and all, and that is the point rather than an
     # oversight. The Deployment is applied with a strategic-merge patch, whose merge key for
     # `containers[].env` is the variable NAME -- so a variable the patch omits is not removed,
-    # it is preserved. While these were emitted only when set, they were write-only: an
-    # operator who set ROBOVAST_PROJECT_TAG once could never unset it again, because deleting
-    # it from ./.env (or from their shell) simply left it out of the next patch and the old
-    # value stayed in the pod. That cost an afternoon: a deployment kept resolving the family
-    # at a tag nobody could find in any file, and every campaign's build failed pulling an
-    # image at it.
+    # it is preserved. Emitting these only when set makes them write-only: an operator who
+    # sets ROBOVAST_PROJECT_TAG once could never unset it again, because deleting it from
+    # ./.env (or from their shell) simply leaves it out of the next patch and the old value
+    # stays in the pod -- a deployment resolving the family at a tag nobody can find in any
+    # file, and every campaign's build failing to pull an image at it.
     #
     # An empty value is safe because it is exactly what "unset" already means to every reader:
     # they all do `os.environ.get(var, "").strip() or <default>` (see execution.default_image_
@@ -1639,11 +1637,11 @@ def _delete_unconfigured_credentials(core, namespace, secrets, configmaps, *,
                                      dry_run=False):
     """Delete an owned credential object this deploy did **not** build.
 
-    Removing a variable from ``.env`` used to leave the Secret it had created in place,
-    and — worse — ``deploy_service`` rediscovers the registry credential *by existence*,
-    so it stayed wired to the Deployment as an imagePullSecret. An operator deleting a
-    password to revoke access got a successful "upgraded" while the credential remained
-    deployed and in use. Rotation worked; only removal was silently ignored.
+    Removing a variable from ``.env`` must remove the Secret it created: ``deploy_service``
+    rediscovers the registry credential *by existence*, so a Secret left in place stays
+    wired to the Deployment as an imagePullSecret. An operator deleting a password to revoke
+    access would get a successful "upgraded" while the credential remained deployed and in
+    use — rotation working, removal silently ignored.
 
     Not a general reconciler: it touches exactly the objects this module creates, so a
     Secret someone else put in the namespace is none of its business.
@@ -1782,8 +1780,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     dr = "All" if dry_run else None
 
     # Anything the caller did not state is RECOVERED, never defaulted. `upgrade` passes none
-    # of the storage or placement arguments, and "not passed" used to mean "unpinned, on a
-    # hostPath" -- so one upgrade unpinned the service pod and reverted a PVC-backed registry,
+    # of the storage or placement arguments, so reading "not passed" as "unpinned, on a
+    # hostPath" lets one upgrade unpin the service pod and revert a PVC-backed registry --
     # silently, on the deployment whose data was the reason those flags were given.
     deployed = service_storage_from_cluster(namespace, kube_context)
     registry_storage_path = registry_storage_path or deployed.get("registry_storage_path", "")

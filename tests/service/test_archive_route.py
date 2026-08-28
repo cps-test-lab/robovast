@@ -3,10 +3,10 @@
 """GET /campaigns/{id}/archive — every lane serves it, and a caller cannot tell which did.
 
 A cluster service streams the postprocessed tar.gz out of the object store with no scratch; a
-local one tars its own results directory. That symmetry is the point, and it is what the route
-used to lack: a local service answered 409 ("the results are already on this host"), which is
-true of the *service* and useless to a browser, a colleague, or anyone importing the campaign
-somewhere else. So the interesting property to defend is that the two lanes agree — same
+local one tars its own results directory. That symmetry is the point: a local service
+answering 409 ("the results are already on this host") states something true of the *service*
+and useless to a browser, a colleague, or anyone importing the campaign somewhere else. So the
+interesting property to defend is that the two lanes agree — same
 exclusions, same streaming, same status codes — because a client that has to ask which backend
 it is talking to before it can offer a download is a client that will get it wrong.
 
@@ -68,8 +68,8 @@ def _members(payload: bytes) -> set:
 def test_a_local_service_streams_its_own_campaign(env):
     """The local lane serves the archive instead of refusing it.
 
-    It used to answer 409. That made the campaign view hide its own download button behind a
-    backend check, and left an operator on a local service with no way to hand a campaign to
+    Answering 409 makes the campaign view hide its own download button behind a backend
+    check, and leaves an operator on a local service with no way to hand a campaign to
     anybody without shell access to the host.
     """
     resp = env.get(f"/campaigns/{_CAMPAIGN}/archive")

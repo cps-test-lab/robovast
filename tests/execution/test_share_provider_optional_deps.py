@@ -3,8 +3,8 @@
 """A provider whose optional dependency is absent must stay silent until it is used.
 
 ``load_share_provider_plugins`` loads *every* registered provider, on every share
-operation and on every campaign import. The SFTP provider used to import paramiko at
-module scope, so an install without the ``sftp`` extra warned about it several times per
+operation and on every campaign import. An SFTP provider importing paramiko at module
+scope makes an install without the ``sftp`` extra warn about it several times per
 command -- to people using a WebDAV or GCS share who will never open an SFTP connection.
 """
 

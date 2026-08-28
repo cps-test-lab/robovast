@@ -221,8 +221,8 @@ def test_a_fresh_error_finding_ends_the_wait_with_its_own_code(statuses):
 
 def test_a_finding_exit_says_what_to_do_next_from_what_the_finding_already_told_you(statuses):
     """A finding names the job and names the check, so the next step starts from those two facts.
-    This used to carry the *stall* step, which sent a reader off to ask what the job was doing --
-    the one question the finding had just answered."""
+    Carrying the *stall* step here sends a reader off to ask what the job was doing -- the one
+    question the finding has just answered."""
     statuses([_finding_status("c1", []), _finding_status("c1", [_finding()])])
     result = _run("c1", "--timeout", "5")
     assert result.exit_code == 5

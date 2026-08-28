@@ -195,8 +195,8 @@ def test_get_behavior_info_still_groups_by_the_file_reader_keys(tmp_path):
 
 
 def test_an_absent_behaviour_returns_the_same_columns_as_a_present_one(tmp_path):
-    """The empty result used to drop start_time/end_time, so selecting them worked until
-    the day the behaviour was not found."""
+    """An empty result that drops start_time/end_time makes selecting them work until the
+    day the behaviour is not found."""
     root = _campaign(tmp_path)
     frame = read_table(root, "behaviors")
     assert list(get_behavior_info("nope", frame).columns) == list(

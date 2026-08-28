@@ -308,8 +308,8 @@ def _container_role(name: str, workload_names: "set[str]") -> str:
 def pod_container_failures(pod) -> "list[dict]":
     """One record per restarted container of *pod*, newest state and all, or ``[]``.
 
-    Everything :func:`pod_restarted_containers` used to format into a sentence and throw
-    away. A restart is the only campaign signal whose evidence dies with the pod -- the
+    Everything a formatted one-sentence summary would throw away. A restart is the only
+    campaign signal whose evidence dies with the pod -- the
     container is gone, its logs are one API call away for a few minutes, and after that the
     whole diagnosis is whatever string got logged. So this captures rather than formats,
     and the formatting is a thin layer on top.
@@ -1144,11 +1144,10 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
 
 #: One counter per phase :func:`list_jobs_with_phase` can report.
 #:
-#: Spelled out because the loop below used to do ``per_run[campaign][phase] += 1`` against
-#: a dict seeded with four names -- which quietly made the classifier's vocabulary this
-#: function's schema. Both phases added there since (``blocked``, then ``waiting``) were
-#: therefore a ``KeyError`` here, and the monitor's caller catches everything and prints
-#: "(unreachable)", so a healthy cluster reported as an unreachable one.
+#: Spelled out because a loop doing ``per_run[campaign][phase] += 1`` against an ad-hoc
+#: dict makes the classifier's vocabulary this function's schema: a phase added there is a
+#: ``KeyError`` here, and the monitor's caller catches everything and prints
+#: "(unreachable)", so a healthy cluster reports as an unreachable one.
 JOB_PHASE_COUNTERS = ("completed", "failed", "running", "pending", "blocked", "waiting")
 
 

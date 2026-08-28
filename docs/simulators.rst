@@ -21,7 +21,7 @@ assembling one:
          system_packages: [ros-jazzy-navigation2]
      scenario_file: scenario.osc
 
-Everything a campaign used to restate by hand — the GL libraries, the simulator's
+Everything a campaign would otherwise restate by hand — the GL libraries, the simulator's
 packages, ``ENABLE_X11``, the recording variables, and how the simulator is started at
 all — comes from the backend. What is left is which simulator, and which config.
 
@@ -239,10 +239,10 @@ family member, which is the only one carrying roqsim *and* the RoboVAST contract
 - ``mode: base`` — the same image as the ``scenario`` container, because a stepped
   simulator shares the scenario's process.
 
-The ROS shape used to default to roqsim's *own* published image, which has the simulator
-but not the contract — so the runner rejected it, and no workflow published that tag in any
-case. Built by ``container/robovast/build.sh --image roqsim``; which registry it is pulled
-from is ``ROBOVAST_PROJECT`` (:doc:`images`), never a ``.vast`` field.
+Not roqsim's *own* published image: that one has the simulator but not the contract, so the
+runner rejects it, and no workflow publishes that tag in any case. The family member is built
+by ``container/robovast/build.sh --image roqsim``; which registry it is pulled from is
+``ROBOVAST_PROJECT`` (:doc:`images`), never a ``.vast`` field.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
 ``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
@@ -337,14 +337,13 @@ campaign is checked against it, once per distinct block:
 Only the *component key* is verified. A key inside a component's config that the world leaves at
 its default is legitimately absent from what the simulator reports, so refusing it would reject a
 correct campaign; a component key matching nothing is unambiguous and is what ``apply_overrides``
-refuses at load time -- previously after the image pull and the pod schedule.
+refuses at load time, before the image pull and the pod schedule.
 
 Two things keep the cost proportionate. A campaign that overrides nothing is not checked, and a
 backend offering no ``describe_query`` -- or an environment with no container runner -- is not
-checked either. In both cases the campaign behaves exactly as it did before: wrong overrides are
-still refused, just later and more expensively. **When a check is skipped it says so**, at
-warning level and with the reason: it used to be a debug line, which is indistinguishable from a
-check that passed.
+checked either. In both cases wrong overrides are still refused, just later and more
+expensively. **When a check is skipped it says so**, at warning level and with the reason —
+not as a debug line, which is indistinguishable from a check that passed.
 
 **In the image the campaign runs.** Which world a ref even names depends on what is *installed*,
 so an experiment shipping its own world package has worlds that exist in its built image and
@@ -429,7 +428,7 @@ tree. To build it from a checkout on disk instead::
 
 That replaces the Dockerfile's clone stage with your tree (buildx ``--build-context``), so both
 paths reach the same ``COPY`` and there is no second code path to drift. The build says in its
-log which source it used, because the resulting image no longer corresponds to the ref.
+log which source it used, because the resulting image does not correspond to the pinned ref.
 
 While roqsim is not a public repository the *clone* path additionally needs a token — set
 ``GITHUB_TOKEN`` and ``build.sh`` passes it as a BuildKit secret — so ``--roqsim-src`` is the

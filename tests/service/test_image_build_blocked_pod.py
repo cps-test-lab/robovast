@@ -4,9 +4,9 @@
 
 Kubernetes leaves such a Job ``active`` forever -- an unpullable image keeps the pod
 ``Pending``, and with ``backoffLimit: 0`` and no ``activeDeadlineSeconds`` neither the
-``succeeded`` nor the ``failed`` counter ever moves. The status read used to call that
-"building", so ``vast image wait`` polled until someone killed it and the agent that
-backgrounded it was never told anything at all.
+``succeeded`` nor the ``failed`` counter ever moves. A status read calling that
+"building" leaves ``vast image wait`` polling until someone kills it, and the agent that
+backgrounded it is never told anything at all.
 
 Hence the two things asserted here, in this order of importance: the wait *ends*, and the
 error *names the knob*. A test that only checked ``done`` would let the second half -- the
@@ -94,7 +94,7 @@ def test_a_fresh_image_pull_failure_is_blocked_not_yet_failed(cs, monkeypatch):
 
 
 def test_an_image_pull_failure_past_the_grace_window_fails_the_build(cs, monkeypatch):
-    """The reported bug: this used to stay 'building' forever."""
+    """Otherwise this stays 'building' forever."""
     _wire(cs, monkeypatch, _pod(init=[_waiting("context-fetch", "ImagePullBackOff",
                                                SIDECAR_ERROR)],
                                 age_s=BLOCKED_GRACE_SECONDS + 1))

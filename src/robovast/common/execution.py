@@ -1051,8 +1051,8 @@ def scenario_env(campaign_data):
     # Always on, and stated rather than left to the entrypoint's own default, so the compose
     # file / pod spec says outright what the run did. A run that did not record how its
     # behaviour tree progressed cannot be explained after the fact, and the file costs
-    # ~100 KB beside a multi-MB rosbag -- there was never a campaign worth turning it off
-    # for, so there is no longer a way to.
+    # ~100 KB beside a multi-MB rosbag -- there is no campaign worth turning it off for,
+    # so there is no way to.
     #
     # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites that
     # whole variable with '-t', which would drop the flag on exactly the runs whose tree
@@ -1192,11 +1192,11 @@ def in_run_env(command: str) -> list:
     shell adds ``/etc/profile``'s opinion about ``PATH`` and buys nothing -- and what a login shell
     does or does not read was itself one of the guesses that made this hard to diagnose.
 
-    **The command is a shell body, not an ``exec`` argument.** It used to be ``exec {command}``,
-    which silently ran only the first simple command: everything after a ``;`` was dropped without
-    a word, and a braced group was a syntax error. A probe that returns the output of the first
-    third of what you typed is worse than one that refuses, because it looks like an answer. The
-    exit status is the last command's either way, which is all ``exec`` was buying.
+    **The command is a shell body, not an ``exec`` argument.** An ``exec {command}`` silently
+    runs only the first simple command: everything after a ``;`` is dropped without a word, and a
+    braced group is a syntax error. A probe that returns the output of the first third of what you
+    typed is worse than one that refuses, because it looks like an answer. The exit status is the
+    last command's either way, which is all ``exec`` would buy.
 
     The notes go to **stderr**, where they join whatever the command says about its own failure
     rather than being mixed into the JSON a caller parses.
@@ -1240,12 +1240,12 @@ _now() {
 # Log one line in the `[LEVEL] [epoch] [node]:` form described above.
 #
 # Writes to stdout ONLY. The redirect below tees stdout into ${LOG_FILE}, so teeing here as
-# well -- which this did -- put every line of a non-ROS run's log in that file twice, and made
-# every count derived from it wrong by up to 2x.
+# well would put every line of a non-ROS run's log in that file twice, and make every count
+# derived from it wrong by up to 2x.
 #
 # The level comes from the message when the message declares one. Several call sites say
-# "ERROR: ..." in their text, and a stamped level *wins* over the keyword scan that used to
-# classify them, so hard-coding INFO here would quietly downgrade every one of those to
+# "ERROR: ..." in their text, and a stamped level *wins* over the keyword scan that would
+# otherwise classify them, so hard-coding INFO here would quietly downgrade every one of those to
 # routine output in the log panel's counts and in search_run_logs.
 log() {
     local msg="$*" level=INFO
@@ -1475,7 +1475,7 @@ def check_campaign_inputs(campaign_data):
     """Fail with one actionable error if a required project input is missing.
 
     Staging copies the ``.vast``, the scenario file and the ``run_files`` verbatim,
-    so a wrong path used to surface as ``shutil``'s ``[Errno 2] ... '<path>'`` —
+    so a wrong path otherwise surfaces as ``shutil``'s ``[Errno 2] ... '<path>'`` —
     which names neither the ``.vast`` key the path came from nor what it was
     resolved against, and arrives mid-campaign, after the campaign dir and the
     store entry already exist. Checked up front and reported together instead, as

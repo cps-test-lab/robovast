@@ -18,15 +18,15 @@
 program has to be run over.
 
 Two flat views (``run_view``, ``config_view``) plus the metric tables answer the per-run,
-per-configuration and aggregate questions that used to need a tool each. The per-scope
-metadata tools they replaced parsed ``metadata.yaml``, which only postprocessing writes,
-so each of them reported "run postprocessing first" about campaigns whose outcomes were
-already recorded in ``campaign.db``.
+per-configuration and aggregate questions, rather than a tool each. A per-scope metadata
+tool would parse ``metadata.yaml``, which only postprocessing writes, so it would report
+"run postprocessing first" about campaigns whose outcomes are already recorded in
+``campaign.db``.
 
 What stays a dedicated tool is the campaign listing (it spans campaigns) and the one
 aggregate asked constantly, itself computed over the same SQL. Campaign **files** are read
 through the address space (``/results/<campaign_id>/<path>``) — with one exception, which is
-why this module is no longer only SQL: **looking at** a run means decoding a recording, and a
+why this module is not only SQL: **looking at** a run means decoding a recording, and a
 decoder takes a path rather than an address. Those tools return an image, so they *raise*
 where the SQL ones return ``{"error": ...}`` — an image response has no dict to carry one.
 """

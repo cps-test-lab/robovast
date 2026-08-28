@@ -29,7 +29,7 @@ cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several
 ``.vast`` files in that workspace. There is no "current project" anywhere — not
-server-side, and no longer CLI-side either: every command names its own input, and
+server-side, and not CLI-side either: every command names its own input, and
 ``vast workspace run`` takes the same workspace-and-path pair this tool does.
 Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
@@ -130,10 +130,10 @@ reading results. Each phase is one plugin, so the generated table below is also 
      - Reference material about RoboVAST itself: the config schema, the CLI, the
        documentation, worked examples, and what plugins are installed.
 
-The grouping used to be a mix: some modules by scope (one per campaign / configuration /
-run) and some by capability, with a 20-tool module holding everything else — so "which
-module owns this?" had no answer, and the biggest one owned build, postprocessing, share,
-deletion and download, none of which are execution control.
+Every module is a capability, none a scope. A mix — some by scope (one per campaign /
+configuration / run), some by capability, with one large module holding everything else —
+leaves "which module owns this?" without an answer, and puts build, postprocessing, share,
+deletion and download inside a module named for execution control.
 
 Names read ``<verb>_<resource>``: ``get`` retrieves, ``list`` enumerates, ``search``
 filters, ``describe``/``query`` are the SQL pair, and ``validate`` / ``preview`` /
@@ -330,11 +330,11 @@ different questions, so ``describe_campaign_data`` names the table and says whic
 
 **The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
 ``nav_get_path_deviation`` and ``nav_get_action_feedback`` query ``data.db`` — the tables
-postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``. They
-used to re-parse ``poses.csv`` off local disk, which meant they answered "campaign not
-found" for every cluster campaign, transferred a whole recording to compute eight numbers,
-and read ``orientation.x/y/z/w`` from a file that records ``orientation.roll/pitch/yaw`` —
-so every reported yaw was ``0.0``, a wrong answer with the shape of a right one.
+postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``.
+Re-parsing ``poses.csv`` off local disk instead answers "campaign not found" for every
+cluster campaign, transfers a whole recording to compute eight numbers, and reads
+``orientation.x/y/z/w`` from a file that records ``orientation.roll/pitch/yaw`` — reporting
+every yaw as ``0.0``, a wrong answer with the shape of a right one.
 
 Maps, videos and the resolved scenario parameters stay file-sourced, because no table
 holds them; they are reached through the ``/results/<campaign_id>/…`` address space, which
@@ -913,11 +913,11 @@ exposes:
   :ref:`mcp-control`.
 
   ``cached`` is the **conjunction**: true only when *every* image was a cache hit, with
-  ``cached_builds`` giving the per-container verdict. That distinction is load-bearing.
-  It was previously whichever value the primary container happened to have, so a project
-  whose scenario image was cached and whose ``sut`` image was still building was told
-  "cache hit, nothing to wait for" — and the caller went on to exec in a ``sut`` image
-  that did not exist yet, where the refusal read as though nothing had been built at all.
+  ``cached_builds`` giving the per-container verdict. That distinction is load-bearing:
+  taking it from whichever value the primary container happens to have tells a project
+  whose scenario image is cached and whose ``sut`` image is still building "cache hit,
+  nothing to wait for" — and the caller goes on to exec in a ``sut`` image that does not
+  exist yet, where the refusal reads as though nothing had been built at all.
 
   It is therefore also the cheap way to *ask* "is this image built?": idempotent, one
   registry manifest probe (or one ``docker image inspect``) when nothing changed, and
@@ -1030,8 +1030,7 @@ legitimately absent, so an unlisted one is unverifiable rather than wrong; a *co
 address matching nothing is unambiguous, and is what the campaign pre-check refuses before any
 compute.
 
-``describe_world`` answers on **both** lanes. It used to be refused outright in-cluster, for want
-of a container runner outside a campaign's composition; it now runs on the exec lane's held query
+``describe_world`` answers on **both** lanes. In-cluster it runs on the exec lane's held query
 pool, the same one ``validate_project``'s world check uses — so the two share a warm container
 rather than each paying a start.
 

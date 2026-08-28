@@ -1113,13 +1113,13 @@ def process_rosbag_worker(args: tuple) -> BagResult:
             return BagResult(bag_path, CACHED)  # already converted
 
     # The worker's own output is captured rather than interleaved: 32 workers printing
-    # through the progress bar would shred it. Captured, NOT discarded -- this used to be a
-    # throwaway ``io.StringIO()``, so every ``✗`` a handler printed died inside the worker
-    # while its *count* travelled home in the ``-2`` sentinel. The parent then reported
-    # "N handler error(s) -- see the messages above" with nothing above it: the one line
-    # saying what went wrong was the one line thrown away, and on the cluster lane (which
-    # never passes --debug) that happened on every campaign. Returned below for a bag that
-    # failed, and printed by the parent once the bar is done.
+    # through the progress bar would shred it. Captured, NOT discarded: a throwaway
+    # ``io.StringIO()`` kills every ``✗`` a handler prints inside the worker while its
+    # *count* travels home in the ``-2`` sentinel, so the parent reports "N handler
+    # error(s) -- see the messages above" with nothing above it -- the one line saying what
+    # went wrong being the one line thrown away, on every campaign of the cluster lane,
+    # which never passes --debug. Returned below for a bag that failed, and printed by the
+    # parent once the bar is done.
     captured = io.StringIO()
     with contextlib.redirect_stdout(sys.stdout if debug else captured):
         # Instantiate handlers from config inside the worker (avoids pickling issues)

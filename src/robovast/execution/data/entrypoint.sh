@@ -27,9 +27,9 @@ LOG_FILE="${LOG_DIR}/system.log"
 # @@LOG_BLOCK@@
 
 # Everything this script prints -- `log` lines and bare `echo`s alike -- goes to the durable
-# artifact from here on, which is earlier than it used to happen. Previously only `log` lines
-# were teed, and the redirect sat after the X11 block, so the Xvfb and tool-check output
-# reached the *live* log and never the file people read after a failure.
+# artifact from here on. Teeing only `log` lines, or placing the redirect after the X11
+# block, leaves the Xvfb and tool-check output in the *live* log and out of the file people
+# read after a failure.
 #
 # Placed after LOG_DIR exists and before anything logs. The init block stays above it: that
 # is what fixuid needs, and it runs before there is a directory to write into.

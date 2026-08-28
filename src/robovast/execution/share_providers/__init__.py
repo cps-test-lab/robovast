@@ -86,10 +86,9 @@ def share_type_configured() -> bool:
 def load_provider_from_env(overrides: "dict | None" = None):
     """Instantiate the configured share provider from the environment, or ``None``.
 
-    Here rather than in the cluster lane, which is where it used to live: the service
-    itself now talks to the share (importing a campaign from it, listing it for the web
-    UI), and core must never import a lane -- that edge is what would make the
-    dependency graph cyclic.
+    Here rather than in the cluster lane: the service itself talks to the share
+    (importing a campaign from it, listing it for the web UI), and core must never
+    import a lane -- that edge is what would make the dependency graph cyclic.
 
     Args:
         overrides: Optional ``{ENV_VAR: value}`` applied to ``os.environ`` before the

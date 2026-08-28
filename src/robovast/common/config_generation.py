@@ -95,9 +95,9 @@ def progress_update(msg):
 # unset we fall back to the local (ephemeral ``docker run``) runner. See
 # variation/container_runner.py.
 #
-# It is a **ContextVar, not a module global**, because the service now drives many
-# campaigns concurrently as threads in one process (the driver used to be an
-# isolated per-campaign pod). A new thread starts with a fresh context, so each
+# It is a **ContextVar, not a module global**, because the service drives many
+# campaigns concurrently as threads in one process rather than as an isolated
+# per-campaign pod each. A new thread starts with a fresh context, so each
 # worker's set() is scoped to that worker's composition — concurrent campaigns
 # never clobber each other's aux-pod target. Composition is synchronous within the
 # worker thread (no thread pool), so the value is visible where it's read.
@@ -614,9 +614,9 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
         available = payload.get("addresses")
         if not isinstance(available, list):
             # An image that does not publish it cannot be checked against. Deriving the set from
-            # something else would be worse than not checking: an older describe names components
-            # the way it used to, which no longer matches the paths an override carries, so every
-            # comparison would fail and a working campaign would be refused for it.
+            # something else would be worse than not checking: a describe that names components
+            # its own way need not match the paths an override carries, so every comparison would
+            # fail and a working campaign would be refused for it.
             logger.warning(
                 "sim overrides were not pre-checked: this world's simulator does not report the "
                 "addresses an override may name, so there is nothing to check them against. They "
@@ -1404,11 +1404,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     subprocess (:func:`_compose_isolated`) so the plugin and its pinned dependencies
     are imported there — never in this long-lived process — and cannot clash with
     robovast's own. Only ``campaign_data`` crosses back, and it is returned exactly as
-    the in-process path returns it: **a bare dict, on every path**. It used to be a
-    ``(campaign_data, {})`` tuple here only, which no caller unpacked — so every ``.vast``
-    declaring ``plugins:`` composed fine and then died on ``campaign_data["vast"] = ...``
-    in :mod:`robovast.search.compose` with "'tuple' object does not support item
-    assignment". Pass ``isolate_plugins=False`` to compose in-process when a caller needs
+    the in-process path returns it: **a bare dict, on every path**. A ``(campaign_data, {})``
+    tuple here only is unpacked by no caller — so every ``.vast`` declaring ``plugins:``
+    composes fine and then dies on ``campaign_data["vast"] = ...`` in
+    :mod:`robovast.search.compose` with "'tuple' object does not support item assignment".
+    Pass ``isolate_plugins=False`` to compose in-process when a caller needs
     live variation GUI classes. A warm cache hit returns without forking. Built-in-only
     vasts (no ``plugins:``) always compose in-process.
     """

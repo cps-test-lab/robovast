@@ -199,9 +199,9 @@ class ObstacleVariationConfig(DestinationConfig):
         """Each bound slot needs the vocabulary it is written from.
 
         Checked here rather than at placement time because the answer is knowable from the
-        campaign alone: a bound ``instances`` with no ``size`` used to yield an obstacle
-        whose extents the placement plugin invented, which is a wrong number in a result
-        set rather than an error.
+        campaign alone: a bound ``instances`` with no ``size`` yields an obstacle whose
+        extents the placement plugin invents, which is a wrong number in a result set
+        rather than an error.
         """
         for i, oc in enumerate(self.obstacle_configs):
             if self.is_bound('objects') and not oc.model:

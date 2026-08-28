@@ -537,8 +537,8 @@ class CampaignController:
         # merely unknown but undefined -- nothing ranks "close but fast" against "slow but
         # safe" without a weighting nobody has -- so the loop folds no best and the
         # deliverable is the non-dominated front instead. Asking the strategy for
-        # `single_objective` here is what used to kill a two-objective campaign before its
-        # first batch, and it asked on behalf of a strategy that had not been consulted.
+        # `single_objective` here kills a two-objective campaign before its first batch, on
+        # behalf of a strategy that has not been consulted.
         objectives = self.strategy.objectives
         obj_name = objectives[0].name if len(objectives) == 1 else None
         if not stop.has_budget:
@@ -894,10 +894,10 @@ class CampaignController:
 
         # Deserializing a rosbag needs the image the runs recorded it with, which is why the
         # campaign-level block dispatches an in-cluster Job rather than importing anything.
-        # A search's block runs every batch and used to run entirely here, so a converter
-        # named in it launched its aux container from the controller, resolved the image
-        # against the default project instead of the deployment's, and exited 1 -- and every
-        # plugin after it read files that were never written.
+        # A search's block runs every batch; running all of it here launches a named
+        # converter's aux container from the controller, which resolves the image against the
+        # default project instead of the deployment's and exits 1 -- and every plugin after it
+        # reads files that were never written.
         container, local = split_container_postprocessing(
             self.postprocessing, config_dir=self.vast_dir)
         if container:
@@ -910,11 +910,11 @@ class CampaignController:
     def _convert_bags_in_cluster(self, rosbag_cmds: list, tag: str = "") -> None:
         """Run a search batch's bag conversion the way the campaign-level path does.
 
-        **One Job per conversion.** *tag* discriminates it. The Job name used to be the
-        campaign's alone, so the second conversion's create returned 409, the wait read the
-        FIRST conversion's completed Job and reported "rosbag conversion complete" having
-        converted nothing -- 0 outputs synced, and an extractor that refused the batch
-        while naming the world as the likely cause.
+        **One Job per conversion.** *tag* discriminates it. Naming the Job after the campaign
+        alone makes the second conversion's create return 409; the wait then reads the FIRST
+        conversion's completed Job and reports "rosbag conversion complete" having converted
+        nothing -- 0 outputs synced, and an extractor that refuses the batch while naming the
+        world as the likely cause.
 
         **Two steps, not one.** The Job writes its output to the object store; ``sync_outputs``
         pulls it into the campaign root, and nothing can read a CSV before that happens. A
@@ -1164,8 +1164,8 @@ def outcome_summary(snap) -> tuple[str, bool]:
 
     Built here rather than at each reader because "did this campaign succeed?" cannot
     be answered from ``phase`` alone — a campaign whose trials all passed but whose
-    postprocessing failed stays ``finished`` with no CSVs and no ``data.db``. Every
-    channel that used to answer from ``phase`` reported that as a clean success.
+    postprocessing failed stays ``finished`` with no CSVs and no ``data.db``. A channel
+    answering from ``phase`` alone reports that as a clean success.
     """
     runs = snap.runs
     parts = [f"{runs.completed}/{runs.total} runs"]
@@ -1209,13 +1209,12 @@ def end_campaign(campaign_id: str, state, notifier=None) -> None:
     """End a campaign exactly once: terminal phase, heartbeat off, one notification.
 
     Called by whichever scope is **outermost** for the lane, and only by it — see
-    ``RunOptions.finalize_phase``. ``run()`` no longer publishes ``finished`` when it
+    ``RunOptions.finalize_phase``. ``run()`` does not publish ``finished`` when it
     returns, because share and postprocessing still have to happen; the campaign is over
     when this runs and not before.
 
     Callers run it from a ``finally``: a campaign left non-terminal would block every
-    waiter until its timeout, which is a worse failure than the early ``finished`` this
-    seam replaces.
+    waiter until its timeout, which is a worse failure than an early ``finished``.
     """
     publish_terminal_phase(state)
     if notifier is None:
@@ -1229,7 +1228,7 @@ def end_campaign(campaign_id: str, state, notifier=None) -> None:
     elif snap.phase in (Phase.FAILED, Phase.CRASHED):
         # The recorded error, not an exception in scope here: this path also carries
         # failures that happened *before* the controller ran at all — an image build
-        # that could not resolve — which previously went unannounced entirely.
+        # that could not resolve — which would otherwise go unannounced entirely.
         notifier.failed(snap.error or snap.stage or "no reason recorded")
     else:
         summary, degraded = outcome_summary(snap)
@@ -1521,10 +1520,10 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
 
     ``config_filter`` exists here only to be **refused**. A search names its
     configurations after parameter sets it has not drawn yet, so there is nothing
-    for a glob to select — but the launch path used to accept the filter and
-    silently drop it, which turned the documented "pilot one configuration before
-    the full sweep" into a launch of the entire search budget. Failing is the
-    point; ``pilot`` below is the affordance that actually works here.
+    for a glob to select — and a launch path that accepts the filter and silently
+    drops it turns the documented "pilot one configuration before the full sweep"
+    into a launch of the entire search budget. Failing is the point; ``pilot`` below
+    is the affordance that actually works here.
     """
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator

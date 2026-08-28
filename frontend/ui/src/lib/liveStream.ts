@@ -8,23 +8,23 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //
 //  - **It gives up.** After enough consecutive failures the browser stops retrying and
 //    parks the stream in `readyState === CLOSED`, from which it will never reopen itself.
-//    The code here used to read `readyState !== CLOSED` as "still trying" and skip the
-//    "reconnecting" state in the closed case — exactly backwards: the one case that needs
-//    help was the one case nothing was done about.
+//    Reading `readyState !== CLOSED` as "still trying" skips the "reconnecting" state in
+//    exactly the closed case — backwards: the one case that needs help would be the one
+//    case nothing is done about.
 //
 //  - **It cannot tell a quiet stream from a dead one.** Suspend the laptop, or tear down
 //    the `kubectl port-forward` the service is reached through, and the socket becomes a
 //    zombie: no error fires, `readyState` stays OPEN, and not one further byte will ever
 //    arrive. Nothing observable separates that from a campaign that simply has not changed
 //    in a while — unless the server keeps saying so. It does: every quiet tick of these
-//    streams is a `heartbeat` event. It has to be an *event* rather than the SSE comment it
-//    used to be, because comments are invisible to the client — they keep proxies happy and
-//    tell the browser nothing.
+//    streams is a `heartbeat` event. It has to be an *event* rather than the SSE comment such
+//    keepalives usually are, because comments are invisible to the client — they keep proxies
+//    happy and tell the browser nothing.
 //
 // So every frame stamps a clock, and returning to the tab checks that clock. A stream that
 // is closed, or that has gone silent for longer than the server could plausibly be quiet,
 // is thrown away and replaced. The Refresh button does the same thing on demand; it just is
-// no longer the only way to get there.
+// not the only way to get there.
 
 /** Stream health, as far as the client can tell. */
 export type LiveState = 'connecting' | 'open' | 'reconnecting' | 'closed'

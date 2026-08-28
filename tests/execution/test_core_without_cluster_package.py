@@ -75,9 +75,9 @@ def warnings_from():
 def test_a_local_teardown_does_not_claim_a_failed_upload(without, warnings_from):
     """`_record_controller_outcome` uploads control-plane artifacts so a stateless
     service can explain a campaign after its pod is gone — a cluster-lane concern,
-    correctly guarded by `cluster_config is None`. The guard used to sit *after* the
-    import, so with no cluster package a purely local run logged "Could not upload
-    outcome record": a warning about work that was never going to happen.
+    correctly guarded by `cluster_config is None`. With that guard *after* the import,
+    a purely local run with no cluster package logs "Could not upload outcome record":
+    a warning about work that was never going to happen.
     """
     without("robovast.execution.cluster_execution")
     messages, handler = warnings_from("robovast.execution.controller")

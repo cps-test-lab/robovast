@@ -46,7 +46,7 @@ class _Exec:
         return self.result
 
 
-# -- the runner: how a held container is given what a mount used to give it ----
+# -- the runner: how a held container is given what a mount would provide ----
 
 
 def test_a_query_never_runs_in_the_callers_container():

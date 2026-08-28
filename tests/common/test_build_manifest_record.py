@@ -54,7 +54,7 @@ def test_an_unparseable_record_is_skipped_not_raised(tmp_path):
 
 
 def test_the_preflight_reads_the_lock_after_the_image_is_gone(tmp_path):
-    """The whole point. The recorded image no longer exists, and the lock is still reported --
+    """The whole point. The recorded image is gone, and the lock is still reported --
     which is what tells a caller a rebuild would install the same versions rather than
     re-resolving the author's loose specs into something else.
     """

@@ -195,8 +195,7 @@ run_child() {
 # A container that declares its own command runs THAT, with everything above already
 # done for it: the ROS overlay sourced, stdout teed into the job's log directory, and
 # the resource monitor running. Exec'ing the command directly as the container's
-# entrypoint -- which is what used to happen -- skipped all three. The ROS one is not a
-# nicety: a colcon package like the MuJoCo bridge only reaches PYTHONPATH once
+# entrypoint skips all three. The ROS one is not a nicety: a colcon package like the MuJoCo bridge only reaches PYTHONPATH once
 # /opt/ros and /ws/install are sourced, so `roqsim sim --ros` died instantly with
 # "unknown plugin 'ros2_bridge'" while the scenario waited out its /scan timeout with
 # no log anywhere to say why. Any simulator backend would have hit the same wall, so

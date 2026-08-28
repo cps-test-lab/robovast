@@ -240,8 +240,6 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     the RUNNING pod picks up with no roll, which is what makes `--no-restart` possible --
     so skipping it would leave a service missing a permission it never regains without a
     full redeploy. Reached through the command that looks safe, which makes it worth a test.
-
-    This used to reconcile the Kueue queues as well; there are none to reconcile now.
     """
     from unittest import mock
 

@@ -26,7 +26,7 @@ MIRROR = re.compile(r"^mc mirror\b(?P<flags>.*?)\s+/out/", re.MULTILINE)
 def _upload_mirror() -> re.Match:
     """The ``mc mirror`` line of the cluster lane's /tmp/s3_upload.sh."""
     match = MIRROR.search(render_entrypoint(cluster=True))
-    assert match, "the cluster post-run block no longer mirrors /out"
+    assert match, "the cluster post-run block does not mirror /out"
     return match
 
 

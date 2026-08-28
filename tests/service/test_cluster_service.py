@@ -1023,11 +1023,11 @@ def test_a_silent_kubelet_elsewhere_does_not_blank_the_disk(cs, monkeypatch):
 def test_a_silent_kubelet_on_the_services_node_says_what_actually_failed(cs, monkeypatch):
     """No disk figure, and a reason that reports the real failure rather than guessing.
 
-    This used to answer "the service needs `nodes/proxy`; run upgrade to reconcile RBAC" for
-    every exception -- a timeout, a TLS refusal, a summary missing a key -- with the real
-    cause going no further than a debug log. Reconciling RBAC then returned the identical
-    message, which is what makes a guess worse than no reason at all: the reader cannot tell
-    a fix that did not work from a diagnosis that was never right.
+    Answering "the service needs `nodes/proxy`; run upgrade to reconcile RBAC" for every
+    exception -- a timeout, a TLS refusal, a summary missing a key -- leaves the real cause
+    no further than a debug log, and reconciling RBAC then returns the identical message.
+    That is what makes a guess worse than no reason at all: the reader cannot tell a fix
+    that did not work from a diagnosis that was never right.
 
     The capacity meter must survive it: an unreadable kubelet is not allowed to blank cpu and
     memory too.
@@ -1374,8 +1374,8 @@ def test_get_job_log_reads_a_pending_pods_sidecars(cs, monkeypatch):
 
     Kubelet runs native sidecars during the init phase, so the pod stays ``Pending``
     while the simulator starts — and a simulator that cannot load its world says so
-    there and then keeps the pod Pending forever. Short-circuiting on the phase, as this
-    used to, discarded exactly the output that explains the hang.
+    there and then keeps the pod Pending forever. Short-circuiting on the phase discards
+    exactly the output that explains the hang.
     """
 
     class _Core:
@@ -2122,11 +2122,11 @@ def test_a_one_shot_init_container_is_not_a_role(cs, monkeypatch):
 
 def test_an_unpacked_job_is_located_too(cs, monkeypatch):
     """An unpacked Job is one run, but its NAME is not the run key -- so the run still has to be
-    resolved, and it used to be left to the readers instead. Both of them can search a couple of
-    levels down for their own file, which is two other components modelling this layout, answering
-    with a heuristic ("the newest below here") where the service has the fact. Worse, searching
-    around a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looked past it and
-    then blamed ``--bt-log``."""
+    resolved here rather than left to the readers. Both of them can search a couple of levels
+    down for their own file, which is two other components modelling this layout, answering with
+    a heuristic ("the newest below here") where the service has the fact. Worse, searching around
+    a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looks past it and then
+    blames ``--bt-log``."""
     _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
     monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfga/0\n", "", False)))
@@ -2179,8 +2179,8 @@ def test_the_job_output_dir_is_read_off_the_job(cs, monkeypatch):
 
 def test_the_pod_outvotes_the_config_about_which_containers_exist(cs, monkeypatch):
     """A pod that HAS a container called ``simulation`` is not something an unreadable -- or simply
-    simulator-less -- config can outvote. The plan used to be asked first, so such a config
-    resolved the role to the scenario container and the health read entered a container with no
+    simulator-less -- config can outvote. Asking the plan first resolves the role to the
+    scenario container for such a config, and the health read then enters a container with no
     simulator in it, confidently and with nothing saying so."""
     _cluster_job_state(cs, monkeypatch,
                        pods=[_Pod("scenario-abc-x9", sidecars=("simulation", "sut"))],

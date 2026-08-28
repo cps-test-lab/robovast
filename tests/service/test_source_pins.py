@@ -8,8 +8,8 @@ scenario-execution-server, and each of those clones is a decision about what the
 
 The shape is load-bearing, not cosmetic. `tools/refresh_source_pins.py` finds a pin by looking for
 `ARG <NAME>_REF` with `ARG <NAME>_REPO` beside it, so a source pinned any other way -- a sha written
-inline in the RUN that clones it, which is where the server's pin used to live -- is one that no
-command refreshes and no label records. It then goes stale invisibly, while `make
+inline in the RUN that clones it, say -- is one that no command refreshes and no label records.
+It then goes stale invisibly, while `make
 release-images-update-versions` reports that everything is current.
 
 Textual for the same reason that module gives: reading a pin needs no Docker, no registry and no

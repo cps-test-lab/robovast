@@ -72,8 +72,8 @@ def _outputs_lines(cls):
     """RST describing what this plugin writes, and how a campaign binds it.
 
     Read from the config class rather than the docstring so the rendered page cannot drift
-    from what validation enforces -- the failure mode a hand-written "Generated outputs"
-    section had, and did: two plugins documented parameter names they no longer wrote.
+    from what validation enforces -- the failure mode of a hand-written "Generated outputs"
+    section, which documents parameter names a plugin does not write.
     """
     config_class = getattr(cls, "CONFIG_CLASS", None)
     fields = getattr(config_class, "model_fields", None) or {}

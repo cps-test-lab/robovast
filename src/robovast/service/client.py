@@ -27,7 +27,7 @@ holding a ``RobovastClient`` is transport-agnostic.
 
 **The in-process transport is re-exported lazily.** Most callers here want
 ``RobovastClient`` to reach a *running* service — ``campaign_wait``, ``service_target``,
-the MCP's service access — and importing this module used to hand them 3,000 lines of
+the MCP's service access — and a plain import here would hand them 3,000 lines of
 in-process server as well. Under PEP 562 they pay for it only if they name it.
 """
 

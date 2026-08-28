@@ -34,13 +34,12 @@ fix: check-tools
 venv: venv/.robovast_installed
 
 # Re-run when any distribution's manifest changes, not only when venv/ is absent. The
-# sentinel alone meant an existing venv silently kept whatever was installed the day it
-# was made: adding robovast-cluster stranded every developer's environment without a lane
-# and without a word, and `make venv` cheerfully reported nothing to do.
+# sentinel alone lets an existing venv silently keep whatever was installed the day it
+# was made: adding a distribution strands every developer's environment without a lane
+# and without a word, while `make venv` cheerfully reports nothing to do.
 # Makefile itself is a prerequisite: the recipe lives here, so changing *how* the venv is
-# built must re-run it too. Listing only the manifests meant a fix to the install order
-# was a no-op for everyone who already had a venv -- the same silence the sentinel alone
-# used to cause.
+# built must re-run it too. Listing only the manifests makes a fix to the install order a
+# no-op for everyone who already has a venv -- the same silence, one level up.
 venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.toml \
                           src/robovast_sim_roqsim/pyproject.toml \
                           src/robovast_cluster/pyproject.toml \
@@ -94,8 +93,8 @@ checklinks: venv
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
 
 # venv/.robovast_installed, not a docs-only sentinel: `pip install -e .[docs,test]`
-# above already brings in sphinxcontrib-spelling, and the venv/.docs_installed this
-# used to name had no rule anywhere -- so the target could not run at all.
+# above already brings in sphinxcontrib-spelling, so there is no separate docs install
+# to name -- and a sentinel with no rule leaves the target unable to run at all.
 checkspelling: venv/.robovast_installed
 	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b html -b spelling -W docs $(LINKCHECKDIR)
 	@echo
@@ -329,8 +328,8 @@ publish-client-test-venv:
 		if /tmp/robovast-client-test-venv/bin/vast $$group run --help > /dev/null 2>&1; then \
 			echo "❌ '$$group run' still resolves; the launch verb is 'workspace run'"; exit 1; fi; \
 	done
-# `--version` used to name the `robovast` distribution, which a client-only install does
-# not have -- click resolves that lazily, so it raised only when asked. Cheap to assert.
+# `--version` must not name the `robovast` distribution, which a client-only install does
+# not have -- click resolves that lazily, so it raises only when asked. Cheap to assert.
 	@/tmp/robovast-client-test-venv/bin/vast --version > /dev/null \
 		|| { echo "❌ 'vast --version' fails on a client-only install"; exit 1; }
 	@echo "...and none of the weight it exists to avoid."

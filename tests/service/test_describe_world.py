@@ -100,7 +100,7 @@ def test_no_backend_is_a_reason_not_a_shrug():
 
 
 def test_the_pre_check_warns_when_it_could_not_check(caplog, monkeypatch):
-    """It used to log this at debug and carry on, which is indistinguishable from a clean check."""
+    """Logging this at debug and carrying on is indistinguishable from a clean check."""
     from robovast.common import config_generation
     from robovast.common.config_generation import _check_sim_against_world
 
@@ -117,7 +117,7 @@ def test_the_pre_check_warns_when_it_could_not_check(caplog, monkeypatch):
 
 
 def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
-    """A CalledProcessError used to escape, so the service answered a bare 500.
+    """A CalledProcessError left to escape makes the service answer a bare 500.
 
     The message is the command's own last words, which for an image whose simulator predates a
     flag reads "unrecognized arguments: --overridable" -- i.e. it names its own remedy.

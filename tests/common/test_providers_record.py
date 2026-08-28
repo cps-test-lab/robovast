@@ -4,11 +4,11 @@
 
 Derived in postprocessing from what the containers recorded, and that is the whole point of
 this file. The question is "which installed distributions register a provider group", and only
-a container can answer it: the packages are in its image and nowhere else. It used to be
-answered by walking the interpreter of whatever process prepared the campaign, which was right
-on a local lane (roqsim is installed beside the service) and empty on a cluster one (the service
-pod carries no simulator) -- so a campaign that used three private providers recorded none, and
-the publication gate certified it as depending on nothing.
+a container can answer it: the packages are in its image and nowhere else. Answering it by
+walking the interpreter of whatever process prepared the campaign is right on a local lane
+(roqsim is installed beside the service) and empty on a cluster one (the service pod carries no
+simulator) -- so a campaign using three private providers records none, and the publication
+gate certifies it as depending on nothing.
 
 The record has THREE states and the distinction is what makes it worth writing. Populated is
 "these providers"; empty is "asked, and there were none"; absent is "could not ask", which

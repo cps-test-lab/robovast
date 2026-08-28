@@ -16,9 +16,9 @@
 
 """Check the prerequisites before something else discovers them the hard way.
 
-Every check here exists because its absence used to surface as something unhelpful:
-a missing ``helm`` as ``FileNotFoundError: 'helm'`` from a bare ``subprocess.run``, an
-a cluster that can schedule nothing as jobs that never start, a namespaced kubeconfig as
+Every check here exists because without it the fault surfaces as something unhelpful:
+a missing ``helm`` as ``FileNotFoundError: 'helm'`` from a bare ``subprocess.run``, a
+cluster that can schedule nothing as jobs that never start, a namespaced kubeconfig as
 a 403 halfway through creating ClusterRoles — each of them minutes after the command
 started and with the real cause several layers down.
 
@@ -420,11 +420,11 @@ def check_client() -> list[Check]:
             "A local service prints both when it starts."))
 
     target = detected_service_url()
-    # Handshake FIRST, because the row below claims the service is answering and used to
+    # Handshake FIRST, because the row below claims the service is answering and must not
     # say so on the strength of a configured URL alone. A stored login is configuration,
-    # not reachability: with the pod mid-roll this printed "\u2713 service" while every call
-    # timed out, and the revision and image-build rows silently vanished rather than
-    # reporting a fault -- a green tick and two missing lines for a service that was down.
+    # not reachability: with the pod mid-roll that prints "\u2713 service" while every call
+    # times out, and the revision and image-build rows silently vanish rather than
+    # reporting a fault -- a green tick and two missing lines for a service that is down.
     info, err = _service_version(target) if target else (None, None)
     if target and _service_answered(err):
         checks.append(Check("service", True, target))
@@ -470,11 +470,11 @@ def check_client() -> list[Check]:
 def _service_version(target: str) -> "tuple[VersionInfo | None, Exception | None]":
     """``(handshake, error)`` — the service's version, and why it could not be read.
 
-    The error is returned rather than swallowed because two very different faults used to
+    The error is returned rather than swallowed because two very different faults otherwise
     arrive as the same ``None``: a service that ANSWERED and refused (a local ``vast serve``
     whose token differs from the stored login answers 401) and one that could not be reached
     at all. Only the first is "no verdict"; the second is the ``service`` check's verdict,
-    and it could not reach it while this function kept the evidence to itself.
+    which it cannot reach if this function keeps the evidence to itself.
 
     A refusal is a :class:`ServiceError` carrying ``.status``, so "it answered" is decidable
     — see :func:`_service_answered`.
@@ -523,8 +523,8 @@ def _check_service_revision(info: "VersionInfo | None",
     if info is None:
         # Silent ONLY when the service never answered: the `service` row above is red and
         # names it, and two rows for one fault sends a reader chasing twice. But a service
-        # that ANSWERED and refused the handshake is a different, unreported thing -- this
-        # row used to disappear for it too, so a 401 read as "no revision question exists"
+        # that ANSWERED and refused the handshake is a different, unreported thing --
+        # disappearing for it too would make a 401 read as "no revision question exists"
         # rather than "your credentials cannot ask it".
         if not _service_answered(err):
             return []

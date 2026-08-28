@@ -1,7 +1,7 @@
 // Column 2 of the Config tab: Generate, and the list of configurations it produced.
 //
-// Split out of what used to be one preview pane so the list and the per-configuration view are
-// separate columns: the list is a narrow index, the view beside it is where the space goes.
+// The list and the per-configuration view are separate columns rather than one preview pane: the
+// list is a narrow index, the view beside it is where the space goes.
 
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'

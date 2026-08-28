@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """A campaign that needs an image is created first and waits for it afterwards.
 
-``create_campaign`` is specified fire-and-forget, but it used to await the image build on
-the caller's thread: a cluster start died on the HTTP client's 30 s read timeout *while
-the server kept going and the campaign succeeded* — a reported failure for work that
-worked — and, because the campaign was only created after the build, nothing about that
-work was observable while it ran.
+``create_campaign`` is specified fire-and-forget. Awaiting the image build on the caller's
+thread kills a cluster start on the HTTP client's 30 s read timeout *while the server keeps
+going and the campaign succeeds* — a reported failure for work that worked — and, with the
+campaign created only after the build, nothing about that work is observable while it
+runs.
 
 The wait now happens on the campaign's own worker, through
 ``LocalTransport._await_build_image``. That loop is **shared by both lanes** (it drives
@@ -161,11 +161,12 @@ def test_the_stage_says_waiting_for_rather_than_building():
 
 
 def test_a_building_campaigns_status_already_names_its_campaign():
-    """``campaign_id`` used to be written by the *controller*, which a building campaign
-    has not reached — and a build that failed never reaches at all. Readers key their log
-    and job reads off that field, so a null left the build's own output unreachable from
-    the very status that was reporting the build. ``create_campaign`` therefore seeds it
-    at acceptance, which works because ``ControllerState(**initial)`` feeds ``Status``.
+    """``campaign_id`` written by the *controller* is absent for a building campaign,
+    which has not reached one — and a build that fails never reaches one at all. Readers
+    key their log and job reads off that field, so a null leaves the build's own output
+    unreachable from the very status reporting the build. ``create_campaign`` therefore
+    seeds it at acceptance, which works because ``ControllerState(**initial)`` feeds
+    ``Status``.
 
     (The seam this pins is the constructor. That ``create_campaign`` passes the id is
     covered end to end rather than here: no test in this suite drives it, since it needs

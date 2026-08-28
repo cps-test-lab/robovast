@@ -23,11 +23,10 @@ side channel with the executable bit preserved. ``vast workspace init``/``update
 
 Nothing here launches anything. A campaign runs a *workspace's* project -- a workspace id
 and a path within it -- so the launch is one ``create_campaign`` call that needs none of
-this, and ``vast workspace run`` makes it directly. This module used to own a
-push-then-launch path whose whole job was reducing a local file path to the workspace the
-service already wanted, along with a rule that pruned every ``.vast`` but one so the
-launch could leave ``config_path`` empty. Both are gone: a workspace holds as many
-projects as it likes, and the path names which one.
+this, and ``vast workspace run`` makes it directly. No push-then-launch path lives here,
+whose whole job would be reducing a local file path to the workspace the service already
+wanted, nor a rule pruning every ``.vast`` but one so a launch could leave ``config_path``
+empty: a workspace holds as many projects as it likes, and the path names which one.
 
 Reused by the CLI; the LocalTransport/HTTP client itself stays transport-agnostic.
 """
@@ -405,10 +404,10 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
                               progress_callback=None) -> str:
     """Stream the campaign's ``tar.gz`` through *client* into *dest_path*; return it.
 
-    A file lands, and that is all that happens. This used to stream-*extract* off the
-    socket, which made "download" also decide where a results tree goes and what it is
-    called -- two jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and
-    putting a campaign back into a service is ``vast campaign import``.
+    A file lands, and that is all that happens. Stream-*extracting* off the socket would
+    make "download" also decide where a results tree goes and what it is called -- two
+    jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and putting a
+    campaign back into a service is ``vast campaign import``.
 
     Written through a ``.part`` sibling and renamed on success, so an interrupted
     transfer cannot leave a truncated archive sitting under the real name looking

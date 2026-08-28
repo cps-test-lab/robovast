@@ -142,16 +142,13 @@ def test_a_per_cluster_cpu_list_is_checked_entry_by_entry():
 # -- the v1 cut --------------------------------------------------------------------
 
 def test_authoring_an_old_version_is_refused_with_instructions():
-    """A migration tool now exists, so the refusal must name it *and* still explain the
-    restructuring.
+    """The refusal must name the migration tool *and* still explain the restructuring.
 
-    This test used to assert the opposite premise -- that the message was the only
-    migration path, because there was neither a tool nor a v1 reader. Both now exist
-    (``robovast.common.migrations``), so what matters here changed: the one-command fix has
-    to be in the text, and the key-by-key explanation has to survive alongside it, because
-    someone authoring a file still needs to know where each removed key went.
-    ``validate_config`` remains the STRICT policy -- reading an archived campaign is
-    ``load_config(upgrade=True)``, covered separately."""
+    ``robovast.common.migrations`` converts a v1 config, so the one-command fix has to be
+    in the text; the key-by-key explanation has to survive alongside it, because someone
+    authoring a file still needs to know where each removed key went. ``validate_config``
+    is the STRICT policy -- reading an archived campaign is ``load_config(upgrade=True)``,
+    covered separately."""
     with pytest.raises(ValueError) as excinfo:
         validate_config({"version": 1, "execution": {"image": "x", "runs": 1}})
     text = str(excinfo.value)
@@ -259,11 +256,11 @@ def test_a_container_with_no_family_default_fails_loud(monkeypatch):
     # A container RoboVAST does not own -- a sidecar, a system-under-test -- has no
     # default: guessing the framework image for it would launch something nobody named.
     # (The main container DOES have one; see the test below. That is the difference
-    # `fallback` expresses, and it used to be tangled up with refusing a mutable tag.)
+    # `fallback` expresses, and it must not be tangled up with refusing a mutable tag.)
     #
     # CampaignConfigError specifically, and asserted as such: the message is
     # self-contained and actionable, so `failure_detail` must report it WITHOUT a
-    # traceback. As a plain ValueError it reached the worker's catch-all and printed a
+    # traceback. As a plain ValueError it reaches the worker's catch-all and prints a
     # stack trace through kubernetes_backend and controller, which reads as a RoboVAST
     # bug rather than as a .vast key the author has to set.
     from robovast.common.errors import CampaignConfigError

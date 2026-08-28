@@ -21,13 +21,12 @@ starts **one aux Pod per campaign** holding a kept-alive container per spec, and
 runs the plugin's commands inside it via the Kubernetes ``pods/exec`` subresource
 — the in-cluster equivalent of ``docker exec``.
 
-**Why a separate pod (and what that costs).** The aux container used to be a
-*sidecar of the per-campaign controller pod*, which shared an ``emptyDir`` with
-the controller — that is how the plugin contract's "workspace visible at the same
-absolute path on both sides" was satisfied for free. The controller pod is gone:
-the driver now runs inside the long-lived ``robovast-service`` pod, and a pod's
-container set is immutable, so a *campaign-specific* sidecar of the service pod is
-impossible. Instead each campaign gets its own aux Pod, and this module **emulates
+**Why a separate pod (and what that costs).** A *sidecar* sharing an ``emptyDir``
+with the driver would satisfy the plugin contract's "workspace visible at the same
+absolute path on both sides" for free. It is not available: the driver runs inside
+the long-lived ``robovast-service`` pod, and a pod's container set is immutable, so
+a *campaign-specific* sidecar of it is impossible. Instead each campaign gets its
+own aux Pod, and this module **emulates
 the shared workspace** by mirroring it into the pod before every ``run()`` and
 copying the results back afterwards, at the *same absolute path*.
 
@@ -50,7 +49,7 @@ Consequences to know:
 
 * The plugin contract is preserved for the *stage inputs → run → read outputs*
   pattern (what ``FloorplanVariation`` does). It is **narrowed** in one respect:
-  the two sides no longer share a live filesystem, so a command that expects the
+  the two sides do not share a live filesystem, so a command that expects the
   caller to observe its writes *while it is still running* (or vice versa) will
   not see them — only the state at copy-in/copy-out boundaries.
 * An **empty workspace transfers nothing**: a generator whose inputs all live in its own
@@ -510,11 +509,11 @@ class AuxPodSession:
             if e.status != 409:
                 raise RuntimeError(
                     f"could not create aux pod {self.pod_name}: {e.reason}") from e
-            # A 409 used to be read as "already exists → reuse it". The name is derived
-            # from the campaign id, so the pod it collides with is this campaign's
-            # previous one — usually still Terminating, and a Terminating pod never
-            # becomes Running again. Adopting it meant waiting out the full ready
-            # timeout for a corpse. Wait for the delete to land, then create ours.
+            # A 409 is not "already exists → reuse it". The name is derived from the
+            # campaign id, so the pod it collides with is this campaign's previous one —
+            # usually still Terminating, and a Terminating pod never becomes Running
+            # again. Adopting it means waiting out the full ready timeout for a corpse.
+            # Wait for the delete to land, then create ours.
             logger.info("Aux pod %s still exists; waiting for it to go before recreating",
                         self.pod_name)
             with contextlib.suppress(ApiException):
@@ -646,9 +645,9 @@ class ClusterContainerRunner:
 
         Raises ``subprocess.CalledProcessError`` on a non-zero exit, so callers
         (and plugins) see the same failure type as the local ``docker run`` path. A
-        command that runs past :data:`AUX_EXEC_LIMIT_S` is one of those failures: this
-        loop used to have no overall bound, so a helper that hung took the campaign's
-        worker thread with it, with nothing in the log to say what it was waiting for.
+        command that runs past :data:`AUX_EXEC_LIMIT_S` is one of those failures: an
+        unbounded loop here lets a helper that hangs take the campaign's worker thread
+        with it, with nothing in the log to say what it was waiting for.
         """
         from .kube_client import exec_stream
 
@@ -727,20 +726,20 @@ class ClusterContainerRunner:
         Emptiness is measured in *files*, matching what ``upload_dir`` actually ships, not
         in directory entries: ``stage_for_container`` always creates an output directory, so
         a no-input generator's workspace holds one empty dir and no files. Counting entries
-        called that non-empty, uploaded nothing, and then mirrored *from a prefix that does
-        not exist* — ``mc`` exits 1, and building a scene descriptor failed with an object
+        would call that non-empty, upload nothing, and then mirror *from a prefix that does
+        not exist* — ``mc`` exits 1, and building a scene descriptor fails with an object
         storage error.
 
         **The staged directory skeleton is created in the container either way**, because an
         object store has no empty directories: ``mc mirror`` recreates only the ones that
-        hold files. This used to be done only on the no-files path, on the reasoning that
-        with files present ``mc`` would make the directories itself — true only of the
-        directories it has something to put in. A workspace that stages inputs AND an empty
-        output directory is every two-step generator, and it arrived missing exactly the
-        directory the command was told to write into: ``floorplan generate`` validates its
-        ``-o`` path and exited 2 with "Path ... does not exist", while step 1 had passed
-        because ``transform`` creates its own output directory. The ``mkdir`` rides along
-        with the mirror's own exec, so this costs no extra round trip.
+        hold files. Doing it only on the no-files path — on the reasoning that with files
+        present ``mc`` makes the directories itself, true only of the directories it has
+        something to put in — breaks every two-step generator, which stages inputs AND an
+        empty output directory: the workspace arrives missing exactly the directory the
+        command was told to write into, so ``floorplan generate`` validates its ``-o`` path
+        and exits 2 with "Path ... does not exist" while step 1 passed, ``transform``
+        creating its own output directory. The ``mkdir`` rides along with the mirror's own
+        exec, so this costs no extra round trip.
         """
         staged_dirs = [self.workspace]
         staged_files = 0

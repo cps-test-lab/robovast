@@ -228,11 +228,11 @@ def test_obstacle_extents_are_stated_once_and_rendered_per_spawner():
 def test_obstacle_size_must_be_declared_rather_than_guessed():
     """A simulator that COMPILES the placement is refused an obstacle with no extents.
 
-    This used to be inferred by parsing ``xacro_arguments`` for width/length/height, and
-    anything unparseable yielded no size at all -- so the placement plugin fell back to its
-    own default and compiled a differently-sized obstacle than the other simulator spawned,
-    silently. Refusing at composition is what makes that a fixable error instead of a wrong
-    number in a result set.
+    Inferring it by parsing ``xacro_arguments`` for width/length/height yields no size at
+    all for anything unparseable -- so the placement plugin falls back to its own default
+    and compiles a differently-sized obstacle than the other simulator spawns, silently.
+    Refusing at composition is what makes that a fixable error instead of a wrong number in
+    a result set.
     """
     from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
 

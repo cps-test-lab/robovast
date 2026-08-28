@@ -158,11 +158,10 @@ def test_the_dev_proxy_covers_every_served_prefix():
 def test_the_generated_ui_client_is_up_to_date():
     """``frontend/ui/src/lib/api.generated.ts`` must match the schema the app publishes now.
 
-    The UI's ~40 response types used to be hand-written mirrors of the pydantic models
-    with nothing tying them together, so a renamed or newly-optional field stayed
-    "correct" in TypeScript until something broke at runtime. They are generated now; this
-    is what makes that real, because a generated file nobody regenerates is just a slower
-    hand-written one.
+    Hand-written mirrors of the pydantic models have nothing tying them together, so a
+    renamed or newly-optional field stays "correct" in TypeScript until something breaks at
+    runtime. The UI's ~40 response types are generated instead; this test is what makes that
+    real, because a generated file nobody regenerates is just a slower hand-written one.
 
     Regenerate with ``cd frontend/ui && npm run generate:api``.
     """

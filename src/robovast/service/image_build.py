@@ -1010,9 +1010,9 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
                     "config); not fixable by editing build:",
             log_tail=tail)
     # Push failures: name the actual cause. These are all "infra", but the operator has to
-    # know *which* knob — this branch used to assert "registry credentials" for every push
-    # failure, which sends you looking for a Secret when the registry host simply does not
-    # resolve from inside the cluster.
+    # know *which* knob — asserting "registry credentials" for every push failure sends
+    # you looking for a Secret when the registry host simply does not resolve from inside
+    # the cluster.
     if "failed to push" in low or "error pushing" in low or "denied" in low or "unauthorized" in low:
         if "no such host" in low or "server misbehaving" in low:
             detail = ("the registry hostname does not resolve from inside the cluster "
@@ -1102,8 +1102,8 @@ def not_built_message(container: str, build_id: str,
         nothing was ever started for these inputs.
     in flight
         a build is running. The common case for an agent that execs straight after starting
-        one, and previously indistinguishable from "you forgot to build" -- so it must say
-        *wait*, not *build again*.
+        one, and easily mistaken for "you forgot to build" -- so it must say *wait*, not
+        *build again*.
     ``blocked``
         a build exists but its pod cannot start, so nothing is being built and nothing about
         the project would change that. Neither "wait" nor "build again" is right.
@@ -1123,9 +1123,9 @@ def not_built_message(container: str, build_id: str,
             f"full image build.")
     if status is not None and phase == "blocked":
         # In flight, but not in the way the branch below means: nothing is being built, the
-        # builder itself cannot start. "Wait for it" is the wrong advice -- it is what left a
-        # caller waiting on a pod that was never going to run -- and so is "build again",
-        # which is where this used to fall through to.
+        # builder itself cannot start. "Wait for it" is the wrong advice -- it leaves a
+        # caller waiting on a pod that is never going to run -- and so is "build again",
+        # which is where this would otherwise fall through to.
         detail = getattr(getattr(status, "error", None), "message", "") or ""
         because = f": {detail}" if detail else ""
         return (f"the image for container '{container}' cannot be built right now{because}. "
@@ -1166,11 +1166,11 @@ def primary_build_ref(refs: dict) -> ImageBuildRef:
     nothing has to be guessed at.
 
     ``cached`` is the **conjunction**, and ``cached_builds`` carries the per-container
-    answer. It used to be whichever value the primary container happened to have, which
-    reported a request as a cache hit while a sibling was still building or had already
-    failed -- and the caller, told "nothing to wait for", went straight on to a container
-    whose image did not exist. One bool cannot answer a question about several images, so
-    the per-image answer is the field and the summary is derived from it.
+    answer. Taking it from whichever value the primary container happens to have reports a
+    request as a cache hit while a sibling is still building or has already failed -- and
+    the caller, told "nothing to wait for", goes straight on to a container whose image does
+    not exist. One bool cannot answer a question about several images, so the per-image
+    answer is the field and the summary is derived from it.
     """
     from robovast.common.config import SCENARIO_CONTAINER
     primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))

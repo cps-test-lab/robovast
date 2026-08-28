@@ -26,13 +26,13 @@ Two files, in this order of precedence:
 
 1. a real environment variable — always wins;
 2. **``./.env``, the current directory only** — the *project's* settings. A ``.env``
-   elsewhere is not consulted: searching the project config's directory and the project
-   dir used to mean that initialising a project in a parent directory silently took a
-   working ``.env`` out of scope;
+   elsewhere is not consulted: searching the project config's directory as well means
+   initialising a project in a parent directory silently takes a working ``.env`` out
+   of scope;
 3. :func:`user_env_file` — the *user's* settings, for what is true of this machine
    rather than of one project: which registry their images come from, their share
-   credentials. Without it every setting had to be repeated per project directory and
-   was silently lost by running ``vast`` one level up — the CWD rule above is right for
+   credentials. Without it every setting has to be repeated per project directory and
+   is silently lost by running ``vast`` one level up — the CWD rule above is right for
    a project's own config and wrong for an operator's.
 
 Both are dotenv format, and the order is achieved with ``override=False``: whatever is

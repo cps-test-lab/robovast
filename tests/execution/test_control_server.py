@@ -4,12 +4,11 @@
 
 """Unit tests for the live campaign state (``Status`` + ``ControllerState``).
 
-The controller runs *in the driving process* now (the CLI locally, the
+The controller runs *in the driving process* (the CLI locally, the
 robovast-service for cluster campaigns), so the service reads ``snapshot()``
-directly. The HTTP ``/status`` + ``/command`` channel this module used to serve —
-along with the command RPC and the upload-to-share retrigger — is gone: it existed
-only to reach a controller that lived in its own pod. Those tests went with it;
-what remains is the state contract every surface still depends on.
+directly. There is no HTTP ``/status`` + ``/command`` channel, no command RPC and
+no upload-to-share retrigger over one: those exist only to reach a controller that
+lives in its own pod. What is here is the state contract every surface depends on.
 """
 
 

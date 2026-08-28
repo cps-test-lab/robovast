@@ -368,17 +368,16 @@ def dual_lane(monkeypatch):
 
 @pytest.mark.parametrize("lane", ["cluster", "local", None])
 def test_download_offers_the_url_whatever_lane_the_campaign_ran_on(dual_lane, lane):
-    """Every lane serves the archive, so the tool no longer asks which one ran it.
+    """Every lane serves the archive, so the tool does not ask which one ran it.
 
-    Two bugs died with that question, and this is here so neither can come back. It used to
-    read the *service's* default backend, so on a dev host every cluster campaign was told its
-    results were on the local filesystem — a real capability denied and a place to look that
-    holds nothing. Reading the campaign's own record fixed that but kept the branch, which
-    then denied the download to genuinely local campaigns; those are now served too (the local
-    lane tars its own results directory), so the branch had nothing left to decide.
+    Two bugs live in that question, and this is here so neither can come back. Reading the
+    *service's* default backend tells every cluster campaign on a dev host that its results
+    are on the local filesystem — a real capability denied and a place to look that holds
+    nothing. Reading the campaign's own record instead, but keeping the branch, denies the
+    download to genuinely local campaigns; those are served too (the local lane tars its own
+    results directory), so the branch has nothing left to decide.
 
-    ``lane=None`` is a campaign with no execution record yet: previously the case that fell
-    back to the service's default, and now simply not a question that gets asked.
+    ``lane=None`` is a campaign with no execution record yet: not a question that gets asked.
     """
     if lane:
         dual_lane["camp-x"] = lane
@@ -429,8 +428,8 @@ def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
 def test_get_campaign_download_says_nothing_about_the_share(monkeypatch):
     """Whether a share copy exists is not a fact this service records.
 
-    The note used to name ``vast share download`` unconditionally, but a campaign only has
-    a share copy if it was uploaded to one -- ``upload_to_share`` is a create-time request
+    Naming ``vast share download`` unconditionally advertises what may not exist: a
+    campaign only has a share copy if it was uploaded to one -- ``upload_to_share`` is a create-time request
     flag, and the only thing travelling with a campaign afterwards is ``share_error``, a
     failure. Advertising the copy anyway is AGENTS.md §4's "capability the caller cannot
     use", and the honest check (``list_share_archives``) is a different system with
@@ -620,8 +619,8 @@ def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch)
 
 
 def test_the_status_reports_a_stall_and_names_the_next_call():
-    """The status must be able to say "unhealthy" on its own; previously the only way
-    to learn it was to know which log to grep."""
+    """The status must be able to say "unhealthy" on its own, rather than leaving a reader
+    to know which log to grep."""
     import time
 
     from robovast.client.status import Status

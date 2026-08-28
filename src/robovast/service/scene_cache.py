@@ -7,9 +7,9 @@
 A run view needs two artifacts (see ``docs/run_capture.rst``): the **capture** (motion), which the run
 itself writes, and the **scene descriptor** (geometry), which is what this module produces.
 
-It used to be produced eagerly, by an ``execution.generate`` entry at campaign preparation: 5-9 s and
-13-31 MB for every campaign, whether or not anyone ever opened the 3D view, and impossible to get right
-for a sweep whose world varies per configuration (generation has no notion of a config name). Here it is
+Producing it eagerly, by an ``execution.generate`` entry at campaign preparation, costs 5-9 s and
+13-31 MB for every campaign whether or not anyone ever opens the 3D view, and cannot be got right for
+a sweep whose world varies per configuration (generation has no notion of a config name). Here it is
 produced when somebody actually looks, and cached by **world identity** so the second look — and every
 other campaign that used the same world — costs nothing.
 

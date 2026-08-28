@@ -17,7 +17,7 @@ def test_no_arguments_lists_the_group_catalogue():
 
 
 def test_a_query_spans_every_group():
-    """Regression: the loop used to ``return`` after the first group only."""
+    """Regression: a ``return`` inside the loop covers the first group only."""
     result = list_plugins(query="*")
     groups = {p["group"] for p in result["plugins"]}
     assert len(groups) > 1

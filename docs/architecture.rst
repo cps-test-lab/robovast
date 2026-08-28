@@ -126,10 +126,10 @@ waiter, cleanup's live-set) counts ``"stopped"`` as done.
 Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
 handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
 clock starts, and the layers that would otherwise fight the teardown consult it. Two
-of them do. The driver's S3 client no longer restarts the ``kubectl port-forward`` on
+of them do. The driver's S3 client does not restart the ``kubectl port-forward`` on
 a timeout that is simply the shutdown itself — and ``ClusterService`` refuses to open
 one at all once the flag is up, so a read still in flight cannot resurrect the tunnel
-and leak a ``kubectl`` child past exit. The SSE streams no longer *wait* for their
+and leak a ``kubectl`` child past exit. The SSE streams do not *wait* for their
 next pull either: a watchdog closes the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
 response task canceled and the cancellation logged as an "Exception in ASGI
@@ -261,9 +261,9 @@ accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, a
 ``config_path`` selects among several ``.vast`` files in that workspace. There is no
 "current project" anywhere — not on the server, and not in the CLI either: every command names
 its own input, and ``vast workspace run`` takes the same workspace-and-path pair the API
-does. Omitting ``workspace_id`` is refused rather than resolved from
-somewhere else, because the fallback that used to exist ignored ``config_path`` and so
-could run a different ``.vast`` than the caller named.
+does. Omitting ``workspace_id`` is refused rather than resolved from somewhere else,
+because such a fallback ignores ``config_path`` and so could run a different ``.vast``
+than the caller named.
 
 **Pinned (read-only) workspaces.** ``vast serve --workspace-dir DIR`` registers a
 directory as a workspace used *in place* rather than copied into the store: no
@@ -587,10 +587,10 @@ the service is a stateless gateway that streams finished campaigns from it —
 response (no scratch on the service, nothing buffered in memory), which is what
 ``vast campaign download`` and the web UI **Download** button use. A local ``vast
 serve`` answers the same route by tarring its own directory: the durable home differs,
-the operation does not. (It used to refuse with a 409 — "the results are already on
-this host's filesystem" — which was true of a caller on that host and false of
+the operation does not. Refusing there with a 409 — "the results are already on this
+host's filesystem" — asserts something true of a caller on that host and false of
 everyone else, so a service reached over the network could not be downloaded from at
-all.)
+all.
 
 The external ``tar.gz`` share is a **separate system**, with its own credentials and
 its own lifetime, reached through ``vast share``. It is opt-in at launch
@@ -669,7 +669,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        artifact dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a
        live read; ``invalid`` — the runner discarded the trial after a container restarted
        under it) and ``source`` naming the actor (``webui``/``mcp``/``cli`` for a person,
-       ``runner`` for the campaign itself — the ledger is no longer only human acts).
+       ``runner`` for the campaign itself — the ledger is not only human acts).
        It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
        the separate ``runs.probed`` column in ``data.db`` — orthogonal on purpose, since a
@@ -857,11 +857,11 @@ clock like every other, which is why it shows no controls of its own — two thi
 That path is also why ``local_file`` has to dispatch per lane. ``FileResponse`` is what carries
 ``Range``, and the route asks the transport for a path outright rather than probing for the
 method: every transport has it (they all subclass ``LocalTransport``), so a presence check can
-only ever succeed. While one was believed to be meaningful, a cluster campaign fell through to
-the *local* resolver, whose ``_data_dir`` used to mean ``fetch_campaign`` — pulling an entire
-campaign to serve one file. Each lane now answers with its own cost: local hands back the path,
-the cluster fetches the single object behind the address. (That fall-through is also what
-``_data_dir`` refusing on the cluster now catches outright, rather than by being slow.)
+only ever succeed. Treating it as meaningful drops a cluster campaign through to the *local*
+resolver, which pulls an entire campaign to serve one file. Each lane answers with its own cost
+instead: local hands back the path, the cluster fetches the single object behind the address —
+and ``_data_dir`` refusing on the cluster catches that fall-through outright, rather than by
+being slow.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
 descriptor per *world*, so one build serves every run that used it — worth a background thread,
@@ -977,7 +977,7 @@ Why images resolve the way they do
 someone will otherwise re-litigate.
 
 A family image ref glues three independent facts into one string, and authoring all three
-in one place is what made image configuration a five-variable problem::
+in one place is what makes image configuration a five-variable problem::
 
     harbor.example/robovast / robovast-roqsim : latest
     \_______ WHERE _______/   \____ WHAT ___/   \ WHICH /
@@ -985,9 +985,8 @@ in one place is what made image configuration a five-variable problem::
 
 **WHAT is never authored.** Which member a container needs follows from its role and the
 campaign's mode. Once that is granted, a ``.vast`` has no reason to mention a family image
-at all, and the question that used to be hard — what should an override do to a
-digest-pinned ref in a published dataset's config? — stops existing rather than being
-answered.
+at all, and the hard question — what should an override do to a digest-pinned ref in a
+published dataset's config? — does not arise rather than being answered.
 
 **``family:<member>`` mirrors ``build:<tag>``.** Both are symbolic refs core resolves late
 from context the author does not hold, and both fail loudly if one reaches a container spec
@@ -1173,19 +1172,18 @@ warm pod that does not tolerate what campaign pods tolerate would skip exactly t
 warming — and report success doing it.
 
 **The pod env is the site default; the request overrides it.** That ordering is the whole
-reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables
-that used to exist, only two were ever carried into the service pod, so
-``vast cluster setup --force`` appeared to move the images and moved only the
-controller — three of the five were read in-pod and set nowhere.
+reason a dev run needs no redeploy. Every per-image variable is carried into the service
+pod, so ``vast cluster setup --force`` moves what it says it moves: one read in-pod and
+set nowhere is a setting that appears to take and does not.
 
-**Reproducibility lives in the recorded digest.** ``resolve_robovast_image`` used to refuse
-a mutable default outright, so that the image a campaign ran was always pinned by its
-author. That rule aimed at the right thing from the wrong layer: it made every ``.vast``
-carry a registry-specific string, which is how a shipped example came to pin a private
-registry only one site could pull. What makes a run reproducible is the digest captured
-*from* it (``pullable_digest`` / ``_capture_image_digest``, replayed by
-``from_campaign``) — a fact about what happened, not an intention recorded beforehand. The
-unpinned case now resolves and warns.
+**Reproducibility lives in the recorded digest.** ``resolve_robovast_image`` resolves an
+unpinned ref and warns, rather than refusing a mutable default outright so that the image a
+campaign runs is always pinned by its author. That rule aims at the right thing from the
+wrong layer: it makes every ``.vast`` carry a registry-specific string, which is how a
+shipped example comes to pin a private registry only one site could pull. What makes a run
+reproducible is the digest captured *from* it (``pullable_digest`` /
+``_capture_image_digest``, replayed by ``from_campaign``) — a fact about what happened, not
+an intention recorded beforehand.
 
 The default tag is ``latest`` and not this installation's version. Deriving it reads well
 and is wrong: it assumes every version has a published tag, and CI publishes semver tags

@@ -19,7 +19,7 @@ from robovast.service.interface import ShareListing
 from robovast.service.local_transport import LocalTransport
 
 #: Deliberately not in date order, and deliberately not in name order either -- sorting on
-#: the id alone (what this used to do) puts `alpha` first, which is the oldest.
+#: the id alone puts `alpha` first, which is the oldest.
 CAMPAIGNS = (
     "nav-2026-08-18-194018",
     "alpha-2025-01-02-030405",

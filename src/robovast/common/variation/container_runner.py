@@ -36,10 +36,9 @@ Two backends implement this:
 * :class:`LocalContainerRunner` (here) — ephemeral ``docker run --rm`` per call.
 * ``ClusterContainerRunner`` (in :mod:`robovast.execution.cluster_execution`) —
   ``kubectl exec``-equivalent into a long-lived container in the campaign's auxiliary
-  pod. The controller-pod sidecar this used to be is gone with the controller pod; the
-  workspace is now mirrored in and out around each ``run`` rather than shared live,
-  which is why the contract above says "at the same absolute path" and not "the same
-  filesystem".
+  pod. There is no sidecar sharing a filesystem with the driver, so the workspace is
+  mirrored in and out around each ``run`` rather than shared live -- which is why the
+  contract above says "at the same absolute path" and not "the same filesystem".
 """
 
 import logging

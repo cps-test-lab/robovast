@@ -184,11 +184,11 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -*)
-            # An unknown *option* is an error, not something to walk past. This case
-            # used to `break`, which silently discarded it — and everything after it,
-            # since parsing stopped there. That is how `--network-host` survived as a
-            # documented, forwarded, entirely dead flag: nothing ever said it was
-            # unknown. Non-option arguments still end parsing (the case below).
+            # An unknown *option* is an error, not something to walk past. A `break`
+            # here silently discards it — and everything after it, since parsing stops
+            # there — which is how a documented, forwarded, entirely dead flag survives:
+            # nothing ever says it is unknown. Non-option arguments still end parsing
+            # (the case below).
             echo "Error: unknown option '$1'" >&2
             echo "" >&2
             show_help >&2
@@ -230,9 +230,9 @@ fi
 
 # Pull image if not available locally.
 #
-# A failed pull is FATAL and says so here. It used to fall through to the protocol check, which
-# could then only report the secondary symptom -- "the image reports no version" -- while the
-# actual fact was that the image does not exist or is not reachable. For a re-run of an archived
+# A failed pull is FATAL and says so here. Falling through to the protocol check reports only
+# the secondary symptom -- "the image reports no version" -- while the actual fact is that the
+# image does not exist or is not reachable. For a re-run of an archived
 # campaign that distinction is the whole answer: an image that cannot be obtained needs its
 # recorded build refs, not a protocol conversation.
 if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
@@ -260,7 +260,7 @@ if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
     IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
     COMPAT_SOURCE="file"
 fi
-# A RANGE, not equality. Equality meant the first bump orphaned every published image, so a
+# A RANGE, not equality. Equality orphans every published image on the first bump, so a
 # campaign pinning one by digest could never be re-run -- refusing the case this exists for.
 if [ -z "$IMAGE_COMPAT" ]; then
     echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."

@@ -379,11 +379,11 @@ class DockerBackend(ExecutionBackend):
         finishes, so the count is a plain glob — the filesystem counterpart of the
         cluster backend counting object keys with the same sentinel.
 
-        This used to return ``None`` ("results are already on disk"), which switched
-        the controller's progress poller off entirely: a live local campaign reported
-        ``batch_runs_total: 0`` and a ``progress`` that never moved, so a wedged pilot
-        and a working one were indistinguishable — and that ``0/0`` also reached the
-        durable ``outcome.json`` of campaigns that had passed.
+        Returning ``None`` ("results are already on disk") switches the controller's
+        progress poller off entirely: a live local campaign reports ``batch_runs_total:
+        0`` and a ``progress`` that never moves, so a wedged pilot and a working one are
+        indistinguishable — and that ``0/0`` reaches the durable ``outcome.json`` of
+        campaigns that passed.
         """
         del campaign_id  # the root already identifies the campaign on this lane
         try:

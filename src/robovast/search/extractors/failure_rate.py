@@ -43,7 +43,7 @@ class FailureRate(Extractor):
             # least interesting score, so the search would steer AWAY from the parameter
             # sets whose runs are dying, which is where the failures it hunts actually are.
             # NoSampleError is the honest answer; the controller records the cell and
-            # continues, so refusing to invent a number no longer costs the campaign.
+            # continues, so refusing to invent a number costs the campaign nothing.
             raise NoSampleError(
                 f"{config_dir}: no run produced a result (no test.xml), so failure_rate "
                 f"has nothing to measure -- scoring 0.0 would claim that nothing failed")

@@ -86,8 +86,8 @@ def grant_local_access() -> None:
     """Let containers on this host talk to the X server (``xhost +local:``).
 
     Non-fatal: access may already be granted, or the host may have no ``xhost`` while
-    still accepting connections. But *reported* — a silently failed grant used to present
-    as a run that started fine and drew nothing.
+    still accepting connections. But *reported* — a silently failed grant presents as a
+    run that started fine and drew nothing.
     """
     try:
         done = subprocess.run(["xhost", "+local:"],  # noqa: S603, S607

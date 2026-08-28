@@ -56,12 +56,12 @@ def test_a_storage_class_switches_the_volume_to_a_pvc():
 
 
 def test_hostpath_storage_can_be_pinned_to_its_node():
-    """hostPath puts the blobs on one node's disk; rescheduling elsewhere would come up
-    with an empty registry and every previously built image would silently be gone.
+    """hostPath puts the blobs on one node's disk; rescheduling elsewhere comes up with an
+    empty registry and every image built so far silently gone.
 
     The selector is the constant `robovast.io/data-node` label, never a hostname: a caller
     that has no value to pass cannot drop the pin by forgetting it, which is exactly how
-    `upgrade` used to unpin this pod.
+    `upgrade` unpins this pod.
     """
     from robovast.execution.cluster_execution import node_placement as np
 

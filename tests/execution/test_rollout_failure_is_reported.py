@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """An upgrade whose new pod cannot start says so, instead of waiting in silence.
 
-``wait_for_rollout`` used to watch the Deployment's replica counters and nothing else. A
+Watching the Deployment's replica counters and nothing else cannot report a failure: a
 counter cannot fail, so an incoming pod in ``ImagePullBackOff`` -- a reason the kubelet
-already had, and which k9s showed the whole time -- was three minutes of no output followed
-by ``False``, which the caller then printed "✓ upgraded and ready" over anyway.
+already has, and which k9s shows the whole time -- is three minutes of no output followed
+by ``False``, which the caller then prints "✓ upgraded and ready" over anyway.
 
 The reason is right there on the pod. Two things follow from that and are pinned here: it is
 reported on the *first* poll (the silence is the bug, independently of when we give up), and

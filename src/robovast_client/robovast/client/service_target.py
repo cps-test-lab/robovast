@@ -29,20 +29,19 @@ resolution is announced rather than assumed. Two ways in, in order:
 * **the service ``vast login`` stored** — the deployed one behind its Ingress, which is
   how a user with no kubeconfig reaches it.
 
-``--cluster`` used to be a third, opening an ephemeral ``kubectl port-forward`` per call.
-It is gone: with the service published and authenticated, an operator uses the same path
-as everybody else, and a tunnel is no longer part of anyone's normal flow. When the
-Ingress itself is broken, ``kubectl port-forward svc/robovast-service 8800:8800`` still
-puts a service on the conventional port, and the first rule above finds it — that is
-kubectl's feature, not one this module has to wrap.
+There is no third rule and no flag opening an ephemeral ``kubectl port-forward`` per
+call: with the service published and authenticated, an operator uses the same path as
+everybody else, and a tunnel is not part of anyone's normal flow. When the Ingress itself
+is broken, ``kubectl port-forward svc/robovast-service 8800:8800`` still puts a service on
+the conventional port, and the first rule above finds it — that is kubectl's feature, not
+one this module has to wrap.
 
 When nothing answers, every command here errors. There is no in-process fallback: this
 package is a **frontend**, and a campaign, a workspace and the files under them live in
-whichever service you talk to. ``require_service`` used to make that per-verb, defaulting
-to off -- so with no service, ``workspace init`` quietly wrote into a local store while
-``workspace run`` refused, and the same command name meant two different systems depending
-on what happened to be listening. Launching was already service-only; this is the rest of
-the loop agreeing with it.
+whichever service you talk to. Making that per-verb, defaulting to off, has ``workspace
+init`` quietly writing into a local store while ``workspace run`` refuses -- the same
+command name meaning two different systems depending on what happens to be listening.
+Launching is service-only, and the rest of the loop agrees with it.
 """
 
 import contextlib
@@ -71,12 +70,12 @@ def detected_service_url():
     2. **A stored ``vast login``.** The deployed instance behind its Ingress — how a
        user with no kubeconfig reaches it.
 
-    This is a deliberate widening of a contract that used to be "the local port, full
-    stop, no environment variable, no guessing". That was right while the only way to
-    reach a remote service was a tunnel *to* the local port; it cannot express "the
-    service is at https://robovast.example.org and here is my token". The narrowness is
-    preserved where it mattered — there is still no ambient env var naming a service,
-    and ``echo_target`` still prints what was resolved, so the choice is never silent.
+    Two rules rather than "the local port, full stop, no environment variable, no
+    guessing": that narrower contract fits only while the sole way to reach a remote
+    service is a tunnel *to* the local port, and cannot express "the service is at
+    https://robovast.example.org and here is my token". The narrowness is kept where it
+    matters — there is no ambient env var naming a service, and ``echo_target`` prints
+    what was resolved, so the choice is never silent.
     """
     from robovast.service.interface import DEFAULT_PORT
     probe = f'http://127.0.0.1:{DEFAULT_PORT}'
@@ -90,9 +89,9 @@ def detected_service_url():
 def target_options(func):
     """Add the target switches every service-touching command shares.
 
-    ``--cluster`` used to be here, opening a ``kubectl port-forward`` for the call.
-    There is one way in now — the service on the conventional local port, or the one
-    ``vast login`` stored — so an operator uses the same path as everybody else.
+    No flag opens a ``kubectl port-forward`` for the call. There is one way in — the
+    service on the conventional local port, or the one ``vast login`` stored — so an
+    operator uses the same path as everybody else.
     """
     func = click.option(
         '--context', '-x', default=None, metavar='NAME',

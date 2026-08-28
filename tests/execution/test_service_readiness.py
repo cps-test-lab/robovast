@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Setup reports success only once the service can actually answer.
 
-It used to return as soon as the Deployment object existed and print
-"✓ Cluster setup completed successfully!". An image that could not be pulled therefore
-surfaced one command later as a connection failure, pointing at the network instead of
-at the ImagePullBackOff that had already happened. The pod's own reason is right there.
+Returning as soon as the Deployment object exists and printing "✓ Cluster setup completed
+successfully!" surfaces an image that cannot be pulled one command later, as a connection
+failure — pointing at the network instead of at the ImagePullBackOff that already
+happened. The pod's own reason is right there.
 """
 
 from types import SimpleNamespace

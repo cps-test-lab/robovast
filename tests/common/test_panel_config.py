@@ -172,8 +172,8 @@ def test_fill_replaces_the_anchor():
     {"anchor": "fill"},                  # fill stopped being an anchor
 ])
 def test_placement_rejects_combinations_it_could_not_honour(position):
-    # Each of these used to be silently dropped by the layout engine, which is how a panel ends
-    # up somewhere its author did not ask for and cannot explain from the .vast.
+    # Silently dropped by the layout engine, each of these is how a panel ends up somewhere
+    # its author did not ask for and cannot explain from the .vast.
     with pytest.raises(ValidationError):
         PanelPosition.model_validate(position)
 
@@ -237,11 +237,11 @@ def test_json_schema_accepts_shorthand():
     assert any("type" in b.get("required", []) for b in branches)  # explicit form still offered
 
 def test_a_panel_on_the_wrong_surface_is_told_where_it_belongs():
-    """The likeliest mistake used to get the least useful answer.
+    """The likeliest mistake must not get the least useful answer.
 
-    Both of these were refused as "unknown panel type ... (package panels require the providing
+    Refusing both of these as "unknown panel type ... (package panels require the providing
     plugin, e.g. 'robovast_nav', installed)" -- for a panel that plugin ships, on the other
-    surface. The author was sent to check an install that was already fine.
+    surface -- sends the author to check an install that is already fine.
     """
     with pytest.raises(ValidationError) as run_in_config:
         ConfigPanelConfig.model_validate({"costmap": None})

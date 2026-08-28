@@ -415,11 +415,11 @@ def job_failed_message(job_name: str) -> str:
 
     Named so the string has one definition and a test can hold it to its contract: it
     carries **no cluster command**. It lands on ``postprocessing_error``, which the web UI
-    renders to someone who has a log panel and no kubeconfig; it used to append
-    ``kubectl logs job/<name> -n <ns>``, which was unrunnable for that reader, aimed at
-    whichever cluster their context happened to name, and pointed at a Job that
+    renders to someone who has a log panel and no kubeconfig. A ``kubectl logs
+    job/<name> -n <ns>`` appended here is unrunnable for that reader, aimed at whichever
+    cluster their context happens to name, and points at a Job that
     ``ttlSecondsAfterFinished`` reaps 300 s after it fails -- so by the time most people
-    read it, it named nothing that still existed. The conversion output is in the campaign
+    read it, it names nothing that still exists. The conversion output is in the campaign
     log, which every surface already shows.
     """
     return (f"postprocessing job {job_name} failed — see the POSTPROCESSING section of "
@@ -514,8 +514,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                     "initContainers": [
                         {
                             # mc for the upload + mirror the campaign (rosbags) down.
-                            # (The scripts are no longer copied by an initContainer —
-                            # they arrive read-only from the ConfigMap volume above.)
+                            # (The scripts are not copied by an initContainer — they
+                            # arrive read-only from the ConfigMap volume above.)
                             "name": "s3-init",
                             "image": resolve_sidecar_image(),
                             "command": ["sh", "-c",

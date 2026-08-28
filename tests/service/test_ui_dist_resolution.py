@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Where ``vast serve`` looks for the built web UI, and why there are three places.
 
-A wheel install used to ship no UI at all and say nothing about it. The resolver walked
-*up* from ``__file__`` to a repo-root ``frontend/ui/dist`` — which, installed, points
-above ``site-packages`` at whatever happens to be there. So the service silently served
-API-only, and "I opened the URL and got JSON" was how you found out.
+A resolver that walks *up* from ``__file__`` to a repo-root ``frontend/ui/dist`` points,
+once installed, above ``site-packages`` at whatever happens to be there — so a wheel
+install ships no UI at all and says nothing about it: the service silently serves
+API-only, and "I opened the URL and got JSON" is how you find out.
 
 The fix has two halves and both have to hold: the assets are staged **inside** the package
 (``make ui-stage``, then an explicit ``include`` because they are git-ignored), and the

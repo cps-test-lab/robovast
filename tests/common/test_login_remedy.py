@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """``vast login`` must name the right remedy, not the most common one.
 
-Every failure used to end in "Check the URL and the token the operator gave you." For an
-untrusted TLS certificate that is worse than saying nothing: the token is fine, and the
-same URL opens in a browser as soon as the warning is clicked away — so the CLI looks
-like the broken half and the user re-checks the one thing that was never wrong.
+Ending every failure in "Check the URL and the token the operator gave you" is, for an
+untrusted TLS certificate, worse than saying nothing: the token is fine, and the same URL
+opens in a browser as soon as the warning is clicked away — so the CLI looks like the
+broken half and the user re-checks the one thing that was never wrong.
 
 Observed live against ``https://robovast.example.org`` before its certificate existed:
 

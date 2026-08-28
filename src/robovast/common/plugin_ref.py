@@ -95,8 +95,8 @@ def _diagnose_empty_builtin_group(group: str) -> str:
     The failure this exists for: ``importlib.metadata`` deduplicates distributions **by
     name** and keeps the first on ``sys.path``, so a second distribution called
     ``robovast`` anywhere ahead of the real one replaces its entry points wholesale ---
-    every group at once, not merely the name being looked up. That is what a workspace
-    plugin directory containing its own copy of the host used to produce, and reading
+    every group at once, not merely the name being looked up. A workspace plugin directory
+    containing its own copy of the host produces exactly that, and reading
     ``(none registered)`` gives no way to guess it.
 
     Diagnosis only. Deliberately *not* a fallback that unions the shadowed distribution's

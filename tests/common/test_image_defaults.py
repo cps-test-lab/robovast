@@ -61,9 +61,9 @@ def test_a_pinned_tag_wins_over_the_default(monkeypatch):
 def test_both_roqsim_shapes_name_the_combined_member(mode):
     """One member for both shapes — the only image with roqsim *and* the contract.
 
-    Regression on two counts: the ROS shape used to default to roqsim's own published
-    image, which carries the simulator but not ``/etc/robovast_compat_version``, so the
-    runner rejected it — and nothing published that tag anyway.
+    Not roqsim's own published image: that one carries the simulator but not
+    ``/etc/robovast_compat_version``, so the runner rejects it — and nothing publishes that
+    tag anyway.
 
     Asserted on what ``containers()`` returns rather than on a module constant: the
     constant is not the contract, the contributed container block is.
@@ -121,7 +121,7 @@ def test_every_build_job_reads_the_shared_platform_policy():
 
     # Both `$PLATFORMS_X` and `${PLATFORMS_X//,/ }` count. Matching only the bare form
     # silently stopped covering the base image the moment plan-base started splitting the
-    # list to build its matrix -- a guard that passes because it no longer looks is worse
+    # list to build its matrix -- a guard that passes because it stopped looking is worse
     # than no guard.
     read = set(re.findall(r"\$\{?PLATFORMS_([A-Z0-9_]+)", workflow))
     assert read, "no job reads container/platforms.env"
@@ -133,7 +133,7 @@ def test_every_build_job_reads_the_shared_platform_policy():
     # The base image is the one whose platforms arrive by matrix, so it is the one a
     # refactor can quietly detach from the policy file. Name it explicitly.
     assert "ROBOVAST" in read, (
-        "image.yml no longer reads PLATFORMS_ROBOVAST; the base image's architectures "
+        "image.yml does not read PLATFORMS_ROBOVAST; the base image's architectures "
         "must still come from container/platforms.env, not from the matrix literal")
 
 
@@ -236,9 +236,9 @@ def test_the_scenario_execution_pin_is_a_full_commit_sha():
     only ever existed on a feature branch, and every build from a clean clone failed
     once that branch was merged and deleted.
 
-    Both spellings are collected, because the pin moved: it used to be a literal
-    ``git checkout <sha>``, and is now an ``ARG SCENARIO_EXECUTION_REF``. Matching only the
-    old one left this test passing on the *other* repo's checkout while guarding nothing.
+    Both spellings are collected, because a pin may be written either as a literal
+    ``git checkout <sha>`` or as an ``ARG SCENARIO_EXECUTION_REF``. Matching only one leaves
+    this test passing on the *other* repo's checkout while guarding nothing.
     """
     dockerfile = (WORKFLOW.parents[2] / "container" / "robovast" / "Dockerfile").read_text()
     pins = (re.findall(r"git checkout ([0-9a-f]{6,})", dockerfile)
@@ -252,10 +252,9 @@ def test_the_scenario_execution_pin_is_a_full_commit_sha():
 def test_the_dockerfiles_build_without_a_staged_context():
     """Every source a Dockerfile needs must be something it can fetch itself.
 
-    Both images used to ``COPY`` a directory that ``build.sh`` created *empty* in a temp
-    context — and git cannot track an empty directory, so with CI's ``context: .`` the COPY
-    had nothing to resolve against. Neither image's workflow could ever have succeeded,
-    which is why nothing published the images the built-in defaults named.
+    A ``COPY`` of a directory that ``build.sh`` creates *empty* in a temp context cannot
+    work: git cannot track an empty directory, so with CI's ``context: .`` the COPY has
+    nothing to resolve against, and the image's workflow can never succeed.
     """
     container = WORKFLOW.parents[2] / "container" / "robovast"
     for name in ("Dockerfile", "Dockerfile.roqsim"):

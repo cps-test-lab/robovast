@@ -17,10 +17,10 @@
 
 """Collect-all validation for ``.vast`` project files.
 
-The normal load/generate path is fail-fast — it raises on the first problem and,
-for a YAML error, historically ``sys.exit(1)``. That is hostile to a program
-(e.g. the MCP server) that validates configs an LLM produced: the LLM sees one
-error at a time, or the server dies.
+The normal load/generate path is fail-fast — it raises on the first problem, and a
+YAML error can take the process with it. That is hostile to a program (e.g. the MCP
+server) that validates configs an LLM produced: the LLM sees one error at a time, or
+the server dies.
 
 ``validate_project_file`` runs the same pipeline as a *linter*: it accumulates
 **every** problem it can find in one pass, each tagged with a stage, the config
@@ -390,8 +390,8 @@ EXPLORER_NOTEBOOKS = "visualization.results.explorer.notebooks"
 def _run_view_panels(raw):
     """The raw ``visualization.results.run_view.panels`` list, or ``[]``.
 
-    Every panel check walks the same path and each used to inline it, which is one copy per
-    check of a key that can be renamed.
+    Every panel check walks the same path, and inlining it in each is one copy per check of
+    a key that can be renamed.
     """
     from robovast.common.config import \
         visualization_block  # pylint: disable=import-outside-toplevel
@@ -1078,8 +1078,8 @@ def _plugins_problems(raw, vast_dir):
       ``build.python_packages`` already gets, which top-level ``plugins:`` never had, so a
       wheel named with a typo surfaced only when a campaign tried to install it;
     * a plugin **already installed** in this workspace whose metadata declares a
-      dependency on robovast itself. Harmless now that the install resolves against the
-      host, but it is what used to put a second robovast in the workspace, and only the
+      dependency on robovast itself. Harmless while the install resolves against the host,
+      but it is what would otherwise put a second robovast in the workspace, and only the
       plugin's author can remove it.
     """
     problems = []

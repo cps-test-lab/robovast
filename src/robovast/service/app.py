@@ -971,9 +971,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         #
         # `impl.local_file` is asked for outright rather than probed with getattr: every
         # transport implements it (they all subclass LocalTransport), so a presence check
-        # could only ever succeed -- and the branch it used to guard, buffering the bytes
-        # for "a lane with no path", was therefore unreachable while the *cluster* lane
-        # fell into the local resolver and fetched an entire campaign to serve one file.
+        # could only ever succeed. A branch guarded on it -- buffering the bytes for "a
+        # lane with no path" -- is unreachable, while the *cluster* lane falls into the
+        # local resolver and fetches an entire campaign to serve one file.
         return _guard(lambda: FileResponse(impl.local_file(address), media_type=media_type))
 
     @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}", tags=["files"])
@@ -1209,11 +1209,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         objects from the store and tars them on the fly, the local lane tars its own
         directory into the response. Decisive for ~1TB campaigns.
 
-        A local service used to refuse this with a 409 -- "the results are already on
-        this host's filesystem". True of a caller on that host, and false of everyone
-        else: a ``vast serve`` reached over the network could not be downloaded from at
-        all, and the web UI had to hide its own button on that lane. The lane is not
-        what decides whether a caller can read a file.
+        Refusing this on a local service with a 409 -- "the results are already on this
+        host's filesystem" -- asserts something true of a caller on that host and false
+        of everyone else: a ``vast serve`` reached over the network could not be
+        downloaded from at all, and the web UI would have to hide its own button on that
+        lane. The lane is not what decides whether a caller can read a file.
         """
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
@@ -1474,8 +1474,8 @@ def _ui_dist() -> Optional[Path]:
     3. ``robovast/_ui`` inside the installed package — the wheel. Resolving *up* from
        ``__file__`` cannot find it: installed, this module is
        ``site-packages/robovast/service/app.py``, and ``parents[3]`` is above
-       site-packages. That is why a plain ``pip install`` used to ship no UI at all and
-       say nothing about it.
+       site-packages -- which is how a plain ``pip install`` comes to ship no UI at all
+       and say nothing about it.
     """
     import os  # pylint: disable=import-outside-toplevel
 

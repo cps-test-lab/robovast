@@ -165,9 +165,9 @@ def _qd(per_batch=8):
 def test_qd_survives_a_draw_that_produced_no_evaluation():
     """One unrealizable draw must not end the search.
 
-    pyribs needs one row per solution it emitted, so a short generation used to raise
-    KeyError out of the batch loop and fail the campaign — which is how a 50-batch search
-    died on batch 33 with eight hours of finished work behind it.
+    pyribs needs one row per solution it emitted, so a short generation raises KeyError
+    out of the batch loop and fails the campaign — a 50-batch search dying on batch 33
+    with eight hours of finished work behind it.
     """
     pytest.importorskip("ribs")
     s = _qd()

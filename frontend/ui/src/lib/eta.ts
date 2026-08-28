@@ -78,10 +78,10 @@ export function isBatchesBudget(b: BudgetItem): boolean {
  * omits the meter, since there is no limit to measure against and inventing a denominator
  * would put a bound on screen that the campaign never declared.
  *
- * Reading this off the budget list is what the card used to do for the CHART as well, which is
- * why a runs-bounded search had no batch counter, no ETA and no objective diagram at all --
- * six of the eight shipped `nav_search` examples, including the Halton campaign whose runs
- * budget is deliberate (see nav_search_random.vast: bounding by runs is what makes the two
+ * The CHART must not be driven off the budget list the same way: a runs-bounded search declares
+ * no batch budget, so doing that leaves it with no batch counter, no ETA and no objective diagram
+ * at all -- six of the eight shipped `nav_search` examples, including the Halton campaign whose
+ * runs budget is deliberate (see nav_search_random.vast: bounding by runs is what makes the two
  * strategies comparable). */
 export function batchesBudget(status: Status): BudgetItem | null {
   return status.budget.find(isBatchesBudget) ?? null

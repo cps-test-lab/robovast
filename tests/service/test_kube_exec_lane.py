@@ -12,10 +12,10 @@ were invisible to the local lane:
 - the "is anything running?" probe counted its own helper processes, so a pod was never
   idle and never idle-reaped.
 
-The second group covers staging. ``/config`` used to arrive as a ConfigMap, which capped
-the staged tree at ~900 KiB and told the caller to "run this config as a campaign
-instead" — the cost the tool exists to avoid. It now arrives the way a campaign Job's
-does: staged to the object store, mirrored down by an ``mc`` init container.
+The second group covers staging. ``/config`` arrives the way a campaign Job's does:
+staged to the object store, mirrored down by an ``mc`` init container. As a ConfigMap it
+would cap the staged tree at ~900 KiB and send the caller off to "run this config as a
+campaign instead" — the cost the tool exists to avoid.
 
 No cluster is needed here: these check the manifests, the argv and the call sequence.
 """
@@ -161,8 +161,8 @@ def test_the_whole_config_tree_is_staged_without_rewriting_names(tmp_path):
 def test_a_config_larger_than_a_configmap_now_stages_fine(tmp_path):
     """The inversion that motivated the change.
 
-    This used to raise ``ValueError`` naming the ConfigMap limit and telling the caller to
-    run a campaign instead — which is the expense ``exec_in_container`` was built to save.
+    A ConfigMap-staged tree raises ``ValueError`` naming the ConfigMap limit and tells the
+    caller to run a campaign instead — the expense ``exec_in_container`` exists to save.
     """
     spec = _spec(tmp_path)
     (tmp_path / "config" / "huge.bin").write_text("x" * (2 * 1024 * 1024))
@@ -181,8 +181,8 @@ def test_staging_without_a_store_refuses_instead_of_running_unstaged(tmp_path):
 def test_the_workspace_is_staged_under_its_own_prefix(tmp_path):
     """Parity with the local lane, which bind-mounts it at ``/sources/<id>``.
 
-    The cluster lane used to ignore ``workspace_dir`` entirely, so the same call answered
-    differently on the two lanes — locally the files were there, in-cluster they were not.
+    A cluster lane ignoring ``workspace_dir`` answers the same call differently from the
+    local one — locally the files are there, in-cluster they are not.
     """
     store = _FakeStore()
     lane = _lane(store)

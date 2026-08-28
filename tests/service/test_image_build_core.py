@@ -86,8 +86,8 @@ def test_apt_order_does_not_affect_hash(tmp_path):
 
 
 def test_python_package_order_affects_hash(tmp_path):
-    """Order no longer decides whether a build *works*, but it is still what gets
-    built — the specs are passed to pip in the order listed — so it stays in the key."""
+    """Order does not decide whether a build *works*, but it is what gets built — the
+    specs are passed to pip in the order listed — so it stays in the key."""
     a = BuildSpec(tag="t", python_packages=["roqsim", "roqsim_assets"])
     b = BuildSpec(tag="t", python_packages=["roqsim_assets", "roqsim"])
     assert build_hash(a, tmp_path, BASE) != build_hash(b, tmp_path, BASE)
@@ -352,8 +352,8 @@ def test_a_dependency_of_a_local_package_blames_the_base_image_not_the_list():
 
     ``roqsim`` was never in ``build.python_packages`` -- it is a dependency of the
     project's own package, and it is missing because the image the container builds on
-    is the wrong one. The classifier used to answer "check build.python_packages",
-    which sends an agent to edit a list that does not contain the name, and cannot.
+    is the wrong one. Answering "check build.python_packages" sends an agent to edit a
+    list that does not contain the name, and cannot.
     """
     err = classify_build_error(_TRANSITIVE, _spec(
         base_image="harbor.example/robovast-roqsim@sha256:abc",

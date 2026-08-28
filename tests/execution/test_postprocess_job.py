@@ -77,9 +77,9 @@ def test_no_credential_configured_leaves_the_pod_spec_alone():
 
 def test_a_failed_job_is_reported_without_a_cluster_command():
     """This message lands on ``postprocessing_error``, which the web UI renders to
-    someone who has a log panel and no kubeconfig. It used to append
-    ``kubectl logs job/<name> -n <ns>`` -- unrunnable for that reader, aimed at whichever
-    cluster their context happened to name, and pointing at a Job that
+    someone who has a log panel and no kubeconfig. An appended
+    ``kubectl logs job/<name> -n <ns>`` is unrunnable for that reader, aimed at whichever
+    cluster their context happens to name, and points at a Job that
     ``ttlSecondsAfterFinished`` reaps 300 s after it fails. The campaign log is where the
     conversion output actually is, and every surface already shows it.
     """

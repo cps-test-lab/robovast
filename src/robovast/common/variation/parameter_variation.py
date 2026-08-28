@@ -251,13 +251,13 @@ class ParameterVariationList(Variation):
               - environments/hospital/hospital.yaml
 
     ``values`` includes a bare-string member, so a string-valued factor is written the
-    obvious way — ``values: [world/depot.yaml, world/warehouse.yaml]``. It did not always:
-    without it, ``values: ["False"]`` was *coerced* to the boolean ``False`` and handed a
-    bool to a parameter the scenario declares as ``string``, which is why the nested-list
-    form below used to be the only way to vary a string. With ``str`` in the union pydantic
-    matches the exact type instead, so a quoted value stays a string.
+    obvious way — ``values: [world/depot.yaml, world/warehouse.yaml]``. Without it,
+    ``values: ["False"]`` is *coerced* to the boolean ``False`` and hands a bool to a
+    parameter the scenario declares as ``string``, leaving the nested-list form below as the
+    only way to vary a string. With ``str`` in the union pydantic matches the exact type
+    instead, so a quoted value stays a string.
 
-    The multi-destination form is still the way to fix several values at one level without
+    The multi-destination form is the way to fix several values at one level without
     multiplying the configuration count:
 
     .. code-block:: yaml

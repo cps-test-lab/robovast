@@ -3,10 +3,10 @@
 """Campaign discovery: which campaigns exist, and who was asked.
 
 ``list_campaigns`` is the only read tool with no absolute-path escape, so it is the
-one place where "no project initialized" used to be a dead end. There is no
-service-side project any more — a campaign runs a workspace's ``.vast`` — so the
-local results root is resolved by precedence (a CWD project's ``results_dir``, else
-the dir beside the workspaces store) and an absent root is simply empty.
+one place where "no project initialized" would be a dead end. There is no service-side
+project — a campaign runs a workspace's ``.vast`` — so the local results root is
+resolved by precedence (a CWD project's ``results_dir``, else the dir beside the
+workspaces store) and an absent root is simply empty.
 
 The tool asks the **service** when one answers, because a cluster campaign's durable
 home is the object store and it is on no local filesystem at all — a disk-only listing
@@ -44,10 +44,9 @@ def test_list_campaigns_tool_is_newest_first(no_project):
     """Among campaigns at rest, the tool's first page is the *newest*, whatever the names
     sort like.
 
-    It used to slice an ascending disk scan, so ``limit`` returned the oldest campaigns
-    and "what did I just run?" landed on the last page. Recency is the second key now —
-    live campaigns lead — but neither campaign here is running, so it is the one in
-    effect.
+    Slicing an ascending disk scan makes ``limit`` return the oldest campaigns, landing
+    "what did I just run?" on the last page. Recency is the second key — live campaigns
+    lead — but neither campaign here is running, so it is the one in effect.
     """
     from robovast.common.store import STORE_FILENAME, CampaignStore
     from robovast.mcp_server.plugins.results import list_campaigns
@@ -60,7 +59,7 @@ def test_list_campaigns_tool_is_newest_first(no_project):
             store.create_campaign(cid, {}, mode="batch", created_at=created_at)
 
     # Neither campaign is postprocessed, and both are still listed as ordinary entries:
-    # the listing no longer splits on metadata.yaml (which only postprocessing writes),
+    # the listing does not split on metadata.yaml (which only postprocessing writes),
     # it reports `postprocessed` per campaign, because a campaign without it is still
     # queryable — its runs are in campaign.db.
     result = list_campaigns(limit=1)
@@ -126,7 +125,7 @@ def test_resolve_results_dir_still_raises_for_a_named_campaign(no_project):
 
     The asymmetry is deliberate: listing tolerates an absent root, but a caller that
     named something it expects to find must be told the root does not exist -- and
-    the message must not say "run 'vast init'", which no longer binds anything.
+    the message must not say "run 'vast init'", which binds nothing here.
     """
     with pytest.raises(ValueError, match="No local results directory"):
         results_resolver.resolve_results_dir()

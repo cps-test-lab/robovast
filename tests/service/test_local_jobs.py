@@ -161,9 +161,9 @@ def test_get_job_log_rejects_path_traversal(transport):
 
 # -- the /usage jobs tally --------------------------------------------------
 #
-# The sidebar's jobs meter used to be hard-wired to "0/0" on this lane: the fields were
-# documented as belonging to backends that run Kubernetes Jobs, but local *does* execute
-# scenario runs — sequentially, as containers. The counts come off the controller
+# The sidebar's jobs meter is not hard-wired to "0/0" on this lane: the fields read as
+# belonging to backends that run Kubernetes Jobs, but local *does* execute scenario
+# runs — sequentially, as containers. The counts come off the controller
 # snapshot, not off disk: list_jobs above calls a run with no test.xml "running" while the
 # campaign is live, so a run that died without writing one would be reported as still
 # executing for the rest of the campaign.

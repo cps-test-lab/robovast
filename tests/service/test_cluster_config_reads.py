@@ -98,7 +98,7 @@ def _downloaded(storage):
 
 
 def test_data_dir_is_refused_on_the_cluster_lane(svc):
-    """The structural guard: the implicit whole-campaign resolver no longer answers."""
+    """The structural guard: the implicit whole-campaign resolver does not answer."""
     service, _ = svc
     with pytest.raises(NotImplementedError) as excinfo:
         service._data_dir("camp-1")

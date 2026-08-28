@@ -97,7 +97,7 @@ type Edge = { x?: 1 | -1; y?: 1 | -1 }
 
 // A handle straddles the panel's border rather than lying inside it: `EDGE_HANDLE` thick, of which
 // `HANDLE_OUTSET` hangs outside. The grab area is a window-manager edge -- live on the border and
-// just beyond it -- and only the remaining 4px reach into the panel, against the 8px that used to
+// just beyond it -- and only the remaining 4px reach into the panel, rather than 8px, which would
 // sit on the run log's horizontal scrollbar and leave a sliver of it to aim at.
 //
 // It does not go fully outside, for two reasons: the border itself is where a reader aims, and a
@@ -167,7 +167,8 @@ const dockSide = (a: Anchor | undefined): Side | null =>
  *  Composed per side rather than added numerically because the sizes may mix units, and because the
  *  two kinds of side compose differently (see the loop in PanelHost). A percentage is left for the
  *  browser to resolve against the host box -- its height for top/bottom, its width for left/right --
- *  which is what a percentage-sized dock means, and is why such a dock used to reserve nothing. */
+ *  which is what a percentage-sized dock means; resolving it here instead makes such a dock
+ *  reserve nothing. */
 type Insets = Record<Side, string>
 
 /** Where a docked panel sits along its own side, and what a fraction of its column means.

@@ -106,9 +106,9 @@ interface LayerRuntime {
    *  the layer being requested again.
    *
    *  Latched, because a postprocessed run is a closed recording: a topic with no rows cannot acquire
-   *  them, and a zero-size grid will not decode on a retry either. Both cases previously left the layer
-   *  perpetually out of date, so it was re-requested ~8×/s for the whole session with nothing shown and
-   *  nothing said. A live provider must not latch this -- there, "no rows yet" is not "no rows". */
+   *  them, and a zero-size grid will not decode on a retry either. Unlatched, both cases leave the
+   *  layer perpetually out of date, so it is re-requested ~8×/s for the whole session with nothing
+   *  shown and nothing said. A live provider must not latch this -- there, "no rows yet" is not "no rows". */
   unavailable?: string
 }
 
@@ -171,7 +171,7 @@ function parseLayers(config: Record<string, unknown>): { layers: LayerCfg[]; pos
 //
 // Two things keep that from recurring, and both are needed. One query PER FRAME, issued only for the
 // frames this panel actually draws (the robot frame, plus whatever frame a costmap grid turns out to
-// be in), so the budget no longer divides by however many frames the world happens to publish -- that
+// be in), so the budget does not divide by however many frames the world happens to publish -- that
 // count is unbounded, since `all` grows with every walker bone and movable prop a scene gains. And
 // decimation, so one frame's own length cannot reach the cap either: 20 Hz is well past what scrubbing
 // a trail can show and buys 250 s of run before the cap is anywhere near.
@@ -215,8 +215,8 @@ function hasNearerFrame(fr: DrawnFrame, t: number): boolean {
 }
 
 /** Nearest pose (by time) for a frame, or null. Called once per layer plus once for the marker on every
- *  animation frame, and each layer now asks at a different time, so this is a binary search rather than
- *  the scan it used to be. */
+ *  animation frame, and each layer asks at a different time, so this is a binary search rather than
+ *  a scan. */
 function poseAt(track: PoseTrack | undefined, t: number): Pose | null {
   if (!track?.poses.length) return null
   const i = nearestIndex(track.times, t)
@@ -264,8 +264,8 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       if (!fr) return // nothing fetched yet
       // The nearest recorded frame can be arbitrarily far from the cursor -- before nav2 started
       // publishing, after it stopped, or across a mid-run gap the endpoint still returns the closest
-      // row it has. Drawing that as though it were current is what put the local window somewhere the
-      // robot no longer was.
+      // row it has. Drawing that as though it were current puts the local window somewhere the
+      // robot no longer is.
       //
       // But only when the recording has nothing nearer (see hasNearerFrame). While scrubbing, a frame
       // leaves its validity window on essentially every cursor change and a replacement is already on

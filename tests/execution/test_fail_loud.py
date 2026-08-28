@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for the no-fallback contract of the cluster execution path.
 
-Each case pins a spot that used to silently degrade (swallow an error and proceed
-with a quietly-wrong configuration) and asserts it now fails loudly instead.
+Each case pins a spot that could silently degrade (swallow an error and proceed
+with a quietly-wrong configuration) and asserts it fails loudly instead.
 """
 
 from unittest import mock

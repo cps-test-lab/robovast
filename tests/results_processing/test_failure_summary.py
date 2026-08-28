@@ -4,7 +4,7 @@
 
 That line is the whole of what a reader gets without opening a log: it is what
 ``get_campaign_status`` returns, what the MCP hands an agent, and what the web UI shows on
-the card. It used to be the message's first line, which for the commonest failure is the exit
+the card. The message's *first* line will not do: for the commonest failure it is the exit
 status -- ``rosbags_process failed with exit code 1`` -- and says nothing about what to fix.
 """
 

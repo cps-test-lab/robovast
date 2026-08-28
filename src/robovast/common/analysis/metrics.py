@@ -21,13 +21,11 @@ Everything here takes a DataFrame and returns a DataFrame, so it works the same 
 from :mod:`~robovast.common.analysis.db` (a ``data.db`` table) and on one from
 :mod:`~robovast.common.analysis.files` (per-run files).
 
-That is why these are not in ``ros2``. :func:`get_behavior_info` lived there because the
-behaviour tree used to arrive as ``behaviors.csv``, converted from the
-``/scenario_execution/snapshots`` topic by a rosbag handler — so it really was ROS-only.
-``scenario_execution`` now writes ``behaviors.jsonl`` itself, from a logger that imports only
-stdlib and ``py_trees``, and ``mode: base`` campaigns produce the same table. Filing these by
-where their input happens to come from is what put the function in the wrong module; the rule
-for ``ros2`` is now "reads a rosbag artifact", which does not move under us.
+That is why these are not in ``ros2``. ``scenario_execution`` writes ``behaviors.jsonl``
+itself, from a logger that imports only stdlib and ``py_trees``, so ``mode: base`` campaigns
+produce the same table and nothing here is ROS-only. Filing these by where their input
+happens to come from is what puts a function in the wrong module; the rule for ``ros2`` is
+"reads a rosbag artifact", which does not move under us.
 """
 
 from typing import Tuple
@@ -77,8 +75,8 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame) -> p
 
     behavior_df = behavior_dataframe[behavior_dataframe['behavior_name'] == behavior_name].copy()
     if behavior_df.empty:
-        # Same columns as a populated result. They used to differ (no start_time/end_time
-        # here), so a notebook that selected them worked until the day it found no matches.
+        # Same columns as a populated result: differing here (no start_time/end_time) makes
+        # a notebook that selects them work until the day it finds no matches.
         return pd.DataFrame(columns=out_cols)
 
     results = []

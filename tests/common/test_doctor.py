@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast doctor`` — each check exists because its absence used to surface badly.
+"""``vast doctor`` — each check exists because without it the fault surfaces badly.
 
 The properties worth pinning are about the *message*, not the verdict. A check that
 reports "helm: missing" and stops has moved the problem rather than solved it, so every
@@ -74,11 +74,10 @@ def _node(cpu, memory):
 def test_capacity_fails_only_on_a_cluster_that_can_run_nothing(monkeypatch, cpu, memory, ok):
     """No fixed threshold, deliberately.
 
-    This asserted 4 CPU / 16 GiB when Kueue's controller had to fit on one node. Nothing
-    is deployed with a fixed size now, and a campaign pod is whatever its ``.vast`` asks
-    for -- so a number here would be invented, and admission already refuses an oversized
-    request at launch while naming both the request and each node's allocatable. A small
-    cluster is small, not broken; one advertising nothing is broken.
+    Nothing is deployed with a fixed size, and a campaign pod is whatever its ``.vast``
+    asks for -- so a number here would be invented, and admission already refuses an
+    oversized request at launch while naming both the request and each node's allocatable.
+    A small cluster is small, not broken; one advertising nothing is broken.
     """
     core = mock.Mock()
     core.list_node.return_value = SimpleNamespace(items=[_node(cpu, memory)])

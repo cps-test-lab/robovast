@@ -55,9 +55,9 @@ class PathVariationRandomConfig(DestinationConfig):
     #:
     #: Whether ``goal`` receives one pose or a list is **not** a key here: it is read from
     #: the scenario's own declaration of that parameter (``pose_3d`` versus
-    #: ``list of pose_3d``). That used to be inferred by comparing the destination name to
-    #: the literal string ``"goal_pose"``, which meant the name both chose the shape and was
-    #: then ignored -- and could contradict the scenario, failing at run time.
+    #: ``list of pose_3d``). Inferring it by comparing the destination name to the literal
+    #: string ``"goal_pose"`` would let the name both choose the shape and then be ignored --
+    #: and contradict the scenario, failing at run time.
     SLOTS = ("start", "goal")
 
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
@@ -77,10 +77,10 @@ class StartGoalSlots:  # pylint: disable=no-member
     A mixin: ``parameters`` and ``scenario_parameter_is_list`` are supplied by the config
     class this is mixed into, so pylint sees attribute access with no attribute to find.
 
-    Here rather than in each class because the two used to answer "one pose or a list?"
+    Here rather than in each class so the two cannot answer "one pose or a list?"
     *differently* -- one comparing the destination name to the literal string
     ``"goal_pose"``, the other keying on ``num_goal_poses == 1``. Two rules for one question
-    is how they came to disagree with each other and with the scenario.
+    is how they come to disagree with each other and with the scenario.
     """
 
     def _start_destination(self) -> str:
@@ -444,15 +444,15 @@ class PathVariationRasterizedConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
 
     #: Same two outputs as :class:`PathVariationRandomConfig`, bound the same way. The goal
-    #: shape likewise comes from the scenario's declaration -- it used to key on
-    #: ``num_goal_poses == 1``, a second rule for the same question that could disagree both
+    #: shape likewise comes from the scenario's declaration, not from
+    #: ``num_goal_poses == 1`` -- a second rule for the same question could disagree both
     #: with the scenario and with the other path variation.
     SLOTS = ("start", "goal")
 
     #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
     #: variation set. Input only: where the generated start pose *goes* is the ``start``
-    #: binding above. The two used to share one key, so ``start_pose: start_pose`` was a
-    #: destination and ``start_pose: {x: .., y: ..}`` was a value.
+    #: binding above. Sharing one key between the two makes ``start_pose: start_pose`` a
+    #: destination and ``start_pose: {x: .., y: ..}`` a value.
     start_from: Optional[str | PoseConfig] = None
     num_goal_poses: Optional[int] = 1  # Number of goal poses to generate
     map_file: Optional[str] = None

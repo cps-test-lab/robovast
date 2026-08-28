@@ -4,8 +4,8 @@
 
 A transport's ``base_url`` is where *it* dials. That is the same string as "where a caller
 can fetch" only for an HTTP client, and only by accident -- the MCP mounted inside the
-service has no transport at all, and used to hand back an ``AttributeError`` in its place.
-So the service reports the origin itself, from the one input that knows it per deployment:
+service has no transport at all, so reading one there hands back an ``AttributeError``
+instead. The service reports the origin itself, from the one input that knows it per deployment:
 the Ingress it was published on, or the address it bound.
 """
 

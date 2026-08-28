@@ -84,9 +84,9 @@ def test_the_re_exports_still_work_for_callers():
 def test_the_client_closure_does_not_import_the_in_process_server():
     """`campaign_wait` + `service_target` + `login` is what a thin client needs.
 
-    They reach `RobovastClient` through `service.client`, which used to re-export the
-    3,000-line in-process server eagerly -- so asking "is this campaign done yet?" pulled
-    the whole local Docker lane. A client distribution would not even have that module.
+    They reach `RobovastClient` through `service.client`. Re-exporting the 3,000-line
+    in-process server eagerly there makes asking "is this campaign done yet?" pull the
+    whole local Docker lane -- which a client distribution does not even have.
     """
     result = _import_in_subprocess(
         "import robovast.execution.campaign_wait, robovast.client.service_target, "
