@@ -758,3 +758,68 @@ def test_it_falls_back_where_the_node_could_not_answer():
     got = nc.read_probe_measurement(lambda k: files.get(k), "probe/",
                                     {"sut": "resource_usage_sut.csv"}, limits={"sut": 3.0})
     assert got["sut"]["peak"] == pytest.approx(2.0), "the per-process file still answers"
+
+
+# -- a probe that measured its own ceiling ---------------------------------------------
+
+
+def test_a_throttled_probe_is_refused():
+    """The measurement would be of the limit, not of the demand.
+
+    The probe runs at the declared sizing, so a ceiling that binds during it caps the peak it
+    reports. Storing that writes the cap in as though it were what the container needed, and
+    every later run on the node inherits it -- with nothing downstream able to tell a figure
+    derived from a limit from one derived from a workload.
+    """
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                               "throttled_ratio": 0.05}})
+    assert stored is False, "a probe that hit its own ceiling must not size the node"
+    assert not c.calibrated("n1"), "the node stays on the declared sizing"
+
+
+def test_throttling_under_the_threshold_is_kept():
+    """Zero is the wrong bar: a container is briefly throttled during bring-up anywhere, and
+    refusing on that would leave a cluster permanently uncalibrated."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    assert c.record("n1", "probe-1",
+                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                             "throttled_ratio": 0.001}}) is True
+
+
+def test_a_node_that_cannot_report_throttling_is_still_calibrated():
+    """Absent is not zero -- but refusing on absence would disable calibration on any host
+    whose cgroup exposes no CPU accounting, which is the case the per-process reader exists
+    to keep working."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    assert c.record("n1", "probe-1",
+                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60}}) is True
+
+
+def test_the_throttle_ratio_never_reaches_the_stored_figures():
+    """It is evidence about the measurement, not a resource to size from."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                                       "throttled_ratio": 0.001}})
+    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+
+
+def test_the_billing_reader_reports_the_throttle_span():
+    """Read from the same rows as the cores: monotonic counters, so last minus first."""
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0",
+             "nr_periods": "100", "nr_throttled": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "1000000",
+             "nr_periods": "200", "nr_throttled": "10"}]
+    assert nc.container_cpu_profile_from_billing(rows)["throttled_ratio"] == pytest.approx(0.1)
+
+
+def test_a_reader_with_no_throttle_columns_omits_the_ratio():
+    """Rather than reporting zero, which would read as "measured, and clean"."""
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "1000000"}]
+    assert "throttled_ratio" not in nc.container_cpu_profile_from_billing(rows)
