@@ -193,9 +193,8 @@ Afterwards, read the results in the browser (``vast ui``, against a running serv
    write this store live; a batch campaign's is written by the controller that ran it.
 
    A results tree with **no** store is therefore invisible to the UI, and nothing
-   rebuilds one: ``vast eval index``, which used to, went with the desktop tools. That
-   only affects a tree produced outside a controller — a hand-copied or pre-store
-   campaign.
+   rebuilds one. That only affects a tree produced outside a controller — a hand-copied
+   or pre-store campaign.
 
    The store also carries the campaign **mode** (``batch``/``search``), so the Explorer
    renders the search ``batch`` level and resolves the
@@ -230,11 +229,11 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
 
 * ``robovast.cli_plugins`` degrades **loudly** — ``load_plugins()`` prints
   ``Warning: Failed to load plugin '<name>'`` and carries on.
-* ``robovast.cli_startup`` used to degrade **silently**, and cost real damage: with the
-  core installed but its ``.env`` hook unregistered, no ``./.env`` was read, and
-  ``vast service upgrade`` — which reconciles Secrets from the environment —
-  concluded the registry and git credentials were gone and deleted both. It now refuses
-  rather than running on, naming the reinstall.
+* ``robovast.cli_startup`` **refuses** rather than running on, naming the reinstall.
+  Degrading silently there costs real damage: with the core installed but its ``.env``
+  hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
+  reconciles Secrets from the environment — concludes the registry and git credentials
+  are gone and deletes both.
 
 The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
@@ -265,11 +264,11 @@ The host declares a **window** of protocol versions it can drive:
 container image twice — as the label ``org.robovast.compat-version`` and, for
 backwards compatibility, as the file ``/etc/robovast_compat_version``.
 
-A window rather than a single value, because this was previously compared with
-``!=``: the first bump orphaned every image already published, so a campaign whose
-results pin an image by digest could never be re-run again — even with those exact
-bytes still in the registry.  Bumping the maximum is now harmless; **dropping**
-support is a separate, deliberate act of raising the minimum.
+A window rather than a single value, because an exact-match comparison orphans
+every image already published on the first bump: a campaign whose results pin an
+image by digest could never be re-run again — even with those exact bytes still in
+the registry.  Bumping the maximum is harmless; **dropping** support is a separate,
+deliberate act of raising the minimum.
 
 Readers prefer the label, because ``docker inspect`` reads it without starting a
 container and ``docker buildx imagetools inspect`` reads it from a *remote* image
@@ -1311,7 +1310,7 @@ or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``
    my_extract = "your_package.extractors:MyExtract"
 
 The extractor **reads** what a postprocessing plugin produced (e.g. per-run
-``metrics.csv``) — it no longer computes raw metrics itself. Pair it with a
+``metrics.csv``) — it does not compute raw metrics itself. Pair it with a
 postprocessing plugin (below) that writes ``metrics.csv`` from raw artifacts:
 list that plugin in ``search.postprocessing`` (run before extract) and/or in
 ``results_processing.postprocessing`` (analysis), so search and the analysis
@@ -1439,13 +1438,11 @@ Who writes it
   ``campaign_data`` readers). It is used for campaign dirs not produced by the
   controller — e.g. cluster results downloaded from S3 — and is idempotent
   (mtime-guarded; ``force=True`` to rebuild). Controller-written stores are left
-  untouched. It has **no CLI entry point**: ``vast eval index`` was the only caller and
-  went with the desktop tools, so a tree that has no store keeps none. The function
-  itself is the register step of ``vast campaign import``: an archive somebody else produced
-  usually has no store, and extraction alone leaves the campaign invisible to every
-  store-driven view. (This paragraph previously said it stayed because ``import-results``
-  and the tests used it -- stale on both counts: that command did not call it, and it had
-  no caller at all, so a routine dead-code sweep would have taken the primitive with it.)
+  untouched. It has **no CLI entry point**, so a tree that has no store keeps none. The
+  function itself is the register step of ``vast campaign import``: an archive somebody
+  else produced usually has no store, and extraction alone leaves the campaign invisible
+  to every store-driven view — which is what keeps the primitive alive, and out of a
+  routine dead-code sweep.
 
 Taking a campaign in
 ^^^^^^^^^^^^^^^^^^^^
@@ -1506,11 +1503,10 @@ holder the controller **writes** and readers **snapshot**. The controller calls
 status model, :class:`~robovast.execution.control_server.Status`, is reused
 verbatim by the interface, the MCP tools and the TS client.
 
-Because the service drives many campaigns as threads in one process, per-campaign
-state that used to be isolated by *being in its own pod* is now isolated
-explicitly: the container-runner factory is a ``ContextVar``, ``controller.log`` is
-filtered to its worker thread, and each aux pod / result prefix is keyed by
-campaign id.
+Because the service drives many campaigns as threads in one process rather than one
+pod each, per-campaign state is isolated explicitly: the container-runner factory is
+a ``ContextVar``, ``controller.log`` is filtered to its worker thread, and each aux pod
+/ result prefix is keyed by campaign id.
 
 Status: phase and stage
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1639,11 +1635,12 @@ keeps its marker and its data stays listed.
 
 **The records themselves come from ``_record_dir``.** Four readers need a campaign's
 recorded facts — ``_summary_for``, ``_started_at_for``, ``_description_for``,
-``_status_from_disk`` — and each used to resolve ``<results>/<id>`` inline, so the cluster
-lane had to override all four or none. They now go through one seam, and ``ClusterService``
-overrides just it: for a campaign with no local copy it materializes exactly two small
-objects — ``campaign.db`` and ``_execution/outcome.json`` — into the campaign's cache dir,
-after which every inherited reader is correct with no second implementation. Deliberately
+``_status_from_disk`` — and they go through one seam rather than resolving
+``<results>/<id>`` inline, which would make the cluster lane override all four or none.
+``ClusterService`` overrides just that seam: for a campaign with no local copy it
+materializes exactly two small objects — ``campaign.db`` and ``_execution/outcome.json``
+— into the campaign's cache dir, after which every inherited reader is correct with no
+second implementation. Deliberately
 a **single-object** fetch (``_materialize``, shared with ``_query_dir``) and never
 ``fetch_campaign``: a 2 KB record must not drag a 1 TB campaign. It is skipped for a
 campaign this process is driving (its driver owns ``campaign.db``), for one whose local dir
@@ -1830,10 +1827,11 @@ rather than a second prop, so navigation still resolves from one source and ``ha
 needs no change — a leaf topic already falls out of the existing grammar.
 
 ``components/LogPanel.tsx`` is the one live-log renderer, for the campaign log, the job log
-and the service log alike. It used to live inside ``StatusView.tsx``; reaching it through
-there dragged ``BatchObjectiveChart``, ``DetailsBox`` and the ETA maths into a lazily-loaded
-page that needs none of them. That the same component fits all three is not a coincidence:
-every live log here is a ``fetch(offset) -> LogChunk`` behind one SSE loop.
+and the service log alike. It is its own module rather than part of ``StatusView.tsx``:
+reaching it through there would drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA
+maths into a lazily-loaded page that needs none of them. That the same component fits all
+three is not a coincidence: every live log here is a ``fetch(offset) -> LogChunk`` behind
+one SSE loop.
 
 The usage recording and the service-log ring both live in the **serving layer**
 (``service/app.py`` and ``service/service_log.py``), not on ``RobovastInterface``. The
@@ -2022,9 +2020,9 @@ a **Monaco** editor (``frontend/ui/src/lib/monaco.ts`` bundles the editor + YAML
 workspace's ``.vast`` (workspace = the project, since a browser has no CWD), autosaves +
 debounce-validates through ``validate_project``, and previews resolved configurations through
 ``preview_configurations``. These four ops — ``validate_project`` / ``preview_configurations`` /
-``get_config_schema`` / ``list_variation_types`` — were **promoted onto** ``RobovastInterface``
-(previously MCP-only, calling local functions); ``LocalTransport`` wraps ``validate_project_file``
-/ ``generate_scenario_variations`` / ``ConfigV1.model_json_schema()`` / the
+``get_config_schema`` / ``list_variation_types`` — live **on** ``RobovastInterface``, so
+every client reaches them; ``LocalTransport`` wraps ``validate_project_file`` /
+``generate_scenario_variations`` / ``ConfigV1.model_json_schema()`` / the
 ``robovast.variation_types`` entry points, and ``validate_project`` swallows unexpected errors into
 a structured problem so the editor's live validation never 500s on in-progress YAML.
 
@@ -2128,8 +2126,8 @@ the module — seeding the host's React singletons — and ``PanelHost`` mounts 
 ``PanelProps``. **Reference example:** the ``costmap`` panel, relocated out of the core UI into
 ``robovast_nav`` — Python descriptor in ``robovast_nav/panels.py``, build sources in
 :repo_link:`src/robovast_nav/web` (a ``@module-federation/vite`` remote exposing ``./costmap``,
-built into ``robovast_nav/web/dist``). It is the first real remote, and validates the (formerly
-untested) variation-preview loading path too. Its **data endpoint** is likewise package-provided —
+built into ``robovast_nav/web/dist``). It is the first real remote, and validates the
+variation-preview loading path too. Its **data endpoint** is likewise package-provided —
 see *Package-provided service data endpoints* below — so both halves of the costmap panel live in
 ``robovast_nav``.
 
@@ -2250,13 +2248,12 @@ types are inferred per column and a JSONL file whose records have differing keys
 column for each (the column list is the union over rows, not the first row's keys).
 
 The one such producer today is ``behaviors.jsonl``, written by ``scenario_execution``'s
-``--bt-log``, on for every run. It replaced a rosbag route — recording
-``/scenario_execution/snapshots`` and converting it with a ``bt_to_csv`` handler — which could
-only work for ROS runs, and so left ``mode: base`` campaigns with no behaviour-tree data at all.
-Since the runner writes the file itself, both kinds of run now produce the ``behaviors`` table by
-the same path, and the snapshots topic no longer needs to be in the bag. The table keeps the
-seven columns it always had (so ``nav2_behaviors``, see above, still shares its schema and the
-same panel renders both) and adds what the JSONL carries: ``child_index``, ``type``,
+``--bt-log``, on for every run. Because the runner writes the file itself — rather than the table
+being converted from a recorded ``/scenario_execution/snapshots`` topic, which only works for ROS
+runs and would leave ``mode: base`` campaigns with no behaviour-tree data at all — both kinds of
+run produce the ``behaviors`` table by the same path, and the snapshots topic need not be in the
+bag. Its first seven columns are the ones ``nav2_behaviors`` (see above) shares, so the same panel
+renders both; to them it adds what the JSONL carries: ``child_index``, ``type``,
 ``additional_detail``, ``feedback_message``, ``is_active``, ``tip_id``, ``osc_file``,
 ``osc_line``, ``osc_column`` and ``removed``. The numeric ``status`` column is re-derived in the
 reader from the status name, because those 1–4 codes come from ``py_trees_ros_interfaces`` — plain
@@ -2284,10 +2281,10 @@ driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
 * the conversion scripts are delivered as a per-campaign **ConfigMap** built from the driver's own
   ``robovast.results_processing.data`` and mounted read-only at ``/scripts`` — the K8s analog of the
   local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
-  *driver* (not from a separately-versioned controller image, as an earlier design did) guarantees
-  the in-cluster scripts match the driver that generates the conversion command, so an
-  off-cluster/dev driver running ahead of a published image can no longer skew (the failure mode that
-  produced a spurious ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
+  *driver* rather than from a separately-versioned controller image guarantees the in-cluster
+  scripts match the driver that generates the conversion command, so an off-cluster/dev driver
+  running ahead of a published image cannot skew them (a skew surfaces as a spurious
+  ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
   ``robovast`` import) and small; nothing is ever baked into the user's image;
 * inputs (``/bags``, mirrored from the object store) and outputs (``/out``) are **separate dirs** —
   the run-Job pattern — enabled by ``rosbags_process.py --output-root``. Its default is the input

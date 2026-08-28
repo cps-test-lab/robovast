@@ -33,12 +33,12 @@ The fix is a **node label**, not a hostname threaded through the call graph:
 
 * It is what Kubernetes actually schedules on, so the record and the mechanism are one
   object and cannot disagree.
-* It is cluster-scoped, so it **survives ``cluster cleanup``** -- which is precisely the
-  moment the old placement used to be forgotten. A later ``setup`` with no flags at all
+* It is cluster-scoped, so it **survives ``cluster cleanup``** -- precisely the moment a
+  placement recorded anywhere else is forgotten. A later ``setup`` with no flags at all
   lands where the previous one did.
 * The manifests then carry a **constant** selector. A caller cannot forget to pass it,
-  which is what made ``upgrade`` silently unpin the service pod: it called the service
-  deploy without the node argument, and "not passed" meant "unpinned".
+  which is how ``upgrade`` silently unpins the service pod: it calls the service deploy
+  without the node argument, and "not passed" reads as "unpinned".
 * No hostname appears in any manifest, which the threaded form could not avoid.
 
 Stickiness beats cleverness. Free space decides only the **first** placement on a cluster;

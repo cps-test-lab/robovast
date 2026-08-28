@@ -441,10 +441,10 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
               (bin.other ? `, ${bin.other} without a verdict` : '')
             }
           >
-            {/* One bar per bin, one colour. The verdict split that used to be stacked in here is
-                gone: at 24 bins a campaign needs 100+ runs before a bin holds enough of both to
-                stack, and below that every bar came out solid -- so the colour was reporting a
-                single run's verdict in a chart whose whole job is to aggregate them. The counts
+            {/* One bar per bin, one colour, and no verdict split stacked in: at 24 bins a
+                campaign needs 100+ runs before a bin holds enough of both to stack, and below
+                that every bar comes out solid -- so the colour would report a single run's
+                verdict in a chart whose whole job is to aggregate them. The counts
                 are still in the hover, where they cost no width, and `Ended in` is where a
                 failure gets attributed. */}
             <Stack

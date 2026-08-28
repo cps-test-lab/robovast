@@ -35,10 +35,10 @@ def _make_workspace(transport) -> str:
 def test_campaign_results_go_to_the_shared_root_not_the_workspace(transport):
     """Results land in the shared root; the workspace only supplies the ``.vast``.
 
-    Resolving a workspace no longer *returns* a results dir at all — it answers with the
-    config path alone (``WorkspaceTarget``), and the root is asked for separately. So the
-    property this used to check at runtime is now structural, and what is left to assert is
-    that the two are genuinely different places.
+    Resolving a workspace does not *return* a results dir at all — it answers with the
+    config path alone (``WorkspaceTarget``), and the root is asked for separately. That
+    makes the property structural rather than a runtime check, and what is left to assert
+    is that the two are genuinely different places.
     """
     wid = _make_workspace(transport)
     target = transport._project_for_workspace(wid)
@@ -161,10 +161,10 @@ def _campaign_with_start(transport, cid: str, created_at: float) -> None:
 def test_listing_is_ordered_by_start_time_not_by_name(transport):
     """The newest campaign comes first even when the names invert the chronology.
 
-    The regression this guards: ordering used to sort the whole campaign id, whose
-    ``<name>-`` prefix is user-supplied — so the list came out alphabetical by name.
-    Because limit/offset slice that order, the newest campaign could fall outside the
-    requested page entirely, which no client-side sort can repair.
+    The regression this guards: ordering by the whole campaign id sorts on a
+    user-supplied ``<name>-`` prefix, so the list comes out alphabetical by name. Because
+    limit/offset slice that order, the newest campaign can fall outside the requested page
+    entirely, which no client-side sort can repair.
     """
     _campaign_with_start(transport, "zzz-2026-07-01-120000", 1_000.0)   # older
     _campaign_with_start(transport, "aaa-2026-07-26-120000", 2_000.0)   # newer

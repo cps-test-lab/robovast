@@ -119,7 +119,7 @@ def test_a_missing_table_names_the_postprocessing_step_that_makes_it(campaign):
 
 
 def test_an_unknown_campaign_is_an_error_result_not_an_exception(campaign):
-    """It used to raise, which reaches an MCP client as a broken server."""
+    """Raising here reaches an MCP client as a broken server."""
     result = nav.nav_get_trajectory("no-such-2026-01-01-000000", "cfg-a", 0)
     assert "error" in result
 

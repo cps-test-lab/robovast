@@ -151,8 +151,8 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
     question for the scenario container and is *right* to fall back to a mutable tag: it
     resolves an image to **run**. This one's answer keys a cache, so a tag would let the
     same key serve artifacts built from bytes that no longer exist -- and it is role-aware,
-    because "the campaign's image" stopped being a single fact once the simulator, the
-    system under test and the scenario got their own containers.
+    because "the campaign's image" is not a single fact: the simulator, the system under
+    test and the scenario each have their own container.
 
     Sources, in order of how well they describe what actually happened:
 
@@ -454,10 +454,10 @@ _INTERVENTIONS_FILENAME = "interventions.json"
 #: one away. All three mean the run is no longer untouched, which is why they share a file
 #: rather than a status.
 #:
-#: ``invalid`` is the one whose actor is not a person. The ledger began as "what a human did",
-#: and the runner joining them is the case the one-file-with-a-kind shape was built for: it
-#: needed no new file, no new reader and no new doc section. ``source`` names who acted --
-#: ``"webui"`` / ``"mcp"`` / ``"cli"`` for a person, ``"runner"`` for the campaign itself.
+#: ``invalid`` is the one whose actor is not a person, which is what the one-file-with-a-kind
+#: shape is for: a non-human actor needs no new file, no new reader and no new doc section.
+#: ``source`` names who acted -- ``"webui"`` / ``"mcp"`` / ``"cli"`` for a person, ``"runner"``
+#: for the campaign itself.
 KIND_KILLED = "killed"
 KIND_PROBED = "probed"
 KIND_INVALID = "invalid"

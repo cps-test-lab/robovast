@@ -95,10 +95,10 @@ def test_a_failed_campaign_that_also_uploads_still_skips_postprocessing(monkeypa
     """The verdict must not be read *after* a step that moves the phase.
 
     The share step publishes ``sharing`` for the length of the upload, so a failed
-    campaign launched with ``--upload-to-share`` stopped saying it had failed — and the
-    skip above no longer recognised it. Postprocessing then ran on a campaign root with
-    no ``_config/`` and buried the real reason (every job in the batch dropped) under
-    "no .vast", and the campaign ended announcing itself finished.
+    campaign launched with ``--upload-to-share`` stops saying it failed, and a skip read
+    after it does not recognise the failure. Postprocessing then runs on a campaign root
+    with no ``_config/`` and buries the real reason (every job in the batch dropped) under
+    "no .vast", and the campaign ends announcing itself finished.
     """
     calls = []
     monkeypatch.setattr(controller, "_chain_postprocessing",

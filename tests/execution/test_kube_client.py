@@ -29,8 +29,8 @@ def installed(monkeypatch):
 
 
 def test_api_calls_get_a_connect_timeout(installed):
-    """A connect to a cluster that is not there (stopped, VPN down) used to block for the
-    OS TCP timeout on every retry — minutes before the failure was even reported. The
+    """A connect to a cluster that is not there (stopped, VPN down) blocks for the OS TCP
+    timeout on every retry without this — minutes before the failure is even reported. The
     generated client passes timeout=None to urllib3, overriding any pool default, so the
     default has to be injected here."""
     request, seen = installed

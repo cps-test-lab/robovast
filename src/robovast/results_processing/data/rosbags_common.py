@@ -202,8 +202,8 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
 
     A directory matches when its name is *bag_dir_name*'s first segment exactly, or when it
     is that name plus ``ros2 bag record``'s default timestamp suffix (``rosbag2_2026_07_15-
-    10_30_00``) -- a bag recorded without an explicit ``-o`` was previously invisible here,
-    and the CLI reported "0 rosbags found" as a success.
+    10_30_00``) -- without the suffix rule a bag recorded with no explicit ``-o`` is
+    invisible here, and the CLI reports "0 rosbags found" as a success.
 
     Args:
         directory: Root directory to search under.

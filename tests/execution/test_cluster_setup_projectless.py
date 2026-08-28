@@ -126,9 +126,9 @@ def test_ambient_project_contributes_no_labels(tmp_path, monkeypatch, deploy_stu
 
 def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
                                                         deploy_stubs):
-    """The reported failure: a project naming a .vast that no longer exists.
+    """A project naming a .vast that does not exist must not fail the deploy.
 
-    Not consulted at all now, so a moved/renamed/deleted ``.vast`` cannot abort a
+    It is not consulted at all, so a moved/renamed/deleted ``.vast`` cannot abort a
     deploy that never mentioned it.
     """
     _write_project(tmp_path, "RoboVAST Examples/example.vast", write_config=False)

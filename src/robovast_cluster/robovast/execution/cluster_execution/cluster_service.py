@@ -317,7 +317,7 @@ class ClusterService(LocalTransport):
         Summing over one node set keeps ``used <= capacity``, which a cluster-wide
         pod sum does not: a pod still waiting for a node (or left behind by one that
         was removed) requests resources nothing has granted, so a queue of pending
-        scenario runs used to report more cores in use than the cluster has —
+        scenario runs would otherwise report more cores in use than the cluster has —
         "29.7/24" on a 24-core workstation. Pending work is visible as
         ``jobs_pending`` instead, counted from Jobs by :meth:`_scenario_job_tally`.
 
@@ -479,12 +479,12 @@ class ClusterService(LocalTransport):
     def _summary_read_reason(e) -> str:
         """Why a kubelet Summary read failed, in words that cross to a UI.
 
-        Only 403 is an RBAC verdict. This used to answer "the service needs `nodes/proxy`
-        get; run `vast service upgrade` to reconcile RBAC" for EVERY exception -- a
-        timeout, a TLS refusal, a summary missing a key -- with the real one going no
-        further than a logger.debug. Reconciling RBAC then returned the identical message,
-        which is the failure mode that makes a guess worse than no reason at all: a reader
-        cannot tell a fix that did not work from a diagnosis that was never right.
+        Only 403 is an RBAC verdict. Answering "the service needs `nodes/proxy` get; run
+        `vast service upgrade` to reconcile RBAC" for EVERY exception -- a timeout, a TLS
+        refusal, a summary missing a key -- leaves the real reason no further than a
+        logger.debug, and reconciling RBAC then returns the identical message. That is the
+        failure mode that makes a guess worse than no reason at all: a reader cannot tell a
+        fix that did not work from a diagnosis that was never right.
         """
         status = getattr(e, "status", None)
         if status == 403:
@@ -643,7 +643,7 @@ class ClusterService(LocalTransport):
         restart, every teardown kills the tunnel a sibling just opened (the thundering-herd
         mutual teardown the ``current``-coalescing in
         :meth:`_minio_port_forward_endpoint` exists to blunt). One prober cannot race
-        itself, so clients no longer need to force anything — they wait for
+        itself, so clients need not force anything — they wait for
         ``_pf_generation`` to move and re-resolve.
         """
         from robovast.common.shutdown import is_shutting_down
@@ -863,14 +863,12 @@ class ClusterService(LocalTransport):
 
     # -- status / listing ---------------------------------------------------
 
-    # ``_status_from_disk`` is inherited. It used to be overridden here to read the durable
-    # ``_execution/outcome.json`` out of the object store first, because the local dir it
-    # reconstructs from does not exist in-pod. ``_record_dir`` now puts that object where
-    # every reader already looks, so the inherited implementation — which prefers
-    # ``outcome.json`` and merges ``postprocessed`` from a present ``data.db`` — is the one
-    # precedence for both lanes. That override's own promise, that a per-campaign status can
-    # never disagree with the list view, only became true with it gone: ``_summary_for``
-    # reconstructs directly and never called it.
+    # ``_status_from_disk`` is inherited, not overridden here: ``_record_dir`` puts the
+    # durable ``_execution/outcome.json`` where every reader already looks, so the inherited
+    # implementation — which prefers ``outcome.json`` and merges ``postprocessed`` from a
+    # present ``data.db`` — is the one precedence for both lanes. An override reading the
+    # object store itself cannot keep a per-campaign status in step with the list view,
+    # because ``_summary_for`` reconstructs directly and never calls it.
 
     def _durable_campaign_ids(self) -> set[str]:
         """Campaign ids from the object store's index (see ``in_pod_storage``).
@@ -1287,8 +1285,8 @@ class ClusterService(LocalTransport):
                                           context_prefix, s3_init_env, stage_context_to_s3)
 
         # One resolution, from the store, so a submitted build and a later "is it there?"
-        # cannot disagree about what this image is called. They used to derive it
-        # separately, which is how a built image could be reported as unbuilt.
+        # cannot disagree about what this image is called. Deriving it separately is how a
+        # built image comes to be reported as unbuilt.
         found = self._images.ref_for(spec, project_dir)
         image_ref, image_hash, build_id = found.ref, found.image_hash, found.build_id
         symbolic = f"{BUILD_IMAGE_PREFIX}{spec.tag}"
@@ -1394,7 +1392,7 @@ class ClusterService(LocalTransport):
                                                 project_dir, dockerfile)
 
             # Scoped to this build's layer-chain shape, not just the container name:
-            # every project's `sut` used to share one tag and evict the others' layers.
+            # otherwise every project's `sut` shares one tag and evicts the others' layers.
             # `base_ref` is the resolution the hash was taken over, so the scope and the
             # build agree on what they are built on.
             cache_ref = cache_image_ref(registry.registry_prefix, spec.tag,
@@ -2025,22 +2023,22 @@ class ClusterService(LocalTransport):
     def _job_live_run(self, campaign_id: str, job_name: str, target, run_dir: str) -> tuple:
         """``(run_dir, run_key)`` for the run this Job is on. Always resolved, never delegated.
 
-        **Which run a job is on is RoboVAST's question, and it gets answered here.** It used to be
-        answered only for a Job that packs several runs; an unpacked one was handed ``/out`` and the
-        readers were left to find the run underneath it. Both of them can -- ``tree_state`` and
-        ``roqsim health`` each search a couple of levels down -- and that is exactly the problem:
+        **Which run a job is on is RoboVAST's question, and it gets answered here.** Answering it
+        only for a Job that packs several runs hands an unpacked one ``/out`` and leaves the readers
+        to find the run underneath it. Both of them can -- ``tree_state`` and ``roqsim health`` each
+        search a couple of levels down -- and that is exactly the problem:
 
         * it is two other components modelling *this* layout, and a layout guessed in two places is
           free to disagree with the one place that owns it;
         * "the newest one below here" is a heuristic answering a question they cannot see the answer
           to, while the service can;
         * and it **masks** a wrong directory instead of failing on it. Pointed at ``_jobs/batch-0``,
-          a reader searched around it and then reported that the scenario may have run without
-          ``--bt-log`` -- a confident wrong cause for a path bug, which cost several rounds to place.
+          a reader searches around it and then reports that the scenario may have run without
+          ``--bt-log`` -- a confident wrong cause for a path bug.
 
         So the exact run dir goes out, every time, and ``run`` names it in the reply. One ``find``
-        over the pod's own emptyDir per read, which is nothing beside the reads it precedes -- and
-        it replaces two heuristics with one resolution.
+        over the pod's own emptyDir per read, which is nothing beside the reads it precedes -- one
+        resolution in place of two heuristics.
 
         A discovery that finds nothing leaves ``/out`` in place: a job between starting and its
         first record is normal, and the readers' own "nothing here yet" is a better answer than a
@@ -2083,16 +2081,16 @@ class ClusterService(LocalTransport):
         simulator and the system under test are *native sidecars* -- ``initContainers`` with
         ``restartPolicy: Always`` -- so ``pod.spec.containers`` holds the scenario container and
         nothing else. Asking it directly made this the fourth place to get that wrong in the same
-        way (see that function's docstring for the other three): every role but ``scenario`` was
-        refused as "this job runs no such container" on a pod that was visibly running three, and
-        the refusal quoted a one-name list as its evidence.
+        way (see that function's docstring for the other three): every role but ``scenario`` is
+        refused as "this job runs no such container" on a pod that is visibly running three, and the
+        refusal quotes a one-name list as its evidence.
 
         **The pod decides, and the plan is only consulted for a role the pod does not name.** That
-        order is the whole point and it used to be the other way round: the plan was asked first,
-        so a campaign whose archived config could not be read -- or whose block simply named no
-        simulator -- resolved ``simulation`` to the scenario container and the read then entered a
-        container with no simulator in it. Confidently, and with no way for the caller to tell.
-        A pod that *has* a container called ``simulation`` is not a thing the config can outvote.
+        order is the whole point. Asking the plan first resolves ``simulation`` to the scenario
+        container for a campaign whose archived config cannot be read -- or whose block simply names
+        no simulator -- and the read then enters a container with no simulator in it. Confidently,
+        and with no way for the caller to tell. A pod that *has* a container called ``simulation``
+        is not a thing the config can outvote.
 
         The plan still answers the case the pod cannot: a simulator stepped in-process **is** the
         scenario container, so there is no container of that name to find and refusing the role
@@ -2483,15 +2481,15 @@ class ClusterService(LocalTransport):
     def _data_dir(self, campaign_id: str):
         """Refused on this lane: there is no cheap "the campaign's directory" here.
 
-        It used to answer ``fetch_campaign`` — the whole object-store prefix, rosbags
-        included. That made every *inherited* method touching it a whole-campaign
-        download, silently and at the worst possible moment: ``list_campaign_plots``
-        pulled the entire campaign to read one small ``.vast``, once per campaign, every
-        time the Results page loaded.
+        Answering it with ``fetch_campaign`` — the whole object-store prefix, rosbags
+        included — makes every *inherited* method touching it a whole-campaign download,
+        silently and at the worst possible moment: ``list_campaign_plots`` pulls the entire
+        campaign to read one small ``.vast``, once per campaign, every time the Results page
+        loads.
 
-        The failure mode is what makes this a refusal rather than a comment. Nothing
-        errored, no test failed, the page merely took minutes and the pod moved
-        gigabytes. So a caller must now say what it needs and pay only that:
+        The failure mode is what makes this a refusal rather than a comment. Nothing errors,
+        no test fails, the page merely takes minutes and the pod moves gigabytes. So a caller
+        says what it needs and pays only that:
 
         * :meth:`_query_dir` — the two databases a SQL query reads.
         * :meth:`_config_dir` — the frozen ``_config`` snapshot.
@@ -2823,14 +2821,10 @@ class ClusterService(LocalTransport):
         already cached the campaign image hides the omission (``imagePullPolicy: IfNotPresent``) -- which
         means it first fails on a fresh node, the worst place to discover it.
 
-        It then never returned one at all: the import named ``cluster_execution.cluster_execution``,
-        which does not define this constant, and the bare ``except`` swallowed the ImportError. So the
-        function this docstring describes was a no-op from the day it was written, and the failure mode
-        it exists to prevent was simply unprotected.
-
-        Two callers now -- the scene aux pod and the diagnostic exec pod, which runs the same private
-        images and had the same omission -- hence the name is no longer about scenes. The store answers
-        it, because which Secret pulls from this registry is the registry's business.
+        Two callers -- the scene aux pod and the diagnostic exec pod, which runs the same private
+        images -- hence the name is not about scenes. The store answers it, because which Secret pulls
+        from this registry is the registry's business. It answers directly rather than through an
+        import guarded by a bare ``except``, which turns a wrong module path into a silent no-op.
         """
         return self._images.pull_secret_name()
 
@@ -3194,10 +3188,10 @@ class ClusterService(LocalTransport):
         operation. The outcome (clear/set ``share_error``) is recorded and published;
         adjusting the share env and re-triggering re-uploads to the new provider.
 
-        **Nothing is staged on the way.** This used to ``fetch_campaign(force=True)``
-        first — materialising the entire campaign in this pod's scratch before a byte
-        reached the share, which on a campaign of any size is a second full copy the pod
-        has no room for and a long wait reported nowhere the campaign view looks. The
+        **Nothing is staged on the way.** A ``fetch_campaign(force=True)`` first would
+        materialise the entire campaign in this pod's scratch before a byte reached the
+        share, which on a campaign of any size is a second full copy the pod has no room
+        for and a long wait reported nowhere the campaign view looks. The
         objects are tarred straight out of the store into the request body instead, the
         same no-scratch path ``campaign_tar_stream`` already serves the download from.
         Only the three small objects that carry the campaign's *status* are pulled down,
@@ -3402,9 +3396,9 @@ class ClusterService(LocalTransport):
         """Publish a failed import's ``_execution/`` — the account, not the campaign.
 
         A failed import never reaches :meth:`_publish_imported_campaign`, so on this lane
-        its ``import.log`` and ``import.json`` used to stay on the pod's scratch while
-        ``list_files``/``read_file`` read the object store: the campaign card showed the
-        refusal and ``/results/<id>`` answered *no directory* for the one campaign whose
+        its ``import.log`` and ``import.json`` would stay on the pod's scratch while
+        ``list_files``/``read_file`` read the object store: the campaign card showing the
+        refusal, and ``/results/<id>`` answering *no directory* for the one campaign whose
         files anybody wanted to open -- the reason written down, and unreachable.
 
         Only ``_execution/`` goes up. The rest of the tree is whatever the archive held,

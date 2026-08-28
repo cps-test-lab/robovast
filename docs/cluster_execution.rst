@@ -210,16 +210,16 @@ A later ``setup`` reads it back and lands on the same node with no flags at all:
 
    robovast.io/data-node: node-a (existing label)
 
-That is the point of the label. Without one, a ``cleanup`` + ``setup`` left no trace of the
-previous placement, the scheduler was free to choose again, and on a heterogeneous cluster it
-did: the service came up on a different node with an **empty registry** -- the blobs still on
-the old node's disk, intact and unreachable -- while setup reported success. The **Disk**
-meter changed at the same moment, because it reports the filesystem of the node carrying the
-service pod (see :doc:`web_ui`), and that was a different machine.
+That is the point of the label. Without one, a ``cleanup`` + ``setup`` leaves no trace of the
+previous placement, the scheduler is free to choose again, and on a heterogeneous cluster it
+will: the service comes up on a different node with an **empty registry** -- the blobs still on
+the old node's disk, intact and unreachable -- while setup reports success. The **Disk**
+meter changes at the same moment, because it reports the filesystem of the node carrying the
+service pod (see :doc:`web_ui`), which is then a different machine.
 
 The pods carry the label as a **constant** ``nodeSelector``, never a hostname. That is what
-makes the pin impossible to lose: there is no node *value* for a caller to forget, which is
-how ``upgrade`` used to unpin the service pod.
+makes the pin impossible to lose: there is no node *value* for a caller to forget, and so
+none for an ``upgrade`` to drop.
 
 How the node is chosen
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -585,10 +585,10 @@ from — so a project whose container adds packages fails at submit naming that 
 Two different states produce it, with two different fixes, and the service cannot tell them
 apart: it reads the prefix out of its environment and has no RBAC to look at its own Ingress.
 
-* **Published, but the prefix is unset.** A ``setup`` re-run *without* ``--ingress-host``
-  used to drop it while leaving the Ingress alone, so nothing looked wrong until a campaign
-  was submitted. ``vast service upgrade`` re-bakes the prefix from the live Ingress.
-  (Setup no longer drops it; deployments set up before that fix still need the upgrade.)
+* **Published, but the prefix is unset.** ``vast service upgrade`` re-bakes the prefix
+  from the live Ingress. A deployment whose prefix was dropped by an older ``setup`` re-run
+  without ``--ingress-host`` — which left the Ingress alone, so nothing looked wrong until a
+  campaign was submitted — needs exactly that upgrade.
 * **Never published.** Re-run ``setup`` with ``--ingress-host``.
 
 ``vast doctor -n <namespace>`` says which of the two you are in.
@@ -635,14 +635,14 @@ Only two things remain configurable, both about *other people's* registries:
    ROBOVAST_BASE_EXPERIMENT_IMAGE=ghcr.io/cps-test-lab/sim-suite-nav2-eval:latest
 
 Removing one of those variables and re-running ``upgrade`` **deletes** the Secret it
-created. Rotation always worked; removal used to be ignored, leaving a revoked credential
-deployed and still attached as an ``imagePullSecret``.
+created, rather than leaving a revoked credential deployed and still attached as an
+``imagePullSecret``.
 
 The pull Secret that ``setup`` creates from those values is **found by the service
 itself** — it looks for the fixed name it would have created (``robovast-registry-push``)
 and uses it when present, so nothing has to tell it it exists. This matters for a
 **local** ``vast serve``: ``setup`` stores its env in the *service pod*, which an
-off-cluster service never reads, and the previous behaviour was to conclude there were no
+off-cluster service never reads, so without the lookup it would conclude there were no
 credentials at all. Set ``ROBOVAST_REGISTRY_PULL_SECRET`` only to point at a
 **differently named** object; it is an override, not a requirement.
 
@@ -790,7 +790,7 @@ Two registry-backed mechanisms remain, and now sit *above* the daemon's own stor
   ``<prefix>/<tag>:<hash>`` already has a manifest, and skips the build if so. This
   is deliberately not derived from the build Job's status: that Job is deleted after
   ``ttlSecondsAfterFinished`` (1 h) and the in-process record is lost on a service
-  restart, after which a bit-identical image used to be rebuilt and re-pushed. The
+  restart, after which a bit-identical image would otherwise be rebuilt and re-pushed. The
   probe **fails closed** — if the registry cannot be reached or authenticated, the
   image counts as absent and is rebuilt, because a wrong cache hit would leave the
   campaign pods in ``ImagePullBackOff``.
@@ -798,7 +798,7 @@ Two registry-backed mechanisms remain, and now sit *above* the daemon's own stor
   ``<prefix>/<tag>-<scope>:buildcache`` (``mode=max``, so intermediate layers are kept
   too). This tag is *not* hash-qualified — that is the point: the build for a new hash
   reuses the layers of the previous one, so changing one late ``python_packages``
-  group no longer rebuilds the ones before it. A failing cache **export** never fails
+  group does not rebuild the ones before it. A failing cache **export** never fails
   the build (the image is already pushed by then); a failing **import** just makes the
   build slower. Both refs inherit the deployment's ``INSECURE`` / CA settings, since
   they address the same registry as the push.
@@ -1144,15 +1144,14 @@ message as its detail. ``pending`` is the literal truth about such a job — its
 and has not started — and the reason it has not started is worth reading without being
 worth acting on.
 
-The listing used to report busy and blocked alike, as ``blocked``. That put a red row and
-a ``Blocked:`` count in front of anyone running two campaigns at once, for a job that
-starts by itself as soon as a neighbour finishes; ``blocked`` is defined just above as the
-state that will *not* clear, so the count that exists to say "someone must do something"
-was saying it about nothing. It is the same mistake the ``waiting`` phase was introduced
-to fix, and it has the same cost: a reader who learns to ignore the alarming word stops
-reading it when it is real. What stayed in the run loop is only how long to wait —
-``blocked`` fails the batch in a minute, busy gets fifteen — and the reason is repeated in
-its log each minute meanwhile.
+Reporting the two alike, as ``blocked``, would put a red row and a ``Blocked:`` count in
+front of anyone running two campaigns at once, for a job that starts by itself as soon as a
+neighbour finishes; ``blocked`` is defined just above as the state that will *not* clear, so
+the count that exists to say "someone must do something" would be saying it about nothing.
+It is the same mistake the ``waiting`` phase exists to avoid, and it has the same cost: a
+reader who learns to ignore the alarming word stops reading it when it is real. The run loop
+separates them only by how long to wait — ``blocked`` fails the batch in a minute, busy gets
+fifteen — and the reason is repeated in its log each minute meanwhile.
 
 A busy job is therefore invisible in the monitor's aggregate counts, which have no
 per-job detail: it is one of ``Pending``. The run loop's log is where a CLI reader learns

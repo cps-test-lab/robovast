@@ -141,9 +141,9 @@ def test_get_world_body_tree_runs_roqsim_scenes_describe_with_the_flag(service):
     assert "roqsim scenes describe" in request.command
     assert "/sources/ws-1/worlds/depot.yaml" in request.command
     assert "--body-tree gripper*" in request.command
-    # Only flags the CLI actually has. This used to assert `--json`, which `roqsim scenes describe`
-    # rejects -- argparse refuses the whole command over an unknown flag, so the tool failed
-    # against every real image while passing here against a stub.
+    # Only flags the CLI actually has. `--json`, which `roqsim scenes describe` rejects, would
+    # pass here against a stub while argparse refuses the whole command over the unknown flag
+    # against every real image.
     assert "--json" not in request.command
 
 

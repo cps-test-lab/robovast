@@ -214,7 +214,7 @@ class QDStrategy(SearchStrategy):
         draw asks for — and then no config is composed, nothing runs, and there is no
         evaluation. The batch loop records that unit and evaluates the rest, so ``tell``
         is handed fewer results than ``ask`` proposed. Every other strategy simply
-        ingests what it got; pyribs cannot, and that asymmetry used to be a crash:
+        ingests what it got; pyribs cannot, and without this that asymmetry is a crash:
         ``Scheduler.tell`` requires exactly one objective and one measure row per
         solution it emitted.
 

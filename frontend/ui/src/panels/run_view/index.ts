@@ -3,7 +3,7 @@
 import './CameraPanel'
 import './PlaybackPanel'
 import './RunLogPanel'
-// Note: the `costmap` panel is no longer built-in — it ships with the robovast_nav package as a
+// Note: the `costmap` panel is not built-in — it ships with the robovast_nav package as a
 // Module-Federation remote (src/robovast_nav/web) and is loaded at runtime by PanelHost.
 import './ScenarioTreePanel'
 import './ScenePanel'

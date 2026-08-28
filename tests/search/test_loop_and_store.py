@@ -749,9 +749,9 @@ def test_an_aborted_search_records_the_batches_it_completed(tmp_path):
 def test_budget_is_published_before_the_first_batch(tmp_path):
     """A search reports its budget from the start, not from the end of round one.
 
-    Every criterion used to be published only at the end of the loop, so a campaign spent
-    its whole first batch reporting no budget at all -- and a batch is many runs long. The
-    reader saw the runs bar alone, with nothing saying `0 / 50 batches`, during exactly the
+    Publishing every criterion only at the end of the loop leaves a campaign reporting no
+    budget at all for its whole first batch -- and a batch is many runs long. The reader
+    sees the runs bar alone, with nothing saying `0 / 50 batches`, during exactly the
     window in which the question is whether the search is going anywhere.
 
     Asserted by making the first batch *raise*, so the loop never completes a round: what
@@ -819,10 +819,10 @@ def test_an_extractor_s_diagnostics_do_not_cost_the_campaign_its_objective(tmp_p
     """End-to-end pin for the bug that emptied a search's objective everywhere at once.
 
     A nav search declares one objective and its extractor also reports two diagnostics.
-    Those extras used to travel into the store as objectives, so ``record_unit`` saw a
-    multi-objective dict, declined to lift the scalar, and wrote NULL into every
-    ``unit.objective`` -- which is the column ``run_view``/``runs`` expose and the one the
-    campaign card's chart trends. The campaign looked perfect and had no objective anywhere.
+    Letting those extras travel into the store as objectives shows ``record_unit`` a
+    multi-objective dict, so it declines to lift the scalar and writes NULL into every
+    ``unit.objective`` -- the column ``run_view``/``runs`` expose and the one the campaign
+    card's chart trends. The campaign looks perfect and has no objective anywhere.
 
     Chain under test: Evaluator narrows -> controller records -> store lifts the scalar ->
     read_batch_objectives finds a trajectory.

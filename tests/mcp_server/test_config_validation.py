@@ -262,9 +262,8 @@ def test_cpu_without_memory_is_advised(tmp_path):
     assert advisory["stage"] == "resources"
     assert "execution.containers.sut" in advisory["message"]
     assert "AVAILABLE_MEM" in advisory["message"]
-    # Not /dev/shm any more: the pool is sized by execution.shm_size, which now has a
-    # default, so it no longer follows the memory limits and this advisory no longer
-    # speaks for it.
+    # Not /dev/shm: the pool is sized by execution.shm_size, which has a default, so it
+    # does not follow the memory limits and this advisory does not speak for it.
     assert "shm" not in advisory["message"]
 
 

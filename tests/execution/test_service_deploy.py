@@ -276,8 +276,8 @@ def test_service_rbac_can_manage_jobs_pods_and_exec():
     ms = sd.service_manifests(namespace="default", image="x")
     role = next(m for m in ms if m["kind"] == "Role")
     resources = {r for rule in role["rules"] for r in rule["resources"]}
-    # The service drives campaigns in-process now (no controller pod), so it needs
-    # everything that pod's ServiceAccount used to hold: it creates/monitors the
+    # The service drives campaigns in-process (no controller pod), so it needs
+    # everything such a pod's ServiceAccount would hold: it creates/monitors the
     # scenario + postprocessing Jobs, their pods/logs, and the per-campaign aux pods
     # it execs into.
     assert {"jobs", "jobs/status"} <= resources
@@ -334,10 +334,10 @@ def test_creating_the_registry_secret_also_wires_it_into_the_deployment(monkeypa
 def test_service_rbac_can_write_the_postprocessing_configmap():
     """Postprocessing ships its scripts into the Job as a ConfigMap it creates.
 
-    The grant used to name secrets and configmaps in one read-only rule, which reads as
-    deliberate ("read-only, by name") and was right for the Secret. So every cluster
-    campaign RAN and then failed postprocessing with a 403 -- after the compute was
-    spent, which is the expensive place to discover a missing verb.
+    Naming secrets and configmaps in one read-only rule reads as deliberate ("read-only,
+    by name") and is right for the Secret only. Every cluster campaign would then RUN and
+    fail postprocessing with a 403 -- after the compute is spent, which is the expensive
+    place to discover a missing verb.
     """
     ms = sd.service_manifests(namespace="default", image="x")
     role = next(m for m in ms if m["kind"] == "Role")

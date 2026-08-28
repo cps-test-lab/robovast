@@ -128,11 +128,11 @@ def test_postprocess_campaign_forwards_the_context(monkeypatch):
 def test_run_share_streams_from_the_store_without_staging_the_campaign(svc, monkeypatch):
     """The export must not materialise the campaign in the pod first.
 
-    It used to open with ``fetch_campaign(force=True)``: the whole campaign came down
-    into this pod's scratch before a byte reached the share — a second full copy the pod
-    has no room for at campaign scale, and a wait reported nowhere the campaign view
-    looks. Only the few small objects carrying the campaign's *status* may be pulled,
-    because the outcome is edited and published back.
+    Opening with ``fetch_campaign(force=True)`` brings the whole campaign down into this
+    pod's scratch before a byte reaches the share — a second full copy the pod has no room
+    for at campaign scale, and a wait reported nowhere the campaign view looks. Only the
+    few small objects carrying the campaign's *status* may be pulled, because the outcome
+    is edited and published back.
     """
     seen = _capture(svc, monkeypatch)
     svc.run_share(RunShareRequest(campaign_id="camp-1"))

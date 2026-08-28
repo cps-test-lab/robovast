@@ -31,8 +31,8 @@ Notebooks are plain Jupyter ``.ipynb`` files referenced from the
                campaign: analysis/analysis_campaign.ipynb
 
 There are four reserved scopes, and a notebook declared under any other key is refused --
-the renderer keeps only the scopes it can address, so a misspelled one used to leave the
-notebook staged and never rendered, with no tab and nothing said:
+the renderer keeps only the scopes it can address, so a misspelled one would otherwise leave
+the notebook staged and never rendered, with no tab and nothing said:
 
 - **run** -- executed once per individual run directory
   (``<campaign-name>-<timestamp>/<config>/<run-number>/``).

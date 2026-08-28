@@ -268,8 +268,8 @@ def build_context_bucket(cluster_config) -> str:
     The deployment's shared bucket when it has one (external-S3 / GCS keep everything
     there under key prefixes). Otherwise a dedicated bucket of our own — an image build
     belongs to no campaign, so a per-campaign-bucket deployment has none to hand it.
-    That case used to be refused outright, demanding external-S3 mode, which was never a
-    real requirement: the embedded MinIO is an ordinary S3 endpoint, the Job takes
+    Refusing that case outright and demanding external-S3 mode is not a real requirement:
+    the embedded MinIO is an ordinary S3 endpoint, the Job takes
     bucket/prefix/endpoint/credentials as plain values, and the S3 client creates a
     missing bucket exactly as it does for a campaign's own bucket.
 
@@ -437,9 +437,9 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                         'configMap': {'name': ca_configmap_name}})
         build_mounts.append({'name': 'registry-ca', 'mountPath': _CA_MOUNT,
                              'readOnly': True})
-        # The per-registry ``ca`` that used to be written here has moved to the daemon's own
-        # buildkitd.toml, which is where it belongs: the daemon resolves, pulls and pushes, so
-        # it is the side making the TLS connection to the registry API.
+        # The per-registry ``ca`` lives in the daemon's own buildkitd.toml rather than here,
+        # which is where it belongs: the daemon resolves, pulls and pushes, so it is the side
+        # making the TLS connection to the registry API.
         #
         # SSL_CERT_FILE stays HERE as well, and the duplication is deliberate. It covers Go's
         # *system* pool, which is what fetches the OAuth token from the realm named in
@@ -476,9 +476,9 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
             # takes many minutes.
             'activeDeadlineSeconds': 3600,
             'template': {
-                # No AppArmor/seccomp exemption here any more: those existed for
-                # rootlesskit's mount namespace, and this pod no longer creates one.
-                # They moved to the daemon, which does.
+                # No AppArmor/seccomp exemption here: those are for rootlesskit's mount
+                # namespace, which this pod does not create. They sit on the daemon, which
+                # does.
                 'metadata': {
                     'labels': {'jobgroup': 'image-builds', 'build-id': build_id},
                 },

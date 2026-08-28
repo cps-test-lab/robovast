@@ -357,11 +357,11 @@ def test_an_unreachable_service_says_nothing_about_the_revision():
 
 
 def test_a_refused_handshake_says_which_credential_fixes_it():
-    """Answered-and-refused is a DIFFERENT fault, and it used to vanish.
+    """Answered-and-refused is a DIFFERENT fault, and it must not vanish.
 
     A service whose token does not match this deployment answers 401. That is not "no
-    revision question exists", it is "your credentials cannot ask it" -- and while this row
-    stayed silent for it, the reader saw nothing to report at all.
+    revision question exists", it is "your credentials cannot ask it" -- and a row that
+    stays silent for it leaves the reader nothing to report at all.
     """
     checks = _revision_checks(raises=_Refused(401, "token does not match"))
 

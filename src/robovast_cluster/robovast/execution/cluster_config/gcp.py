@@ -152,9 +152,9 @@ def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-
 GCS_S3_ENDPOINT = "https://storage.googleapis.com"
 
 # No Kubernetes helper pod is deployed on GCP. Campaign data lives directly in
-# the user's GCS bucket; the controller pod compresses and uploads it in-process
-# (see :mod:`..cluster_execution.in_pod_upload`), so the former archiver sidecar
-# pod (and its ephemeral PVC / StorageClass) is no longer needed.
+# the user's GCS bucket and is compressed and uploaded in-process
+# (see :mod:`..cluster_execution.in_pod_upload`), so no archiver sidecar pod --
+# and no ephemeral PVC / StorageClass for it -- is needed.
 
 
 class GcpClusterConfig(BaseConfig):

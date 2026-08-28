@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Characterization tests for BatchJobRunner's job-manifest construction.
 
-This is the previously-untested critical path (create_job_manifest /
-_build_job_manifest / get_job_manifest). These tests pin the manifest shape a
-scenario Job is submitted with — the container env, volumes, init container, the
-per-job S3 wiring and deadline — so the manifest builder can be refactored/split
-behind a safety net instead of blind.
+The critical path is create_job_manifest / _build_job_manifest /
+get_job_manifest. These tests pin the manifest shape a scenario Job is submitted
+with — the container env, volumes, init container, the per-job S3 wiring and
+deadline — so the manifest builder can be refactored/split behind a safety net
+instead of blind.
 """
 
 
@@ -148,8 +148,8 @@ def test_bt_log_is_always_on_and_always_stated(monkeypatch):
     """Stated rather than omitted: the pod spec says what the run did, instead of deferring
     to a container default that may differ between image versions.
 
-    There is no longer a way to turn it off -- a run whose tree state was not recorded
-    cannot be explained afterwards, and the file is small beside the rosbag.
+    There is no way to turn it off -- a run whose tree state was not recorded cannot be
+    explained afterwards, and the file is small beside the rosbag.
     """
     r = _runner(monkeypatch)
     job = r._build_jobs()[0]
@@ -175,7 +175,7 @@ def _sidecar(manifest, name):
 
 
 def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
-    """A sidecar no longer inherits the main container's image: it states one, which is
+    """A sidecar does not inherit the main container's image: it states one, which is
     what lets the system under test be a vanilla vendor image."""
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
@@ -323,7 +323,7 @@ def test_a_declared_gpu_lands_on_the_simulation_sidecar(monkeypatch):
     m = _job_manifest(r)
     sim = _sidecar(m, "simulation")
     assert sim["resources"]["limits"]["nvidia.com/gpu"] == "1"
-    # Both, because Kueue reads the pod TEMPLATE -- no pod exists yet for Kubernetes to
+    # Both, because admission reads the pod TEMPLATE -- no pod exists yet for Kubernetes to
     # default one from the other, so an empty request is accounted as zero GPUs.
     assert sim["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert _env_dict(sim)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
@@ -450,8 +450,8 @@ def test_a_non_simulator_container_gets_a_gpu_when_it_asks_for_one(monkeypatch):
     assert sut["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert _env_dict(sut)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
     # And the simulator gets none, so the pod asks for exactly the one device that was asked
-    # for. It used to auto-claim a second, which halved how many such jobs a replica count
-    # admitted for a renderer nobody had asked to render.
+    # for. Auto-claiming a second halves how many such jobs a replica count admits, for a
+    # renderer nobody asked to render.
     assert "nvidia.com/gpu" not in _sidecar(m, "simulation")["resources"].get("limits", {})
     assert m["spec"]["template"]["spec"]["runtimeClassName"] == "nvidia"
 
@@ -495,7 +495,7 @@ def _dshm(manifest):
 def test_dev_shm_is_unbounded_when_the_execution_block_names_no_size(monkeypatch):
     """The lane stays honest about an absent key rather than inventing a size of its own.
 
-    A *composed* campaign no longer reaches this state -- composition settles `shm_size`
+    A *composed* campaign does not reach this state -- composition settles `shm_size`
     for every campaign, declared or not (see
     tests/execution/test_shm_size_reaches_both_lanes.py). This pins the lane's own
     behaviour, which is what keeps the default in one place instead of two.

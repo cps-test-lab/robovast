@@ -164,9 +164,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // Whether this campaign was ALREADY over when the card first rendered — not whether it is
   // over now, which is a different question with a different answer.
   //
-  // A campaign at rest has no live jobs to list, and every card used to issue this request
-  // anyway: the query had no `enabled` gate, so a page of a hundred finished campaigns fired a
-  // hundred `listJobs` calls before the first status reply could turn polling off. On the
+  // A campaign at rest has no live jobs to list, so the query carries an `enabled` gate: without
+  // one every card issues the request anyway, and a page of a hundred finished campaigns fires a
+  // hundred `listJobs` calls before the first status reply can turn polling off. On the
   // cluster lane each of those is a Kubernetes API call, and they all leave at once — the page
   // is served over HTTP/2, so nothing throttles the burst the way a connection limit would.
   // Nothing is lost by skipping them: this view is `liveOnly`, so it already hides the
@@ -352,8 +352,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // Every lane serves the archive now: the cluster streams it from the object store, and a
   // local service tars its own results directory (`campaign_tar_stream` is on the interface,
   // implemented by both). So the only thing gating the download is whether the campaign is
-  // still being written to — it used to be gated on the backend as well, because a local
-  // service answered this route with a 409.
+  // still being written to, not which backend it ran on.
   const canDownload = !running
 
   // One listing for the whole page: every card asks under the same react-query key, so

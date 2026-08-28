@@ -179,8 +179,8 @@ def test_preflight_tool_explains_a_missing_service(monkeypatch):
 def test_announced_once_not_once_per_layer(monkeypatch, caplog):
     """The tool announces and the chokepoint reports; only one of them may probe.
 
-    Both used to, which logged the warning twice and made the post-call status read look
-    like the pre-call one — so the measured cost was reported as no cost at all.
+    Probing in both logs the warning twice and makes the post-call status read look like
+    the pre-call one — so the measured cost is reported as no cost at all.
     """
     client = _use(monkeypatch, _Client(_COLD))
     probes = {"n": 0}

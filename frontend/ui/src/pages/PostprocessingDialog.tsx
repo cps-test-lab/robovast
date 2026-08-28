@@ -15,7 +15,7 @@ import { robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
 
 // The 'Retrigger postprocessing' modal. A campaign is self-contained — it carries the `.vast`
-// that ran — so the only way to compute different metrics used to be hand-editing that file.
+// that ran — so computing different metrics would otherwise mean hand-editing that file.
 // Here the user adapts the `results_processing.postprocessing` block in Monaco (same editor as
 // the run-view 'edit visualization' dropdown) and reruns. If the text changed, it is first saved
 // as a new `.vast` override revision (validated server-side; the immutable `_config/` snapshot is

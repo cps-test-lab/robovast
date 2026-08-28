@@ -158,8 +158,8 @@ def test_contact_with_a_positive_sampled_clearance_still_fails(tmp_path):
 
 
 def test_contact_does_not_flatten_runs_onto_one_value(tmp_path):
-    """26 colliding cells previously shared exactly -1.0 while their clearances differed
-    by 16%. Correcting the input instead of the score keeps them apart."""
+    """Scored on the outcome alone, 26 colliding cells share exactly -1.0 while their
+    clearances differ by 16%. Correcting the input instead of the score keeps them apart."""
     shallow = _score(tmp_path, "shallow", clearance=-0.01, duration=30.0, to_goal=0.0,
                      collided=True)
     deep = _score(tmp_path, "deepc", clearance=-0.09, duration=30.0, to_goal=0.0,

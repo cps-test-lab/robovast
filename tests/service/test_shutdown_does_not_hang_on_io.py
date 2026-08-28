@@ -11,7 +11,7 @@ ASGI application" traceback. Meanwhile the abandoned read hit the just-closed
 port-forward, its retry loop re-opened the tunnel, and the ``kubectl`` child outlived
 the service.
 
-So: a stuck pull no longer holds the stream open, and nothing re-opens a port-forward
+So: a stuck pull does not hold the stream open, and nothing re-opens a port-forward
 once shutdown has been announced.
 """
 
@@ -51,7 +51,7 @@ def test_sse_stream_closes_on_shutdown_while_a_pull_is_stuck(tmp_path):
         # test double
         def list_campaigns(self, request):  # pylint: disable=signature-differs
             entered.set()
-            release.wait(_STUCK_S)  # the pull that used to hold shutdown hostage
+            release.wait(_STUCK_S)  # a pull that would hold shutdown hostage
             return super().list_campaigns(request)
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))

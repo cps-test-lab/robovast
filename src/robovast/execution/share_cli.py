@@ -18,10 +18,9 @@
 """``vast share`` -- the external share, as its own command group.
 
 The share is a separate system: its own storage, its own credentials, its own
-lifetime. It used to be four verbs scattered through ``vast results``, where
-``download`` meant either "ask the service" or "ask the share" depending on what
-happened to be reachable -- and preferred the share even when a service was there.
-Here the two are apart, and each verb names one transfer:
+lifetime. Scattered through ``vast results`` instead, ``download`` would mean either
+"ask the service" or "ask the share" depending on what happened to be reachable. Here
+the two are apart, and each verb names one transfer:
 
 ======================  =========================  ==========
 verb                    moves                      who acts

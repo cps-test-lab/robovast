@@ -64,11 +64,11 @@ class Phase(StrEnum):
     # ``initializing`` is the phase a campaign has from the instant the service
     # accepts it: registered, listed, and addressable by id, with none of the slow
     # lane pre-flight done yet (project push, registry/base-image resolution, the
-    # object-store tunnel). It exists because that work used to happen *before* the
-    # campaign was registered, so a caller whose start call timed out could poll
-    # every read path and be told, truthfully and misleadingly, that no such
-    # campaign existed -- which is exactly the state that invites a retry and a
-    # duplicate campaign. Nothing may be slow ahead of this phase.
+    # object-store tunnel). It exists because doing that work *before* registering the
+    # campaign lets a caller whose start call timed out poll every read path and be
+    # told, truthfully and misleadingly, that no such campaign exists -- which is
+    # exactly the state that invites a retry and a duplicate campaign. Nothing may be
+    # slow ahead of this phase.
     INITIALIZING = "initializing"
     BUILDING = "building"
     STARTING = "starting"
@@ -94,8 +94,8 @@ class Phase(StrEnum):
 
 
 #: Phases meaning the campaign is over (no more work will happen). Single source
-#: of truth for the terminal test that was previously re-inlined — with divergent
-#: membership — across the CLI, the service, and the MCP plugins.
+#: of truth for the terminal test, so the CLI, the service and the MCP plugins cannot
+#: re-inline it with divergent membership.
 TERMINAL_PHASES: frozenset[str] = frozenset({
     Phase.FINISHED, Phase.FAILED, Phase.STOPPED, Phase.CRASHED, Phase.UNKNOWN,
 })
@@ -343,9 +343,9 @@ STALL_NEXT_STEP = ("ask what the job is doing with get_job_state, then what it i
 
 
 #: What a caller should do once a run's own simulator has reported something wrong. A DIFFERENT
-#: step from :data:`STALL_NEXT_STEP`, and this used to reuse it, which sent a reader to go and ask
-#: what the job was doing -- the question the finding had already answered. A finding names the job
-#: and names the check, so the useful next move starts from those two facts.
+#: step from :data:`STALL_NEXT_STEP`: reusing that one sends a reader to go and ask what the job
+#: was doing -- the question the finding has already answered. A finding names the job and names
+#: the check, so the useful next move starts from those two facts.
 HEALTH_NEXT_STEP = ("read that job with get_job_state -- the finding says a check failed, the tree "
                     "says which action was running while it did and the simulator's own state "
                     "carries the clock and the poses; look the check's slug up in the simulator's "

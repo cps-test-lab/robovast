@@ -311,9 +311,9 @@ def _point_to_segment_distance(
 def _reporting(fn):
     """Turn a :class:`NavDataError` into the ``{"error": …}`` every other MCP tool returns.
 
-    The nav tools used to let a ``ValueError`` escape, which reaches an MCP client as a
-    protocol error rather than as an answer — so "this campaign is on the cluster, not
-    here" was indistinguishable from the server being broken.
+    A ``ValueError`` left to escape reaches an MCP client as a protocol error rather than
+    as an answer — so "this campaign is on the cluster, not here" would be indistinguishable
+    from the server being broken.
     """
     import functools  # pylint: disable=import-outside-toplevel
 
@@ -740,8 +740,8 @@ def draw_map(
         MapVisualizer  # pylint: disable=import-outside-toplevel
 
     # Straight from the configuration's own resolved scenario parameters, rather than the
-    # campaign metadata.yaml this used to read: that file is written by postprocessing, so
-    # drawing the map of a campaign that had merely run used to fail.
+    # campaign metadata.yaml: that file is written by postprocessing, so reading it would
+    # fail to draw the map of a campaign that has merely run.
     prefix, yaml_name = _map_dir_and_yaml(campaign_id, config_name)
     map_config = _read_yaml(campaign_id, *prefix, yaml_name)
     image_name = map_config.get("image")

@@ -168,7 +168,7 @@ def test_iter_files_skips_broken_symlink(tmp_path):
 
     finalize_campaign's upload_dir walks the campaign root; an interrupted campaign
     leaves ``<config>/<run>/job`` pointing at an ``_jobs/...`` target that was never
-    produced. os.stat on that link used to abort the whole upload.
+    produced. An unguarded os.stat on that link aborts the whole upload.
     """
     (tmp_path / "test.xml").write_text("<ok/>")
     run = tmp_path / "cfg" / "0"

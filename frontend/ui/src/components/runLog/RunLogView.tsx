@@ -427,8 +427,8 @@ export function RunLogView({
   const hidden = scoped.length - shown.length
   const shutdownHidden = rows.length - scoped.length
 
-  // What the footer used to say, now only when there is something to say: the log gets the whole
-  // panel, and a line count that is simply the number of lines was noise on every single view.
+  // The footer speaks only when there is something to say: the log gets the whole panel, and a
+  // line count that is simply the number of lines is noise on every single view.
   // These are not noise -- each one changes how the log should be read.
   const notes: string[] = []
   if (data?.clock && data.clock.source === 'none')

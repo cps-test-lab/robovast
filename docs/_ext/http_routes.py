@@ -54,7 +54,7 @@ class HTTPRoutesDirective(Directive):
 
         if undescribed:
             # Loud, not a blank row: a route table with empty cells is how a stale
-            # hand-maintained list used to look complete.
+            # hand-maintained list looks complete.
             raise self.error(
                 "http-routes: no description for " + ", ".join(sorted(undescribed))
                 + " — give the handler a docstring, a summary=, or a matching "

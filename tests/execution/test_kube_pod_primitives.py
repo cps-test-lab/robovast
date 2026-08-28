@@ -49,7 +49,7 @@ def _container(reason=None, message=""):
 def test_a_pending_pod_names_the_reason_it_is_stuck():
     """The phase alone is just "Pending", which explains nothing.
 
-    A bad image reference used to surface on the aux pod as five minutes of silence
+    Without it a bad image reference surfaces on the aux pod as five minutes of silence
     followed by "was not Running within 300s".
     """
     pod = _Pod("Pending", main=[_container("ImagePullBackOff", "manifest unknown")])

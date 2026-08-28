@@ -268,7 +268,7 @@ def test_pod_termination_reason_reports_oom_and_eviction():
 
 def test_list_jobs_with_phase_explains_oom_killed_failure():
     """A failed job whose pod was OOM-killed carries the reason as its detail, so the
-    truncated scenario log is no longer a dead end."""
+    truncated scenario log is not a dead end."""
     jobs = [_job("oom-job", failed=1)]
     batch = _Batch(jobs)
     core = _Core([_pod("oom-job", terminated=("robovast", "OOMKilled"))])
@@ -431,8 +431,8 @@ def test_a_restart_the_kubelet_has_not_explained_is_treated_as_a_crash():
 
 
 def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
-    """The case worth catching: a job on its way to a plausible result its simulator can
-    no longer justify."""
+    """The case worth catching: a job on its way to a plausible result its simulator
+    cannot justify."""
     batch = _Batch([_job("j", active=1)])
     core = _Core([_pod("j", restarts=("simulation", 2, "OOMKilled", 137))])
     result = {jb.metadata.name: (p, d)

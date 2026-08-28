@@ -150,9 +150,9 @@ def remove_campaign_log_handler(handler: logging.Handler | None) -> None:
 def setup_default_logging() -> None:
     """Set the default log level for a command that did not pass ``--log-level``.
 
-    INFO, always. This used to read a level out of a ``.robovast_project`` found by
-    walking up to the filesystem root, so a file in some ancestor directory decided how
-    verbose an unrelated command was -- and silently, since nothing said where the level
-    came from. ``--log-level`` is the one way to change it.
+    INFO, always. Reading a level out of a ``.robovast_project`` found by walking up to
+    the filesystem root lets a file in some ancestor directory decide how verbose an
+    unrelated command is -- and silently, since nothing says where the level came from.
+    ``--log-level`` is the one way to change it.
     """
     setup_logging("INFO")

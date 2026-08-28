@@ -62,8 +62,8 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     model_config = ConfigDict(extra='forbid')
 
     #: Two further outputs, so the same binding form covers them: where the obstacle sits and
-    #: how far along the path the trial should act on it. They used to be config keys whose
-    #: *values* were parameter names, which is a slot binding without saying so.
+    #: how far along the path the trial should act on it. As config keys whose *values*
+    #: were parameter names they would be slot bindings without saying so.
     SLOTS = ("objects", "trigger_point", "trigger_threshold")
 
     trigger_distance: Union[float, List[float]]
@@ -174,11 +174,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
                         )
                         # Propagate spawn trigger point to a private key for GUI access.
                         # Read back from the destination the campaign BOUND the slot to, the
-                        # same way ObstacleVariation resolves `objects`. It used to be
-                        # `self.parameters.spawn_trigger_point` -- a config key whose value was
-                        # a parameter name, which is what output slots replaced, so the
-                        # attribute no longer exists and every campaign using this variation
-                        # failed at generation.
+                        # same way ObstacleVariation resolves `objects`. Not
+                        # `self.parameters.spawn_trigger_point`: that is a config key whose
+                        # value is a parameter name, which is what output slots express, and
+                        # no such attribute exists.
                         trigger_point_name = self.parameters.binding('trigger_point')[1]
                         for r in result:
                             tp = r['config'].get(trigger_point_name)

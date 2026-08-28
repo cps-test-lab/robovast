@@ -25,8 +25,8 @@ _PLUGINS_DIR = pathlib.Path(__file__).resolve().parents[2] / \
 _DOCS_DIR = pathlib.Path(__file__).resolve().parents[2] / "docs"
 _SKILLS_DIR = pathlib.Path(__file__).resolve().parents[2] / "skills"
 
-# Phantom tool names that previously leaked into docstrings/prompts/docs. They
-# name tools that never existed (or were renamed away); guard against their return.
+# Phantom tool names that must not appear in docstrings/prompts/docs. They name tools
+# that do not exist; an LLM reading one will try to call it.
 _FORBIDDEN_NAMES = [
     "list_run_data_tables", "query_run_data_table", "query_run_data_tables",
     "inspect_run_data_table", "query_run_log",
@@ -53,8 +53,8 @@ _FORBIDDEN_NAMES = [
     # Their questions are now one WHERE clause on ``run_view`` (or, for the campaign's
     # configurations, a directory listing — SQL knows only configs that produced runs).
     # Listed here because a retired tool name left in a docstring or a doc page is one an
-    # LLM will try to call: the replacements are described by what they answer, never by
-    # the name of the tool that used to answer it.
+    # LLM will try to call: a replacement is described by what it answers, never by the
+    # name of a tool that does not exist.
     "get_configuration_summary", "get_configuration_scenario_parameter",
     "get_configuration_variations", "get_run_details", "get_run_sysinfo",
     "list_campaign_configurations", "get_campaign_execution_details",
@@ -135,11 +135,11 @@ _INVOCATION = re.compile(r"\bvast((?:\s+[a-z][a-z0-9-]*)+)")
 def _registered_plugin_modules():
     """Every module a ``robovast.mcp_plugins`` entry point resolves to.
 
-    The guards below used to scan ``mcp_server/plugins/`` only, which is one
-    distribution's worth of plugins. The ``nav`` plugin ships from ``robovast_nav`` and
-    was therefore unguarded — it accumulated a tool function dropped from ``_TOOLS`` but
-    left in the file, and four error messages naming a ``vast`` command that does not
-    exist. Resolving the modules from the registry covers whatever is installed.
+    Scanning ``mcp_server/plugins/`` covers one distribution's worth of plugins.
+    The ``nav`` plugin ships from ``robovast_nav``, so it would go unguarded — free to
+    accumulate a tool function dropped from ``_TOOLS`` but left in the file, or an error
+    message naming a ``vast`` command that does not exist. Resolving the modules from the
+    registry covers whatever is installed.
     """
     mods = {}
     for ep in entry_points(group="robovast.mcp_plugins"):
@@ -378,9 +378,9 @@ def test_prompt_references_only_real_tools(source):
 def test_the_server_says_it_runs_experiments_before_any_tool_is_read():
     """The instructions are the only text read before a tool is chosen.
 
-    They used to say the server "provides access to the results created by RoboVAST" —
-    true, and the reason agents ran experiments by hand on the host and came here only to
-    read files. An archive is not offered as a place to run anything.
+    Saying the server "provides access to the results created by RoboVAST" is true, and
+    the reason an agent runs experiments by hand on the host and comes here only to read
+    files. An archive is not offered as a place to run anything.
     """
     instructions = (create_server().instructions or "").lower()
     assert "run" in instructions and "not on this host" in instructions
@@ -505,8 +505,8 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: merged ``run_log`` table across runs and campaigns. Paid for first, in this order: the
 #: tool's own text went from ~885 to ~475 tokens (four parameters dropped outright, since
 #: ``query_campaign_data_sql`` reaches the same columns for the rare question that needs
-#: them), and the fat this note used to point at, ``start_campaign.show_gui``, was
-#: compressed from ~199 tokens to ~90. Net cost of the new capability: ~230.
+#: them), and ``start_campaign.show_gui`` was compressed from ~199 tokens to ~90. Net cost
+#: of the new capability: ~230.
 #:
 #: Raised 11_600 → 12_600 to absorb accumulated drift: the surface had already reached ~12_113
 #: across 52 tools, so the ceiling was being enforced retroactively rather than deciding anything.

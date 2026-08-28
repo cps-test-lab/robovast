@@ -324,8 +324,8 @@ def _campaign_next_step(result: dict) -> str:
     """What to do about the campaign state just reported, or "" when nothing is obvious.
 
     The same reason :func:`_status_next_step` exists for builds: a caller reads this to
-    decide, and the decision was previously something to *remember* -- which is the defect
-    :data:`~robovast.client.status.STALL_NEXT_STEP` was written against. Empty when the
+    decide, and leaving that decision to be *remembered* is the defect
+    :data:`~robovast.client.status.STALL_NEXT_STEP` is written against. Empty when the
     campaign is simply progressing, per AGENTS.md: a hint on every reply is a field callers
     learn to skip.
 
@@ -540,10 +540,10 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
     which is the same contract ``view_log`` keeps for the lines it filters.
 
     ``phase=""`` reads **every** phase, ``"all"`` is its explicit synonym, and a phase
-    name includes only that one. ``BUILD`` used to be held back from a default read as
-    an aside — shared, content-addressed work rather than this campaign's narrative —
-    but a campaign still waiting for its image has no other section, so that default
-    answered "what is this campaign doing?" with nothing at all. Narrowing is the
+    name includes only that one. ``BUILD`` is included, not held back as an aside —
+    shared, content-addressed work rather than this campaign's narrative — because a
+    campaign still waiting for its image has no other section, and holding it back
+    answers "what is this campaign doing?" with nothing at all. Narrowing is the
     caller's move (``phase="run"``), made with the same controls every other log tool
     has, rather than a default that decides for them.
 

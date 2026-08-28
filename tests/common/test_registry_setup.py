@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Registry config wiring in `vast cluster setup` (service_deploy).
 
-Two registries meet in this config and used to be one, which is what these tests pin
-apart:
+Two registries meet in this config and are easily conflated, which is what these tests
+pin apart:
 
 * the **build target** is the registry running in the service pod, so its prefix is
   *derived* from the service's own Ingress host and cannot be configured to somewhere the

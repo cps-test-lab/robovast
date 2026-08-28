@@ -18,12 +18,11 @@
 
 Polling the service's ``get_status`` until :func:`~robovast.client.status.is_terminal`
 is not lane-specific: the service drives every campaign, so its phase *is* the
-campaign's, whether the runs execute in local Docker or as Kubernetes Jobs. This lived
-in ``execution_utils/cluster_run`` under a cluster-flavoured name, which is why the MCP
-was about to grow a fourth hand-rolled poll loop beside the CLI's monitor and this one.
-:data:`~robovast.client.status.TERMINAL_PHASES` records what that costs: the terminal
-test itself was previously re-inlined, with divergent membership, across the CLI, the
-service and the MCP plugins.
+campaign's, whether the runs execute in local Docker or as Kubernetes Jobs. Under a
+cluster-flavoured name it is not found, and every other surface grows its own hand-rolled
+poll loop beside it. :data:`~robovast.client.status.TERMINAL_PHASES` records what that
+costs: a re-inlined terminal test, with divergent membership, across the CLI, the service
+and the MCP plugins.
 
 Two properties every caller depends on and none should re-implement:
 

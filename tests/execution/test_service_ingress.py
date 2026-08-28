@@ -150,9 +150,9 @@ def test_an_ingress_is_applied_not_just_built(monkeypatch):
 def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
     """A pure argument error must not cost a half-set-up cluster.
 
-    The check used to live only inside the manifest builder, which runs after the device
-    plugin is installed and the storage deployed — so `--ingress-host` without TLS
-    modified the cluster and *then* refused.
+    Inside the manifest builder alone the check runs after the device plugin is installed
+    and the storage deployed — so `--ingress-host` without TLS modifies the cluster and
+    *then* refuses.
     """
     from unittest import mock
 

@@ -40,16 +40,16 @@ def _controller_cluster_role_name(namespace):
 def _controller_rbac_manifests(namespace):
     """Cluster-scoped node access for the **robovast-service**.
 
-    Campaigns are driven in-process by the service now, so the namespaced
-    permissions that used to live here (jobs, pods, pods/exec) moved onto the
-    service's own Role in :mod:`.service_deploy` together with its ServiceAccount.
-    What remains is the read-only **ClusterRole** for node metadata (count/labels/
-    CPU-manager policy) that enriches ``execution.yaml``: nodes are cluster-scoped,
-    so they cannot live in that namespaced Role — and it is now bound to the
-    service's ServiceAccount, which is what does the reading.
+    Campaigns are driven in-process by the service, so the namespaced permissions
+    (jobs, pods, pods/exec) live on the service's own Role in :mod:`.service_deploy`
+    together with its ServiceAccount. What is here is the read-only **ClusterRole**
+    for node metadata (count/labels/CPU-manager policy) that enriches
+    ``execution.yaml``: nodes are cluster-scoped, so they cannot live in that
+    namespaced Role — and it is bound to the service's ServiceAccount, which is what
+    does the reading.
 
-    The legacy ``robovast-controller`` ServiceAccount/Role are no longer created;
-    :func:`delete_controller_rbac` removes them from clusters set up earlier.
+    No ``robovast-controller`` ServiceAccount/Role is created;
+    :func:`delete_controller_rbac` removes one from a cluster that still has it.
     """
     from .service_deploy import SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
     cluster_role_name = _controller_cluster_role_name(namespace)
@@ -272,7 +272,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
     there — and calls :meth:`~BaseConfig.restore_from_setup_kwargs` so that
     credential-dependent methods such as :meth:`~BaseConfig.get_s3_credentials`
     work without the user re-passing ``-o`` flags, and **from any host** (no local
-    flag file). Bucket cleanup no longer uses this — it runs server-side.
+    flag file). Bucket cleanup does not use this — it runs server-side.
 
     Args:
         context_key (str | None): Kubernetes context; ``None`` uses the active one.
@@ -385,8 +385,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
         )
 
     # Before anything is installed or deployed. A refused Ingress combination is a pure
-    # argument error, and it used to be raised inside deploy_service -- after the cluster's
-    # storage had been deployed, leaving a half-set-up cluster behind for a mistake that
+    # argument error; raising it inside deploy_service instead -- after the cluster's
+    # storage has been deployed -- leaves a half-set-up cluster behind for a mistake that
     # costs nothing to catch here.
     from .service_deploy import validate_ingress_options  # pylint: disable=import-outside-toplevel
     validate_ingress_options(**{k: v for k, v in (service_kwargs or {}).items()
@@ -496,10 +496,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # read_service_config_from_cluster) — no local flag file to write.
     from .service_deploy import deploy_service, published_host, wait_for_service_ready
     # Keep the registry prefix a re-run cannot drop. It is baked from the Ingress host,
-    # so a `setup` without --ingress-host used to make `_registry_env` return None: the
-    # Secret went unlisted from the Deployment's envFrom, the pod lost the prefix, and
-    # in-cluster builds became impossible -- while the Ingress itself was untouched, so
-    # nothing looked wrong until a campaign was submitted and refused.
+    # so a `setup` without --ingress-host must not make `_registry_env` return None: the
+    # Secret would go unlisted from the Deployment's envFrom, the pod would lose the prefix,
+    # and in-cluster builds would become impossible -- while the Ingress itself stayed
+    # untouched, so nothing looks wrong until a campaign is submitted and refused.
     #
     # `deploy_service` separates registry_host from ingress_host precisely so a caller
     # can re-bake the prefix without rebuilding the Ingress; `upgrade` already used that
@@ -525,10 +525,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Secret, and `deploy_service` is what creates both. Nothing can be built without it, so it
     # is part of setup rather than something a first campaign discovers is missing.
     #
-    # The ordering used to have an honest cost: setup sized a fixed ClusterQueue quota before
-    # this daemon existed, so a fresh cluster granted marginally too much until the next
-    # upgrade re-sized it. Admission measures committed requests each cycle instead, so the
-    # daemon is counted as soon as it is running and the discrepancy is gone.
+    # Ordering it after the service costs nothing: admission measures committed requests
+    # each cycle, so the daemon is counted as soon as it is running.
     from .buildkitd_deploy import apply_buildkitd  # pylint: disable=import-outside-toplevel
     apply_buildkitd(namespace, kube_context=kube_context, **buildkit_kwargs)
 

@@ -16,12 +16,12 @@
 
 """The one way to block until image builds are over — :mod:`campaign_wait` for builds.
 
-The MCP used to answer this with a blocking ``wait_for_image_build`` tool, on the argument
-that a build is minutes rather than days so holding the caller costs nothing. Two things
-were wrong with that. The wait was capped at 600s, so a ROS build doing apt + pip + colcon
-came back unfinished and had to be re-called — blocking again, with dead air in between,
-in exactly the case where blocking costs most. And the surface already had the single-read
-half (``get_image_build_status``); the blocking loop was a third thing beside it.
+Not an MCP tool. A blocking ``wait_for_image_build`` looks affordable — a build is
+minutes rather than days — but the tool-call wait is capped at 600s, so a ROS build doing
+apt + pip + colcon comes back unfinished and has to be re-called: blocking again, with
+dead air in between, in exactly the case where blocking costs most. The surface also
+already has the single-read half (``get_image_build_status``), so a blocking loop would
+be a third thing beside it.
 
 So a build waits the way a campaign does: a shell command an agent harness can background
 and be notified about, over a shared loop, costing no MCP surface at all. The properties

@@ -110,8 +110,8 @@ export function StatusView({
   status: Status
   // The campaign this status belongs to. Passed in because the caller already knows it
   // and `status.campaign_id` does not: the controller fills that field, and a campaign
-  // waiting for its image build has no controller yet — which used to leave the log
-  // button off exactly the card that had nothing else to show. Falls back to the status
+  // waiting for its image build has no controller yet — which would otherwise leave the log
+  // button off exactly the card that has nothing else to show. Falls back to the status
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
@@ -177,8 +177,8 @@ export function StatusView({
   // them buries the handful of jobs that are really doing something. The backlog is
   // reported by the `waiting N` counter instead, which is what makes it legible anyway.
   // `killed` is dropped from the live view for the same reason as `completed`: the job is
-  // over. It used to linger as `running` — its `test.xml` is the thing that never arrives —
-  // so the Jobs list kept a row, and a Stop button, on a job that was already dead.
+  // over. Kept, it would show as `running` — its `test.xml` never arrives —
+  // so the Jobs list would carry a row, and a Stop button, on a job that is already dead.
   const shownJobs = jobs?.jobs.filter(
     (j) =>
       j.status !== 'waiting' &&
@@ -211,9 +211,9 @@ export function StatusView({
       {upload ? <UploadSection upload={upload} /> : null}
       <Box>
         <Stack direction="row" justifyContent="space-between">
-          {/* Just "runs". The batch counter that used to ride here -- `batch 2 (3 done)` --
-              said what the batches bar directly below already shows, and this label sits
-              above a bar measuring RUNS, so a batch number on it invited reading the bar as
+          {/* Just "runs", and no batch counter -- `batch 2 (3 done)` -- riding along: it
+              says what the batches bar directly below already shows, and this label sits
+              above a bar measuring RUNS, so a batch number on it invites reading the bar as
               batch progress. */}
           <Typography variant="caption" color="text.secondary">
             runs

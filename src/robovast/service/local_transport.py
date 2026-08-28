@@ -362,10 +362,9 @@ class _LocalCampaign:
 class WorkspaceTarget:
     """What the service resolved a request to: one workspace's ``.vast``.
 
-    Deliberately just the config path. This used to be a ``ProjectConfig`` — the CLI's
-    type, back when ``.robovast_project`` bound a config *and* a results dir — but
-    the service synthesized one per call with a constant ``results_dir``, so the type
-    implied a choice that was never made. Every campaign lands in the shared
+    Deliberately just the config path, not the CLI's ``ProjectConfig``. The service would
+    synthesize one per call with a constant ``results_dir``, so the type would imply a
+    choice that is never made. Every campaign lands in the shared
     ``_campaigns_root()``; a caller needing that asks for it, rather than reading a copy
     off this object where it could look per-workspace.
 
@@ -576,12 +575,12 @@ class LocalTransport(RobovastInterface):
         single-mode by design. ``vast_path`` selects which ``.vast`` in a
         multi-``.vast`` workspace (workspace-relative).
 
-        There used to be a fallback here: an empty ``workspace_id`` resolved the
-        ``.robovast_project`` in the *service's* CWD. That branch ignored ``vast_path``
-        entirely, so a caller naming one ``.vast`` silently got whichever one had been
-        initialized -- a campaign that ran the wrong simulator and looked successful.
-        Its stated justification ("``vast exec local run`` back-compat") was false:
-        that command drove the controller in-process and never reached this method.
+        There is no fallback here. Resolving an empty ``workspace_id`` against the
+        ``.robovast_project`` in the *service's* CWD would ignore ``vast_path`` entirely,
+        so a caller naming one ``.vast`` silently gets whichever one was initialized -- a
+        campaign that runs the wrong simulator and looks successful. Nor would an
+        in-process runner need it: such a caller drives the controller directly and never
+        reaches this method.
         """
         if not workspace_id:
             raise ValueError(
@@ -601,8 +600,8 @@ class LocalTransport(RobovastInterface):
         service's readers and let ``delete_workspace`` take the campaigns with it.
 
         ``vast serve --results-dir`` wins when it was given: the caller naming a directory
-        on the serve host is the most specific answer there is, and it is the only one now
-        that a project file no longer binds a results dir. Otherwise the precedence lives in
+        on the serve host is the most specific answer there is, and the only one, since no
+        project file binds a results dir. Otherwise the precedence lives in
         :func:`~robovast.common.results_root.local_results_root`, shared with the MCP results
         reader so the two cannot disagree about where a campaign is.
 
@@ -1163,25 +1162,23 @@ class LocalTransport(RobovastInterface):
     def _run_import(self, state, campaign_id: str, fetch, request) -> None:
         """The import itself: claim, fetch, extract, register, and postprocess if raw.
 
-        **A failed import is left in place, as a failed campaign.** It used to delete its
-        own directory, on the reasoning that a tree which merely looks like a campaign
-        would be listed by every client from then on. Live testing showed that reasoning
-        buys nothing and costs the diagnosis: the campaign is listed anyway -- registering
-        the tracked entry is what makes it visible during the import, and that entry
-        outlives the failure -- so deleting the tree produced a campaign listed as
-        ``failed`` with *no* ``import.log``, no ``import.json``, and nothing to read.
-        Worst of both.
+        **A failed import is left in place, as a failed campaign.** Deleting its own
+        directory -- on the reasoning that a tree which merely looks like a campaign would
+        be listed by every client from then on -- buys nothing and costs the diagnosis: the
+        campaign is listed anyway, since registering the tracked entry is what makes it
+        visible during the import and that entry outlives the failure. Deleting the tree
+        leaves a campaign listed as ``failed`` with *no* ``import.log``, no
+        ``import.json``, and nothing to read. Worst of both.
 
         So the evidence stays where the evidence goes: in the campaign, next to the log
         that explains it. It behaves like any other failed campaign, including being
         removed by ``vast campaign delete``, and the archive is untouched, so a retry with
         force costs only the transfer.
 
-        "In the campaign" has to mean *where clients read the campaign*, which is the half
-        this originally got wrong. Publishing runs only on the success path, so on a lane
-        whose durable home is an object store the log and the report stayed on a pod's
-        scratch while ``list_files`` answered from the store -- the same undiagnosable
-        failed campaign as before, reached by a different route.
+        "In the campaign" has to mean *where clients read the campaign*. Publishing runs
+        only on the success path, so on a lane whose durable home is an object store the log
+        and the report would stay on a pod's scratch while ``list_files`` answered from the
+        store -- the same undiagnosable failed campaign, reached by a different route.
         :meth:`_publish_failed_import` closes it: the account goes up, the scratch goes
         away, and the campaign reads the same on both lanes.
         """
@@ -1246,11 +1243,11 @@ class LocalTransport(RobovastInterface):
             # the tracked entry that carries it now lives only in this process.
             self._record_failed_import(target, detail)
             # ...and durable *where clients read*, which on a lane whose home is an object
-            # store is not this disk. Publishing happens only on success, so a failed
-            # import used to leave import.log and import.json on a pod's scratch, where
+            # store is not this disk. Publishing happens only on success, so without this
+            # a failed import leaves import.log and import.json on a pod's scratch, where
             # `list_files` -- pointed at the store -- answers "no directory" for the very
-            # campaign whose card is showing the failure. That is the "worst of both" this
-            # method's docstring says was fixed; it was fixed only for the local lane.
+            # campaign whose card is showing the failure: the "worst of both" this method's
+            # docstring names, on the cluster lane only.
             self._publish_failed_import(campaign_id, target)
             state.update(error=detail)
             state.set_phase(Phase.FAILED)
@@ -1334,15 +1331,15 @@ class LocalTransport(RobovastInterface):
         #
         # The tracked entry an import runs under is constructed EMPTY -- it exists to make
         # the campaign visible while its bytes arrive -- and it shadows the durable
-        # ``outcome.json`` for as long as it lives. So an import used to end reporting
-        # ``0 runs`` and ``postprocessed: false`` over a campaign whose every table was
-        # present, and the status advised running postprocessing that would recompute all of
-        # it. Both arrival paths need this: the raw one recorded only the postprocessing
-        # verdict, never the run tally, and the postprocessed one recorded nothing at all --
+        # ``outcome.json`` for as long as it lives. Without this an import ends reporting
+        # ``0 runs`` and ``postprocessed: false`` over a campaign whose every table is
+        # present, and the status advises running postprocessing that would recompute all of
+        # it. Both arrival paths need it: the raw one records only the postprocessing
+        # verdict, never the run tally, and the postprocessed one records nothing at all --
         # having nothing to *compute* is not having nothing to *report*.
         status = reconstruct_status_from_disk(target)
         # After postprocessing rather than before: this is where the campaign actually
-        # becomes durable, and publishing first would have published a campaign without the
+        # becomes durable, and publishing first would publish a campaign without the
         # tables just computed.
         self._publish_imported_campaign(campaign_id, target)
         state.update(mode=status.mode, runs=status.runs,
@@ -2001,7 +1998,7 @@ class LocalTransport(RobovastInterface):
                 else:
                     # Build (or join a sibling's build of) the experiment image and pin the
                     # concrete ref, so the backend uses it (explicit wins in
-                    # resolve_robovast_image). A failed build is no longer a failed *request*:
+                    # resolve_robovast_image). A failed build is not a failed *request*:
                     # it raises into the handler below and becomes an inspectable ``failed``
                     # campaign, with the reason in its status and the output in its own log.
                     # The campaign's image project goes with it: a build's base may be a
@@ -2538,10 +2535,8 @@ class LocalTransport(RobovastInterface):
         raise ImageNotBuilt(message, next_step=next_step)
 
     def stop_exec_container(self) -> "ExecStopResult":  # noqa: F821
-        # The `del backend` that used to be here outlived the parameter it deleted: the
-        # per-request lane selector went when a service became single-lane, and this line
-        # made every call raise NameError. Nothing caught it because every test of this
-        # verb uses a fake transport, so the real method was never called.
+        # Every test of this verb uses a fake transport, so nothing here is exercised by
+        # them: a stale name in this body raises NameError in production only.
         return self._exec_manager.stop()
 
     def resolve_image(self, request) -> "ImageResolution":  # noqa: F821
@@ -2711,13 +2706,13 @@ class LocalTransport(RobovastInterface):
         campaign whose derived data was never fetched here answers the same as before.
 
         Two states are deliberately *not* promoted, both of which the plain existence of
-        ``data.db`` used to promote — this is the live path, so it sees them where the
+        ``data.db`` would promote — this is the live path, so it sees them where the
         recovery path (which runs only once nothing is driving the campaign) mostly cannot:
 
-        * a build **in progress**. The file appears at 0%, so a campaign spent the whole of a
-          twenty-minute ``data.db`` build reporting that its results were ready. The web UI
-          gates its Results views on exactly this flag, so it offered them over a database
-          being appended to.
+        * a build **in progress**. The file appears at 0%, so a campaign would spend the whole
+          of a twenty-minute ``data.db`` build reporting that its results were ready. The web
+          UI gates its Results views on exactly this flag, so it would offer them over a
+          database being appended to.
         * a build that **failed**. ``postprocessing_error`` sets the flag False on purpose;
           promoting it back would hide the error behind "results are ready".
         """
@@ -2849,9 +2844,9 @@ class LocalTransport(RobovastInterface):
 
         **All** of the job's containers, not just the main one: the ROS shape runs the
         simulator and the system under test in their own containers, which write
-        ``logs/system_<name>.log`` beside the main container's ``logs/system.log``. Only
-        the latter used to be read, so the panel showed scenario-execution and neither
-        the simulator nor nav2 -- the two whose output explains a failed run. See
+        ``logs/system_<name>.log`` beside the main container's ``logs/system.log``. Reading
+        only the latter shows scenario-execution and neither the simulator nor nav2 -- the
+        two whose output explains a failed run. See
         :class:`~robovast.service.local_job_log.LocalJobLogTail` for how concurrent files
         are merged without breaking the byte-offset contract.
 
@@ -3632,8 +3627,8 @@ class LocalTransport(RobovastInterface):
         container-teardown traps complete before the process exits.
         """
         # Held containers first, and unconditionally: they are the ones nothing else
-        # reaps, and a service with no running campaign used to return below while still
-        # holding a multi-gigabyte image. Every slot, not just the caller's -- a query
+        # reaps, and a service with no running campaign would otherwise return below while
+        # still holding a multi-gigabyte image. Every slot, not just the caller's -- a query
         # container outliving the process is exactly the leak the pool cap exists to bound.
         if self._exec_mgr is not None:
             try:
@@ -4100,8 +4095,8 @@ class LocalTransport(RobovastInterface):
         # `docker run` fallback: in a controller pod that would run on whatever host the
         # service happens to sit on -- a different image cache, or no docker at all -- with
         # nothing in the reply to say the answer did not come from the cluster. This is
-        # also what lets the cluster lane answer at all; it used to refuse outright for
-        # want of a runner outside a campaign's composition.
+        # also what lets the cluster lane answer at all, which otherwise has no runner
+        # outside a campaign's composition.
         from robovast.common.config_generation import set_container_runner_factory
         from robovast.service.world_query import ExecSlotContainerRunner, _reset_factory
         runner = ExecSlotContainerRunner(
@@ -4227,10 +4222,10 @@ class LocalTransport(RobovastInterface):
     def _whole_campaign_dir(self, campaign_id: str):
         """Campaign dir for a caller that genuinely needs **arbitrary** files from it.
 
-        The honest, explicit form of what ``_data_dir`` used to do implicitly: notebook
-        rendering against run outputs, and the ``/results`` file address space. On the
-        cluster this is a full ``fetch_campaign``, which is expensive and now says so at
-        the call site rather than hiding behind a resolver name.
+        The honest, explicit form of an arbitrary-file need: notebook rendering
+        against run outputs, and the ``/results`` file address space. On the cluster this is
+        a full ``fetch_campaign``, which is expensive and says so at the call site rather
+        than hiding behind a resolver name.
         """
         return self._data_dir(campaign_id)
 
@@ -4778,7 +4773,7 @@ class LocalTransport(RobovastInterface):
         An entry is registered *before* its worker thread exists (create_campaign
         registers eagerly so the campaign lists from t=0, and shows phase
         ``building``/``starting`` during the image-build preflight). So "thread is
-        None" no longer means "done" — a not-yet-started campaign is still live.
+        None" does not mean "done" — a not-yet-started campaign is still live.
         Done means either a terminal phase, or a thread that existed and has ended
         (covering a crashed worker that never recorded a terminal phase)."""
         return is_terminal(entry.state.snapshot().phase) or (

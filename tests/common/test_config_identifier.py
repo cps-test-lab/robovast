@@ -15,12 +15,12 @@ from robovast.common.config_identifier import (collect_paths_from_config,
 def test_blank_strings_are_not_path_references(tmp_path):
     """An empty config value must not resolve to the project directory.
 
-    ``os.path.join(vast_dir, "")`` is ``vast_dir`` itself and always exists, so an empty
-    string used to be collected as a referenced path — making the hash walk every file
-    under the project. Deliberate empty values exist (an empty launch-package name is how
-    ``ros_launch`` is told to take a plain file path), and on a campaign directory the
-    walk was both ruinously slow and fatal: it raced a run's transient files and raised
-    FileNotFoundError for a path that existed moments earlier when it was listed.
+    ``os.path.join(vast_dir, "")`` is ``vast_dir`` itself and always exists, so collecting
+    an empty string as a referenced path makes the hash walk every file under the project.
+    Deliberate empty values exist (an empty launch-package name is how ``ros_launch`` is
+    told to take a plain file path), and on a campaign directory that walk is both
+    ruinously slow and fatal: it races a run's transient files and raises FileNotFoundError
+    for a path that existed moments earlier when it was listed.
     """
     (tmp_path / "somefile.txt").write_text("x", encoding="utf-8")
     for blank in ("", " ", "\t"):

@@ -27,9 +27,9 @@ def _finish_run(campaign_root: Path, config: str, run: str) -> None:
 
 
 def test_the_local_backend_counts_finished_runs(tmp_path):
-    """It used to return ``None`` ("results are already on disk"), which switched the
-    controller's progress poller off entirely — so a live local campaign reported
-    ``0/0`` and a progress that could never move."""
+    """Returning ``None`` ("results are already on disk") switches the controller's
+    progress poller off entirely — so a live local campaign reports ``0/0`` and a
+    progress that can never move."""
     backend = DockerBackend()
     assert backend.count_run_artifacts("camp", str(tmp_path)) == 0
     _finish_run(tmp_path, "cfg-a", "0")

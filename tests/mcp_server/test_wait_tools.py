@@ -2,19 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Neither a campaign nor a build is waited for inside a tool call.
 
-Both operations return the moment the work is *named* and then run on, and both used to
-offer nothing but "poll this" prose — which is how an agent came to read one status and
-end its turn mid-campaign.
+Both operations return the moment the work is *named* and then run on. Offering nothing
+but "poll this" prose is how an agent comes to read one status and end its turn
+mid-campaign.
 
-They were once answered differently: the campaign wait went to a shell command, the build
-wait stayed a blocking tool on the argument that a build is minutes rather than days, so
-holding the caller costs nothing. That argument had a cap in it. The tool blocked for at
-most 600s, and a ROS build doing apt + pip + colcon came back unfinished, to be re-called
-— blocking again — in exactly the case where blocking cost most. The single-read half
-(``get_image_build_status``) already existed, so the blocking loop was a third thing beside
-it rather than the missing one.
+Nor is a blocking tool the answer for the build half, on the argument that a build is
+minutes rather than days so holding the caller costs nothing: that argument has a cap in
+it. A tool call blocks for at most 600s, and a ROS build doing apt + pip + colcon comes
+back unfinished, to be re-called — blocking again — in exactly the case where blocking
+costs most. The single-read half (``get_image_build_status``) already exists, so a
+blocking loop is a third thing beside it rather than the missing one.
 
-So both are shell commands now (``vast campaign wait``, ``vast image wait``), over loops in
+So both are shell commands (``vast campaign wait``, ``vast image wait``), over loops in
 ``robovast_client`` that a harness can background, and what each tool owes its caller is
 the *command*, in band, with the ids already filled in. Waiting for the loops themselves is
 tested in ``tests/execution/test_cli_wait`` and ``tests/execution/test_image_build_wait``.

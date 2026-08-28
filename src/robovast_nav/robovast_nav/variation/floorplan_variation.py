@@ -106,8 +106,8 @@ class FloorplanVariationConfig(DestinationConfig):
     #:     sim:      {mesh: plugins.floorplan.mesh}
     #:
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
-    #: parameter. What is no longer possible is the retired positional ``name:
-    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    #: parameter. Each destination is named, rather than positional as in
+    #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
     SLOTS = ("map", "mesh")
 
     variation_files: list[str]
@@ -164,8 +164,8 @@ class FloorplanGenerationConfig(DestinationConfig):
     #:     sim:      {mesh: plugins.floorplan.mesh}
     #:
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
-    #: parameter. What is no longer possible is the retired positional ``name:
-    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    #: parameter. Each destination is named, rather than positional as in
+    #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
     SLOTS = ("map", "mesh")
 
     floorplans: list[str]

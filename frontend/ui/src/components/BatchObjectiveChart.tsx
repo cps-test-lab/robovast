@@ -11,9 +11,8 @@ import type { BatchObjective, SearchHistory } from '@/lib/robovastClient'
 // laid over it.
 //
 // One chart, two callers. The campaign card renders it live from `/search/history` while a search
-// runs; the Details panel renders it from the same route afterwards. It used to be `ObjectiveLine`
-// in DetailsCharts.tsx, post-hoc only and best-per-batch only — the two views are now the same
-// component reading the same route, so they cannot drift apart or disagree.
+// runs; the Details panel renders it from the same route afterwards. One component reading one
+// route, so the two views cannot drift apart or disagree.
 //
 // Why the band and not just the line: a flat best-so-far has two very different causes, and the
 // decision the reader is making (let it run, or stop it) depends on which. If the spread is still

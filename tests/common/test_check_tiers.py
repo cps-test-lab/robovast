@@ -6,11 +6,11 @@
 
 Three tools check a ``.vast`` and differ in two things: whether they install the
 ``plugins:`` block, and whether they compose inside an execution backend's container
-context. Neither difference used to be visible in what they reported, so a correct file
-looked broken:
+context. A tier that does not report which of the two applies makes a correct file look
+broken:
 
-* a ``plugins:``-declaring ``.vast`` was told to declare the package in ``plugins:``, and
-* a variation needing an auxiliary container died on a bare ``FileNotFoundError: 'docker'``.
+* a ``plugins:``-declaring ``.vast`` is told to declare the package in ``plugins:``, and
+* a variation needing an auxiliary container dies on a bare ``FileNotFoundError: 'docker'``.
 
 The invariant behind both: a name or a runner that is genuinely missing must still fail
 loudly. These tests pin the difference between "cannot check that here" and "that is wrong".
@@ -210,9 +210,9 @@ def test_an_actionable_refusal_keeps_its_next_step_in_a_problem():
 def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypatch):
     """Preview composes, so it is a place the aux-container refusal surfaces.
 
-    It used to return ``{"error": str(e)}``, which drops the ``next_step`` riding on an
-    ActionableError -- leaving the caller a reason and no move, in exactly the case where
-    the move is least obvious.
+    Returning ``{"error": str(e)}`` drops the ``next_step`` riding on an ActionableError --
+    leaving the caller a reason and no move, in exactly the case where the move is least
+    obvious.
     """
     from robovast.common.errors import AuxContainerUnavailable
     from robovast.mcp_server.plugins import authoring

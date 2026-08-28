@@ -386,7 +386,7 @@ class ExecutionConfig(BaseModel):
         """Reject a value that is not a memory quantity, here rather than at the lane.
 
         Both lanes pass this string through to a manifest untouched, so an unparseable one
-        used to surface as a Kubernetes rejection or a ``docker compose`` error, minutes
+        otherwise surfaces as a Kubernetes rejection or a ``docker compose`` error, minutes
         into a campaign and nowhere near the line that caused it.
 
         An explicit ``null`` is rejected along with the rest. It reads as "no opinion", but
@@ -992,8 +992,8 @@ class PanelConfigBase(BaseModel):
 
         Opt-in per type on purpose. The alternative -- ``extra='forbid'`` for everyone -- would
         refuse every run-view panel's bindings until each was modelled, and the point here is the
-        failure mode being fixed: an unknown key used to validate cleanly and draw nothing, so the
-        only symptom was an empty panel in the browser with nothing naming the key that was ignored.
+        failure mode: an unknown key that validates cleanly and draws nothing leaves an empty panel
+        in the browser as its only symptom, with nothing naming the key that was ignored.
         """
         model = bindings_model_for(self.type, self.SURFACE)
         if model is None:
@@ -1183,7 +1183,7 @@ class RunViewConfig(BaseModel):
 #: The tree levels an Explorer notebook can be declared for, outermost last. ``batch`` is a
 #: *logical* level with no directory of its own, and appears in the tree only for a search
 #: campaign. Lives here rather than in the service because it is part of what a ``.vast`` may
-#: say: the renderer keeps only the scopes it recognises, so a misspelled one used to drop the
+#: say: the renderer keeps only the scopes it recognises, so an unchecked misspelling drops the
 #: notebook with nothing said anywhere.
 EXPLORER_SCOPES = ("run", "config", "batch", "campaign")
 
@@ -1738,11 +1738,10 @@ class ConfigV1(BaseModel):
 
 #: What a version 1 config has to become, as human-readable instructions.
 #:
-#: This was once the *only* migration path -- there was no tool and no v1 reader. Both now
-#: exist (``robovast.common.migrations``), so the text is no longer load-bearing for
-#: recovery; it stays because it explains the restructuring in one screen, which a caller
-#: staring at a refusal still wants. ``migrations/config/v1_to_v2.py`` is the executable
-#: form and must agree with it. Keep each entry as "what you wrote" -> "what it becomes".
+#: Not the recovery path -- ``robovast.common.migrations`` converts a v1 config. This text
+#: exists because it explains the restructuring in one screen, which a caller staring at a
+#: refusal wants. ``migrations/config/v1_to_v2.py`` is the executable form and must agree
+#: with it. Keep each entry as "what you wrote" -> "what it becomes".
 _V1_MIGRATION = (
     "  execution.image: <img>          ->  execution.containers.scenario.image: <img>\n"
     "  execution.resources: {...}      ->  execution.containers.scenario.resources: {...}\n"

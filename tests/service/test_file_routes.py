@@ -248,10 +248,10 @@ def test_unknown_namespace_names_the_valid_ones(env):
 def test_a_binary_read_is_streamed_and_seekable(env):
     """Served with FileResponse, so ``Range`` works and the service holds no copy.
 
-    The route used to read the whole file into memory and return it as one Response.
-    A campaign's rosbag is tens of megabytes and up, so every request cost that much
-    service memory to hand back bytes it never inspects — and without ``Range`` a browser
-    had to download a whole ``.webm`` before it could play a second of it.
+    Reading the whole file into memory and returning it as one Response costs a campaign's
+    rosbag in service memory — tens of megabytes and up, per request, to hand back bytes it
+    never inspects — and without ``Range`` a browser has to download a whole ``.webm``
+    before it can play a second of it.
     """
     client, _lt, _ws = env
     url = "/results/camp-1/nav/3/scene/scene.bin"

@@ -4,7 +4,7 @@
 
 The temptation with backfill is to make old campaigns *look* complete. That is the one thing it
 must not do: a campaign's own record is evidence, and a reader who cannot tell which values the
-campaign reported from which were inferred a year later can no longer cite any of them. So the
+campaign reported from which were inferred a year later can cite none of them. So the
 tests below are mostly about restraint -- additive writes, unknowns kept as unknowns with their
 reason, and a local image id refused rather than promoted to something that looks pullable.
 """

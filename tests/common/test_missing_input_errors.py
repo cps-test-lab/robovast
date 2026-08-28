@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A .vast pointing at files that are not there must fail as a clean user error.
 
-The failure used to be ``shutil``'s ``[Errno 2] ... '<path>'`` raised mid-staging:
+Unchecked, the failure is ``shutil``'s ``[Errno 2] ... '<path>'`` raised mid-staging:
 no ``.vast`` key, no resolution base, and a traceback in the durable failure
 record. These guard the reporting, not just the raising.
 """

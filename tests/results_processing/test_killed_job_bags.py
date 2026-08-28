@@ -187,11 +187,11 @@ def test_a_probe_does_not_make_a_bag_unreadable(tmp_path):
 # -- what a failing bag tells the reader ---------------------------------------------------
 #
 # Workers run under ``redirect_stdout`` so 32 of them cannot shred the progress bar. That
-# buffer used to be a throwaway: every ``✗`` a handler printed died in the worker while its
-# *count* came home in the ``-2`` sentinel, so the summary reported "N handler error(s) — see
-# the messages above" with nothing above it. On the cluster lane, which never passes
-# ``--debug``, that happened on every campaign. Same shape as the reporting bug it sat next
-# to: a pointer to evidence nobody kept.
+# buffer must not be a throwaway: every ``✗`` a handler prints would die in the worker while
+# its *count* came home in the ``-2`` sentinel, so the summary reports "N handler error(s) —
+# see the messages above" with nothing above it. On the cluster lane, which never passes
+# ``--debug``, that is every campaign. Same shape as the reporting bug beside it: a pointer
+# to evidence nobody kept.
 
 
 def test_a_failing_bag_reports_what_it_printed(tmp_path):

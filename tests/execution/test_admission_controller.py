@@ -5,8 +5,7 @@
 Two of these tests are the reason the module is shaped the way it is. ``test_two_grants...``
 pins the in-flight ledger, without which a second job is handed cores the first already took
 but whose pod is not yet visible. ``test_an_older_campaigns_second_batch...`` pins the
-ordering, and is the regression guard for a bug the codebase already fixed once in Kueue's
-priority class: order by submission and an older campaign's later batches lose to a younger
+ordering: order by submission and an older campaign's later batches lose to a younger
 campaign, so the two take turns instead of the older one finishing.
 """
 

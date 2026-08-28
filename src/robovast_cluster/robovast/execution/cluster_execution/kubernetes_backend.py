@@ -434,11 +434,10 @@ class BatchJobRunner:
         # down is force-killed by Kubernetes (``DeadlineExceeded``) instead of hanging
         # the campaign forever. ``execution.timeout`` is the budget for a whole Job, so
         # it is used as declared -- this is the granularity Kubernetes can enforce at, and
-        # the multiplication that used to happen here was reconstructing a per-run figure
-        # nothing could act on. The figure comes from ``common.config`` because the
-        # campaign status derives its stall threshold from the same declaration -- were
-        # the two to diverge, a Job could be killed while the status still called it
-        # healthy.
+        # multiplying it out here would reconstruct a per-run figure nothing can act on.
+        # The figure comes from ``common.config`` because the campaign status derives its
+        # stall threshold from the same declaration -- were the two to diverge, a Job could
+        # be killed while the status still called it healthy.
         self._deadline_seconds = job_deadline_seconds(execution_params)
         self.manifest["spec"]["activeDeadlineSeconds"] = self._deadline_seconds
         # Pod-level, so it has to be decided across every container of the plan rather
@@ -867,7 +866,7 @@ class BatchJobRunner:
         # compression to materialise <config>/<run>/job symlinks into the tar.gz, and
         # by readers resolving a job's artifacts while it is still running. Written in
         # per-batch mode too: the manifest is batch-aware, so the batch-namespaced job
-        # tag no longer breaks the target path.
+        # tag does not break the target path.
         #
         # Seeded with what the campaign already has, because THIS DIRECTORY IS UPLOADED TO
         # THE CAMPAIGN PREFIX: a manifest holding only this batch overwrites the campaign's
@@ -1086,7 +1085,7 @@ class BatchJobRunner:
         # controller (node_admission.AdmissionController), which creates it only once the
         # cluster has room for it, so there is nothing left for an external queue to gate.
         # Ordering across concurrent campaigns is the controller's too, by campaign start
-        # time, which is why the priority-class label that used to carry it is gone as well.
+        # time, so no priority-class label carries it either.
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
@@ -1272,26 +1271,27 @@ class BatchJobRunner:
         that does not gets none, and the cluster having a GPU is not taken as a reason to hand
         one out.
 
-        This used to give the simulator one automatically whenever the cluster advertised any,
-        so "use the GPU if there is one" needed no ``.vast`` edit. Measured on a headless nav2
-        campaign, that device did nothing: with ``gpu: 0`` the simulator's CPU was unchanged
-        (mean 0.34 cores either way), trials took the same time (33.8 s against 33.5 s), and the
-        ``capture/`` the 3D run view replays was still written -- it is pose and geometry, not
-        rendered frames. Nothing in that world drew anything: no camera, and a lidar is a
-        raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no device is
-        present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back from.
+        Handing the simulator one automatically whenever the cluster advertises any -- so
+        "use the GPU if there is one" needs no ``.vast`` edit -- buys nothing measurable. On a
+        headless nav2 campaign that device does nothing: with ``gpu: 0`` the simulator's CPU is
+        unchanged (mean 0.34 cores either way), trials take the same time (33.8 s against
+        33.5 s), and the ``capture/`` the 3D run view replays is still written -- it is pose and
+        geometry, not rendered frames. Nothing in such a world draws anything: no camera, and a
+        lidar is a raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no
+        device is present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back
+        from.
 
-        What it did cost was concurrency, and silently. A request is charged against the
-        ClusterQueue's ``nvidia.com/gpu`` quota, and time-slicing replicas are a concurrency cap
+        What it costs is concurrency, silently. A request is charged against the cluster's
+        ``nvidia.com/gpu`` capacity at admission, and time-slicing replicas are a concurrency cap
         and not a VRAM budget (see :data:`DEFAULT_GPU_REPLICAS`) -- so one auto-claimed device
-        per run capped a campaign that never rendered a frame. Worse, it capped it *invisibly*:
-        the default replica count is chosen to sit above the CPU ceiling, so the GPU only starts
+        per run caps a campaign that never renders a frame. Worse, it caps it *invisibly*: the
+        default replica count is chosen to sit above the CPU ceiling, so the GPU only starts
         binding once someone right-sizes CPU, which is exactly when they are looking at CPU.
 
         A simulator that DOES render -- a camera or image sensor in the world, a video in the
-        postprocessing -- declares ``resources: {gpu: 1}`` and is treated exactly as before,
-        including on a CPU-only cluster, where the declaration stands and the pre-flight refuses
-        the campaign rather than scheduling a job that would hang.
+        postprocessing -- declares ``resources: {gpu: 1}``, including on a CPU-only cluster,
+        where the declaration stands and the pre-flight refuses the campaign rather than
+        scheduling a job that would hang.
         """
         declared = (resources or {}).get('gpu')
         if declared is None:
@@ -1784,17 +1784,17 @@ class BatchJobRunner:
             # happened. The container lost its state, so every extra second spent waiting
             # buys a more convincing wrong answer rather than a chance of recovery.
             #
-            # What is NOT deliberate is failing the campaign for it, which is what this
-            # used to do. One flaky sidecar in one job of one batch ended a 50-batch
-            # search and orphaned the batches that had already finished. The trial is what
-            # the restart invalidates; the batch around it is fine and the 47 batches after
-            # it were never in question. So: drop that job, record why, and keep going.
+            # What is NOT deliberate is failing the campaign for it: one flaky sidecar in
+            # one job of one batch would end a 50-batch search and orphan the batches that
+            # had already finished. The trial is what the restart invalidates; the batch
+            # around it is fine and the batches after it were never in question. So: drop
+            # that job, record why, and keep going.
             self._invalidate_restarted_jobs(
                 job_label, job_names, jobs_by_name, campaign_root,
                 storage, bucket_name, campaign_prefix)
             # blocked is None (probe failed) => leave blocked_since unchanged.
-            # Nothing suspends a Job any more, so the pod-based probe above is no longer
-            # blind to a waiting job: a job that has not been created yet is PLANNED in the
+            # Nothing suspends a Job, so the pod-based probe above is not blind to a
+            # waiting job: a job that has not been created yet is PLANNED in the
             # controller, which _publish_capacity_wait reads directly rather than inferring
             # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
@@ -2082,8 +2082,8 @@ class KubernetesBackend(ExecutionBackend):
 
         The upload runs in-driver (this same process/env), so the env checked here is
         exactly the one :meth:`share_campaign` would read at the finish tail. Raising
-        now — before the campaign runs — turns what used to be a silent, end-of-run
-        skip into an up-front, actionable error.
+        now — before the campaign runs — turns a silent, end-of-run skip into an
+        up-front, actionable error.
         """
         from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 

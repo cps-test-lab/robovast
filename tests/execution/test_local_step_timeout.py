@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The local lane enforces ``execution.timeout``, as the cluster lane always has.
 
-It previously did not — a local run "will continue past this timeout and must be stopped
-manually" — which meant one config key had two meanings depending on where it ran. These
-pin the three things that make the two lanes agree:
+Unenforced there — a local run "will continue past this timeout and must be stopped
+manually" — one config key would have two meanings depending on where it ran. These pin
+the three things that make the two lanes agree:
 
 - the limit is per *step*, scaled by ``runs_per_job``, the same arithmetic the cluster
   applies to a Job's ``activeDeadlineSeconds``;

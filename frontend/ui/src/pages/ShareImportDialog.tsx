@@ -123,9 +123,9 @@ export function ShareImportDialog({
 
 /** Either the rows, or the one thing standing in their way.
  *
- *  Each of these used to be a `return null` on the old panel, which could afford it: nobody
- *  had asked for it. This dialog was opened deliberately — from the menu, or by following
- *  somebody's link — so it owes an answer even when the answer is that there is nothing. The
+ *  A `return null` would do on a panel nobody asked for. This dialog is opened deliberately —
+ *  from the menu, or by following somebody's link — so it owes an answer even when the answer
+ *  is that there is nothing. The
  *  unconfigured case is reachable despite the menu disabling its entry, because a link opens
  *  this regardless of the menu. */
 function Body({

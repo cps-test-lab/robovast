@@ -367,9 +367,9 @@ def _exec_json(client, request, command: str, container: str = "") -> dict:
     ``ValueError`` naming why (a non-zero exit, unparseable output).
 
     Always ``query=True``: these are read-only questions put to an image, so they run in
-    the service's query pool. Two reasons, and both were real failures. A one-shot exec
-    discards the held container by design, so every call here used to destroy the
-    container its caller was debugging in. And the pool *holds* the container, so a second
+    the service's query pool. Two reasons. A one-shot exec discards the held container by
+    design, so a call here would destroy the container its caller is debugging in. And the
+    pool *holds* the container, so a second
     question about the same project costs an exec rather than a container start -- measured
     at ~0.5 s against 6-15 s on the cluster lane.
 

@@ -326,8 +326,8 @@ def test_ensure_plugins_importable_installs_recorded_specs(tmp_path, monkeypatch
 def test_a_leftover_dir_registering_nothing_is_not_put_on_sys_path(tmp_path):
     """A .vast that declares no plugins must not reorder imports for the process.
 
-    An empty (or plugin-less) leftover directory used to be prepended anyway, which is
-    how one workspace's install reached a campaign that never asked for one.
+    Prepending an empty (or plugin-less) leftover directory anyway is how one workspace's
+    install reaches a campaign that never asked for one.
     """
     site = plugin_site_dir(str(tmp_path))
     os.makedirs(site)

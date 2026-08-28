@@ -268,9 +268,9 @@ def _build_agents(
 
         # Build derived_from entity nodes. The value is what an author would write for
         # "where this agent came from": one IRI, several, or a mapping when the source
-        # also carries a version. A bare string is the common case and used to be
-        # iterated character by character, which asked `.get` of a str and lost the whole
-        # provenance graph to an AttributeError.
+        # also carries a version. A bare string is the common case; iterating it as a
+        # sequence asks `.get` of a str and loses the whole provenance graph to an
+        # AttributeError.
         derived_from_iris = []
         for df in _as_list(agent_cfg.pop("derived_from", [])):
             if isinstance(df, str):

@@ -73,10 +73,10 @@ The three modes
 Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2
 for scaled, parallel execution.
 
-There is no serviceless mode. There used to be a third, in-process one -- the CLI calling
-the interface directly, with no service, no workspace and no ``CampaignOrigin`` -- and it is
-gone: a campaign runs a *workspace's* project through a service, and a local service on its
-Docker lane is the same path as a remote one, differing only in which service answers.
+There is no serviceless mode -- no third, in-process one where the CLI calls the interface
+directly, with no service, no workspace and no ``CampaignOrigin``. A campaign runs a
+*workspace's* project through a service, and a local service on its Docker lane is the same
+path as a remote one, differing only in which service answers.
 
 Access matrix
 -------------
@@ -106,10 +106,9 @@ Access matrix
        ``/login``; the CLI and MCP use ``vast login <url>``. Nothing is held open and
        no kubeconfig is involved.
 
-That last row is the hardening this page used to defer — "a public **Ingress +
-token/TLS**, decided once for the whole surface". It is decided: one shared secret,
-presented as a cookie by browsers and a bearer header by everything else, in front of
-an Ingress that refuses to exist without TLS.
+That last row is hardened once for the whole surface: one shared secret, presented as
+a cookie by browsers and a bearer header by everything else, in front of an Ingress
+that refuses to exist without TLS.
 
 Walkthrough — a remote VM service over an SSH tunnel
 ----------------------------------------------------
@@ -308,7 +307,7 @@ asks for, and a request no node can hold is refused when the campaign launches, 
 both the request and each node's allocatable.
 
 **It also checks whether the deployment can build experiment images**, which is the one
-prerequisite that used to surface only when a campaign was submitted and refused:
+prerequisite that would otherwise surface only when a campaign is submitted and refused:
 
 .. list-table::
    :header-rows: 1

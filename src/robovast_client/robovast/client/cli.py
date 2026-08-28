@@ -1017,11 +1017,11 @@ def image_build(workspace_id, config_path, wait, namespace, context):  # pylint:
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path))
         # Report every container, not just the one the handle happens to name. Both lines
-        # below used to say only `ref.tag`, so a project building two images printed one
-        # cache-hit line for the scenario image and never mentioned the other — a reader
+        # below say more than `ref.tag`: a project building two images would otherwise print
+        # one cache-hit line for the scenario image and never mention the other — a reader
         # could not tell whether the second was covered, still building, or absent. The
-        # per-container verdict is in `cached_builds`; the aggregate `ref.cached` is now
-        # its conjunction, so a cache-hit line means every image, which is what it reads as.
+        # per-container verdict is in `cached_builds`; the aggregate `ref.cached` is their
+        # conjunction, so a cache-hit line means every image, which is what it reads as.
         cached_builds = getattr(ref, "cached_builds", None) or {}
         for name in sorted(cached_builds):
             if cached_builds[name]:
@@ -1077,10 +1077,10 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         err = status.error
         if err:
             click.echo(f"✗ {build_id} failed [{err.phase}] {err.message}", err=True)
-            # ``fixable_by`` used to print only alongside an ``entry``, which meant it never
-            # printed for an infra failure -- the one case where "this is not yours to fix"
-            # is the whole message. It is the more important half of the two, so it is
-            # unconditional and the entry rides along when there is one.
+            # ``fixable_by`` printed only alongside an ``entry`` never prints for an infra
+            # failure -- the one case where "this is not yours to fix" is the whole message.
+            # It is the more important half of the two, so it is unconditional and the entry
+            # rides along when there is one.
             where = f", offending entry: {err.entry}" if err.entry else ""
             click.echo(f"  fixable_by={err.fixable_by}{where}", err=True)
         else:
@@ -1101,12 +1101,12 @@ def image_wait(build_ids, interval, timeout, namespace, context):
     --timeout, or the service stopped answering).
 
     A build whose *pod* cannot start -- its own image unpullable, nowhere to schedule it --
-    is a failure (exit 1) reported within a minute, not something this waits out. It used to
-    hang here indefinitely, because Kubernetes leaves such a Job ``active`` forever.
+    is a failure (exit 1) reported within a minute, not something this waits out: waiting it
+    out hangs indefinitely, because Kubernetes leaves such a Job ``active`` forever.
 
     Exists so a *caller* can wait without holding a request open, and is why the MCP
-    offers no image-build-wait tool — it did, and the cap on how long a tool call may
-    block turned a long ROS build into repeated blocking calls. An agent harness
+    offers no image-build-wait tool — the cap on how long a tool call may block turns a
+    long ROS build into repeated blocking calls. An agent harness
     backgrounds this instead and is notified when it exits; ``build_experiment_image``
     hands back the command with the ids already filled in.
 

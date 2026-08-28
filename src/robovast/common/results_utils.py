@@ -158,8 +158,8 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
     # Otherwise scan the campaign directories under a results *root*, newest last-sorted
     # first. Note this orders by directory name, and a name is ``<experiment>-<timestamp>``
     # -- so it is only "most recent" among campaigns of the same experiment. Good enough
-    # for a bare "give me some campaign's config" caller, and no longer reached by one
-    # that knows which campaign it means.
+    # for a bare "give me some campaign's config" caller, and not reached by one that
+    # knows which campaign it means.
     for campaign_item in sorted(root.iterdir(), reverse=True):
         if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue

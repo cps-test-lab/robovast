@@ -578,11 +578,10 @@ class Variation():
 
         The scenario file is the only place that fact is actually defined
         (``goal_poses: list of pose_3d`` versus ``goal_pose: pose_3d``), so a plugin
-        producing one-or-many asks here rather than inferring it. Inferring it is what the
-        two path variations used to do -- one compared the destination *name* to the literal
-        string ``"goal_pose"``, the other keyed on ``num_goal_poses == 1`` -- and both could
-        disagree with the scenario, which surfaced as a type error at run time rather than
-        as a wrong ``.vast``.
+        producing one-or-many asks here rather than inferring it. Inference -- comparing the
+        destination *name* to the literal string ``"goal_pose"``, or keying on
+        ``num_goal_poses == 1`` -- can disagree with the scenario, which surfaces as a type
+        error at run time rather than as a wrong ``.vast``.
 
         An undeclared parameter raises, naming it: the alternative is guessing a shape for a
         destination that does not exist.

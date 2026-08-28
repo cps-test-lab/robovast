@@ -59,8 +59,8 @@ logger = logging.getLogger(__name__)
 
 STAGE_OK = "ok"
 STAGE_MIGRATED = "migrated"
-#: Retained for readability in callers: no longer a *verdict*, since how the store came
-#: to exist is orthogonal to whether it is healthy. See the ``rebuilt`` field.
+#: For readability in callers, not a *verdict*: how the store came to exist is orthogonal
+#: to whether it is healthy. See the ``rebuilt`` field.
 STAGE_REBUILT = "rebuilt"
 STAGE_ABSENT = "absent"
 STAGE_DEGRADED = "degraded"

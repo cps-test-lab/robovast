@@ -394,8 +394,7 @@ export const robovast = {
 
   // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
   // it: a cluster service streams it from the object store, a local one tars its own
-  // results directory. (A local service used to reply 409 here, which is why the button
-  // was once hidden outside the cluster.)
+  // results directory.
   archiveUrl: (campaignId: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
 

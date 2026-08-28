@@ -6,12 +6,11 @@ Two ways in, in order: a service answering on the conventional local port, then 
 ``vast login`` stored. Finding neither is an error for every command: the client is a
 frontend, so there is no in-process store to fall back to.
 
-This used to be *one* way in, with the narrowness itself asserted below. That was right
-while the only way to reach a remote service was a tunnel to the local port; it could
-not express "the service is at https://robovast.example.org and here is my token", which
-is what a user with no kubeconfig needs. What is still asserted is the part that
-mattered: no ambient environment variable names a service, and the resolution is
-announced rather than silent.
+*One* way in is enough only while the sole way to reach a remote service is a tunnel to
+the local port; it cannot express "the service is at https://robovast.example.org and
+here is my token", which is what a user with no kubeconfig needs. What is still asserted
+is the narrowness that matters: no ambient environment variable names a service, and the
+resolution is announced rather than silent.
 """
 
 import click
@@ -50,11 +49,10 @@ def test_service_client_follows_detected_service(monkeypatch):
 def test_service_client_raises_when_no_service_answers(monkeypatch):
     """No service is a missing dependency, for every verb -- not a second implementation.
 
-    This used to yield a ``LocalTransport`` unless the caller passed
-    ``require_service=True``, so with nothing listening ``workspace init`` wrote into a
-    local store while ``workspace run`` refused: one command name, two systems, chosen by
-    what happened to be on the port. The parameter is gone rather than defaulted, so a
-    caller cannot ask for the old behaviour back.
+    Yielding a ``LocalTransport`` unless the caller passes ``require_service=True`` has
+    ``workspace init`` writing into a local store with nothing listening while ``workspace
+    run`` refuses: one command name, two systems, chosen by what happens to be on the port.
+    There is no such parameter to default, so a caller cannot ask for that back.
     """
     monkeypatch.setattr(st, "_service_alive", lambda url: False)
     with pytest.raises(click.ClickException, match="No robovast-service found"):

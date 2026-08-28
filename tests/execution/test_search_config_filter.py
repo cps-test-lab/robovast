@@ -6,9 +6,9 @@
 ``config_filter`` + ``runs=1`` is the documented way to pilot one configuration
 before committing to a sweep. A search names its configurations after parameter
 sets the strategy has not drawn yet, so the filter cannot select anything -- and
-the launch path used to accept it and silently drop it. The caller asking to run
-*one* configuration got the entire search budget instead: the exact compute the
-pilot exists to avoid, spent without a word.
+a launch path that accepts it and silently drops it hands the caller asking for
+*one* configuration the entire search budget: the exact compute the pilot exists
+to avoid, spent without a word.
 """
 
 import pytest

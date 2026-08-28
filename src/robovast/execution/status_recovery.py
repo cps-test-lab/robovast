@@ -20,9 +20,9 @@ While a controller drives a campaign, its live :class:`Status` lives in the
 in-memory :class:`~robovast.execution.control_server.ControllerState`. Once no
 process is driving it (a past campaign, or one lost to a service restart), the
 status has to be reconstructed from what is on disk. This module is the *single*
-implementation of that reconstruction — it was previously duplicated (with
-subtly different results) in ``service/client.py`` and the ``execution``
-MCP plugin.
+implementation of that reconstruction: a second copy in a reader such as
+``service/client.py`` or the ``execution`` MCP plugin gives subtly different
+results for the same campaign.
 
 Precedence, loud and fixed:
 
@@ -167,9 +167,9 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
         return outcome
 
     # No durable record. Nothing here may claim a run passed without a verdict saying
-    # so: this used to report `completed == total`, painting a campaign green having
-    # never looked at what its runs did. The artifact walk carries the verdicts too, so
-    # it stands in for the store when there is none.
+    # so: reporting `completed == total` paints a campaign green having never looked at
+    # what its runs did. The artifact walk carries the verdicts too, so it stands in for
+    # the store when there is none.
     if counts is None:
         try:
             counts = get_vast_configuration_info(campaign_dir)

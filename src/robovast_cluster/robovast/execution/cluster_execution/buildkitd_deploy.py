@@ -3,11 +3,10 @@
 
 """The shared BuildKit daemon: one long-lived builder with a store that outlives a build.
 
-Every build used to get a **fresh** BuildKit, spawned inside its own Job by
+The alternative is a **fresh** BuildKit per build, spawned inside its own Job by
 ``buildctl-daemonless.sh``. That is why the registry layer cache exists at all -- with nothing
-on a node reusable between builds, a registry was the only cache there could be. It also meant
-two costs were paid on every single build, and neither showed up as anything but "the build is
-slow":
+on a node reusable between builds, a registry is the only cache there can be. It also pays two
+costs on every single build, neither of which shows up as anything but "the build is slow":
 
 * the base image was pulled again -- measured at 95-110 s per container, on builds where every
   layer was already a cache hit;

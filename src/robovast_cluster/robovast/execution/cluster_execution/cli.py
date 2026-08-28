@@ -174,9 +174,9 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         lines.append(run_line)
         # A campaign spends its whole life in one `running` phase, so the only thing worth
         # saying about its clock is the verdict: this run is wedged, not merely slow. The
-        # bare age of the last completion used to ride here too and said nothing a reader
-        # could act on -- and it could not be judged at all without a declared per-run
-        # budget, which is now reported once by `validate_project` instead.
+        # bare age of the last completion says nothing a reader can act on, and cannot be
+        # judged at all without a declared per-run budget -- which `validate_project`
+        # reports once instead.
         stall = stall_report(Status.model_validate(status))
         if stall.get("stall_reason"):
             lines.append(f"  Stalled: {stall['stall_reason']}")
@@ -1042,10 +1042,10 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         wait_for_service_ready(namespace=namespace, kube_context=kube_context,
                                timeout_s=timeout)
         # No branch here, deliberately: wait_for_rollout raises on every outcome that is
-        # not convergence. It used to return a bool, and the caller printing
-        # "✓ upgraded and ready" regardless of it is how an upgrade whose pod sat in
-        # ImagePullBackOff still exited 0. Everything below this line is now reachable
-        # only when the new pod really is the one serving.
+        # not convergence. Returning a bool instead lets a caller print "✓ upgraded and
+        # ready" regardless of it, which is how an upgrade whose pod sits in
+        # ImagePullBackOff still exits 0. Everything below this line is reachable only
+        # when the new pod really is the one serving.
         wait_for_rollout(namespace=namespace, kube_context=kube_context, timeout_s=timeout,
                          report=lambda message: click.echo(f"  {message}"))
         # With a floating tag the Deployment spec is byte-identical either way, so this

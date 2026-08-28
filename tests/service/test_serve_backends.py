@@ -94,8 +94,8 @@ def test_the_conventional_port_has_one_definition():
 
 
 def test_finding_a_local_service_does_not_touch_the_cluster_package():
-    """`detected_service_url` is the first thing any client does. It used to import the
-    cluster deploy module to learn which port to probe."""
+    """`detected_service_url` is the first thing any client does, so it must not import
+    the cluster deploy module to learn which port to probe."""
     mods = _imports_after(
         "from robovast.client.service_target import detected_service_url;"
         " detected_service_url()")

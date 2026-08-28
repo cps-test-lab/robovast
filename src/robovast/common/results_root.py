@@ -18,9 +18,8 @@
 
 The service and the MCP server both need this, and they must agree: a ``vast serve`` that
 wrote a campaign somewhere the results reader does not look produces "no such campaign" for
-a campaign that plainly exists. They used to hold two copies of the precedence rule with a
-comment on each saying it had to match the other, which is the arrangement that lets them
-stop matching.
+a campaign that plainly exists. Two copies of the precedence rule, each with a comment
+saying it has to match the other, is the arrangement that lets them stop matching.
 """
 
 import logging
@@ -35,10 +34,9 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
     A service-owned ``results`` directory beside the workspaces store: one stable
     location, the same for every campaign this service runs.
 
-    There used to be a first branch here reading an initialized CWD project's
-    ``results_dir``. It was the last thing ``.robovast_project`` decided, and it went with
-    it -- a file discovered by walking up to the filesystem root deciding where a service
-    writes is a surprise, not a convenience. A caller who wants to choose says so:
+    No branch here reads an initialized CWD project's ``results_dir``: a file
+    discovered by walking up to the filesystem root, deciding where a service writes, is a
+    surprise rather than a convenience. A caller who wants to choose says so:
     ``vast serve --results-dir DIR``, which the transport honours ahead of this.
 
     Pure path resolution: the directory need not exist, and asking never creates it, so a

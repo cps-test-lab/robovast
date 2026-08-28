@@ -24,8 +24,8 @@ project's docker build context. Both the local build path
 match the tree staged on the other.
 
 It lives in ``common`` so both sides import it *downward*: the cluster build code
-previously reached up into ``service.image_build`` for this private constant — the
-lone engine-level ``execution → service`` dependency — which inverted the layering.
+reaching up into ``service.image_build`` for this constant would be an engine-level
+``execution → service`` dependency, which inverts the layering.
 """
 
 from pathlib import Path

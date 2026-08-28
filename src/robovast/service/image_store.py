@@ -22,14 +22,14 @@ is the image called here, and is it actually here. That is the only part that di
 between a local ``vast serve`` (the docker daemon) and a cluster deployment (a registry),
 and it is the part that must be asked rather than assumed.
 
-It exists because it was previously *not* named. The local store was a class
-(``LocalImageBuildManager``) while the cluster's identical responsibilities were spread
-across nineteen methods of ``ClusterService`` -- so the local manager was reachable on both
-lanes and quietly answered wrongly on one, and every new caller needed a hand-written
-override to be safe. One caller (``_exec_image``) did not get one: on the cluster it asked
-the local docker daemon, inside a pod that has none, and reported every built image as
-unbuilt. A lane that forgets to implement :class:`ImageBuildStore` now cannot be
-constructed at all, which is the difference between a checklist and a convention.
+It exists so that the store is *named*. Left unnamed -- a class for the local store while
+the cluster's identical responsibilities are spread across methods of ``ClusterService`` --
+the local manager is reachable on both lanes and quietly answers wrongly on one, and every
+new caller needs a hand-written override to be safe. A caller that does not get one (such
+as ``_exec_image``) asks the local docker daemon on the cluster, inside a pod that has
+none, and reports every built image as unbuilt. A lane that forgets to implement
+:class:`ImageBuildStore` cannot be constructed at all, which is the difference between a
+checklist and a convention.
 """
 
 import logging

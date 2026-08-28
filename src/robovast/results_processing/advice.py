@@ -124,8 +124,8 @@ SHM_ADVICE_FLOOR_BYTES = 64 * 1024 * 1024
 
 #: What a campaign composed today reserves when its ``.vast`` says nothing, in bytes.
 #:
-#: Derived from the config model rather than restated, so this cannot quote a size that is
-#: no longer the one campaigns actually get.
+#: Derived from the config model rather than restated, so this cannot quote a size other
+#: than the one campaigns actually get.
 DEFAULT_SHM_SIZE_BYTES = to_bytes(DEFAULT_SHM_SIZE)
 
 #: Per-container CPU and memory, pooled over every tick of every run.

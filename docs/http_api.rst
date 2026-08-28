@@ -100,9 +100,9 @@ Four routes stream instead of returning a body. The two ``.../stream`` log route
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
 than replaying the whole log. ``GET /campaigns/{id}/archive`` streams a tar.gz of the
 campaign — tarred from the object store's objects as they are fetched on a cluster
-service, from the campaign directory on a local one. Both lanes answer it: a local
-service used to refuse with a ``409`` ("the results are already on this host's
-filesystem"), which was true of a caller on that host and false of everyone else.
+service, from the campaign directory on a local one. Both lanes answer it: refusing on a
+local service with a ``409`` ("the results are already on this host's filesystem") asserts
+something true of a caller on that host and false of everyone else.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is

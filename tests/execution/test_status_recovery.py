@@ -38,9 +38,9 @@ def test_stopped_outcome_survives_reconstruction(tmp_path):
 def test_incomplete_artifacts_without_outcome_are_crashed(tmp_path):
     """No durable record and missing verdicts: the campaign did not finish.
 
-    This used to derive ``finished`` regardless, which is what a campaign looks like
-    after its service is restarted out from under it — jobs still running, most runs
-    without a verdict yet. Reported as finished, a reader (and a waiter) stops looking.
+    Deriving ``finished`` regardless mislabels what a campaign looks like after its
+    service is restarted out from under it — jobs still running, most runs without a
+    verdict yet. Reported as finished, a reader (and a waiter) stops looking.
     """
     campaign = tmp_path / "camp-2026-01-01-000002"
     campaign.mkdir()

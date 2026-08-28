@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """A campaign ends exactly once, and not before its results exist.
 
-``run()`` used to publish ``finished`` the moment the run loop returned — while share
-and postprocessing were still to come. Every reader believed it: a waiter returned
-"done" for a campaign with no metrics, and the ntfy message said so on a phone nobody
-re-reads. The phase now stops at ``finishing`` there, and ``end_campaign`` publishes the
-terminal phase from whichever scope is outermost for the lane.
+Publishing ``finished`` the moment the run loop returns — while share and postprocessing
+are still to come — is believed by every reader: a waiter returns "done" for a campaign
+with no metrics, and the ntfy message says so on a phone nobody re-reads. So ``run()``
+stops at ``finishing`` there, and ``end_campaign`` publishes the terminal phase from
+whichever scope is outermost for the lane.
 
 The tests that matter here are the two failure directions, because they are opposites and
 a fix for one produces the other: ending *too early* is the original bug; never ending at
@@ -116,7 +116,7 @@ def test_ending_twice_is_harmless():
 
 def test_the_heartbeat_stops_only_at_the_end():
     """It deliberately outlives run(): share and postprocessing are the longest stretch
-    in which nothing else reports, and that window used to be silent."""
+    in which nothing else reports, so stopping it there leaves that window silent."""
     notifier = _Notifier()
     controller.end_campaign("c1", _state(), notifier)
     assert notifier.heartbeat_stopped

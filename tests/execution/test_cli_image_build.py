@@ -3,13 +3,13 @@
 """``vast image build`` — what a human is told about a project that builds SEVERAL images.
 
 A project builds one image per container that adds packages, and the returned handle names
-only one of them. Both output lines used to name that one, so a project building a scenario
-image and a `sut` image printed a single cache-hit line for the scenario and never mentioned
-the `sut` at all: a reader could not tell whether the second image was covered, still
-building, or missing entirely. That was observed in practice and read as "the sut image is
-not being built", which is a different and much more alarming thing than what had happened.
+only one of them. Naming that one in both output lines makes a project building a scenario
+image and a `sut` image print a single cache-hit line for the scenario and never mention the
+`sut` at all: a reader cannot tell whether the second image was covered, still building, or
+missing entirely, and reads it as "the sut image is not being built" -- a different and much
+more alarming thing.
 
-The MCP surface had the same defect in `cached`/`next_step`; this is the human half of it.
+`cached`/`next_step` carry the same property on the MCP surface; this is the human half.
 """
 
 import contextlib

@@ -277,8 +277,8 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
         already imported, which is exactly what ``_warn_if_already_loaded`` reports.
     ``host_dependency``
         the requirement, when the plugin declares a dependency on robovast itself. Recorded
-        because that declaration is the shape that used to break the process (see the
-        module docstring), and a reader should see it without re-deriving it.
+        because that declaration is the shape the module docstring warns about, and a reader
+        should see it without re-deriving it.
     ``commit`` / ``url``
         for a VCS install, the resolved commit and origin, from the ``direct_url.json`` pip
         writes per PEP 610. This is what turns ``@main`` into something re-installable.
@@ -335,8 +335,8 @@ def _host_dependency_of(dist) -> str:
 def host_dependent_plugins(vast_dir: str) -> dict:
     """``{distribution: requirement}`` for installed plugins that depend on robovast.
 
-    Harmless now --- the host satisfies it, so pip installs nothing --- but it is the
-    declaration that used to produce a second robovast in the workspace, and it still
+    Harmless here --- the host satisfies it, so pip installs nothing --- but it is the
+    declaration that would otherwise produce a second robovast in the workspace, and it
     drags the published robovast's own closure into any environment that resolves it
     without the host present. The plugin's author is the only one who can remove it, so
     both the install and ``validate_project`` report it, from this one read.

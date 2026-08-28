@@ -4,10 +4,9 @@
 
 Every cluster read (a status probe, a listing, a file read) ends at the object store,
 so when the store stops answering the failure reaches ``_guard`` on many routes at
-once. It used to arrive as a raw botocore transport error, which FastAPI turned into
-a ~90-line traceback in the service log and a bare 500 for the caller — while the
-message the operator needed ("the store did not answer, here is the endpoint") was
-buried at the bottom.
+once. A raw botocore transport error reaching it becomes a ~90-line traceback in the
+service log and a bare 500 for the caller, with the message the operator needs ("the
+store did not answer, here is the endpoint") buried at the bottom.
 """
 
 import pytest

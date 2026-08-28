@@ -155,10 +155,10 @@ class ImageStoreUnavailable(RuntimeError):
     """Raised when an image store could not be asked whether an image is there.
 
     "I could not check" and "it is not there" are different answers, and conflating them
-    is a bug this class exists to prevent: the local store used to swallow a missing docker
-    CLI into ``image_exists() -> False``, so a service running where no docker daemon
-    exists reported every built image as unbuilt — a missing *dependency* reported as a
-    missing *artifact*, which cost a real investigation.
+    is a bug this class exists to prevent: a local store that swallows a missing docker CLI
+    into ``image_exists() -> False`` makes a service running where no docker daemon exists
+    report every built image as unbuilt — a missing *dependency* reported as a missing
+    *artifact*.
 
     A ``RuntimeError`` for the same reason :class:`ObjectStoreUnreachableError` is one: the
     readers that already degrade on one keep working unchanged.

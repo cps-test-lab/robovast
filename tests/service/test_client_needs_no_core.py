@@ -197,8 +197,8 @@ def test_launching_a_campaign_gets_as_far_as_the_service(without_core, monkeypat
 
 
 def test_the_waiting_half_of_wait_and_download_needs_no_core(without_core):
-    """``--wait-and-download`` calls `wait_for_campaign_outcome`, which used to be
-    `wait_for_cluster_campaign` in the core -- the single reason `run` could not move."""
+    """``--wait-and-download`` calls `wait_for_campaign_outcome`, which lives in the
+    client rather than the core -- otherwise it is the single thing keeping `run` there."""
     from robovast.execution import campaign_wait  # pylint: disable=import-outside-toplevel
 
     class _Done:
@@ -267,9 +267,9 @@ def test_doctor_can_ask_about_a_deployment_without_the_core(without_core):
     #
     # It has to be absent somehow, though: without it the deferred import SUCCEEDS, the
     # code calls the cluster, and returns [] ten seconds later because nothing answered.
-    # That is the same answer the ImportError path gives, so this assertion used to hold
-    # while proving nothing about it -- and it would have failed on a machine that could
-    # reach a deployment. `None` in sys.modules is what makes an import raise.
+    # That is the same answer the ImportError path gives, so the assertion would hold
+    # while proving nothing about it -- and would fail on a machine that can reach a
+    # deployment. `None` in sys.modules is what makes an import raise.
     with patch.dict(sys.modules, {"robovast.execution.cluster_execution": None}):
         assert check_deployment(namespace="default") == []
 

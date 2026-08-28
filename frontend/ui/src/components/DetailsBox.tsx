@@ -81,8 +81,8 @@ function bestOf(history: SearchHistory): string | undefined {
 function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean) {
   return useQuery({
     // `postprocessed` is part of the key so the answer is re-fetched when the metric tables
-    // arrive: a finished campaign is postprocessed a few minutes LATER, and the panel used to
-    // cache the pre-postprocessing answer for the whole session.
+    // arrive: a finished campaign is postprocessed a few minutes LATER, and without it the
+    // panel caches the pre-postprocessing answer for the whole session.
     queryKey: ['campaign-details', campaignId, postprocessed],
     enabled,
     retry: false,

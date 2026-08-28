@@ -268,9 +268,9 @@ on the second one.
 
 .. note::
 
-   ``name:`` is no longer a destination and is refused, naming the two keys that are. It
-   used to mean ``scenario:``; one spelling per destination is what keeps the commonest
-   line in a ``.vast`` from having two.
+   ``name:`` is not a destination and is refused, naming the two keys that are. In a
+   ``.vast`` that still carries it, it means ``scenario:``; one spelling per destination
+   is what keeps the commonest line in a ``.vast`` from having two.
 
 .. _config-variation-slots:
 
@@ -496,17 +496,16 @@ Number of times to execute each run configuration. Multiple runs allow for stati
    execution:
      runs: 20
 
-behaviours and logs (no longer configurable)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Behaviours and logs
+^^^^^^^^^^^^^^^^^^^
 
-Two former keys are gone as of config version 3.
+Neither of these is configurable.
 
-``bt_log`` recorded how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in
-each run directory, and could be turned off. **It is now always on.** A run whose tree state
-was not recorded cannot be explained after the fact; the file is small — tens to a few
-hundred KB, beside a rosbag measured in MB — and turning it off also cost the *live* answer,
-since ``get_job_state`` reads it to say which action a wedged run is stuck in. There was no
-campaign worth paying that for.
+**The behaviour tree is always logged**, as ``behaviors.jsonl`` in each run directory. A run
+whose tree state was not recorded cannot be explained after the fact; the file is small —
+tens to a few hundred KB, beside a rosbag measured in MB — and not recording it also costs
+the *live* answer, since ``get_job_state`` reads it to say which action a wedged run is stuck
+in. There is no campaign worth paying that for.
 
 The file is ingested into the ``behaviors`` table of ``data.db`` — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
@@ -515,10 +514,10 @@ executed are still present. Each row carries ``parent_id`` and ``child_index`` (
 (where in the scenario source the behaviour came from). The Run view's scenario-tree panel
 reads this table. See the scenario-execution documentation for the file format.
 
-``log_topics`` chose what the entrypoint's own recorder captured. It is now fixed at
-``/rosout`` and ``/clock``, which is exactly what the merged :ref:`run_log <merged-run-log>`
-needs: ``/rosout`` for the lines, ``/clock`` for the sim↔wall mapping (each message's
-receive time is wall and its content is sim — see :ref:`clock-map`). What a run records
+**The entrypoint's own recorder is fixed at** ``/rosout`` and ``/clock``, which is exactly
+what the merged :ref:`run_log <merged-run-log>` needs: ``/rosout`` for the lines, ``/clock``
+for the sim↔wall mapping (each message's receive time is wall and its content is sim — see
+:ref:`clock-map`). What a run records
 *beyond* that is the scenario's ``bag_record`` to say, where it sits beside the behaviour
 producing it.
 

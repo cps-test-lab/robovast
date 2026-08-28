@@ -7,12 +7,12 @@ Every verb here goes through the **robovast-service**, which drives the campaign
 process. That is why they are the client's: acting on a campaign is an HTTP verb and
 nothing else -- no kubeconfig, no Kubernetes client, no Docker.
 
-They used to sit under ``vast exec cluster``, which said something untrue about them.
+Not under ``vast exec cluster``, which would say something untrue about them.
 ``CreateCampaignRequest.backend`` is vestigial -- "one service runs one lane, chosen by
 the serve command's --backend" -- so the lane belongs to the service and never to the
-verb: ``stop`` against a local service stops a local campaign, and the ``cluster`` in its
-old path named a choice the request cannot express. The campaign is what these act on, so
-the campaign is what names them.
+verb: ``stop`` against a local service stops a local campaign, and a ``cluster`` in the
+path would name a choice the request cannot express. The campaign is what these act on,
+so the campaign is what names them.
 
 Starting one is not here. A campaign does not exist until it is created, so it cannot be
 the address; the project's location can -- ``vast workspace run WORKSPACE [VAST]``. What
@@ -148,9 +148,9 @@ def log(campaign, follow, namespace, context):
     (config-generation), run (controller) and postprocessing phases in order, each
     under a ``===== PHASE =====`` divider.
 
-    One reader, over HTTP. This used to fall back to assembling the log from a campaign
-    directory when no service answered -- which needed the core installed, took a path
-    where every other verb takes a campaign id, and so was a second implementation of
+    One reader, over HTTP, and no fallback to assembling the log from a campaign
+    directory when no service answers -- that needs the core installed, takes a path
+    where every other verb takes a campaign id, and is a second implementation of
     "read the log" that a client-only install could not reach anyway.
     """
     try:
@@ -660,9 +660,9 @@ def download_cmd(campaigns, output, force, namespace, context):
     file, not a results tree, so a results directory is the wrong home for it.
 
     One campaign that fails does not stop the others: each is reported on its own line and
-    the exit summary counts what landed. This is the implementation that used to be ``vast
-    results download``; the thin single-archive copy that lived here could not do several,
-    resume past a failure, or show progress on a multi-gigabyte transfer.
+    the exit summary counts what landed. A thin single-archive copy cannot do several,
+    resume past a failure, or show progress on a multi-gigabyte transfer, so this is the
+    one implementation.
     """
     import time  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel

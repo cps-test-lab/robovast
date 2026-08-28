@@ -6,8 +6,8 @@ The service composes the engine (``service -> execution``); the engine must not
 reach back up into the service. The ``vast exec`` CLI and the wait-and-download
 poller under ``execution_utils/`` are client/orchestration code that legitimately
 drives the service, so they are deliberately excluded — this guards the *engine*,
-where the lone leak (cluster image staging importing a private ``service``
-constant) used to live.
+where such a leak (cluster image staging importing a private ``service`` constant)
+would sit.
 """
 
 import subprocess

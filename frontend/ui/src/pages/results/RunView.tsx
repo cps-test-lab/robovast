@@ -359,8 +359,8 @@ export function RunView({
   }
 
   // The tree's own id builder, so the current run highlights in the picker. Shared rather than
-  // spelled again here: this used to be a hand-written copy of the id, which any change to the
-  // tree's shape (such as the batch level) would silently break.
+  // spelled again here: a hand-written copy of the id is silently broken by any change to the
+  // tree's shape (such as the batch level).
   const selectedTreeId = run
     ? selectionNodeId(campaignId, run, resolved.batch)
     : ''

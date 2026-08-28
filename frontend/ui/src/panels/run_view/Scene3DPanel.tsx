@@ -3,7 +3,7 @@
 // It reads the two artifacts that define a replay, and nothing else:
 //
 //   * the **scene** descriptor (`scene.json`/`scene.bin`) -- the geometry: a body tree with rest
-//     transforms and named joints. Static per *world*, so it is not a per-run artifact and is no longer
+//     transforms and named joints. Static per *world*, so it is not a per-run artifact and is not
 //     shipped by every campaign: the service compiles it on demand, in the campaign's own image, the
 //     first time somebody opens a 3D view, and caches it by world identity. The panel asks
 //     `GET /campaigns/{id}/scene`, POSTs once if nothing is cached, and loads the URL it is handed.

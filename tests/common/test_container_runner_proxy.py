@@ -313,8 +313,8 @@ def test_worker_installs_the_proxy_before_composing(tmp_path, monkeypatch):
     """compose_worker turns the socket into the factory ``_make_container_runner`` reads.
 
     Asserted through ``_make_container_runner`` rather than the ContextVar, because that
-    is the function the variation actually goes through -- and the one that used to
-    raise "not yet supported under isolated plugin composition on a cluster backend".
+    is the function the variation actually goes through -- and the one that otherwise
+    raises "not yet supported under isolated plugin composition on a cluster backend".
     """
     import json
 

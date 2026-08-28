@@ -21,8 +21,8 @@ It provides four views:
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
   it was launched from; see `Where a campaign came from`_.
-  The phase reflects the whole lifecycle, including the two pre-run steps that used to
-  be invisible: ``building`` (the campaign is **waiting for its experiment image** —
+  The phase reflects the whole lifecycle, including its two pre-run steps:
+  ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
   triggered) and ``variation`` (the campaign's configurations are being expanded), then
   ``running`` → ``finishing`` → ``postprocessing`` → ``finished`` (or ``failed`` /
@@ -62,9 +62,8 @@ It provides four views:
   campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
   A finished campaign also shows a **download icon** that streams its ``tar.gz``
   straight from the service — from the object store on a cluster, from disk on a local
-  one; the lane is not something a viewer should have to know, and this used to be
-  offered only on the cluster. When that campaign also has a copy on the share the icon
-  becomes a small menu, adding **Copy share link** beside the download (omitted for a
+  one; the lane is not something a viewer should have to know. When that campaign also has
+  a copy on the share the icon becomes a small menu, adding **Copy share link** beside the download (omitted for a
   share provider that has no link a browser could open — SFTP has none). No share copy,
   no menu — one click. A finished campaign's
   actions menu offers **Retrigger campaign**, which starts a **new** campaign from
@@ -115,7 +114,7 @@ The Admin page
 --------------
 
 Every other page is about a campaign. This one is about the service running them, and it
-answers three questions that previously had no answer from a browser at all.
+answers three questions no other page does.
 
 **How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
@@ -183,7 +182,7 @@ the service heartbeats every quiet second with a *visible* event (:doc:`http_api
 UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
 connection whenever the tab becomes visible, the network returns, or the check next runs.
 The **Refresh** button beside the campaign list's heading does the same thing on demand — it
-is no longer the only way to get there, which is why it is an icon rather than a labelled
+is not the only way to get there, which is why it is an icon rather than a labelled
 button: it sits next to the heading it acts on, the way the Explorer's and the run view's do.
 Anything other than a healthy stream is labeled ``reconnecting…`` next to it, so a stale list
 always says that it might be.
@@ -267,9 +266,10 @@ appears in the list at phase ``importing`` and its own row is the progress from 
 One import per visit; a refusal instead keeps the dialog open, because a refused import
 creates no row to be reported on.
 
-This used to be a panel *below* the campaign list. On a deployment with a hundred campaigns
-it was off the bottom of the page, collapsed, which is a poor place for the only feature
-that brings somebody else's work in — hence a menu entry, a search box, and newest first.
+It is a menu entry rather than a panel below the campaign list: on a deployment with a
+hundred campaigns such a panel is off the bottom of the page, collapsed, which is a poor
+place for the only feature that brings somebody else's work in — hence a menu entry, a
+search box, and newest first.
 
 **Newest campaign first**, ordered by the timestamp inside each campaign id. Not by when the
 archive was written: no share provider reports a modification time, and when the campaign
@@ -444,8 +444,9 @@ shaped like this page: one key per view.
 
 .. _visualization-old-keys:
 
-**Reading an older campaign.** These declarations used to live in two unrelated top-level
-blocks. The mapping, for anyone opening a campaign's archived ``_config/*.vast``:
+**Reading an older campaign.** A campaign archived before these keys moved carries them in
+two unrelated top-level blocks. The mapping, for anyone opening a campaign's archived
+``_config/*.vast``:
 
 =================================  ============================================
 Old key                            Now
@@ -581,8 +582,7 @@ run files, and author the ``.vast`` in the Monaco editor.
       vast workspace init configs/examples/growth_sim
       #> Target: this machine, in-process (store: …)
 
-   There is no flag to pick between them, and there used to be: ``--cluster`` opened
-   an ephemeral ``kubectl port-forward`` for the call. With the service published and
+   There is no flag to pick between them: with the service published and
    authenticated, an operator uses the same path as everybody else. Every command
    prints the ``Target:`` it
    resolved — including ``[detected]`` — so the choice is never silent. To reach a
@@ -629,11 +629,10 @@ column is never empty for want of a block nobody wrote.
 The built-in panels:
 
 **Scenario parameters** (``parameters``) — what the trial is given, as YAML, and nothing
-else. It used to add a toggle for the ``_``-prefixed keys a variation writes for other
-readers (``_map_file``, ``_path``, ``_goal_parameter_name``) and, below that, a preview of
-each factor's value list with this configuration's value marked; both restated in a second
-notation what the ``.vast`` in the next column already says, and the column is too narrow to
-spend on that.
+else. Not the ``_``-prefixed keys a variation writes for other readers (``_map_file``,
+``_path``, ``_goal_parameter_name``), and not a preview of each factor's value list with this
+configuration's value marked: both would restate in a second notation what the ``.vast`` in
+the next column already says, and the column is too narrow to spend on that.
 
 **World configuration** (``world``) — the resolved ``sim`` block: the world this
 configuration runs in and the plugin overrides on it. A different question from the
@@ -709,8 +708,8 @@ nothing about ``ParameterVariationList`` knows about placement, so it contribute
 .. _panel-bindings:
 
 Every field of every panel is bound the same way, and a panel that declares its fields has
-them **checked**: a misspelled binding is a validation error naming the valid fields, where it
-used to validate cleanly and leave the panel silently empty. The four sources are
+them **checked**: a misspelled binding is a validation error naming the valid fields, rather
+than validating cleanly and leaving the panel silently empty. The four sources are
 
 ``map: files/depot.yaml``
     a literal — written out, the common case;
@@ -1389,7 +1388,7 @@ It needs no bindings at all — ``- scene3d:`` on its own is a complete panel �
 artifacts are specified in :ref:`run-capture`.
 
 *Geometry is compiled when somebody looks, not when a campaign runs.* A descriptor is 13–31 MB and takes
-5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign no longer ships one.
+5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign does not ship one.
 On the first view the service compiles it **inside that campaign's own pinned image** (the world is
 generally installed there from a wheel, and a host that merely happens to have the tooling could be a
 different version, which renders plausible but wrong geometry) and caches it keyed by *world identity*:
@@ -1411,17 +1410,17 @@ static world.
 
 .. note::
 
-   Two earlier shapes are gone. The panel used to animate from the postprocessed ``poses`` table
-   (``rosbags_tf_to_csv``): that needed a rosbag before anything moved, imposed a naming contract on the
-   simulator plus a ``bind`` list for its exceptions, and could only place bodies parented to the world —
-   so an articulated robot replayed rigid. ``scene.scope``/``capture.scope`` go with it: once geometry is
-   resolved by content key there is nothing to declare, and nothing to declare *wrongly* (a
-   campaign-scope descriptor aimed at a world that varied per configuration rendered confidently wrong
-   geometry, and no validation could catch it). The ``poses`` table is unaffected and still serves the
-   costmap panel and ``timeseries``.
+   The panel does not animate from the postprocessed ``poses`` table (``rosbags_tf_to_csv``): that
+   would need a rosbag before anything moved, impose a naming contract on the simulator plus a
+   ``bind`` list for its exceptions, and could only place bodies parented to the world — so an
+   articulated robot would replay rigid. Nor is there a ``scene.scope``/``capture.scope`` to declare:
+   geometry is resolved by content key, so there is nothing to declare, and nothing to declare
+   *wrongly* (a campaign-scope descriptor aimed at a world that varies per configuration renders
+   confidently wrong geometry, and no validation could catch it). The ``poses`` table itself serves
+   the costmap panel and ``timeseries``.
 
-   ``execution.generate`` remains supported for a campaign that wants its descriptor *frozen into its
-   results* — an archive that must replay even without the image — but it is no longer how the run view
+   ``execution.generate`` is supported for a campaign that wants its descriptor *frozen into its
+   results* — an archive that must replay even without the image — but it is not how the run view
    obtains geometry.
 
 **2D scene** (``scene``) — a top-down/side 2D plot of "where the thing is right now": one

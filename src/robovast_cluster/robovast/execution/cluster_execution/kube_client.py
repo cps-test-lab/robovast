@@ -103,12 +103,11 @@ def load_kube_config(context: str | None = None) -> str:
     cluster-touching path must come through here rather than calling
     ``kubernetes.config`` itself.
 
-    That used to be asserted rather than checked, and it was false in ten places: the
-    cluster-config providers, the service deploy/cleanup paths and the RBAC setup all
-    loaded config directly, so their API calls ran with ``timeout=None``. The visible
-    cost was an off-cluster ``vast serve --backend cluster`` hanging for minutes on an
-    unreachable cluster and then dying in a urllib3 traceback. A test now enforces it
-    (``tests/common/test_kube_loader_is_the_only_entry.py``).
+    Asserted in prose alone, that rule goes false quietly: a cluster-config provider, a
+    service deploy/cleanup path or the RBAC setup loading config directly runs its API
+    calls with ``timeout=None``, which shows up as an off-cluster ``vast serve --backend
+    cluster`` hanging for minutes on an unreachable cluster and then dying in a urllib3
+    traceback. A test enforces it (``tests/common/test_kube_loader_is_the_only_entry.py``).
 
     Args:
         context: Host kubeconfig context to select when not running in-cluster.

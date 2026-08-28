@@ -16,7 +16,7 @@ import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 // `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
 // (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
 // `data.db` at all -- still lists its runs. It also means both surfaces build the same tree from
-// the same rows; they used to read two different tables for it.
+// the same rows.
 //
 // `batch` is the ask/tell round that proposed the configuration, and `objective` its score --
 // the two things that make a search's history readable. `objective_direction` comes from the

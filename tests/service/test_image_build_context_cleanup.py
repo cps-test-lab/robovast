@@ -334,7 +334,7 @@ def test_a_submit_that_dies_before_its_job_exists_takes_its_context_with_it(
         cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
 
     assert storage.deleted == [("bkt", context_prefix("imgbuild-foo-h"))]
-    # And the record no longer holds the sweep back.
+    # And the record does not hold the sweep back.
     assert cs.get_image_build_status("imgbuild-foo-h").done
 
 

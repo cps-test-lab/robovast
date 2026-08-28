@@ -167,9 +167,9 @@ class ImageBuildRef(BaseModel):
     builds: dict = {}
     #: Per-container cache verdict, ``{container: bool}``. :attr:`cached` is the
     #: conjunction of these; this is the field that answers "is the image I care about
-    #: built?" for a request that started several builds. It was previously only the
-    #: primary container's verdict, reported as the whole request's, which announced
-    #: "nothing to wait for" while a sibling build was still running.
+    #: built?" for a request that started several builds. Taking only the primary
+    #: container's verdict and reporting it as the whole request's announces "nothing to
+    #: wait for" while a sibling build is still running.
     cached_builds: dict = {}
 
 
@@ -230,8 +230,8 @@ class ImageBuildStatus(BaseModel):
     #: What this build carried and where it looked for layers. Both are fixed costs that
     #: are invisible in BuildKit's own output: the context is copied, uploaded and
     #: mirrored back down once per container per build, and the cache ref decides whether
-    #: any layer is reused at all. A build that is slow for either reason used to look
-    #: exactly like one that was slow for no reason. Zero/empty means "not reported".
+    #: any layer is reused at all. Without them a build that is slow for either reason
+    #: looks exactly like one that is slow for no reason. Zero/empty means "not reported".
     context_bytes: int = 0
     cache_ref: str = ""
 
@@ -1711,13 +1711,13 @@ class CampaignVisualizationsResponse(BaseModel):
 class ServiceError(OSError):
     """A refusal from the service, carrying what the service actually said.
 
-    The HTTP transport used to call ``raise_for_status()``, which discards FastAPI's
-    ``{"detail": ...}`` body. Every 4xx therefore reached an MCP tool or the CLI as
+    A plain ``raise_for_status()`` in the HTTP transport discards FastAPI's
+    ``{"detail": ...}`` body, so every 4xx reaches an MCP tool or the CLI as
     ``"400 Client Error: Bad Request for url: http://…?as=text&lines=200"`` — the status
     line and the URL, with the actual message dropped. The service's refusals are written
     to say what to do next ("is a binary file — read it as bytes…", "stop it first"), and
-    none of that survived the trip, while the web UI, which parses ``detail`` itself, saw
-    the real text. Two client families, two answers about the same call.
+    none of that survives the trip, while the web UI, which parses ``detail`` itself, sees
+    the real text: two client families, two answers about the same call.
 
     Subclasses ``OSError`` deliberately: ``requests.HTTPError`` already did (via
     ``IOError``), so every existing ``except OSError`` — notably

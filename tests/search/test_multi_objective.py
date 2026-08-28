@@ -96,7 +96,8 @@ def _controller(cfg, tmp_path, strategy):
 # -- the loop ---------------------------------------------------------------
 
 def test_a_two_objective_search_runs_to_completion(tmp_path):
-    """The regression: this used to raise before the first batch."""
+    """The regression: asking the strategy for a single objective raises before the
+    first batch."""
     cfg = _cfg(TWO)
     controller, store = _controller(cfg, tmp_path, _TwoObjective(cfg))
     report = controller.run()
