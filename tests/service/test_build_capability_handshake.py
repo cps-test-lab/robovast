@@ -69,8 +69,8 @@ def test_the_local_lane_can_always_build(local):
 
 
 def test_it_does_not_probe_docker(local, monkeypatch):
-    """The regression that matters. `check_docker_access` shells out with a 15 s timeout,
-    and this is the call that must answer instantly."""
+    """The regression that matters. Asking the Docker daemon means shelling out with a
+    timeout, and this is the call that must answer instantly."""
     import subprocess
 
     def _boom(*_a, **_k):

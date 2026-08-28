@@ -186,9 +186,9 @@ def get_kubernetes_node_labels_from_config(config_path=None):
     """
     if config_path is None:
         logger.info(
-            "No .vast config named ('vast -V <file>') — no node labels applied. Pass "
-            "'vast -V <file>' to pin pods to a node pool via "
-            "execution.kubernetes.{jobs,control}.node_labels.")
+            "No .vast config named ('--vast <file>') — no node labels applied. Pass "
+            "'vast cluster setup --vast <file>' to pin the control pod to a node pool "
+            "via execution.kubernetes.control.node_labels.")
         return None, None
     try:
         execution = load_config(config_path, subsection="execution", allow_missing=True)
@@ -198,8 +198,8 @@ def get_kubernetes_node_labels_from_config(config_path=None):
         # setup reported success — the failure has to surface here.
         raise ValueError(
             f"could not read node labels from '{config_path}': {exc}\n"
-            "Fix that .vast, or name another one with 'vast -V <file>'. Cluster setup "
-            "needs no config at all — drop the '-V' to deploy with no node selectors."
+            "Fix that .vast, or name another one with '--vast <file>'. Cluster setup "
+            "needs no config at all — drop '--vast' to deploy with no node selectors."
         ) from exc
     k8s = (execution or {}).get("kubernetes") or {}
     jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None

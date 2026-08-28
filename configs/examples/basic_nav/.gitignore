@@ -2,6 +2,5 @@
 # .vast's execution.generate: block at campaign preparation. Derived, and ~11 MB of mesh buffers
 # and textures -- never committed.
 files/scene/
-# RoboVAST results land here when the project is initialized in place.
+# Where `vast serve --results-dir .` lands this project's campaigns.
 results/
-.robovast_project

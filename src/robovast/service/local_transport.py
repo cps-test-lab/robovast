@@ -20,10 +20,10 @@ Executes local Docker campaigns by driving
 :func:`robovast.execution.controller.run_batch_campaign` in a background thread,
 serving live status from the same
 :class:`~robovast.execution.control_server.ControllerState` the cluster controller
-uses. This backs ``vast workspace run run`` (mode 1); campaigns die with the process.
-:class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
-        subclasses this, reusing
-its driver-hosting shape and overriding only the launch hooks.
+uses. This is the lane behind ``vast serve --backend local``; campaigns die with the
+service process.
+:class:`~robovast.execution.cluster_execution.cluster_service.ClusterService` subclasses
+this, reusing its driver-hosting shape and overriding only the launch hooks.
 
 Split out of the former single ``client`` module; ``client`` now re-exports
 ``LocalTransport`` so existing imports keep working.
@@ -363,7 +363,7 @@ class WorkspaceTarget:
     """What the service resolved a request to: one workspace's ``.vast``.
 
     Deliberately just the config path. This used to be a ``ProjectConfig`` — the CLI's
-    type, where ``.robovast_project`` genuinely binds a config *and* a results dir — but
+    type, back when ``.robovast_project`` bound a config *and* a results dir — but
     the service synthesized one per call with a constant ``results_dir``, so the type
     implied a choice that was never made. Every campaign lands in the shared
     ``_campaigns_root()``; a caller needing that asks for it, rather than reading a copy
@@ -476,8 +476,8 @@ class LocalTransport(RobovastInterface):
     A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
     project binding this service accepts (see :meth:`_resolve_project`), and
     ``config_path``/``vast_path`` selects among several ``.vast`` files in that
-    workspace. ``.robovast_project`` is a CLI-side concept and never selects what the
-    service runs — its one remaining role is the *results root* (see
+    workspace. Nothing ambient selects what the service runs; the results root is
+    named by ``vast serve --results-dir`` (see
     :func:`~robovast.common.results_root.local_results_root`).
     """
 
@@ -580,8 +580,8 @@ class LocalTransport(RobovastInterface):
         ``.robovast_project`` in the *service's* CWD. That branch ignored ``vast_path``
         entirely, so a caller naming one ``.vast`` silently got whichever one had been
         initialized -- a campaign that ran the wrong simulator and looked successful.
-        Its stated justification ("``vast workspace run run`` back-compat") was false:
-        that command drives the controller in-process and never reaches this method.
+        Its stated justification ("``vast exec local run`` back-compat") was false:
+        that command drove the controller in-process and never reached this method.
         """
         if not workspace_id:
             raise ValueError(
@@ -1399,7 +1399,7 @@ class LocalTransport(RobovastInterface):
         # there is no registry, no Ingress and nothing an operator can misconfigure, so
         # the capability is a property of the lane rather than of this deployment. A dead
         # daemon is *liveness* — `resource_usage`, the run preflight and `vast doctor`
-        # each answer that — and `check_docker_access` shells out with a 15 s timeout,
+        # each answer that — and asking the daemon means shelling out with a timeout,
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),

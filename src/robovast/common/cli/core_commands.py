@@ -144,10 +144,10 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
     runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
-    and campaigns survive client exit (unlike ``vast workspace run run``). The
-    service serves the web UI at the same URL — from a source checkout this
-    (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
-    ``--rebuild-ui`` forces it). Ways it makes the port live:
+    and campaigns survive client exit. The service serves the web UI at the same
+    URL — from a source checkout this (re)builds ``frontend/ui/dist`` first when it
+    is missing or stale (needs ``npm``; ``--rebuild-ui`` forces it). Ways it makes
+    the port live:
 
     * **local** (default off-cluster) — runs the app in-process: local Docker +
       local filesystem. Run it on your machine or a remote VM reached
