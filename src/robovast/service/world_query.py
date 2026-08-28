@@ -168,7 +168,13 @@ class ExecSlotContainerRunner:
 
     def _script(self, command) -> str:
         """The shell script that stages the documents and then runs *command*."""
-        parts = []
+        # Newline-separated, never `&&`-joined: a heredoc ends only at a line holding
+        # exactly its delimiter, and an `&&` after the terminator leaves that line holding
+        # the next command as well. The document then swallowed the describe, the script
+        # still exited 0, and every campaign carrying overrides was reported "not checked".
+        # `set -e` keeps what the `&&` was there for -- a failed mkdir or cat must not let
+        # the simulator go on to read a file nothing wrote.
+        parts = ["set -e"]
         for container_path, text in self._documents.items():
             directory = os.path.dirname(container_path)
             if directory:
@@ -181,7 +187,7 @@ class ExecSlotContainerRunner:
                 f"{text.rstrip(chr(10))}\n{_HEREDOC_EOF}")
         parts.append(" ".join(shlex.quote(self._rewrite(arg))
                               for arg in (command or [])))
-        return " && ".join(parts)
+        return "\n".join(parts)
 
     def _rewrite(self, arg: str) -> str:
         """*arg* with an exposed directory's container path swapped for this lane's."""
