@@ -89,7 +89,7 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
 // *failed* job is deliberately not here: a failure is the thing the reader came to look at.
 const DONE_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'killed'])
 
-// Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
+// Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
@@ -171,7 +171,7 @@ export function StatusView({
       return next
     })
   // The jobs list mirrors what actually exists on the cluster — the same set `k9s`
-  // shows: jobs that own a pod. A `waiting` job is the un-admitted Kueue backlog: it has
+  // shows: jobs that own a pod. A `waiting` job is the un-admitted backlog: it has
   // no pod, nothing distinguishes one queued job from the next, and there is no log to
   // expand (the row's only affordance). Whole batches sit there at launch, so listing
   // them buries the handful of jobs that are really doing something. The backlog is

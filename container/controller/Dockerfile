@@ -1,6 +1,6 @@
 # robovast-controller image
 #
-# Hosts the in-cluster CampaignController for `vast exec cluster run` (search and
+# Hosts the in-cluster CampaignController for `vast workspace run` (search and
 # batch). It contains robovast and its Python dependencies so the controller can
 # compose, postprocess, evaluate and drive the search loop from inside the
 # cluster — reading per-batch results from S3 in-cluster instead of round-tripping
@@ -15,8 +15,8 @@
 # execution lane -- the only one needing its own step, added separately below).
 # robovast-client is not optional and not an extra: it is the layer robovast is built on,
 # so `poetry install` brings it in with the root project. There is no wheel-injection shortcut -- an earlier comment here
-# described one that `vast exec cluster run` no longer does -- so changing any of them
-# means rebuilding this image and rolling the Deployment with `vast exec cluster upgrade`.
+# described one that the launch path no longer does -- so changing any of them
+# means rebuilding this image and rolling the Deployment with `vast service upgrade`.
 # The cheaper loops are local `vast serve`, or `vast serve --backend cluster -x <ctx>`
 # driving a real cluster from an editable checkout.
 #

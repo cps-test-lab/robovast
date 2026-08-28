@@ -4,7 +4,7 @@
 """``vast cluster`` / ``vast service`` — the verbs that need a cluster of one's own.
 
 What is left here is the **operator** half: ``setup``, ``cleanup``, ``upgrade``, ``token``
-and ``run-cleanup`` each want a kubeconfig, an API server or a cluster Secret, and
+and ``jobs-cleanup`` each want a kubeconfig, an API server or a cluster Secret, and
 ``monitor`` wants one for its fallback view. The verbs that merely *drive* a deployed
 service — ``run``, ``stop``, ``stop-job``, ``log``, ``download-cleanup`` — moved to
 ``robovast.client.cluster_cli``, because launching a campaign is four HTTP verbs and
@@ -750,7 +750,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         handle_cli_exception(e)
 
 
-@click.command('run-cleanup')
+@click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--data', is_flag=True,
@@ -776,6 +776,7 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
     object-store credentials), resolved on the conventional local port or from the
     ``vast login`` record — no local credentials needed.
 
+    \b
     Usage: vast cluster jobs-cleanup
     Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456
     Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456 --data
@@ -1188,7 +1189,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement, vas
     by deleting the NFS manifest configuration.
 
     This command can be run after completing all scenario executions
-    to clean up cluster infrastructure resources (different from run-cleanup
+    to clean up cluster infrastructure resources (different from jobs-cleanup
     which only cleans up job pods).
 
     If ``--cluster-config`` is not specified, it will automatically detect which

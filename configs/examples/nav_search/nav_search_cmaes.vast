@@ -82,9 +82,9 @@ execution:
   mode: ros2
   runs: 3
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
-  # verdict about a wedged run is possible, and `vast wait` cannot exit on one. The trial
-  # bounds itself at 120 s; this is the outer backstop for a run that wedges before its own
-  # timeout arms.
+  # verdict about a wedged run is possible, and `vast campaign wait` cannot exit on one.
+  # The trial bounds itself at 120 s; this is the outer backstop for a run that wedges
+  # before its own timeout arms.
   #
   # 600 and not 300 in a SEARCH: this is a no-progress deadline, and in a search loop a
   # batch is followed by an in-cluster bag conversion before anything is scored. Progress

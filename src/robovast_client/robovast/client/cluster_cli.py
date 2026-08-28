@@ -15,7 +15,7 @@ named a lane the request cannot express, so ``vast campaign stop`` against a loc
 service said "cluster" and stopped a Docker campaign. They are ``vast campaign`` verbs now.
 
 What stays in ``robovast-cluster`` is the half that genuinely needs a cluster: ``setup``,
-``cleanup``, ``upgrade``, ``token``, ``run-cleanup``, and ``monitor``. They attach here
+``cleanup``, ``upgrade``, ``token``, ``jobs-cleanup``, and ``monitor``. They attach here
 through the ``robovast.cluster_plugins`` entry-point group, so they are listed without
 being imported and an install without that package is short a subcommand rather than
 broken.

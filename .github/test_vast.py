@@ -708,19 +708,19 @@ def main():
         '-c', '--config',
         type=str,
         default=None,
-        help='Configuration to run (will be passed as -c <config> to vast exec)'
+        help='Configuration to run (passed as --filter <config> to vast workspace run)'
     )
     parser.add_argument(
         '-d', '--test-directory',
         type=str,
         required=True,
-        help='Directory for test output (will be passed as -d <directory> to vast exec)'
+        help='Directory the test runs in and writes its output to'
     )
     parser.add_argument(
         '-r', '--runs',
         type=int,
         default=None,
-        help='Number of runs (will be passed as -r <runs> to vast exec)'
+        help='Number of runs (passed as -r <runs> to vast workspace run)'
     )
     parser.add_argument(
         '--no-packing-test',

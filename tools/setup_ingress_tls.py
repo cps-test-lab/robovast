@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bootstrap the hostname and certificate `vast exec cluster setup --ingress-host` needs.
+"""Bootstrap the hostname and certificate `vast cluster setup --ingress-host` needs.
 
 Assembling cert-manager issuers by hand is the step most likely to stall an operator, so
 this asks for what it cannot detect and prints the two things needed next: the setup
@@ -56,7 +56,7 @@ from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME  # 
 #: The cert-manager release this installs when it is missing.
 CERT_MANAGER_VERSION = "v1.16.2"
 
-#: Names created here, referenced by `vast exec cluster setup --issuer`.
+#: Names created here, referenced by `vast cluster setup --issuer`.
 SELFSIGNED_ISSUER = "robovast-selfsigned"
 CA_ISSUER = "robovast-ca"
 CA_SECRET = "robovast-ca-key-pair"
@@ -99,7 +99,7 @@ def detect(core, networking):
 
 
 def install_cert_manager(assume_yes):
-    """Install cert-manager with helm, which is already a prerequisite (Kueue)."""
+    """Install cert-manager with helm, which cluster setup already requires."""
     if not _confirm("cert-manager is not installed. Install it now?", assume_yes):
         raise SystemExit(
             "cert-manager is required for an issued certificate. Install it, or re-run "
@@ -269,7 +269,7 @@ def main():
     print("\n" + "=" * 72)
     print("Next, deploy the service with:\n")
     flag = f"--tls-secret {tls_secret}" if tls_secret else f"--issuer {issuer}"
-    print(f"  vast exec cluster setup <flavor> \\\n"
+    print(f"  vast cluster setup <flavor> \\\n"
           f"      --ingress-host {host} --ingress-class {ingress_class} {flag}")
     print("\n" + "=" * 72)
     print("Then give your users this:\n")

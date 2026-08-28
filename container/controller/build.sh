@@ -12,7 +12,7 @@
 #
 # Point a deployment at the resulting image by naming its project:
 #   export ROBOVAST_PROJECT=docker.io/<you>   # moves the whole image family
-# then 'vast exec cluster upgrade'. Build the other three to match with
+# then 'vast service upgrade'. Build the other three to match with
 # 'make release-images PROJECT=docker.io/<you> PUSH=1'.
 BASEDIR=$(dirname "$0")
 ROOT=$(cd "$BASEDIR/../.." && pwd)

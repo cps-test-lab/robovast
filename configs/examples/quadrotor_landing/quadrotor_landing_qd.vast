@@ -2,7 +2,8 @@ version: 3
 metadata:
   name: quadrotor_landing_qd
 # Quality-diversity (pyribs MAP-Elites) search. Run with:
-#   vast execution local run        (needs the 'qd' extra: pip install 'robovast[qd]')
+#   vast workspace run <workspace> quadrotor_landing_qd.vast
+# (needs the 'qd' extra: pip install 'robovast[qd]')
 # Fills an ARCHIVE of behaviorally distinct failure-prone configs — a map of the
 # *different kinds* of failures across the behavior space. Same scenario/sim/
 # extract as the random and optuna variants; only strategy + strategy_parameters

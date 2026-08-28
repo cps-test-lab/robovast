@@ -278,6 +278,7 @@ def export_configs(args, input_file, remove):
 
     Example::
 
+    \b
         vast config export-configs --vast mine.vast unirandom* new.vast
         vast config export-configs --vast mine.vast --remove 'office*' subset.vast
     """

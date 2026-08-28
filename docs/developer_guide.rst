@@ -1021,13 +1021,11 @@ Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugin
     [tool.poetry.plugins."robovast.cluster_configs"]
     "YourClusterConfig" = "robovast_<yourplugin>.your_cluster_config:YourClusterConfig"
 
-To test your cluster configuration, you can use:
-
-.. code-block:: bash
-
-    vast cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
-
-The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
+To test your cluster configuration, call
+:meth:`~robovast.execution.cluster_config.base_config.BaseClusterConfig.prepare_setup_cluster`
+with an output directory. It writes the files and the instructions for performing the setup
+steps by hand, without applying anything. There is no CLI verb for it — ``vast cluster setup``
+is the applying path.
 
 **Storage for experiment-image builds.** ``build_context_bucket()``
 (``cluster_execution.cluster_image_build``) decides where a build stages its context,

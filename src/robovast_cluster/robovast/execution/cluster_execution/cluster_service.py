@@ -1969,7 +1969,7 @@ class ClusterService(LocalTransport):
         batch campaign's wait loop blocks until its Jobs finish on their own, so the
         flag would appear to do nothing. We therefore also tear down the campaign's
         cluster workloads (the same cleanup ``vast cluster
-        run-cleanup`` performs): the running pods terminate now, the batch wait loop
+        jobs-cleanup`` performs): the running pods terminate now, the batch wait loop
         unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
         driver winds the campaign down.
 
@@ -2255,9 +2255,9 @@ class ClusterService(LocalTransport):
         """Delete one campaign's in-flight cluster workloads (label-scoped).
 
         Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast cluster
-        run-cleanup`` performs — so the running pods terminate now and the driver's
-        batch wait loop unblocks. Label-scoped to this campaign's Jobs/Workloads/pods,
-        and it leaves the shared ClusterQueue alone, so a concurrent campaign keeps
+        jobs-cleanup`` performs — so the running pods terminate now and the driver's
+        batch wait loop unblocks. Label-scoped to this campaign's Jobs and pods, and
+        nothing cluster-wide is paused for the duration, so a concurrent campaign keeps
         being admitted while this one is torn down.
         """
         from .cluster_execution import cleanup_cluster_campaign

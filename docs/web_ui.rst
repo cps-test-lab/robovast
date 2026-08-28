@@ -1474,7 +1474,7 @@ Three things to know when charting a ``poses`` table, because every such spec hi
 * **A long run needs ``decimate_hz``, not a bigger ``max_rows``.** The row cap is a ``LIMIT`` applied
   *after* ``ORDER BY`` time, so a run that outgrows it is cut at the **head**: the chart ends
   mid-run while looking complete. Raising ``max_rows`` cannot fix that — the data query clamps at
-  5000 rows whatever a panel asks for, which is why ``vast check`` rejects a larger one.
+  5000 rows whatever a panel asks for, which is why ``vast config validate`` rejects a larger one.
   ``source: {decimate_hz: 5}`` instead keeps one sample per 1/hz second across the *whole* run, in
   SQL. Rule of thumb: ``hz ≈ 4000 / run seconds``; a 460×380 panel resolves nothing past a few
   hundred points anyway. The panel says so itself when a query is truncated.

@@ -57,7 +57,7 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
 	# environment that looked like broken code.
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
-	# with no execution lane but `local`, so `vast exec cluster` disappears and the
+	# with no execution lane but `local`, so `vast cluster` disappears and the
 	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
 	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
 	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
@@ -204,7 +204,7 @@ release-images:
 #
 # `release-images` above stays the RELEASE path and publishes all four, because
 # ROBOVAST_PROJECT moves all four. These two exist because iterating does not need that:
-# `vast exec cluster upgrade` rolls only robovast-controller, and the other three members are
+# `vast service upgrade` rolls only robovast-controller, and the other three members are
 # pulled by campaign job pods. So a change to robovast's own source needs the controller image
 # and nothing else, and a roqsim change needs robovast-roqsim and nothing else -- which is the
 # difference between publishing 0.56 GB and publishing 4.35 GB.
@@ -214,7 +214,7 @@ release-images:
 # as a set. `make image-digests PROJECT=... TAG=...` is the check for it.
 .PHONY: release-image-controller
 release-image-controller:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast exec cluster upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast service upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
 	./container/controller/build.sh \
 		-t "$(patsubst %/,%,$(PROJECT))/robovast-controller:$(if $(TAG),$(TAG),latest)" \
 		$(if $(PUSH),--push,--ask-push)

@@ -503,7 +503,7 @@ campaign that is still running:
 
 The service is auto-detected on the conventional local port, or named by ``vast login``
 (``-x`` context, ``-n`` namespace) to tunnel to the in-cluster service for the call.
-``run-cleanup --data`` deletes the buckets the same way after removing the Jobs.
+``jobs-cleanup --data`` deletes the buckets the same way after removing the Jobs.
 
 
 Push notifications (ntfy)
@@ -1194,7 +1194,7 @@ the ``--context`` flag to any cluster sub-command to select a specific context
    vast workspace run --context gcp-c4
 
 The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
-``run-cleanup``, and ``cleanup``.
+``jobs-cleanup``, and ``cleanup``.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 

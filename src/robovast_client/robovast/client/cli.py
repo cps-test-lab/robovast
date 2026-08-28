@@ -103,6 +103,7 @@ def cli(ctx):
     environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
     be kept there instead of exported by hand.
 
+    \b
     Examples:
       vast --log-level DEBUG cluster cleanup
       vast config list my.vast

@@ -17,7 +17,7 @@
 
 """Shared cluster-job utilities.
 
-Helpers used across the cluster CLI (``monitor``, ``run-cleanup``,
+Helpers used across the cluster CLI (``monitor``, ``jobs-cleanup``,
 ``upload-to-share``), the controller launcher's orphan reaping, and cluster
 teardown — independent of how scenario Jobs are produced. The job-manifest
 toolkit that actually builds/submits Jobs lives in
