@@ -132,7 +132,7 @@ def test_a_pod_that_declares_no_cpu_is_refused_at_launch():
     """
     r = kb.BatchJobRunner()
     r.campaign = "camp-1"
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"name": "scenario"}],
         "initContainers": [{"name": "sut", "restartPolicy": "Always"},
                            {"name": "simulation", "restartPolicy": "Always"}]}}}}
@@ -154,7 +154,7 @@ def test_one_container_declaring_nothing_warns_but_proceeds(caplog):
 
     r = kb.BatchJobRunner()
     r.campaign = "camp-1"
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"name": "scenario",
                         "resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
         "initContainers": [{"name": "sut", "restartPolicy": "Always"}]}}}}

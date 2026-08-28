@@ -345,13 +345,13 @@ def test_preflight_and_drain_agree_about_headroom(monkeypatch):
 
     p, _ = _provider([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch)
     queue = AdmissionController(p)
-    oversized = JobSizing(cpu=7.5, memory=1 * MiB)
+    oversized = JobSizing(cpu=7.5, memory=1 * MIB)
 
     with pytest.raises(AdmissionRefused):
         queue.preflight(oversized)
 
     # And the two agree the other way: what preflight admits, a drain can place.
-    fits = JobSizing(cpu=7.0, memory=1 * MiB)
+    fits = JobSizing(cpu=7.0, memory=1 * MIB)
     queue.preflight(fits)
     created = []
     queue.submit("c", [("j", fits, lambda node_id: created.append(node_id))],

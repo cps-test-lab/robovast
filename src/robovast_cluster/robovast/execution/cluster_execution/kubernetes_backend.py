@@ -88,6 +88,11 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .manifests import JOB_TEMPLATE, MAIN_CONTAINER_NAME
+# Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
+# import inside the loop would be noise. node_admission imports nothing from this package,
+# so there is no cycle to route around by importing late.
+from .node_admission import CREATED as _ADMIT_CREATED
+from .node_admission import PLANNED as _ADMIT_PLANNED
 from .node_placement import NODE_ID_LABEL, job_node_pool
 
 logger = logging.getLogger(__name__)
