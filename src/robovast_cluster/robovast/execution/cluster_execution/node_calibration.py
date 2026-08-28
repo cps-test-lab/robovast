@@ -163,16 +163,17 @@ class NodeCalibration:
         self._probes.pop(node_id, None)
         if not completed:
             # A probe whose scenario never reached a verdict measured a fragment of a run.
-            # The node stays on the declared sizing, which is merely un-optimised, rather
-            # than on a figure derived from a run that did not happen.
-            logger.warning("calibration probe %s did not complete; node %s stays on the "
-                           "declared sizing", job_key, node_id)
+            # The node keeps what it is already running on -- the declared figures, or the
+            # bootstrap under `sizing: calibrated` -- which is merely un-optimised, rather
+            # than a figure derived from a run that did not happen.
+            logger.warning("calibration probe %s did not complete; node %s keeps its current "
+                           "sizing (declared, or the bootstrap)", job_key, node_id)
             return False
         thin = [name for name, stats in (measured or {}).items()
                 if (stats or {}).get("samples", 0) < MIN_PROBE_SAMPLES]
         if thin:
             logger.warning("calibration probe %s produced too few samples for %s "
-                           "(< %d ticks); node %s stays on the declared sizing",
+                           "(< %d ticks); node %s keeps its current sizing",
                            job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
             return False
         # A probe that hit its own ceiling measured the ceiling. Refused rather than stored,
@@ -186,7 +187,7 @@ class NodeCalibration:
                         if (stats or {}).get("oom_kills", 0) > 0)
         if killed:
             logger.warning(
-                "calibration probe %s was OOM-killed (%s); node %s stays on the declared "
+                "calibration probe %s was OOM-killed (%s); node %s keeps its current "
                 "sizing. The memory it was given is too small for this campaign -- see "
                 "ROBOVAST_BOOTSTRAP_MEMORY, or declare it with execution.sizing: fixed",
                 job_key, ", ".join(killed), node_id)
@@ -197,7 +198,7 @@ class NodeCalibration:
         if capped:
             logger.warning(
                 "calibration probe %s was throttled against its own limit (%s); node %s "
-                "stays on the declared sizing, which is what it was measured against",
+                "keeps its current sizing, which is what the probe was measured against",
                 job_key,
                 ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
                 node_id)
@@ -211,7 +212,7 @@ class NodeCalibration:
                 figures[name] = kept
         if not figures:
             logger.warning("calibration probe %s produced no usable measurement; node %s "
-                           "stays on the declared sizing", job_key, node_id)
+                           "keeps its current sizing", job_key, node_id)
             return False
         self._by_node[node_id] = figures
         # INFO on a `robovast.*` logger, so it reaches the campaign log as well as the

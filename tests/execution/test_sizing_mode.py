@@ -240,3 +240,85 @@ def test_the_calibrated_figures_reach_the_campaign_log(caplog):
         c.record("n1", "probe-1", {"sut": {"sustained": 0.5, "peak": 1.5, "samples": 60}})
     said = [r.getMessage() for r in caplog.records if "calibrated" in r.getMessage()]
     assert said and "n1" in said[0] and "peak" in said[0]
+
+
+# -- the first job on a node, before anything is measured -------------------------------
+
+
+def _calibrated_runner(monkeypatch):
+    """A calibrated batch, rendered through the real manifest builder.
+
+    Borrowed wholesale from ``test_job_manifest``: the stubs there are the live cluster
+    calls (`the GPU probe, the pull Secret, the registry digest`), none of which this
+    question involves, and rendering a real manifest is what the question needs -- the
+    defect this pins was invisible to every test that asserted on the sizing helpers
+    instead of on the pod that reaches the cluster.
+    """
+    from tests.execution.test_job_manifest import _runner
+
+    return _runner(monkeypatch, execution={
+        "sizing": "calibrated",
+        "containers": {"sut": {"image": "an-image"}, "scenario": {}},
+    })
+
+
+def _resources_of(manifest, name):
+    """A sidecar is a NATIVE sidecar -- an initContainer with `restartPolicy: Always` -- so
+    it is not in `spec.containers` and looking only there finds nothing."""
+    spec = manifest["spec"]["template"]["spec"]
+    for container in list(spec["containers"]) + list(spec.get("initContainers") or []):
+        if container["name"] == name:
+            return container.get("resources") or {}
+    raise AssertionError(f"no container {name!r}")
+
+
+def test_the_main_container_takes_the_bootstrap_before_any_node_is_calibrated(monkeypatch):
+    """The FIRST job on every node, which is every job until one finishes -- so a guard that
+    waits for measured figures leaves the main container unsized for exactly the runs the
+    bootstrap exists to carry.
+
+    An empty limit is not merely generous. JOB_TEMPLATE reads AVAILABLE_CPUS and
+    AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the downward API substitutes the
+    NODE's allocatable for an absent limit -- so the scenario sizes itself to the whole
+    machine, and the probe measures a container that was never bounded. Measured on a
+    96-core node: the run was told it had 96 cores and 125 GiB.
+    """
+    runner = _calibrated_runner(monkeypatch)
+    manifest = runner.create_job_manifest(runner._build_jobs()[0], total_jobs=1)
+
+    main = manifest["spec"]["template"]["spec"]["containers"][0]
+    limits = (main.get("resources") or {}).get("limits") or {}
+    assert limits.get("cpu"), "the main container must never reach a node without a cpu limit"
+    assert limits.get("memory"), "nor without a memory limit"
+
+
+def test_the_sidecars_take_it_too(monkeypatch):
+    """The half that already worked, pinned beside the half that did not: they go through
+    one helper, and the value of that is lost if only one caller is covered."""
+    runner = _calibrated_runner(monkeypatch)
+    manifest = runner.create_job_manifest(runner._build_jobs()[0], total_jobs=1)
+
+    limits = (_resources_of(manifest, "sut").get("limits")) or {}
+    assert limits.get("cpu"), "the sut container must never reach a node without a cpu limit"
+    assert limits.get("memory"), "nor without a memory limit"
+
+
+def test_the_main_container_takes_its_measured_figure_once_the_node_is_calibrated(monkeypatch):
+    """The probe records the main container under the name the MONITOR wrote --
+    `resource_usage_main.csv`, hence `robovast` -- while the `.vast` calls the container by
+    its role. Look the figures up by the role and the lookup misses on every node, and the
+    miss is silent: the container falls back to the bootstrap and stays there for the whole
+    campaign, throttling against a figure nobody chose. Measured on a 10-run campaign: every
+    run quota-bound on the main container while both sidecars used their calibrated values.
+    """
+    from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
+
+    runner = _calibrated_runner(monkeypatch)
+    figures = {MAIN_CONTAINER_NAME: {"sustained": 1.386, "peak": 1.754, "samples": 90}}
+    manifest = runner.create_job_manifest(runner._build_jobs()[0], total_jobs=1,
+                                          node_figures=figures)
+
+    cpu = float((_resources_of(manifest, MAIN_CONTAINER_NAME).get("requests") or {})["cpu"])
+    bootstrap_cpu = bootstrap_sizing("scenario")[0]
+    assert cpu != bootstrap_cpu, "still on the bootstrap: the measured figure never arrived"
+    assert cpu >= 1.386, "the scenario role takes its sustained figure, plus headroom"

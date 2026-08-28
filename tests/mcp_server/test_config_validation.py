@@ -345,3 +345,79 @@ def test_a_project_with_no_execution_block_is_still_advised(tmp_path):
     path = tmp_path / "bare.vast"
     path.write_text("version: 3\nscenario: x.osc\n")
     assert len(_liveness_advisories(str(path))) == 1
+
+
+# --- a container not named after a role, under calibrated sizing ---------------------------
+#
+# A role is read off the container's NAME and cannot be declared, so `nav` and `sut` are
+# not the same container to the sizing rules: the second is sized on its PEAK with
+# request == limit, and the first on its sustained use with the ad-hoc bootstrap. The
+# failure that follows is quiet -- the system under test throttles mid-plan and it reads
+# as the stack being slow -- so it is worth saying before the compute is spent.
+
+def _sized(tmp_path, name, sizing, containers):
+    path = tmp_path / f"{name}.vast"
+    body = "" if sizing is None else f"  sizing: {sizing}\n"
+    path.write_text("version: 3\nexecution:\n" + body + "  containers:\n" + containers)
+    return str(path)
+
+
+def test_a_container_outside_the_role_names_is_advised_when_calibrated(tmp_path):
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "adhoc", "calibrated",
+                  "    simulation: {}\n    nav:\n      image: an-image\n")
+    advisory, = _calibration_role_advisories(path)
+    assert advisory["stage"] == "resources"
+    assert advisory["field"] == "execution.containers"
+    assert "execution.containers.nav" in advisory["message"]
+    assert "execution.containers.simulation" not in advisory["message"]
+    assert "sut" in advisory["message"]
+
+
+def test_role_named_containers_are_not_advised(tmp_path):
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "roles", "calibrated",
+                  "    scenario: {}\n    simulation: {}\n    sut:\n      image: an-image\n")
+    assert _calibration_role_advisories(path) == []
+
+
+def test_a_fixed_campaign_is_not_advised(tmp_path):
+    """With a declared figure the name decides nothing about sizing, so the advisory would
+    be noise on every `.vast` written before calibration existed."""
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "fixed", "fixed", "    nav:\n      image: an-image\n")
+    assert _calibration_role_advisories(path) == []
+
+
+def test_declared_resources_infer_fixed_and_stay_quiet(tmp_path):
+    """Same rule reached the other way: `sizing` is optional, and a file that declares any
+    allocation resolves to `fixed` without saying so."""
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "inferred", None,
+                  "    nav:\n      resources:\n        cpu: 4\n        memory: 6Gi\n")
+    assert _calibration_role_advisories(path) == []
+
+
+def test_declaring_nothing_infers_calibrated_and_advises(tmp_path):
+    """The case that matters: no `sizing`, no allocations -- which is what a `.vast` looks
+    like once its numbers are removed, and exactly when the name starts to decide sizing."""
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "bare-calibrated", None, "    nav:\n      image: an-image\n")
+    advisory, = _calibration_role_advisories(path)
+    assert "execution.containers.nav" in advisory["message"]
+
+
+def test_every_ad_hoc_container_is_named_once(tmp_path):
+    from robovast.common.config_validation import _calibration_role_advisories
+
+    path = _sized(tmp_path, "many", "calibrated",
+                  "    nav: {}\n    explorer: {}\n    sut:\n      image: an-image\n")
+    advisory, = _calibration_role_advisories(path)
+    assert "execution.containers.explorer" in advisory["message"]
+    assert "execution.containers.nav" in advisory["message"]
+    assert "are not named after a role" in advisory["message"]

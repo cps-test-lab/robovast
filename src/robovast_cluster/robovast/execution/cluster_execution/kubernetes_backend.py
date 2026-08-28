@@ -745,11 +745,20 @@ class BatchJobRunner:
         s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
 
         spec = job_manifest['spec']['template']['spec']
-        if node_figures:
+        if node_figures or self._sizing_is_calibrated():
             # The MAIN container too, not only the sidecars. Its resources were stamped once
             # onto the base manifest at batch setup, so without this the container running
             # the scenario would be the one container a calibrated node did not re-size --
             # and on the ROS shape that is the scenario, a third of the pod.
+            #
+            # `node_figures` alone is not the condition, and the difference is the whole
+            # first job on every node: before anything is measured there are no figures, so
+            # gating on them left the main container with NO resources at all rather than
+            # the bootstrap. An empty limit is not merely generous -- JOB_TEMPLATE reads
+            # AVAILABLE_CPUS/AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the
+            # downward API substitutes the NODE's allocatable for an absent limit, so the
+            # scenario sizes itself to the whole machine and the probe measures a container
+            # that was never bounded.
             main_role = getattr(getattr(self, "plan", None), "main", None)
             main_name = getattr(main_role, "name", None) or SCENARIO_CONTAINER
             declared = {}
@@ -766,8 +775,20 @@ class BatchJobRunner:
             # `declared` is empty under `sizing: calibrated`, and that is the case the
             # bootstrap exists for -- so the guard asks whether anything will be produced,
             # not whether anything was written in the file.
-            sized = calibrated_resources(declared, main_name, node_figures,
-                                         roles=getattr(main_role, "roles", ()),
+            # Looked up under MAIN_CONTAINER_NAME, not under the role: the probe measures
+            # what the monitor wrote, and the main container's file is `resource_usage_main`
+            # whatever the `.vast` calls the container -- the same mismatch
+            # `_probe_container_limits` aliases past. Keyed by the role instead, the lookup
+            # misses on every node and the container silently keeps the bootstrap for the
+            # whole campaign, which is not a visible failure: it is a container running at a
+            # figure nobody chose, throttling against it.
+            #
+            # The ROLE still decides the statistic and the bootstrap, so it is passed on
+            # separately -- falling back to the scenario role, since that is what the main
+            # container runs when the `.vast` names no block for it.
+            sized = calibrated_resources(declared, MAIN_CONTAINER_NAME, node_figures,
+                                         roles=(getattr(main_role, "roles", ())
+                                                or (main_name,)),
                                          bootstrap=self._sizing_is_calibrated())
             if sized:
                 stamp_resources(spec['containers'][0], sized)
@@ -1155,6 +1176,7 @@ class BatchJobRunner:
         admission = self.admission
         if admission is None:
             return None
+        self._warn_about_containers_with_no_role()
         calibration = admission.calibration(self.campaign, NodeCalibration)
         self._calibration = calibration
         node_ids = self._probe_node_ids(total_jobs)
@@ -1480,6 +1502,40 @@ class BatchJobRunner:
         except Exception:  # noqa: BLE001 - status reporting must not fail a batch
             logger.debug("Could not publish capacity wait for batch %s",
                          self._batch_tag, exc_info=True)
+
+    def _warn_about_containers_with_no_role(self) -> None:
+        """Name the containers calibration will treat as ad-hoc, in the campaign log.
+
+        A role comes from the container's NAME -- `scenario`, `simulation`, `sut` -- and
+        there is no way to declare one. A container named anything else therefore gets the
+        ad-hoc bootstrap rather than its role's, and is sized on the SUSTAINED figure rather
+        than the peak once measured.
+
+        For a system under test called something else, both are wrong and only the first is
+        loud: too small a bootstrap OOMs or throttles and stops the campaign, while sizing
+        the thing under test on its sustained figure just lets it throttle mid-plan, which
+        looks like the stack failing. So it is said up front, at INFO's louder neighbour, in
+        the log the campaign keeps.
+
+        Only under `calibrated`: with a declared figure the name decides nothing.
+        """
+        from robovast.common.config import CONTAINER_ROLES  # noqa: PLC0415
+
+        plan = getattr(self, "plan", None)
+        if plan is None or not self._sizing_is_calibrated():
+            return
+        adhoc = sorted(c.name for c in plan.containers
+                       if not (set(getattr(c, "roles", ()) or ()) & set(CONTAINER_ROLES)))
+        if not adhoc:
+            return
+        logger.warning(
+            "execution.sizing is calibrated and %s %s not named after a role (%s), so each "
+            "takes the ad-hoc bootstrap and is sized on its sustained use rather than its "
+            "peak. If one of them is the system under test, rename it to '%s' -- the peak "
+            "rule exists so the thing under test never throttles mid-plan, and it keys on "
+            "the name.",
+            ", ".join(adhoc), "is" if len(adhoc) == 1 else "are",
+            "/".join(CONTAINER_ROLES), "sut")
 
     def _sizing_is_calibrated(self) -> bool:
         """Whether this campaign's reservations are measured rather than declared.

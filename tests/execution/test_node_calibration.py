@@ -746,7 +746,7 @@ def test_a_throttled_probe_is_refused():
                       {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
                                "throttled_ratio": 0.05}})
     assert stored is False, "a probe that hit its own ceiling must not size the node"
-    assert not c.calibrated("n1"), "the node stays on the declared sizing"
+    assert not c.calibrated("n1"), "the node keeps whatever it started on"
 
 
 def test_throttling_under_the_threshold_is_kept():
@@ -805,7 +805,7 @@ def test_an_oom_killed_probe_is_refused():
                       {"simulation": {"sustained": 1.0, "peak": 2.0, "samples": 60,
                                       "oom_kills": 1}})
     assert stored is False
-    assert not c.calibrated("n1"), "the node stays on the declared sizing"
+    assert not c.calibrated("n1"), "the node keeps whatever it started on"
 
 
 def test_a_node_that_cannot_report_ooms_is_still_calibrated():
