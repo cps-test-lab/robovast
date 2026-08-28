@@ -33,18 +33,8 @@
 # reproducible: the clone layer's cache key is the command text plus its ARGs, never the state of
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
-#
-# `main` is the branch now. It previously held a sim_suite_* layout without the roqsim packages
-# installed below, which is why this used to name `robovast` -- but that branch is gone from the
-# public repo and main carries the roqsim layout: all eleven packages this file installs, plus
-# both colcon packages, are present at the sha below.
-#
-# Moved off 22ceb75, which no longer BUILDS on this base: its roqsim_walker required
-# `scipy>=1.13`, so pip tried to replace the ROS image's Debian-packaged scipy 1.11.4 -- which
-# ships no RECORD, so pip cannot uninstall it and the build dies. The floor is `>=1.11` from
-# 8b40bb1 on, and scipy's own metadata carries the numpy bound it was standing in for.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=1c91fc91b88367d2a24fc219cafdd2c5f53d8ea7
+ARG ROQSIM_REF=20d88427def3acb52679245a4b8639e4a8b2b70b
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
