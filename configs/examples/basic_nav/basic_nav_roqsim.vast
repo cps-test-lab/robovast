@@ -192,11 +192,17 @@ execution:
   # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
       - ros-jazzy-nav2-minimal-tb4-description
       resources:
-  # NO split here, deliberately. The system under test must get the same budget in every run
-  # or the allocation becomes a hidden independent variable and the runs stop being
-  # comparable -- a threat to the experiment rather than to throughput. Sized above its
-  # measured peak (2.91) so it does not throttle: system_usage.nr_throttled says per run
-  # whether that held.
+  # NO split here -- but the property being bought is that the ceiling never BINDS, not that
+  # the same number is in force everywhere. An allocation the container never reaches cannot
+  # have shaped the run; equality is the conservative way to get there while nothing measures
+  # what it actually got. (Per-node sizing already varies the figure, so "identical in every
+  # run" was never the rule this could enforce.) Sized above its measured peak of 2.91, and
+  # run_validity_view says per run whether it held: quota_bound for this ceiling, contended
+  # for other work taking cores it had not reserved.
+  #
+  # What that peak does not cover: it comes from a pilot, and clipping is non-linear -- 0.5%
+  # of ticks over the limit cost 22% of runs. A search proposing harder configurations than
+  # the pilot can exceed it, so watch quota_bound rather than assuming the headroom holds.
         cpu: 3
         memory: 640Mi
     scenario:

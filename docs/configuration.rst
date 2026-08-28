@@ -998,10 +998,12 @@ Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accep
 The reservation is what the scheduler packs by, so lowering it is what buys concurrency. The
 limit only decides when the kernel starts throttling. Which means:
 
-- The **system under test** should keep them equal, sized so it does not throttle. Its budget
-  has to be identical in every run, or the allocation becomes a hidden independent variable
-  and the runs stop being comparable — a threat to the experiment rather than to throughput,
-  and worth over-reserving for. ``run_validity_view`` says per run whether that held.
+- The **system under test** should keep them equal, sized so it does not throttle. The
+  property that protects the result is that its ceiling is never *binding*: an allocation the
+  container never reaches cannot have shaped what the stack did, and equality is the
+  conservative way to reach that while nothing measures what it actually got. It is worth
+  over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
+  for this ceiling, ``contended`` for other work taking cores it had not reserved.
 - The **simulator and scenario** are not under test and should split. Measured on the shipped
   ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
   the world's geometry compiles — a ratio of ~18, so there is no honest single number.
@@ -1022,6 +1024,13 @@ limit only decides when the kernel starts throttling. Which means:
 The size of the win depends on the world: the same simulator peaks at 5.98 cores in
 ``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
 different figures and gain differently from the split.
+
+**The system under test's ceiling is set from a pilot**, which is the assumption to keep in
+view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of
+the runs, because clipped work queues rather than vanishing. A campaign that searches toward
+harder configurations can therefore exceed the peak a pilot measured, and the cells that do so
+are the interesting ones. ``quota_bound`` is what says it happened; do not read the headroom as
+a guarantee.
 
 **Memory is deliberately not split** in the shipped examples. Exceeding a CPU limit costs
 speed; exceeding a memory limit is an OOM kill, so a request below the limit trades a run for
