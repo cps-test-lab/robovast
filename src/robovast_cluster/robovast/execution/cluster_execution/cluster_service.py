@@ -742,14 +742,11 @@ class ClusterService(LocalTransport):
         that talks to every kubelet in turn (see ``_DISK_BUDGET_SECONDS``), and sharing it
         would let one unresponsive node block every campaign's job creation.
 
-        **Raises rather than falling back, and that changed when Kueue was retired.** While
-        Kueue was still in the path a failure here could return ``None`` and let the lane
-        create jobs as it always had, because Kueue then gated them -- the fallback was the
-        previous behaviour, not a degraded result. With no queue label on the Job there is
-        nothing behind it: ``None`` would mean creating a campaign's entire plan, which for a
-        one-run-per-job sweep is upwards of a thousand Jobs, in one unthrottled loop against
-        a cluster sized for a few dozen. A service that cannot measure the cluster must
-        refuse to submit to it.
+        **Raises rather than falling back.** Nothing gates job creation behind this, so a
+        ``None`` here would mean creating a campaign's entire plan -- for a one-run-per-job
+        sweep, upwards of a thousand Jobs -- in one unthrottled loop against a cluster sized
+        for a few dozen. A service that cannot measure the cluster must refuse to submit
+        to it.
         """
         with self._admission_lock:
             if self._admission is None:
@@ -1129,9 +1126,7 @@ class ClusterService(LocalTransport):
         These have **no Kubernetes object at all**, so unlike every other status here they
         cannot come from a listing -- the controller is the only thing that knows they
         exist. Reporting them is what keeps ``waiting`` meaning "queued for capacity"
-        rather than silently becoming a count that is always zero: a Kueue-suspended Job
-        used to be a real object a listing could see, and the queue this replaced it with
-        holds the plan in memory instead.
+        rather than silently becoming a count that is always zero.
 
         Never *builds* the controller. This is a read path -- a job listing behind a web
         UI -- and a cluster that cannot be measured must degrade to "nothing planned"

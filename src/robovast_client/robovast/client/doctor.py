@@ -224,12 +224,10 @@ def _check_rbac() -> Check:
 def _check_capacity() -> Check:
     """Report the largest node, and fail only on a cluster that can run nothing.
 
-    This used to assert 4 CPU / 16 GiB, the Kueue controller's own request: that pod had to
-    fit on one node or nothing was ever admitted. RoboVAST admits its own jobs now, in the
-    service process, so there is no controller to size for and no honest fixed threshold to
-    put in its place -- a campaign's pod is whatever its ``.vast`` asks for, and admission
-    refuses at launch, naming the request and each node's allocatable, which is a better
-    answer than any number guessed here.
+    There is no honest fixed threshold to check against: a campaign's pod is whatever its
+    ``.vast`` asks for, and admission refuses an oversized request at launch, naming the
+    request and each node's allocatable -- a better answer than any number guessed here.
+    So this reports the largest node and fails only when no node could run anything.
 
     So it reports rather than judges. The one thing still worth failing on is a cluster that
     could not run a single container, because that is a broken cluster rather than a small

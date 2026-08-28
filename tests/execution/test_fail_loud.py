@@ -101,8 +101,7 @@ def test_load_kube_config_prefers_in_cluster():
         assert load_kube_config() == "in-cluster"
 # -- A6: postprocessing survives an unreachable cluster ----------------------
 #
-# The Kueue admission preflight that used to guard this path is gone, but the obligation
-# it happened to carry is not: postprocessing chains AFTER the runs are published, so a
+# Postprocessing chains AFTER the runs are published, so a
 # cluster that has gone away must be a reported, re-runnable failure rather than an
 # exception out of the conversion step. The load-bearing detail is that the very first
 # call touching the API server is the one that has to translate the transport error.

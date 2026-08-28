@@ -90,9 +90,9 @@ class ClusterBudgetProvider:
         reports its autoscaler's *max*, which is larger than the nodes that exist right now.
         Sizing admission to the current nodes instead would be quietly self-defeating: pods
         that cannot be placed are exactly what makes an autoscaler add a node, so a scheduler
-        that never creates them keeps the cluster at whatever size it happens to be. Kueue got
-        this right by sizing its quota from the same override, and losing it would have been a
-        regression visible only on a cluster nobody here runs.
+        that never creates them keeps the cluster at whatever size it happens to be. The
+        effect is visible only on a cluster with an autoscaler, which is why it is stated
+        here rather than left to be rediscovered.
 
         It qualifies the "never create what cannot be placed" rule rather than breaking it:
         the rule is about what can *never* be placed, and on an autoscaler "not yet" is not

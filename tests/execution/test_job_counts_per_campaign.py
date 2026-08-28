@@ -56,9 +56,9 @@ def test_a_blocked_job_is_counted_not_a_key_error():
 
 
 def test_a_waiting_job_is_counted_too():
-    """`waiting` reaches the counter like any other phase. Its *source* changed -- a
-    Kueue-suspended Job was a real object, a job queued for capacity now has none and is
-    contributed by the admission controller -- but the counter must handle it either way."""
+    """`waiting` reaches the counter like any other phase. A job queued for capacity has no
+    Kubernetes object and is contributed by the admission controller, so the counter has to
+    take it from there rather than from a listing."""
     counts = _counts([(_job("j1", "camp-a"), "waiting", "queued for cluster capacity")])
     assert counts["camp-a"]["waiting"] == 1
 
@@ -137,8 +137,8 @@ def test_the_monitor_does_not_call_a_blocked_batch_finished():
 
 
 def test_a_queued_batch_is_not_finished_either():
-    """Kueue-suspended jobs have no pod at all, so they are invisible to the pod probe
-    and only this count keeps them on the books."""
+    """Queued jobs have no pod at all, so they are invisible to the pod probe and only this
+    count keeps them on the books."""
     result = _monitor(_full(waiting=4))
     assert result.exit_code == 0
     assert "0/4" in result.output          # not 0/0, which reads as nothing to do

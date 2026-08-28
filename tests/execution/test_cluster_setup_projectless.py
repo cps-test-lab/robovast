@@ -141,7 +141,7 @@ def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
 
 def test_jobs_node_labels_are_refused_rather_than_silently_ignored(monkeypatch, tmp_path,
                                                                    deploy_stubs):
-    """Its only implementation was Kueue's ResourceFlavor, so it now has none.
+    """Nothing applies it, so setup refuses it rather than accepting it silently.
 
     Accepting it silently would place campaign jobs on every node of the cluster while
     setup reported success -- a lasting, cluster-wide misconfiguration from a setting the
@@ -205,10 +205,6 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
     satisfied. The plugin therefore has to be in place before the service is deployed and
     can accept a campaign; otherwise the first GPU campaign measures a cluster with no GPUs
     and is refused outright.
-
-    It used to be ordered against the Kueue quota, which was sized once at setup -- a
-    stronger requirement, because a quota sized from zero GPUs stayed wrong until the next
-    upgrade, whereas a measurement corrects itself the moment the plugin registers.
     """
 
     from robovast.execution.cluster_execution import service_deploy

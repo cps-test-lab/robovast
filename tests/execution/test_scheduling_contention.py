@@ -293,8 +293,8 @@ def test_a_contended_job_keeps_the_schedulers_own_reason():
     """The scheduler's message is the diagnosis, so nothing may overwrite it.
 
     This once guarded a specific way of losing it: a `waiting` branch that assigned
-    `detail` unconditionally would have replaced it with Kueue's wait message. That branch
-    is gone with Kueue, but the property it protected is the reason the message is carried
+    `detail` unconditionally would replace it with a generic wait message. The property
+    that guards against is the reason the message is carried
     through verbatim at all, so it stays pinned.
     """
     listed = _listed(_Batch([_job("run-7", active=1)]), _Core([_pod("run-7")]))

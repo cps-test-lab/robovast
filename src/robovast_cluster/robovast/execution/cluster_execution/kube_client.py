@@ -432,9 +432,8 @@ def api_transport_errors(what: str):
 def parse_resource(val):
     """A Kubernetes resource quantity as a number; ``0`` for missing or unparseable.
 
-    Lives here rather than in the Kueue module it grew up in, because four other modules
-    import it and none of them is about Kueue -- capacity arithmetic outlives whatever is
-    admitting the jobs.
+    Shared by the modules that do capacity arithmetic, which is why it lives here rather
+    than in any one of them.
 
     Zero for absent is deliberate and load-bearing in the fit tests: a resource a node does
     not advertise at all (a GPU whose device plugin is down, say) must read as none available

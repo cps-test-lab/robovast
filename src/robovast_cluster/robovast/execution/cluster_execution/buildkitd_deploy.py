@@ -221,8 +221,7 @@ def _tolerations() -> list:
     """What the daemon must tolerate to be schedulable where the work is.
 
     Read from where the campaign job pods get it rather than restated, so there is one place
-    to change if the taint moves -- the same reasoning the warm DaemonSet gives. It used to
-    be Kueue's ResourceFlavor that injected this; a job pod carries it itself now.
+    to change if the taint moves -- the same reasoning the warm DaemonSet gives.
     """
     from .node_placement import CAMPAIGN_NODE_TOLERATIONS
     return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]

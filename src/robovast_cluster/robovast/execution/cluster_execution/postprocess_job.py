@@ -587,12 +587,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     from .kube_client import load_kube_config  # noqa: PLC0415
 
     # Explicitly, and it must stay explicit: these clients read whatever context is loaded
-    # when they are constructed. This used to be a side effect of the Kueue admission check
-    # that ran above, and when that check was called without a context postprocessing dialled
-    # the ambient kubeconfig while the campaign's Jobs had gone to the service's --context
-    # cluster -- failing against a cluster the campaign never used, and naming the configured
-    # API server as unreachable while quoting a timeout to a different address. Retiring Kueue
-    # removed the check; the load it was incidentally doing is a real requirement and stays.
+    # when they are constructed. Without this load, postprocessing dials the ambient
+    # kubeconfig while the campaign's Jobs went to the service's --context cluster -- failing
+    # against a cluster the campaign never used, and naming the configured API server as
+    # unreachable while quoting a timeout to a different address.
     load_kube_config(kube_context)
     core = client.CoreV1Api()
     batch = client.BatchV1Api()

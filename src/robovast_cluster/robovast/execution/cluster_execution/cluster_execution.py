@@ -969,13 +969,10 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     """Clean up scenario run jobs and pods from the cluster.
 
-    Nothing is paused for the duration any more. This used to hold the shared
-    ClusterQueue while cleaning the whole cluster, so that no campaign was admitted
-    against quota the deletions were still releasing; with admission measuring the
-    cluster each cycle rather than tracking a quota, a deletion in flight is just
-    capacity that has not come back yet, which the next measurement sees. There is no
-    longer a cluster-wide switch to leave stuck, which is what a failed cleanup used to
-    risk.
+    Nothing is paused for the duration. Admission measures the cluster each cycle rather
+    than tracking a quota, so a deletion in flight is simply capacity that has not come
+    back yet and the next measurement sees it -- there is no cluster-wide switch a failed
+    cleanup could leave stuck.
 
     Args:
         namespace: Kubernetes namespace.
@@ -987,19 +984,15 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
 
 
 def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, context=None):
-    """Delete scenario run jobs and pods (steps 4-7 and 9).
+    """Delete scenario run jobs and pods.
 
     Called by :func:`cleanup_cluster_campaign`.
 
     Order:
-    4. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
-    5. Force-clear finalizers on stuck Jobs.
-    6. Delete Pods.
-    7. Force-clear finalizers on stuck Pods.
-
-    Steps 2-3 deleted Kueue Workloads ahead of the Jobs so quota was released in a
-    tracked order; there are no Workloads now, and capacity is measured rather than
-    tracked, so the ordering they existed for no longer has anything to protect.
+    1. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
+    2. Force-clear finalizers on stuck Jobs.
+    3. Delete Pods.
+    4. Force-clear finalizers on stuck Pods.
 
     If campaign is given, removes only resources for that run (label
     ``jobgroup=scenario-runs,campaign-id=<campaign>``) plus that campaign's
@@ -1144,10 +1137,9 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Failed to clean up aux pods: %s", exc)
 
-    # Step 10 deleted the campaign's Kueue priority class. Campaign ordering is now the
-    # admission queue's, held in memory for as long as the campaign runs, so a cleanup
-    # has no cluster-side ordering object to remove -- and no way to break a campaign
-    # that is still submitting by removing it too early.
+    # Campaign ordering belongs to the admission queue and is held in memory for as long
+    # as the campaign runs, so a cleanup has no cluster-side ordering object to remove --
+    # and no way to break a campaign that is still submitting by removing one too early.
 
 
 #: One counter per phase :func:`list_jobs_with_phase` can report.

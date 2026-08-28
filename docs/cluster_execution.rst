@@ -162,10 +162,8 @@ The control pod's node selector comes from
 the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
 read:
 
-``execution.kubernetes.jobs.node_labels`` no longer exists and setup **fails** on a config
-that sets it: it was implemented by Kueue's ResourceFlavor. To keep campaign jobs off
-particular machines, taint those machines — job pods carry the campaign toleration, so an
-untainted pool still takes them.
+To keep campaign jobs off particular machines, taint those machines — job pods carry the
+campaign toleration, so an untainted pool still takes them.
 
 .. code-block:: bash
 
@@ -912,10 +910,9 @@ Job Queueing
 
 .. note::
 
-   **Upgrading a cluster that ran an older RoboVAST: remove Kueue by hand, once.**
-   Admission used to be Kueue's, and ``setup`` installed it. Neither ``setup`` nor
-   ``cleanup`` touches it any more, so an existing deployment keeps a controller pod and
-   its CRDs indefinitely — inert, since no job carries a queue label, but running.
+   **If your cluster has Kueue installed, remove it by hand, once.** Nothing here
+   installs or removes it, so a cluster that has it keeps a controller pod and its CRDs
+   indefinitely — inert, since no job carries a queue label, but running.
 
    .. code-block:: bash
 
@@ -1003,7 +1000,7 @@ campaign — the campaign stays ``finished`` with the reason on
    every job at once, which is the one way a campaign could still overload the nodes.
 
 What the queue is not
-~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^
 
 This is a special-purpose queue for RoboVAST's own work, not a general cluster
 scheduler, and two consequences are worth stating rather than discovering.
@@ -1015,15 +1012,12 @@ would be over-admission and pods that cannot be placed. Scaling the Deployment p
 replica requires making the queue cluster-wide state first; the ``replicas: 1`` in the
 service Deployment says so at the line.
 
-**A service restart abandons the campaigns that were running.** This is unchanged by the
-queue and predates it, but the queue changes the shape of what is left behind:
+**A service restart abandons the campaigns that were running.** What is left behind:
 
 * Jobs already created keep running. They carry no owner reference, so Kubernetes does
   not collect them, and startup reaping covers aux pods only -- they run to completion,
   write their results, and hold capacity while nothing is listening.
-* Jobs still queued were never created, so there is nothing to orphan. Under the previous
-  Kueue-based admission the whole plan was created up front, and a restart left the
-  remainder suspended in the cluster; there are strictly fewer leftovers now.
+* Jobs still queued were never created, so there is nothing to orphan.
 * The successor process does **not** over-admit against the abandoned Jobs. Capacity is
   measured from the pods actually bound to nodes rather than bookkept, so their requests
   are visible to it exactly like any other tenant's.

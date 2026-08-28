@@ -230,8 +230,7 @@ def _warm_tolerations() -> list:
     """What the warm pod must tolerate, and it is not optional: a pod that does not tolerate
     what campaign pods tolerate skips exactly the nodes worth warming -- and reports success
     while doing it. Read from where the campaign job pods get it rather than restated here,
-    so there is one place to change if the taint ever does. It used to be Kueue's
-    ResourceFlavor that injected this; a job pod carries it itself now.
+    so there is one place to change if the taint ever does.
     """
     from .node_placement import CAMPAIGN_NODE_TOLERATIONS
     return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]

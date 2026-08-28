@@ -1748,7 +1748,7 @@ mappings documented under *Per-Cluster Resource Limits* in
    :undoc-members:
 
 
-.. _kueue-internals:
+.. _admission-internals:
 
 Job admission internals
 -----------------------
@@ -1760,16 +1760,13 @@ behind it.
 :class:`~robovast.execution.cluster_execution.node_admission.AdmissionController`,
 one at a time, each only once the cluster has room for it — so nothing is ever
 submitted to a queue and left to wait. ``runs_per_job`` defaults to 1, so a
-typical campaign's plan is upwards of a thousand Jobs; creating them all at once
-and letting something else sort it out is what this replaced.
+typical campaign's plan is upwards of a thousand Jobs, and none is created before
+the cluster can hold it.
 
-**Why creation is the admission point.** Two facts, verified against Kueue 0.16.1
-on a live cluster, decide the shape: ``podSetUpdates`` carries only
-``annotations``/``labels``/``name``/``nodeSelector``/``tolerations`` and **no**
-``resources``, and patching ``spec.template`` on a suspended Job is rejected as
-immutable. The request a Job is created with is therefore permanent, so anything
-that wants to size a Job per node has to decide before it exists. Holding the
-plan in RoboVAST's own store and creating on admit makes that immutability
+**Why creation is the admission point.** A Job's ``spec.template`` is immutable:
+patching it is rejected, so the request a Job is created with is permanent and
+anything that wants to size a Job per node has to decide before it exists. Holding
+the plan in RoboVAST's own store and creating on admit makes that immutability
 irrelevant rather than something to work around.
 
 **Ordering is a property of the queue, not of thread scheduling.** One global
@@ -1794,78 +1791,6 @@ inferred from a pod. ``list_campaign_jobs`` reports it ``waiting``; the no-progr
 deadline is suppressed while a batch is entirely queued, because that deadline is a
 per-*run* budget and no run of the campaign is running. Getting this wrong is what
 made a healthy third campaign report as wedged behind two others.
-
-**Kueue is no longer in the path.** Campaign and postprocessing Jobs carry no
-``kueue.x-k8s.io/*`` label, so Kueue neither suspends nor admits them, and the
-per-campaign ``WorkloadPriorityClass`` that used to order them is gone with the
-label that named it. ``vast execution cluster setup`` still installs Kueue and its
-queues; they are inert with respect to campaign jobs and are removed separately.
-
-**Campaign priority (oldest first) — historical.** The paragraphs below describe the
-Kueue mechanism this replaced. Kueue orders a ClusterQueue's pending workloads
-by priority, then by Workload ``creationTimestamp``. That second key is the wrong one for
-a search campaign, whose batches are submitted one after another: campaign A's batch *n+1*
-Jobs are only created once batch *n* has finished, so their Workloads are *younger* than
-those of a campaign B that started later. With equal priorities A then queues behind B's
-whole batch, B behind A's next one, and the two take turns instead of A finishing first.
-
-Every scenario and postprocess Job therefore *used to* also carry the **label**
-``kueue.x-k8s.io/priority-class``, naming a per-campaign ``WorkloadPriorityClass`` whose
-value was ``_PRIORITY_BASE − seconds since _PRIORITY_REF`` — so an earlier start time was a
-higher value. Points worth knowing, since the ordering requirement outlived the mechanism:
-
-* **The value is derived, never stored.** It is computed from the timestamp already in the
-  campaign id (``<name>-YYYY-MM-DD-HHMMSS``) by ``campaign_priority_value()``. Because it
-  is monotone in the start time, the ordering is permanent: no label is ever rewritten as
-  campaigns come and go, and nothing has to know which campaigns are live. The two
-  datetimes are subtracted **naively** rather than via ``.timestamp()``, so the repeated
-  hour of a DST fall-back cannot fold two campaigns onto the same value. Resolution is one
-  second; two campaigns started within the same second tie and fall back to Kueue's second
-  key, which is the pre-existing behaviour for that pair alone.
-* **A ``WorkloadPriorityClass``, not a pod ``PriorityClass``.** The former orders admission
-  only; the latter reaches kube-scheduler and would **preempt** a younger campaign's
-  running scenario pods, discarding compute and leaving partial run data. ``preemption`` is
-  left unset on the ClusterQueue (so ``Never``) for the same reason, and
-  ``queueingStrategy`` is left at Kueue's default ``BestEffortFIFO`` so a high-priority
-  workload that does not fit cannot stall smaller ones behind it.
-* **Why one object per campaign.** Kueue resolves a *Job's* priority only through a named
-  object. A fixed ladder created once at setup cannot express it: fine-grained ordering
-  needs a rung per distinct start time, and coarsening to age buckets ties exactly the
-  campaigns launched minutes apart that this exists to separate. Setting
-  ``Workload.spec.priority`` directly would avoid the object — it is a bare int32 in
-  v1beta2 — but its correctness would rest on Kueue's webhook permitting the update and
-  the Job reconciler not reverting it, neither documented, and the failure mode is silent.
-* **Lifecycle.** ``ensure_campaign_priority_class()`` runs beside the admission preflight,
-  before any Job exists (idempotent; a 409 means an earlier batch created it). It fails
-  loudly, because Kueue *rejects* a Job naming a class that does not exist. The class
-  carries the same ``jobgroup``/``campaign-id`` labels as the campaign's Jobs and Pods, so
-  ``cleanup_campaign_priority_classes()`` removes it with one more label-scoped
-  ``delete_collection`` at the end of the ordinary campaign cleanup — there is no GC pass
-  of its own. It must run **last**: deleting the class cannot disturb workloads Kueue has
-  already created (the resolved value is copied onto each at creation), but removing it
-  while the campaign still submits would break that campaign.
-
-The class is cluster-scoped, so ``create``/``delete`` on ``workloadpriorityclasses`` is on
-the service's **ClusterRole** — the first write that role grants. An existing deployment
-must be redeployed to pick it up.
-
-**Holding the queue during cleanup.** ``stopPolicy`` lives on the single,
-cluster-scoped ``ClusterQueue`` that every campaign shares. Holding it stops
-*all* admissions — ``Hold`` versus ``HoldAndDrain`` decides only whether
-already-running workloads are preempted, not whose workloads are affected.
-
-Cleaning up **one** campaign therefore does not touch it: doing so would stall
-every other campaign's pending jobs for the length of the cleanup, and a cleanup
-that died in between used to leave the queue held permanently — suspending every
-later campaign forever, indistinguishable from a missing ClusterQueue.
-Per-campaign quota safety does not need the hold: the deletions are label-scoped
-and ordered Workloads-before-Jobs, which is what lets Kueue release that
-campaign's quota cleanly.
-
-A **cluster-wide** cleanup (no campaign given) does hold the queue, since pausing
-everything is the intent. It restores the *previous* ``stopPolicy`` in a
-``finally``, so a concurrent teardown's hold survives and an error can never
-leave the queue stopped.
 
 
 .. _web-ui-internals:
@@ -2063,16 +1988,16 @@ returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory
 capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
 in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
 ``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
-``kubernetes_kueue._parse_resource``) and the requests of the non-terminal pods *bound to
+``cluster_capacity.parse_resource``) and the requests of the non-terminal pods *bound to
 those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
 never branch on backend. Summing both sides over one node set is what keeps ``used <=
 capacity``: a pod still queued for a node requests cores nothing has granted, and counting
 it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage.
 
 That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
-both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Kueue-suspended Job
-has no pod at all — the state every cluster batch *starts* in — so the original pod-based count
-reported a freshly launched sweep as ``0/0`` with its whole queue waiting for quota.
+both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A job waiting for
+capacity has no pod at all — the state every cluster batch *starts* in — so a pod-based count
+reports a freshly launched sweep as ``0/0`` with its whole queue waiting.
 ``ClusterService._scenario_job_tally`` therefore delegates to
 ``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
 consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-

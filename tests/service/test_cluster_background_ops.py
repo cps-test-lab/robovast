@@ -64,15 +64,14 @@ def test_postprocess_job_loads_the_given_context(monkeypatch):
     """Postprocessing must dial the context the campaign's Jobs were submitted with.
 
     The Kubernetes clients this path builds read whatever context is loaded at the moment
-    they are constructed, so loading it is the whole of the requirement. It used to happen
-    only as a side effect of the Kueue admission check that ran first, and when that check
-    was called with no context at all it dialled the ambient kubeconfig while the campaign's
-    Jobs had gone to the service's ``--context`` cluster. Postprocessing then failed against
+    they are constructed, so loading it is the whole of the requirement. Without it the path
+    dials the ambient kubeconfig while the campaign's Jobs have gone to the service's
+    ``--context`` cluster. Postprocessing then fails against
     a cluster the campaign never used, and said so self-contradictorily: naming the
     configured API server as unreachable while quoting a timeout to a different address.
 
-    Retiring Kueue deleted that check, and with it the incidental load — so this pins the
-    load itself rather than the probe that used to imply it. The stub raises after recording,
+    So this pins the load itself, rather than any probe that happens to imply it. The stub
+    raises after recording,
     which stops the test where the context has been consumed and needs no cluster.
     """
     from robovast.execution.cluster_execution import (in_pod_storage, kube_client,

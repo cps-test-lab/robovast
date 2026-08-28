@@ -166,8 +166,7 @@ def get_kubernetes_node_labels_from_config(config_path=None):
           kubernetes:
             jobs:
               node_labels:
-                <key>: <value>   # REFUSED by setup -- see setup_server; its only
-                                 # implementation was Kueue's ResourceFlavor
+                <key>: <value>   # REFUSED by setup -- see setup_server
             control:
               node_labels:
                 <key>: <value>   # applied as nodeSelector to the robovast control pod
@@ -410,15 +409,13 @@ def setup_server(config_name=None, list_configs=False, force=False,
     jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
         get_vast_file_override())
     if jobs_node_labels:
-        # Refused rather than ignored. Its only implementation was the Kueue
-        # ResourceFlavor's nodeLabels, so with Kueue retired there is nothing left to
-        # apply it to -- and accepting it silently would place campaign jobs on every
-        # node of the cluster while setup reported success, which is precisely the
-        # cluster-wide, lasting misconfiguration this function refuses elsewhere.
+        # Refused rather than ignored: nothing applies it, and accepting it silently would
+        # place campaign jobs on every node of the cluster while setup reported success --
+        # precisely the cluster-wide, lasting misconfiguration this function refuses
+        # elsewhere.
         raise CampaignConfigError(
-            "execution.kubernetes.jobs.node_labels is no longer applied and this "
-            f"configuration sets it ({jobs_node_labels}). It was implemented by Kueue's "
-            "ResourceFlavor, which RoboVAST no longer installs. To keep campaign jobs off "
+            "execution.kubernetes.jobs.node_labels is not applied and this "
+            f"configuration sets it ({jobs_node_labels}). To keep campaign jobs off "
             "particular machines, taint the nodes that should NOT run them -- job pods "
             "carry the campaign toleration, so an untainted pool still takes them. Remove "
             "the setting to continue.")

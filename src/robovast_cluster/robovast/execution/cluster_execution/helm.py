@@ -3,10 +3,8 @@
 
 """Running ``helm``, for whoever needs a chart.
 
-These grew up in the Kueue module because Kueue was the first thing installed by chart, and
-they are shared with the NVIDIA device-plugin installer. Neither is about Kueue: as long as
-anything here is installed by chart, something has to run helm, and that outlives whatever is
-admitting the jobs.
+Shared by every installer that works through a chart -- currently the NVIDIA device plugin.
+As long as anything is installed by chart, something has to run helm.
 """
 
 from __future__ import annotations

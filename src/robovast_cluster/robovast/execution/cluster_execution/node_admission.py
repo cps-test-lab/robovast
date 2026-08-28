@@ -4,19 +4,17 @@
 """Deciding WHEN a campaign's jobs are created, so that the cluster is never handed more
 than it can run.
 
-RoboVAST used to create every Job of a batch in one loop and let something else cope. That
-failed on large campaigns, which is why Kueue was adopted; a typical campaign creates ~1435
-Jobs in one shot (``runs_per_job`` defaults to 1). This module takes that duty back, with the
-one property that matters preserved: **a job is created only when there is room for it**, so
-nothing ever reaches the scheduler that the scheduler cannot place.
+A typical campaign's plan is upwards of a thousand Jobs (``runs_per_job`` defaults to 1),
+and creating them in one loop overwhelms both the cluster and the kubelets pulling their
+images. The property this module exists to hold: **a job is created only when there is room
+for it**, so nothing ever reaches the scheduler that the scheduler cannot place.
 
 **It is a queue, not a per-caller reservation service, and that is the load-bearing decision.**
 Every campaign runs on its own thread, so if each asked "may I go?" for itself the order would
-be decided by which thread won the lock. That is precisely the failure the per-campaign
-Kueue priority class was written to fix, back when Kueue ordered admission: a search
-campaign submits its batches one after another, so ordering by
-submission makes an older campaign's later batches look younger than a newer campaign, and
-"the two end up taking turns instead of the older one finishing first". Here the order is a
+be decided by which thread won the lock. A search campaign submits its batches one after
+another, so ordering by submission makes an older campaign's later batches look younger than
+a newer campaign, and the two end up taking turns instead of the older one finishing first.
+Here the order is a
 property of the queue -- ``(priority, campaign start)`` -- and no thread can change it by
 being quick.
 
@@ -174,8 +172,7 @@ class AdmissionRefused(Exception):
 
     Distinct from "no room now", which is an ordinary answer (``drain`` simply creates
     nothing). Conflating the two is how a campaign ends up waiting forever for capacity that
-    cannot exist, with no error anywhere -- the failure the Kueue admission preflight
-    existed to prevent, and which this inherited when Kueue was retired.
+    cannot exist, with no error anywhere.
     """
 
 

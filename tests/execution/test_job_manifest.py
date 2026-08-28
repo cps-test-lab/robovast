@@ -559,10 +559,11 @@ def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     assert [c["name"] for c in spec["containers"]] == [MAIN_CONTAINER_NAME]
 
 def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
-    """Kueue's ResourceFlavor used to inject this at admission, so nothing in the manifest
-    carried it. A deployment that taints its campaign nodes would therefore have stopped
-    scheduling the moment Kueue was removed -- silently, as pods that never place rather than
-    as an error. The pod carries it now, so the toleration outlives the admitter."""
+    """The pod itself must carry it, not whatever admits it.
+
+    A deployment that taints its campaign nodes depends on this toleration to schedule at
+    all, and the failure mode if it goes missing is silent -- pods that never place, rather
+    than an error -- so it is pinned here."""
     from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
 
     m = _job_manifest(_runner(monkeypatch))

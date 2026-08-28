@@ -1098,17 +1098,6 @@ kubernetes.jobs
 
 Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
 
-kubernetes.jobs.node_labels
-''''''''''''''''''''''''''''
-
-**Removed.** ``vast execution cluster setup`` now **fails** when a config sets this,
-rather than accepting it and doing nothing.
-
-It was implemented by the ``nodeLabels`` of Kueue's ``ResourceFlavor``, and Kueue has
-been retired -- so there is nothing left to apply it to. This documentation also never
-matched the implementation: it described a ``nodeSelector`` on the Job pod spec, which
-is not where the value went.
-
 To keep campaign jobs off particular machines, **taint the nodes that should not run
 them**. Job pods carry the campaign toleration (``dedicated=batch:NoSchedule``), so an
 untainted pool still takes them:
@@ -1125,8 +1114,7 @@ kubernetes.control
 **Required:** No
 
 Settings applied to RoboVAST's own infrastructure pods, as opposed to the
-campaign's job pods. (The name predates the current architecture: the
-per-campaign controller pod it was written for no longer exists.)
+campaign's job pods.
 
 kubernetes.control.node_labels
 '''''''''''''''''''''''''''''''

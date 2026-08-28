@@ -531,11 +531,10 @@ class BatchJobRunner:
 
         spec = job_manifest['spec']['template']['spec']
 
-        # Tolerate the taint a campaign node may carry, on the pod itself. Kueue's
-        # ResourceFlavor used to inject this at admission, so nothing in the manifest needed
-        # it -- and a deployment that taints its campaign nodes would have stopped scheduling
-        # the moment Kueue was removed, silently, as pods that simply never place. Additive
-        # and idempotent, so it is safe to apply to a spec that already carries it.
+        # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
+        # injects it, and a deployment that taints its campaign nodes without it does not
+        # fail loudly -- its pods simply never place. Additive and idempotent, so it is
+        # safe to apply to a spec that already carries it.
         from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
         existing = list(spec.get('tolerations') or [])
         for toleration in CAMPAIGN_NODE_TOLERATIONS:
@@ -1560,8 +1559,7 @@ class BatchJobRunner:
         # 3. Build and submit one Job per packed job, then wait.
         # The up-front "can these jobs ever be admitted?" check is admission.preflight()
         # below: it asks whether the request fits any node's allocatable, which is the
-        # question that used to be asked of the Kueue queue and is now asked of the
-        # cluster directly.
+        # question, asked of the cluster directly.
         jobs = self._build_jobs()
         total_jobs = len(jobs)
         # Derived rather than read back off a rendered manifest: under admission a job's

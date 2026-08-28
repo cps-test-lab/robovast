@@ -169,7 +169,7 @@ def _with_config(nodes, pods, monkeypatch, config):
 def test_an_autoscaling_cluster_is_sized_by_what_it_can_become(monkeypatch):
     """Otherwise admission is self-defeating: pods that cannot be placed are exactly what
     makes an autoscaler add a node, so only ever creating what currently fits keeps the
-    cluster at whatever size it happens to be. Kueue sized its quota from this same override.
+    cluster at whatever size it happens to be.
     """
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, _Autoscaler())
     assert p.budget().free_cpu == pytest.approx(64 - 1), "should use the autoscaler max, not 8"

@@ -242,8 +242,8 @@ def _wait_for_gpu_capacity(expected, kube_context=None, timeout=120):
     Asserts the exact number rather than "more than zero", and that is not pedantry:
     changing the time-slicing config rewrites the plugin's ConfigMap and restarts its
     DaemonSet, so capacity goes ``24 -> absent -> 16``. A check that accepts any non-zero
-    reading can therefore see the *old* value and size the Kueue quota from it -- wrongly,
-    permanently, and while reporting success.
+    reading can therefore see the *old* value and size capacity from it -- wrongly, and
+    while reporting success.
     """
     deadline = time.monotonic() + timeout
     seen = 0
@@ -280,9 +280,8 @@ def ensure_nvidia_device_plugin(kube_context=None, gpu_replicas=None, skip=False
       would otherwise get software rendering while believing they had a GPU.
 
     Either way nothing is left half-configured, and that is structural rather than
-    promised: the Kueue quota is read from live node capacity *after* this returns, so a
-    failed install advertises nothing, the queue covers no GPU, the job requests none, and
-    every layer agrees.
+    promised: capacity is read from the live nodes *after* this returns, so a failed install
+    advertises nothing, admission sees no GPU, the job requests none, and every layer agrees.
     """
     requested = gpu_replicas is not None
 

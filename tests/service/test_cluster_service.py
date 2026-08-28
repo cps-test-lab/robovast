@@ -689,9 +689,7 @@ def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
 def test_list_jobs_reports_planned_jobs_as_waiting(cs, monkeypatch):
     """A job queued for capacity must be visibly ``waiting``, and only the controller knows.
 
-    This is the property a Kueue-suspended Job used to carry: a batch that has not started
-    must not read as "nothing is happening". The mechanism inverted when RoboVAST took over
-    admission -- a suspended Job was a real object a listing could classify, while a PLANNED
+    A batch that has not started must not read as "nothing is happening". A PLANNED
     job has no Kubernetes object at all -- so the listing has to ask the controller or the
     count silently becomes permanently zero, which is the failure this pins.
     """
@@ -830,9 +828,8 @@ def test_resource_usage_counts_podless_jobs_as_pending(cs, monkeypatch):
 
     Regression: the tally read pods, so freshly created Jobs whose pods the scheduler had
     not bound yet reported ``0/0``, and the sidebar's jobs bar said nothing was happening
-    while 3 runs were starting. Kueue-suspended Jobs were the original way to have an
-    active Job with no pod; a just-created one is the way that remains, and the tally has
-    to read Jobs either way.
+    while 3 runs were starting. A just-created Job is an active Job with no pod, so the
+    tally has to read Jobs.
     """
     jobs = [_job("j-queued-1", active=1), _job("j-queued-2", active=1),
             _job("j-queued-3", active=1)]
