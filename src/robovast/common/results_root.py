@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 def local_results_root(workspaces_root: Path | None = None) -> Path:
     """The directory local campaigns are written to and read from.
 
-A service-owned ``results`` directory beside the workspaces store: one stable location,
-    the same for every campaign this service runs.
+    A service-owned ``results`` directory beside the workspaces store: one stable
+    location, the same for every campaign this service runs.
 
     There used to be a first branch here reading an initialized CWD project's
     ``results_dir``. It was the last thing ``.robovast_project`` decided, and it went with
