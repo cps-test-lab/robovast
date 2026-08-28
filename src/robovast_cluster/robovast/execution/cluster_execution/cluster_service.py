@@ -835,6 +835,7 @@ class ClusterService(LocalTransport):
             return
         with AuxPodSession(tag, specs, self.namespace, core_v1=self._k8s(),
                            kube_context=self.kube_context,
+                           pull_secret=self._registry_pull_secret(),
                            **self._aux_store_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
             try:
@@ -2893,8 +2894,8 @@ class ClusterService(LocalTransport):
         already cached the campaign image hides the omission (``imagePullPolicy: IfNotPresent``) -- which
         means it first fails on a fresh node, the worst place to discover it.
 
-        Two callers -- the scene aux pod and the diagnostic exec pod, which runs the same private
-        images -- hence the name is not about scenes. The store answers it, because which Secret pulls
+        Three callers -- the scene aux pod, a campaign's aux pod, and the diagnostic exec pod, which
+        runs the same private images -- hence the name is not about scenes. The store answers it, because which Secret pulls
         from this registry is the registry's business. It answers directly rather than through an
         import guarded by a bare ``except``, which turns a wrong module path into a silent no-op.
         """

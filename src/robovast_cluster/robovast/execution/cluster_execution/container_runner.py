@@ -326,6 +326,20 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     return deleted
 
 
+def _aux_image(image: str) -> str:
+    """An aux container's image as a Pod may carry it: a ``family:`` ref resolved, anything else
+    left exactly as written.
+
+    Left verbatim on purpose when it is not a family ref: an image a campaign names is used as
+    written everywhere else in RoboVAST, and an aux container is no place to start rewriting one.
+    """
+    from robovast.common.execution import is_family_image_ref, resolve_family_image
+
+    if not is_family_image_ref(image):
+        return image
+    return resolve_family_image(image, role="image for an auxiliary container")
+
+
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
                            pull_secret: str = "", s3: tuple | None = None,
@@ -383,7 +397,15 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         container = {
             "name": (container_names or {}).get(spec.container_name(),
                                                 spec.container_name()),
-            "image": spec.image,
+            # A `family:<member>` ref is SYMBOLIC and must be resolved before it reaches a Pod --
+            # kubelet reads an unresolved one as `docker.io/library/family:<member>` and fails the
+            # pull with `insufficient_scope`, which reads like a credentials problem rather than an
+            # unresolved reference. Resolved here, in the service, for the same reason the mc-tools
+            # container below calls resolve_sidecar_image(): this process is the one carrying the
+            # deployment's project and tag. The local lane resolves at runner-creation time
+            # instead (config_generation._make_container_runner), which is why a family ref worked
+            # there and not here.
+            "image": _aux_image(spec.image),
             "imagePullPolicy": "IfNotPresent",
             "command": list(spec.keep_alive_command),
         }
