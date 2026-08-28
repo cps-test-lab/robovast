@@ -128,7 +128,7 @@ auto-detects it — nothing to export:
    ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel to :8800
 
    # the CLI and the web UI follow the tunnel on :8800:
-   vast workspace run                             # no flags — auto-detected
+   vast workspace run my-experiment               # no target flags — auto-detected
    # ...author, run, and query campaigns on the VM.
 
 That one tunnel also reaches MCP, since ``vast serve`` mounts it at ``/mcp`` on

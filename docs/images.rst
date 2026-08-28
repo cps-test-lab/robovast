@@ -67,7 +67,8 @@ So the way to run a campaign against a different project is **not** to edit the 
 
 .. code-block:: bash
 
-   vast workspace run --image-project ghcr.io/cps-test-lab campaign.vast
+   vast workspace run my-experiment campaign.vast \
+       --image-project ghcr.io/cps-test-lab
 
 and the way to stop that working is to write a fixed ``image:``. If a ``.vast`` of yours
 names a family image, delete the line.

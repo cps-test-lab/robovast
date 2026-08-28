@@ -84,10 +84,10 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 .. code-block:: bash
 
-    vast workspace run --config config1 ./test_out
+    vast workspace run <pinned-workspace> my.vast --filter config1
 
-    # check that output is created in ./test_out/<campaign-name>-<timestamp>/<config-name>/<run_number>
-    ls -l ./test_out/*-*/config1/0/
+    # check that output is created in ./test_run/<campaign-name>-<timestamp>/<config-name>/<run_number>
+    ls -l ./test_run/*-*/config1/0/
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
@@ -102,10 +102,10 @@ A good procedure is to add configurations one-by-one and analyze the result.
     # 1. add configuration in config file
 
     # 2. list created configurations
-    vast config list
+    vast config list my.vast
 
     # 3. try local execution with one of the created configurations
-    vast workspace run --config <config-name> --runs 1 ./test_out
+    vast workspace run <pinned-workspace> my.vast --filter <config-name> --runs 1
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^
@@ -118,7 +118,7 @@ A good practice is, to first run a single configuration to verify that everythin
 .. code-block:: bash
 
     # 1. run single configuration in cluster, once
-    vast workspace run --config config1 --runs 1
+    vast workspace run <workspace> my.vast --filter config1 --runs 1
 
     # 2. fetch the campaign's archive (or publish it to the share for someone else)
     vast campaign download <campaign-id>       # -> ./<campaign-id>.tar.gz
@@ -137,9 +137,9 @@ campaign runs in the background in the cluster:
     # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
     vast cluster jobs-cleanup
 
-By default, a new run does not clean up previous runs, so you can run multiple
-runs in parallel. Use ``--cleanup`` to remove previous runs before starting
-(e.g. ``vast workspace run --cleanup``).
+Campaigns run in parallel and a new one never removes an older one's Jobs. Clear
+them when you are done with ``vast cluster jobs-cleanup`` (add ``--campaign`` for
+one campaign, ``--data`` to drop its result buckets too).
 
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""

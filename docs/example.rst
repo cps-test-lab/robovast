@@ -121,7 +121,7 @@ Before starting the execution in the cluster, it is recommended to first check t
 
 .. code-block:: bash
 
-   vast config list
+   vast config list configs/examples/growth_sim/growth_sim.vast
 
 
 Check Result of a Single Execution
@@ -133,7 +133,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast workspace run --config config1 output_config1
+   vast workspace run growth_sim growth_sim.vast --filter config1 --runs 1
 
 
 Cluster Execution
@@ -143,7 +143,7 @@ To execute all tests in the cluster, run:
 
 .. code-block:: bash
 
-   vast workspace run
+   vast workspace run growth_sim growth_sim.vast
 
 This command is *fire-and-forget*: it starts the campaign on the
 ``robovast-service`` (which drives it in-process) and returns immediately, printing

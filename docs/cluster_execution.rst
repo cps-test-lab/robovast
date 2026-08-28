@@ -437,14 +437,14 @@ Running Scenarios
 
 .. code-block:: bash
 
-   # Run all configs defined in the project's .vast file
-   vast workspace run
+   # Run every config the workspace's .vast expands to
+   vast workspace run my-experiment my.vast
 
    # Override the number of runs from the CLI
-   vast workspace run --runs 5
+   vast workspace run my-experiment my.vast --runs 5
 
-   # Run only one specific config by name (batch campaigns)
-   vast workspace run --config my-config
+   # Run only the configs matching a name or glob (batch campaigns)
+   vast workspace run my-experiment my.vast --filter my-config
 
 ``run`` is fire-and-forget: it starts the campaign on the service and returns
 immediately, printing the campaign id. The campaign continues in the cluster —
@@ -1188,13 +1188,13 @@ the ``--context`` flag to any cluster sub-command to select a specific context
 .. code-block:: bash
 
    # Use the currently active context (default)
-   vast workspace run
+   vast workspace run my-experiment
 
    # Explicitly target a context
-   vast workspace run --context gcp-c4
+   vast workspace run my-experiment --context gcp-c4
 
-The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
-``jobs-cleanup``, and ``cleanup``.
+The ``--context`` flag is available on ``workspace run``, ``cluster setup``,
+``cluster monitor``, ``cluster jobs-cleanup``, and ``cluster cleanup``.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -1250,8 +1250,8 @@ Running the same config on two clusters:
 
 .. code-block:: bash
 
-   vast workspace run --context gcp-c4
-   vast workspace run --context local
+   vast workspace run my-experiment --context gcp-c4
+   vast workspace run my-experiment --context local
 
 
 Cloud Provider Configurations
