@@ -1348,6 +1348,39 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                                   for c, v in zip(all_cols, base_vals + param_vals)])
 
 
+def _build_run_health_table(conn, campaign_path, log) -> None:
+    """Grade each run with whatever health checks this deployment has, and record the result.
+
+    Best-effort by construction: a campaign's runs are the deliverable, and a stack plugin
+    that cannot load must not cost them their ``data.db``. What it must never do is fail
+    *silently* -- a missing row means "not checked" (see
+    :mod:`robovast.results_processing.run_health`), so a swallowed error would be
+    indistinguishable from a clean bill of health.
+    """
+    from .run_health import build_run_health_table, load_health_checks  # noqa: PLC0415
+
+    declared, config_dir = None, None
+    try:
+        from robovast.common.common import load_config  # noqa: PLC0415
+        from robovast.common.results_utils import campaign_vast  # noqa: PLC0415
+        vast = campaign_vast(campaign_path)
+        config_dir = str(Path(vast).parent)
+        results = load_config(str(vast), subsection="results_processing",
+                              allow_missing=True) or {}
+        declared = results.get("health_checks")
+    except Exception as exc:  # noqa: BLE001 - a campaign need not declare any
+        logger.debug("no declared health checks for %s: %s", campaign_path, exc)
+
+    try:
+        checks = load_health_checks(declared=declared, config_dir=config_dir)
+        written = build_run_health_table(conn, checks)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        log(f"  warning: run health could not be recorded: {exc}")
+        return
+    if checks:
+        log(f"  table: run_health ({written} rows from {len(checks)} check(s))")
+
+
 def _build_postprocessing_steps_table(conn, campaign_path, name_map: dict) -> None:
     """Create ``postprocessing_steps``: how each table in this ``data.db`` was produced.
 
@@ -1742,6 +1775,12 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         # How each of the tables above was produced — the provenance edge from a metric
         # back to the plugin and parameters that derived it.
         _build_postprocessing_steps_table(conn, campaign_path, name_map)
+
+        # Last, because a health check reads the tables above: what the stack under test
+        # thinks of each run, graded by the stack rather than by RoboVAST. The table is
+        # created even when no check is installed -- absent and empty say different things,
+        # and only "they ran and found nothing" is evidence.
+        _build_run_health_table(conn, campaign_path, _log)
 
         # Final commit and persist name map
         conn.commit()

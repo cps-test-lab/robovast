@@ -642,6 +642,18 @@ class ResultsConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
     publication: Optional[list[str | dict[str, Any]]] = None
+    #: Per-run health checks to run, graded into the ``run_health`` table. Either an
+    #: installed ``robovast.health_checks`` plugin by name (``nav2_control_loop_rate``) or a
+    #: local ``./path.py:Class`` ref, which is how a system under test ships a check without
+    #: packaging it.
+    #:
+    #: **Nothing runs undeclared.** A check that ran everywhere would grade campaigns it
+    #: knows nothing about: nav2's control-loop check finds no misses in a MoveIt 2 campaign
+    #: and would write ``ok`` for every run of it -- a clean bill for a stack that was never
+    #: there. Declaring is also what makes the campaign record say which checks were *meant*
+    #: to run, so a missing row cannot be confused with a plugin that was not installed on
+    #: whichever machine did the postprocessing.
+    health_checks: Optional[list[str | dict[str, Any]]] = None
 
 
 class PlotSpec(BaseModel):

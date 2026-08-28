@@ -121,6 +121,12 @@ execution:
   - "files/*.sdf"
   - "files/*.py"
 results_processing:
+  # nav2's own operating-rate metric, graded per run into the `run_health` table.
+  # Declared rather than discovered: a health check that ran everywhere would grade
+  # campaigns it knows nothing about -- this one finds no misses in a non-nav2 stack and
+  # would write "ok" for every run of it, a clean bill for a stack that was never there.
+  health_checks:
+  - nav2_control_loop_rate
   postprocessing:
   # Identical to basic_nav_roqsim.vast, so both halves' `poses` tables hold the same frames. `require`
   # names what the analysis is measured from -- base_link, odom (places the local costmap in the map

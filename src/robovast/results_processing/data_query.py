@@ -604,6 +604,26 @@ _POSE_ORIENTATION = (
 )
 
 _TABLE_DESCRIPTIONS = {
+    ("main", "run_health"): (
+        "HOW WELL did each run go, graded by the stack under test rather than by RoboVAST: "
+        "config_name, run_id, check_name, level (ok|warn|error), value, unit, detail, source. "
+        "The scenario's pass/fail says WHETHER; this says HOW WELL, which is what a resource "
+        "floor or a reproduction-fidelity question actually needs. "
+        "ABSENCE IS NOT A PASS. A run with no row for a check was not checked -- no plugin "
+        "installed, the check did not apply to this stack, or its input tables were not "
+        "produced. Never read a missing row as healthy. An EMPTY table means checks ran and "
+        "had nothing to say; a MISSING table means the campaign predates them. "
+        "level is the only word RoboVAST interprets; check_name and detail belong to the "
+        "stack that wrote them. value/unit are the measure -- re-threshold them yourself "
+        "rather than trusting level if you disagree with the plugin's cutoff. "
+        "It NEVER decides pass/fail: run_view.status is the verdict, this grades it. A run "
+        "can be level='error' here and passed=1 there, and that is not a contradiction. "
+        "Worst level per run: SELECT config_name, run_id, MAX(CASE level WHEN 'error' THEN 2 "
+        "WHEN 'warn' THEN 1 ELSE 0 END) FROM run_health GROUP BY 1,2. "
+        "Pair with run_validity_view to tell a resource artifact from a real fault: "
+        "quota_bound=1 AND health degraded means the CPU limit is a live explanation; "
+        "quota_bound=1 AND health clean means the clipping cost nothing. "
+        "Join on (config_name, run_id)."),
     ("temp", "run_validity_view"): (
         "WAS THIS RUN A CLEAN OBSERVATION? One row per (run, container) saying whether the "
         "kernel capped it at its OWN CPU limit, and whether it was crowded out by other "

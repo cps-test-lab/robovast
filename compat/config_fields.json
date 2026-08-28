@@ -609,6 +609,11 @@
   ],
   "ResultsConfig": [
     [
+      "health_checks",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
       "metadata_processing",
       false,
       "Union[list[Union[dict[str, Any], str]], NoneType]"
