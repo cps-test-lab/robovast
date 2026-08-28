@@ -194,7 +194,7 @@ def test_disagreeing_with_a_foreign_advertiser_is_an_error(monkeypatch, helm):
 def test_the_wait_demands_the_exact_count(monkeypatch):
     """Not "more than zero". Changing time-slicing restarts the DaemonSet, so capacity goes
     24 -> absent -> 16; a check that accepts any non-zero reading can see the old value and
-    size the Kueue quota from it permanently."""
+    size capacity from it."""
     monkeypatch.setattr(kg.time, "sleep", lambda _s: None)
     readings = iter([24, 24, 0, 16])
     monkeypatch.setattr(kg, "get_cluster_allocatable_gpus",

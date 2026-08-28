@@ -426,7 +426,7 @@ file) have read/write access to it.
     # ------------------------------------------------------------------
 
     def get_cluster_allocatable_resources(self, kube_context=None):
-        """Return GKE autoscaler **max** capacity for Kueue quota.
+        """Return GKE autoscaler **max** capacity, for sizing admission.
 
         Queries ``gcloud container clusters describe`` to obtain each node
         pool's autoscaling *maxNodeCount* and machine type, then multiplies
@@ -434,8 +434,8 @@ file) have read/write access to it.
         describe``.  This gives the true upper bound even when the cluster
         is currently scaled down.
 
-        Falls back to ``(None, None)`` (K8s node API query in
-        ``kubernetes_kueue``) when:
+        Falls back to ``(None, None)`` (the K8s node API query in
+        ``cluster_capacity``) when:
 
         * *kube_context* is not a GKE context (``gke_…`` prefix),
         * ``gcloud`` is not installed or returns an error, or

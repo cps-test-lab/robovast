@@ -641,9 +641,12 @@ owns, with no log reading at all:
    * - ``stalled``
      - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
        (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
-       inside it; ``null`` when no verdict is possible — either the ``.vast`` declares
-       no timeout, or ``status`` is not ``running`` (see below). ``stall_verdict``
-       then says which.
+       inside it; ``null`` when no verdict is possible — the ``.vast`` declares no
+       timeout, ``status`` is not ``running`` (see below), or every job of the current
+       batch is queued for cluster capacity, so no run is running and none can complete.
+       That last case is the second one's argument applied inside ``running``: the budget
+       is per-run, and a queue the campaign does not control is not a stalled run.
+       ``stall_verdict`` then says which.
    * - ``stall_reason``
      - Present only when ``stalled`` is ``true``. Names the comparison *and the next
        call*, so the follow-up is not something to remember.

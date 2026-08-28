@@ -545,7 +545,7 @@ class JobSummary(BaseModel):
     display_name: Optional[str] = None
     # Why a job is in its state, when there is something to say — the Kubernetes reason
     # + message for a ``blocked`` job (e.g. ``"ImagePullBackOff: Back-off pulling image
-    # ..."``), or Kueue's own wait message for a ``waiting`` one. ``None`` otherwise.
+    # ..."``), or why capacity was refused for a ``waiting`` one. ``None`` otherwise.
     #
     # A ``pending`` job carries one too, when the cluster has said why it has not been
     # placed yet: a pod waiting for a node another campaign is holding, or for a pull
@@ -560,9 +560,10 @@ class JobCounts(BaseModel):
 
     running: int = 0
     pending: int = 0
-    # Jobs queued for cluster capacity (Kueue-suspended, no pod yet). Healthy and
-    # expected — every cluster batch starts here — so it is counted apart from both
-    # ``pending`` (pod exists, scheduling) and ``blocked`` (needs a human).
+    # Jobs queued for cluster capacity: planned by RoboVAST's admission controller but
+    # not created yet, so they have no Kubernetes object at all. Healthy and expected —
+    # every cluster batch starts here — so it is counted apart from both ``pending``
+    # (the Job exists and its pod is being scheduled) and ``blocked`` (needs a human).
     waiting: int = 0
     completed: int = 0
     failed: int = 0
@@ -829,12 +830,12 @@ class UpgradeInfo(BaseModel):
       there is no button rather than hiding one silently.
 
     **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
-    and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
-    Secrets and the build daemon are untouched, so a version needing a permission the last
-    one did not will deploy and then 403 at runtime. ``vast service upgrade`` is the
-    command that reconciles all of it, and the one a consumer must name. The Secrets in
-    particular can *never* be done from in here: they are rebuilt from the operator's
-    environment, which the pod does not have.
+    and nothing else: RBAC, the registry Ingress route, the credential Secrets and the
+    build daemon are untouched, so a version needing a permission the last one did not will
+    deploy and then 403 at runtime. ``vast service upgrade`` is the command that reconciles
+    all of it, and the one a consumer must name. The Secrets in particular can *never* be
+    done from in here: they are rebuilt from the operator's environment, which the pod does
+    not have.
     """
 
     supported: bool = False
@@ -882,7 +883,7 @@ class ResourceUsage(BaseModel):
     ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
     question ("how much is currently claimed"): on the **cluster** they are the sum
     of resource *requests* of the non-terminal pods bound to a node (schedulability,
-    matching how Kueue reasons about quota — pods still queued for a node are
+    matching how the scheduler reasons about capacity — pods still queued for a node are
     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
     on **local** they are live host utilization. ``cpu_*`` are CPU cores;
     ``memory_*`` are bytes.
@@ -908,7 +909,7 @@ class ResourceUsage(BaseModel):
     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
     this backend is driving, not one. One definition, both lanes: ``running`` is what is
     **executing right now**, ``pending`` is work the backend has **accepted but is not
-    executing**. On the cluster that means Kueue-waiting + pod-pending + blocked Jobs;
+    executing**. On the cluster that means planned + pod-pending + blocked Jobs;
     locally it is the remainder of the current batch, with ``running`` 0 or 1 because
     the Docker lane is single-flight. So the pair can be read — and summed into an
     "outstanding work" total — without branching on ``backend``.

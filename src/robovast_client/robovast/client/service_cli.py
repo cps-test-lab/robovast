@@ -88,7 +88,7 @@ def restart(yes, wait, namespace, context):
     \b
     restart  the image, by stamping the Deployment's restart annotation. With
              imagePullPolicy: Always that is what moves a floating tag onto new bytes.
-    upgrade  that, plus RBAC, the Kueue queues, the registry ingress route, the credential
+    upgrade  that, plus RBAC, the registry ingress route, the credential
              Secrets and the build daemon.
 
     **This reconciles none of those.** A version needing a permission the last one did not

@@ -54,8 +54,7 @@ execution:
 def _deploy_stubs(monkeypatch):
     """Stub out everything ``setup_server`` touches outside label resolution.
 
-    Returns the ``apply_kueue_queues`` and ``setup_cluster`` mocks, which is where the
-    resolved job / control labels land.
+    Returns the ``setup_cluster`` mock, which is where the resolved control labels land.
     """
     from robovast.execution.cluster_execution import service_deploy
 
@@ -69,18 +68,15 @@ def _deploy_stubs(monkeypatch):
     # --ingress-host was given, so it reaches the API server where it did not before.
     # Unstubbed, these tests wait out a connection timeout apiece.
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
-    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "ensure_nvidia_device_plugin"):
+    for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
-    queues = mock.Mock()
-    monkeypatch.setattr(cluster_setup, "apply_kueue_queues", queues)
     config = mock.Mock()
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: config)
-    return queues, config
+    return config
 
 
 def _stub_placement(monkeypatch, node="node-a"):
@@ -112,15 +108,16 @@ def _write_project(directory, config_name, write_config=True):
 
 def test_ambient_project_contributes_no_labels(tmp_path, monkeypatch, deploy_stubs):
     """A project above the CWD must not reach a cluster deploy, even when valid."""
-    queues, config = deploy_stubs
+    config = deploy_stubs
     _write_project(tmp_path, "campaign.vast")
     deep = tmp_path / "some" / "other" / "workdir"
     deep.mkdir(parents=True)
     monkeypatch.chdir(deep)
 
+    # It would RAISE if the ambient project's jobs.node_labels had been read, which is a
+    # sharper assertion than the old one: that setting is refused outright now.
     setup_server(config_name="rke2", namespace="default")
 
-    assert queues.call_args.kwargs["node_labels"] is None
     # The store pod is still pinned -- that decision comes from the cluster, not from a
     # .vast -- but nothing the ambient project said reached it.
     assert config.setup_cluster.call_args.kwargs["control_node_labels"] == {
@@ -134,25 +131,42 @@ def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
     Not consulted at all now, so a moved/renamed/deleted ``.vast`` cannot abort a
     deploy that never mentioned it.
     """
-    queues, _ = deploy_stubs
     _write_project(tmp_path, "RoboVAST Examples/example.vast", write_config=False)
     monkeypatch.chdir(tmp_path)
 
     setup_server(config_name="rke2", namespace="default")
 
-    assert queues.call_args.kwargs["node_labels"] is None
 
+def test_jobs_node_labels_are_refused_rather_than_silently_ignored(monkeypatch, tmp_path,
+                                                                   deploy_stubs):
+    """Nothing applies it, so setup refuses it rather than accepting it silently.
 
-def test_named_config_supplies_labels(tmp_path, monkeypatch, deploy_stubs):
-    """``--vast <file>`` is the one way node labels reach the deploy."""
-    queues, config = deploy_stubs
+    Accepting it silently would place campaign jobs on every node of the cluster while
+    setup reported success -- a lasting, cluster-wide misconfiguration from a setting the
+    operator had every reason to think was applied.
+    """
+    from robovast.common.errors import CampaignConfigError
+
     vast = tmp_path / "campaign.vast"
     vast.write_text(_VAST, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
+    with pytest.raises(CampaignConfigError, match="jobs.node_labels"):
+        setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
+
+
+def test_named_config_supplies_control_labels(tmp_path, monkeypatch, deploy_stubs):
+    """``--vast <file>`` is the one way control-pod node labels reach the deploy."""
+    config = deploy_stubs
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(_VAST.replace("""    jobs:
+      node_labels:
+        node-pool: primary
+""", ""), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
     setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
 
-    assert queues.call_args.kwargs["node_labels"] == _JOBS
     # ANDed with the placement label, not replaced by it: a node pool alone still lets the
     # store pod float within the pool, which is the same bug at a smaller scale.
     assert config.setup_cluster.call_args.kwargs["control_node_labels"] == {
@@ -179,14 +193,14 @@ def test_unreadable_named_config_raises(tmp_path):
         get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))
 
 
-def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
+def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch):
     """Ordering, and it is load-bearing rather than tidy.
 
-    `apply_kueue_queues` sizes the ClusterQueue's GPU quota from what the nodes advertise,
-    and a node advertises nothing until the device plugin's DaemonSet is running. Install it
-    afterwards and the quota is sized from zero GPUs by construction -- which Kueue answers
-    by suspending every GPU job forever rather than failing, so the campaign hangs while
-    setup reports success.
+    A node advertises no ``nvidia.com/gpu`` until the device plugin's DaemonSet is running,
+    and admission reads exactly that field to decide whether a GPU request could ever be
+    satisfied. The plugin therefore has to be in place before the service is deployed and
+    can accept a campaign; otherwise the first GPU campaign measures a cluster with no GPUs
+    and is refused outright.
     """
 
     from robovast.execution.cluster_execution import service_deploy
@@ -195,25 +209,23 @@ def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
     _stub_placement(monkeypatch)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: (None, None))
-    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda **k: order.append("gpu-plugin"))
-    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
-                        lambda **k: order.append("kueue-helm"))
-    monkeypatch.setattr(cluster_setup, "apply_kueue_queues",
-                        lambda **k: order.append("kueue-queues"))
-    monkeypatch.setattr(cluster_setup, "verify_kueue_admission_ready", mock.Mock())
-    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "deploy_service",
+                        lambda *a, **k: order.append("service"))
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac",
+                        lambda **k: order.append("rbac"))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     cluster_setup.setup_server(config_name="rke2", namespace="default")
 
-    assert order == ["gpu-plugin", "kueue-helm", "kueue-queues"], (
-        "the GPU quota would be sized before the node could advertise any GPUs")
+    assert order[0] == "gpu-plugin", (
+        "a campaign could be accepted before any node could advertise a GPU")
+    assert "service" in order
 
 
 def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkeypatch):
@@ -226,8 +238,8 @@ def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkey
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda **k: touched.append("gpu"))
-    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
-                        lambda **k: touched.append("kueue"))
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac",
+                        lambda **k: touched.append("rbac"))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())

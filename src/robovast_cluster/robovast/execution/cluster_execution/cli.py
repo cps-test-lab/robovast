@@ -354,7 +354,7 @@ def monitor(interval, once, kube_context, namespace, vast):
                 empty = dict.fromkeys(JOB_PHASE_COUNTERS, 0)
                 empty["total_job_num"] = None
                 c = per_run.get(campaign, empty)
-                # A job that is blocked (cannot pull its image) or waiting (no Kueue quota
+                # A job that is blocked (cannot pull its image) or waiting (no cluster capacity
                 # yet) is submitted and unfinished, so it belongs in both sums below --
                 # otherwise this loop reaches "All jobs finished" while such jobs sit in
                 # the cluster, and stops watching them.
@@ -866,7 +866,7 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Change the cache kept even when old. See setup.')
 @click.option('--no-restart', is_flag=True, default=False,
-              help='Reconcile only what does not need the pod rolled -- RBAC, the Kueue '
+              help='Reconcile only what does not need the pod rolled -- RBAC, the '
                    'queues, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
@@ -898,9 +898,9 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
-    ``--no-restart`` reconciles just that part — RBAC, the Kueue queues, the registry
+    ``--no-restart`` reconciles just that part — RBAC, the registry
     ingress route — and stops before the Deployment is touched. All three are picked up by
-    the *running* pod (the API server evaluates RBAC per request, Kueue reads its queues per
+    the *running* pod (the API server evaluates RBAC per request, and
     workload, a route is the gateway's own state), so a permission the running version is
     missing can be granted without a version change and without the API blip. That is the
     difference between fixing a missed migration and rolling a service: it is the only way
@@ -937,7 +937,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
                      the environment (git, share, ntfy, registry). Recovers this
                      cluster's config and ingress host from the cluster itself, so it
                      cannot lose them. The access token is preserved.
-      setup --force  re-provisions: Kueue, the object store, the registry storage. It
+      setup --force  re-provisions: the object store, the registry storage. It
                      takes its options as *arguments*, so a re-run without the original
                      flags re-provisions with different ones. Also re-mints the access
                      token when asked (--rotate-token), logging everyone out.
@@ -945,7 +945,6 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     Campaign data lives in the object store and survives both.
     """
     from .cluster_setup import apply_controller_rbac
-    from .kubernetes_kueue import apply_kueue_queues
     from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  wait_for_rollout, wait_for_service_ready)
@@ -972,22 +971,12 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
-        # Announced because the Kueue step below can spend a silent minute inside
-        # 'kubectl wait' establishing CRDs, which reads as a hang in a command whose
-        # previous output was the line above.
-        click.echo("  reconciling RBAC and Kueue queues...")
+        click.echo("  reconciling RBAC...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
-        # The ClusterQueue's covered resources are coupled to what THIS version of the
-        # backend asks for, and `upgrade` is the command operators use to move versions.
-        # Skipping it meant a build that started requesting a new resource kind could be
-        # deployed onto a queue that does not cover it -- and an uncovered request is not
-        # rejected by Kueue, it is suspended forever, so the campaign hangs rather than
-        # failing. Idempotent, and it self-heals a missing CRD on the way through.
-        apply_kueue_queues(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  added the registry's /v2 route to the existing Ingress")
         # --no-restart stops here, and everything above this line is why it can: RBAC is
-        # evaluated by the API server per request, Kueue reads its queues per workload, and
+        # evaluated by the API server per request, and
         # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
         # up with no roll. Only the image and the env Secrets need a restart, and this flag
         # promises neither.
@@ -998,7 +987,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         # none of which they asked for, and all of which is unavailable to them anyway while
         # a campaign is in flight, since the campaign controller lives in that pod.
         if no_restart:
-            click.echo("✓ reconciled RBAC, Kueue queues and the ingress route")
+            click.echo("✓ reconciled RBAC and the ingress route")
             click.echo("  the pod was NOT restarted: the running version is unchanged and "
                        "its env Secrets were not re-read")
             click.echo("  run 'vast service upgrade' without --no-restart to move the "

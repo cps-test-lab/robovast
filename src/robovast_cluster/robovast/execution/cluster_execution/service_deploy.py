@@ -187,17 +187,6 @@ def _service_rbac_manifests(namespace):
                 # cluster_execution.container_runner.ClusterContainerRunner).
                 {"apiGroups": [""], "resources": ["pods/exec"],
                  "verbs": ["create", "get"]},
-                # Stopping a campaign tears down its Kueue Workloads: list to find
-                # the ones owned by the campaign's jobs, delete/deletecollection to
-                # remove them, and patch to strip finalizers off any stuck ones
-                # (see cluster_execution.kubernetes_kueue.cleanup_kueue_workloads).
-                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloads"],
-                 "verbs": ["get", "list", "watch", "delete", "deletecollection", "patch"]},
-                # The admission preflight reads the LocalQueue every job is labeled
-                # into, to fail loudly instead of letting Kueue suspend the batch
-                # forever (kubernetes_kueue.verify_kueue_admission_ready).
-                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["localqueues"],
-                 "verbs": ["get", "list"]},
                 # The service rolls ITSELF, from the web UI's Admin page and from
                 # 'vast service restart': it stamps its own Deployment's restart
                 # annotation, which with imagePullPolicy: Always lands the new pod on the
@@ -249,13 +238,6 @@ def _service_rbac_manifests(namespace):
                 # dependency belongs in /usage's own role -- a pruned controller role must
                 # not silently take the disk meter with it.
                 {"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
-                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["clusterqueues"],
-                 "verbs": ["get", "list"]},
-                # One per campaign, created before its first Job and deleted with the rest
-                # of the campaign's resources (kubernetes_kueue.ensure_campaign_priority_
-                # class / cleanup_campaign_priority_classes).
-                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloadpriorityclasses"],
-                 "verbs": ["get", "list", "create", "delete", "deletecollection"]},
             ],
         },
         {
@@ -358,6 +340,12 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         "metadata": {"name": SERVICE_NAME, "namespace": namespace,
                      "labels": {"app": SERVICE_NAME}},
         "spec": {
+            # Load-bearing for admission correctness, not just a sizing choice. The job
+            # admission queue lives in this process's memory (`node_admission`), so a second
+            # replica would be a second queue spending the same free capacity against the same
+            # cluster -- and the failure is silent: over-admission and pods that cannot be
+            # placed, never an error. RoboVAST is the sole scheduler of its own work by design;
+            # making the queue cluster-wide state is what a second replica would first require.
             "replicas": 1,
             "selector": {"matchLabels": {"app": SERVICE_NAME}},
             "template": {
@@ -828,7 +816,7 @@ def validate_ingress_options(ingress_host="", tls_secret="", issuer="",
     """Refuse an unpublishable combination **before** anything is changed.
 
     A pure argument check, so it belongs at the very start of setup. It used to live
-    only inside :func:`_ingress_manifest`, which runs after Kueue has been installed and
+    only inside :func:`_ingress_manifest`, which runs after the cluster has been changed and
     the cluster's storage deployed — so an operator who forgot ``--issuer`` discovered it
     only once the cluster had already been modified. The check costs nothing; doing it
     late costs a half-finished setup.

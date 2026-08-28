@@ -117,14 +117,31 @@ class BoundarySearch(SearchStrategy):
         batch scored in one pass would put every proposal on the single best point: they
         are scored against the same model and would all agree. A cell evaluated eight
         times locates the boundary no better than once.
+
+        **A pick is removed from the pool, not merely penalised.** The spread term alone
+        cannot guarantee this and did not: ``nearness`` is in [0, 1] while the bonus is
+        ``exploration * distance``, so a candidate sitting exactly on the level outscores
+        every rival even with its own bonus driven to zero. Measured on a real campaign,
+        batch 2 asked for 8 proposals and returned the same point 8 times. Identical values
+        hash to one ``ParamSet`` id, so composition mapped one id to several configs and the
+        campaign died pointing at its variations. The spread term is kept -- it is what
+        makes the picks *spread* rather than merely differ -- but distinctness is now
+        structural.
         """
+        if n > self.params.candidates:
+            raise ValueError(
+                f"boundary search asked for {n} proposals from a pool of "
+                f"{self.params.candidates} candidates; a batch cannot be larger than the "
+                f"pool it is drawn from without repeating a point. Raise "
+                f"'candidates' above per_batch.")
         pool = np.array([self._rng.random(self._dims) for _ in range(self.params.candidates)])
         known = np.array(self._points)
         taken: list[np.ndarray] = []
         picked = []
+        available = list(range(len(pool)))
         for _ in range(n):
-            scores = [self._score(c, known, taken) for c in pool]
-            best = int(np.argmax(scores))
+            scores = [self._score(pool[i], known, taken) for i in available]
+            best = available.pop(int(np.argmax(scores)))
             picked.append(pool[best])
             taken.append(pool[best])
         return picked

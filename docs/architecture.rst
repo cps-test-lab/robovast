@@ -99,11 +99,11 @@ one — a per-campaign **auxiliary-container pod** the driver execs into.
 Because the driver's batch wait loop blocks on the running Jobs and the
 cooperative-stop flag is only checked *between* batches (or search generations),
 ``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
-Kueue-aware, campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
+campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
-down promptly; the ``"Hold"`` (never ``"HoldAndDrain"``) queue policy means other
-queued/running campaigns are not preempted. **Service shutdown** (Ctrl+C on
+down promptly. The deletions are label-scoped to the one campaign, so other
+queued/running campaigns are untouched. **Service shutdown** (Ctrl+C on
 ``vast serve``, e.g. an off-cluster ``--backend cluster -x <context>`` driver) runs
 the same teardown for *every* running campaign via the
 ``_terminate_running_campaigns`` hook — the cluster analogue of the local backend's
@@ -1132,10 +1132,10 @@ Three properties of the **Job** shape, and each replaces machinery rather than a
   failed build. It warns instead, and the warning is load-bearing: nothing reads a prewarm back,
   so the log is the only place a permanently broken one can surface.
 
-Deliberately outside Kueue, which is the same choice the build Job makes (campaign and
-postprocessing Jobs are the ones carrying the queue label). A prewarm admitted behind a full
-sweep would warm the node *after* the thing that needed it, which is worse than not warming; the
-cost is a few millicores of quota Kueue has not accounted for, and no Workload object at all.
+Deliberately outside admission, which is the same choice the build Job makes. A prewarm queued
+behind a full sweep would warm the node *after* the thing that needed it, which is worse than
+not warming; the cost is a few millicores, and admission counts its pods like any other once
+they are bound, so nothing is double-counted.
 
 It is **not** wired to the 3D panel's geometry compile, though that is the one place a human
 watches this wait and the panel names it out loud. The compile runs in

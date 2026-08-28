@@ -137,9 +137,9 @@ to date": that would tell you a fix you have just published is not there.
 
 **Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
 annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the
-Kueue queues, the registry ingress route, the credential Secrets and the build daemon are
-untouched, so a version needing a permission the last one did not will deploy and then fail
-at runtime with a 403. ``vast service upgrade`` is the command that reconciles all of
+registry ingress route, the credential Secrets and the build daemon are untouched, so a
+version needing a permission the last one did not will deploy and then fail at runtime with
+a 403. ``vast service upgrade`` is the command that reconciles all of
 it, and the credential Secrets in particular can *only* be done there — they are rebuilt
 from the operator's environment, which the pod does not have.
 

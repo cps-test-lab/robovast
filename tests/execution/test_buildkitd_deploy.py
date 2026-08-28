@@ -126,15 +126,16 @@ def test_the_generated_config_is_valid_toml():
 
 
 def test_the_daemon_reserves_something_and_caps_itself():
-    """Requests are subtracted from Kueue's campaign quota, so they must be deliberate --
-    and asking for nothing is not free: BestEffort QoS is evicted first, i.e. mid-build."""
+    """Requests are subtracted from what campaigns can be admitted against, so they must be
+    deliberate -- and asking for nothing is not free: BestEffort QoS is evicted first, i.e.
+    mid-build."""
     res = _container(_dep())["resources"]
     assert res["requests"]["cpu"] and res["requests"]["memory"]
     assert res["limits"]["cpu"] and res["limits"]["memory"]
 
 
 def test_parallelism_is_bounded():
-    """Unset, it defaults to the node's CPU count -- capacity Kueue promised to campaigns."""
+    """Unset, it defaults to the node's CPU count -- capacity campaigns are admitted against."""
     dep = _dep()
     rendered = " ".join(_container(dep).get("args") or _container(dep)["command"])
     assert "--oci-max-parallelism" in rendered

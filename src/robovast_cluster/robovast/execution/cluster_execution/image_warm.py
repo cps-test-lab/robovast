@@ -47,12 +47,11 @@ which is the only way Kubernetes expresses "on every node". It gives up the self
 below in exchange: a DaemonSet is meant to persist, so it is removed explicitly at teardown
 (:func:`delete_warm_daemonset`) rather than by a TTL.
 
-Deliberately **not** submitted to Kueue: a prewarm admitted behind a full sweep warms the
-node after the thing that needed it, which is worse than not warming at all. That follows
-the build Job, which carries no queue label either; campaign and postprocessing Jobs are
-the ones that do. Its footprint is :data:`WARM_CPU_REQUEST` / :data:`WARM_MEMORY_REQUEST`
-for at most the deadline, and it creates no Workload object, so Kueue's quotas are
-untouched.
+Deliberately **not** put through admission: a prewarm queued behind a full sweep warms the
+node after the thing that needed it, which is worse than not warming at all. A DaemonSet is
+also the wrong shape for a queue that admits one pod at a time against free capacity. Its
+footprint is :data:`WARM_CPU_REQUEST` / :data:`WARM_MEMORY_REQUEST` for at most the deadline,
+and admission counts it like any other pod once it is bound, so it is never double-counted.
 """
 
 import hashlib
@@ -230,11 +229,11 @@ WARM_SLEEP_SECONDS = 2147483647
 def _warm_tolerations() -> list:
     """What the warm pod must tolerate, and it is not optional: a pod that does not tolerate
     what campaign pods tolerate skips exactly the nodes worth warming -- and reports success
-    while doing it. Read from where the ResourceFlavor granting it is written rather than
-    restated here, so there is one place to change if the taint ever does.
+    while doing it. Read from where the campaign job pods get it rather than restated here,
+    so there is one place to change if the taint ever does.
     """
-    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS
-    return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+    return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]
 
 
 def family_refs_to_warm() -> list:

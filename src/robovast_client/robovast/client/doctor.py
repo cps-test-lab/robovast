@@ -18,7 +18,7 @@
 
 Every check here exists because its absence used to surface as something unhelpful:
 a missing ``helm`` as ``FileNotFoundError: 'helm'`` from a bare ``subprocess.run``, an
-undersized node as a Kueue queue that never admits anything, a namespaced kubeconfig as
+a cluster that can schedule nothing as jobs that never start, a namespaced kubeconfig as
 a 403 halfway through creating ClusterRoles — each of them minutes after the command
 started and with the real cause several layers down.
 
@@ -45,9 +45,6 @@ if TYPE_CHECKING:  # the handshake type, for readers and type checkers only -- t
 #: Python this codebase requires (``pyproject.toml``: ``>=3.12,<3.14``).
 MIN_PYTHON = (3, 12)
 
-#: What the Kueue controller asks for; a cluster smaller than this never schedules it.
-KUEUE_CPU = 4
-KUEUE_MEMORY_GIB = 16
 
 
 @dataclass
@@ -103,7 +100,7 @@ def check_tools(flavor: str = "") -> list[Check]:
         _tool("kubectl", "Install kubectl: https://kubernetes.io/docs/tasks/tools/",
               version_args=("version", "--client=true")),
         _tool("helm", "Install helm: https://helm.sh/docs/intro/install/ — setup "
-                      "installs Kueue with it.",
+                      "installs the GPU device plugin with it.",
               version_args=("version", "--short")),
     ]
     if flavor == "gcp":
@@ -111,7 +108,7 @@ def check_tools(flavor: str = "") -> list[Check]:
             "gcloud",
             "Install the gcloud CLI and the GKE auth plugin "
             "(google-cloud-cli-gke-gcloud-auth-plugin); the gcp flavor uses them to "
-            "authenticate and to size the Kueue quota."))
+            "authenticate and to read the autoscaler's maximum size."))
     checks.append(_tool("docker", "Install Docker — needed only to run campaigns on "
                                   "this machine, not for the cluster path.",
                         optional=True, version_args=("--version",)))
@@ -225,7 +222,17 @@ def _check_rbac() -> Check:
 
 
 def _check_capacity() -> Check:
-    """Kueue's controller asks for 4 CPU / 16 GiB; a smaller cluster never admits it."""
+    """Report the largest node, and fail only on a cluster that can run nothing.
+
+    There is no honest fixed threshold to check against: a campaign's pod is whatever its
+    ``.vast`` asks for, and admission refuses an oversized request at launch, naming the
+    request and each node's allocatable -- a better answer than any number guessed here.
+    So this reports the largest node and fails only when no node could run anything.
+
+    So it reports rather than judges. The one thing still worth failing on is a cluster that
+    could not run a single container, because that is a broken cluster rather than a small
+    one.
+    """
     from kubernetes import client
     try:
         nodes = client.CoreV1Api().list_node().items
@@ -245,19 +252,18 @@ def _check_capacity() -> Check:
                 return float(value[:-len(suffix)]) * factor
         return float(value) / (1024 ** 3)
 
-    # The largest single node, not the sum: the Kueue controller is one pod and has to
-    # fit on one node. A cluster with plenty of total capacity and no node big enough
-    # leaves it Pending forever, which is the failure this catches.
+    # The largest single node, not the sum: a pod runs on one node, so total capacity
+    # spread thinly is what a cluster with "plenty of room" and nothing schedulable looks
+    # like -- and it is the number an operator needs when admission refuses a request.
     best_cpu = max(_cpu(n.status.allocatable.get("cpu", "0")) for n in nodes)
     best_mem = max(_gib(n.status.allocatable.get("memory", "0")) for n in nodes)
     detail = f"largest node: {best_cpu:.1f} CPU, {best_mem:.1f} GiB"
-    if best_cpu >= KUEUE_CPU and best_mem >= KUEUE_MEMORY_GIB:
+    if best_cpu > 0 and best_mem > 0:
         return Check("capacity", True, detail)
     return Check(
         "capacity", False, detail,
-        f"Kueue's controller requests {KUEUE_CPU} CPU / {KUEUE_MEMORY_GIB} GiB and "
-        "must fit on one node, so it would stay Pending here and no campaign would "
-        "ever be admitted. Use a larger node.")
+        "No node reports allocatable CPU and memory, so nothing can be scheduled here "
+        "at all. Check that the nodes are Ready ('kubectl get nodes').")
 
 
 def check_deployment(namespace: str = "default",
@@ -672,7 +678,7 @@ def run_checks(flavor: str = "", context: str | None = None,
     lane = cluster_lane_installed()
     # With no lane, the binaries it shells out to are moot rather than merely advisory:
     # `kubectl` and `helm` are what `vast cluster setup` runs, and there is no `setup`
-    # in this install to run them -- so "Install helm: setup installs Kueue with it" answers
+    # in this install to run them -- so "Install helm: setup uses it" answers
     # a question this user cannot ask, one line under a check that just said the lane is
     # missing. Fatal, it was worse: a client user whose only real problem was that they had
     # not run `vast login` yet got told, in red, to install two cluster binaries.

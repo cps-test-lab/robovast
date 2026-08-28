@@ -15,7 +15,6 @@ from kubernetes import client
 from robovast.execution.backends import RunOptions  # noqa: F401  # pylint: disable=unused-import  (import parity)
 from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
-from robovast.execution.cluster_execution.kubernetes_kueue import campaign_priority_class_name
 
 
 class _FakeClusterConfig:
@@ -90,15 +89,15 @@ def _env_dict(container):
     return {e["name"]: e["value"] for e in container.get("env", []) if "value" in e}
 
 
-def test_base_manifest_has_kueue_label_and_deadline(monkeypatch):
+def test_base_manifest_carries_no_external_queue_label_and_has_deadline(monkeypatch):
     r = _runner(monkeypatch, execution={"timeout": 30})
-    # Kueue admits off the queue-name *label* (an annotation is ignored by Kueue).
-    assert r.manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
-    # Same for the priority class, which is what orders this campaign's pending jobs
-    # against a concurrent campaign's by start time. An annotation would be ignored and
-    # every campaign would silently fall back to equal priority.
-    assert (r.manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
-            == campaign_priority_class_name("camp-2026-07-17-120000"))
+    # Admission is RoboVAST's own: a Job is created only once the cluster has room for it,
+    # so it must carry no label that would hand it to an external queue as well. Guarded
+    # rather than merely absent, because re-adding one is silent -- a second gate in front
+    # of a controller that already decided would suspend jobs the controller thinks it
+    # placed, and the campaign would wait on pods that are never going to exist.
+    labels = r.manifest["metadata"].get("labels", {})
+    assert not [k for k in labels if k.startswith("kueue.x-k8s.io/")], labels
     # Every Job is wall-clock capped so a stuck scenario is force-killed.
     assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # per-run * runs_per_job(1)
 
@@ -558,3 +557,24 @@ def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
     assert [c["name"] for c in spec["containers"]] == [MAIN_CONTAINER_NAME]
+
+def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
+    """The pod itself must carry it, not whatever admits it.
+
+    A deployment that taints its campaign nodes depends on this toleration to schedule at
+    all, and the failure mode if it goes missing is silent -- pods that never place, rather
+    than an error -- so it is pinned here."""
+    from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
+
+    m = _job_manifest(_runner(monkeypatch))
+    tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
+    for expected in CAMPAIGN_NODE_TOLERATIONS:
+        assert dict(expected) in tolerations, f"job pod must tolerate {expected}"
+
+
+def test_the_toleration_is_not_duplicated(monkeypatch):
+    """Additive and idempotent: while Kueue is still in the path it appends the same
+    toleration, and rendering twice must not accumulate copies."""
+    m = _job_manifest(_runner(monkeypatch))
+    tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
+    assert len(tolerations) == len({tuple(sorted(t.items())) for t in tolerations})

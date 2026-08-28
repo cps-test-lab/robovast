@@ -22,7 +22,7 @@ slower -- so on a GPU cluster this is the difference between a sweep that finish
 that does not. Three things have to line up, and this module owns the first:
 
 1. the node must *advertise* ``nvidia.com/gpu``, which needs a device plugin (here);
-2. Kueue's ClusterQueue must cover that resource (:mod:`.kubernetes_kueue`);
+2. admission must see the resource advertised (:mod:`.cluster_capacity`);
 3. the pod must request it and ask the container runtime for the ``graphics`` driver
    capability (:mod:`.kubernetes_backend`).
 
@@ -40,7 +40,8 @@ import time
 
 from kubernetes import client
 
-from .kubernetes_kueue import _parse_resource, _run_helm, helm_release_exists
+from .kube_client import parse_resource as _parse_resource
+from .helm import helm_release_exists, run_helm as _run_helm
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ NVIDIA_PLUGIN_CHART = "nvidia-device-plugin"
 #: Located with ``--repo`` rather than ``helm repo add``: setup runs on an operator's own
 #: machine, and adding a repo to their global helm config is a side effect nobody asked for.
 NVIDIA_PLUGIN_REPO = "https://nvidia.github.io/k8s-device-plugin"
-#: Pinned, like Kueue's chart. A floating version would change what a re-run installs.
+#: Pinned. A floating version would change what a re-run installs.
 NVIDIA_PLUGIN_VERSION = "0.17.1"
 
 #: Time-slicing replicas advertised per physical GPU when the operator did not say.
@@ -241,8 +242,8 @@ def _wait_for_gpu_capacity(expected, kube_context=None, timeout=120):
     Asserts the exact number rather than "more than zero", and that is not pedantry:
     changing the time-slicing config rewrites the plugin's ConfigMap and restarts its
     DaemonSet, so capacity goes ``24 -> absent -> 16``. A check that accepts any non-zero
-    reading can therefore see the *old* value and size the Kueue quota from it -- wrongly,
-    permanently, and while reporting success.
+    reading can therefore see the *old* value and size capacity from it -- wrongly, and
+    while reporting success.
     """
     deadline = time.monotonic() + timeout
     seen = 0
@@ -279,9 +280,8 @@ def ensure_nvidia_device_plugin(kube_context=None, gpu_replicas=None, skip=False
       would otherwise get software rendering while believing they had a GPU.
 
     Either way nothing is left half-configured, and that is structural rather than
-    promised: the Kueue quota is read from live node capacity *after* this returns, so a
-    failed install advertises nothing, the queue covers no GPU, the job requests none, and
-    every layer agrees.
+    promised: capacity is read from the live nodes *after* this returns, so a failed install
+    advertises nothing, admission sees no GPU, the job requests none, and every layer agrees.
     """
     requested = gpu_replicas is not None
 

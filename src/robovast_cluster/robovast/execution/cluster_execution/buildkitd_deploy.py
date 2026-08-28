@@ -91,9 +91,9 @@ DEFAULT_BUILDKITD_GC_MIN_FREE = "50GB"
 #: What the daemon reserves. Unlike the warm DaemonSet's near-nothing, this is a real workload:
 #: it compiles, unpacks and compresses layers, and a solve holds gigabytes.
 #:
-#: The number matters more than it looks. Kueue's quota is node allocatable minus the requests
-#: of every pod it does not manage, so whatever is asked for here is taken directly out of what
-#: campaigns may run. Asking for nothing is not the cheap option -- it lands the pod in
+#: The number matters more than it looks. Admission measures free capacity as node allocatable
+#: minus the requests of every pod bound to a node, so whatever is asked for here is taken
+#: directly out of what campaigns may run. Asking for nothing is not the cheap option -- it lands the pod in
 #: BestEffort QoS, first in line for eviction under node memory pressure, i.e. exactly during a
 #: heavy build. Modest requests with generous limits is the honest shape: reserve what it needs
 #: to be schedulable and survive, burst into whatever is idle.
@@ -103,8 +103,8 @@ BUILDKITD_CPU_LIMIT = "8"
 BUILDKITD_MEMORY_LIMIT = "16Gi"
 
 #: Cap on concurrent build steps across the **whole daemon**, not per build. Left to its default
-#: it is the node's CPU count, which is capacity Kueue has already promised to campaign jobs --
-#: so an unbounded daemon competes with the runs it exists to serve.
+#: it is the node's CPU count, which is capacity admission has already counted out to campaign
+#: jobs -- so an unbounded daemon competes with the runs it exists to serve.
 BUILDKITD_MAX_PARALLELISM = 4
 
 _CA_MOUNT = "/certs"
@@ -220,11 +220,11 @@ def buildkitd_pvc_manifest(namespace: str, storage_class: str,
 def _tolerations() -> list:
     """What the daemon must tolerate to be schedulable where the work is.
 
-    Read from where the ResourceFlavor granting it is defined rather than restated, so there is
-    one place to change if the taint moves -- the same reasoning the warm DaemonSet gives.
+    Read from where the campaign job pods get it rather than restated, so there is one place
+    to change if the taint moves -- the same reasoning the warm DaemonSet gives.
     """
-    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS
-    return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+    return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]
 
 
 def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",

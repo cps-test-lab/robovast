@@ -255,7 +255,7 @@ it exists because ``upgrade`` needs cluster access, so somebody who reached the 
 through ``vast login`` had a button in the browser and no command at all. It carries the
 same live-campaign guard and the same ``--yes``.
 
-**It reconciles nothing.** RBAC, the Kueue queues, the registry ingress route, the
+**It reconciles nothing.** RBAC, the registry ingress route, the
 credential Secrets and the build daemon are all untouched, so a version needing a new
 permission will deploy and then 403 at runtime. Use it for "new bytes are published and
 nothing else changed"; use ``upgrade`` for a version bump, a missed RBAC migration, a
@@ -302,9 +302,10 @@ Reads only, so it is safe at any time — which makes it usable both as the firs
 of an install and as the first step of debugging one. Every failure names its remedy.
 It checks the Python version, ``kubectl``/``helm``/``gcloud``, that the kubeconfig
 resolves and the API server answers, that the caller may create ClusterRoles (setup
-does), and that one node is large enough for the Kueue controller's 4 CPU / 16 GiB —
-a cluster with plenty of *total* capacity but no node big enough leaves that
-controller Pending and admits no campaign at all.
+does), and that the nodes report allocatable capacity at all. It reports the largest
+node rather than judging against a threshold: a campaign's pod is whatever its ``.vast``
+asks for, and a request no node can hold is refused when the campaign launches, naming
+both the request and each node's allocatable.
 
 **It also checks whether the deployment can build experiment images**, which is the one
 prerequisite that used to surface only when a campaign was submitted and refused:

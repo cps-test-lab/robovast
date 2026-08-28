@@ -269,97 +269,104 @@ go with it.
 
 .. _future-node-types:
 
-Node types: per-pool quota, and how a campaign should express what a run needs
-------------------------------------------------------------------------------
+Per-node budgets: admitting against the node a pod will actually run on
+------------------------------------------------------------------------
 
-**Motivation.** A cluster is modeled as one homogeneous pool. ``apply_kueue_queues``
-renders a single ``default-flavor`` and a single ``ClusterQueue`` whose ``nominalQuota``
-comes from :func:`get_cluster_allocatable_resources` — the **sum** of every node's
-allocatable CPU and memory. On nodes of one shape that is correct. On a mixed cluster it is
-arithmetic fiction: two 48-core nodes plus three 8-core nodes report 120 cores, so a
-campaign reserving 8 cores per run has 15 runs admitted, of which only 11 fit the large
-nodes, while an 8-core request does not fit an 8-core node at all once ``kubelet`` and the
-DaemonSets have taken their cut. The remainder sit ``Pending`` and read as a scheduler
-fault. ``execution.kubernetes.jobs.node_labels`` is the only lever today, and it is
-all-or-nothing: it confines the whole cluster's jobs to one pool.
+**Motivation.** Admission measures one cluster-wide figure — allocatable minus committed
+requests minus headroom — while a pod runs on **one node**. The two come apart in two ways,
+and both are measured rather than supposed.
 
-**The part that is clear.** Declaring the pools in the config the operator names with
-``vast cluster setup --vast <file>`` — one ``ResourceFlavor`` per node type, each with its
-own ``nominalQuota``, listed in one ``ClusterQueue`` in preference order — is a
-straightforward extension of what is already there, and Kueue then places by fit and copies
-the assigned flavor's ``nodeLabels`` onto the admitted pod. Quota per type would default to
-the allocatable sum *over the nodes carrying that type's labels*, so the derivation is the
-one already implemented, applied per label set rather than cluster-wide. A type whose
-labels match no node has to be a setup error: a flavor no job can land on is precisely the
-failure :func:`verify_kueue_admission_ready` exists to catch. With no node types declared
-the rendered YAML must stay byte-identical, so existing clusters need no re-``setup``.
+*Fragmentation.* A cluster can have room in total and nowhere to put a pod. Observed on the
+trio of 2026-08-26: **11.31 cores free cluster-wide, and no single node holding the 4.75 a
+pod needed**, so two pods were correctly admitted against the total and could not be placed.
+It is benign — such a pod fits an empty node, so it is classified as contention rather than a
+fault, and it was placed as soon as a neighbour finished — but only per-node budgets can
+prevent it.
 
-**The part that is not decided: where a per-type reservation is written, and by whom.**
-The reservation a run needs is a property of the *experiment* and belongs in the campaign's
-``.vast`` (``execution.containers.<name>.resources``); which pools exist is a property of
-the *cluster*. Per-node-type reservations sit exactly on that seam, and both placements
-have a real cost:
+*Unlike machines.* The same trial costs **1.6x more CPU on one node than on another**, and
+*wall time does not show it*. A realtime-paced simulator sleeps to hold one simulated second
+per wall second, so its realtime factor is capped at 1.0 by construction and every machine
+finishes at roughly the same time. The difference lands entirely in CPU consumed, which is
+what decides how many trials fit. Because kube-scheduler packs by *capacity*, the node with
+the most cores attracts the most work — which here was also the most expensive per unit of
+work.
 
-* In the campaign ``.vast`` — the author gains full control, but every author, including an
-  LLM authoring a sweep over MCP, now has to know the cluster's pool names to write a
-  reservation. Performance and placement detail leaks into the file that should describe
-  only the experiment. The existing per-cluster list form
-  (``cpu: [{gke_…: 4}, {minikube: 8}]``, resolved by
-  :func:`~robovast.execution.cluster_execution.cluster_context.resolve_resources`) is the
-  precedent, and it is already the least agent-friendly corner of the schema.
-* Cluster-side only — the campaign stays clean, but the operator is silently rewriting what
-  an experiment reserved, which for a reproduction study changes the measurement, not just
-  its cost.
+**What was measured, and how.** Two campaigns of one configuration times twenty runs, so the
+machine was the only variable; forty trials, all passed. Per-container CPU comes from the
+``resource_usage`` table, **summed per tick before averaging** (a row is one process name,
+not a container) and then divided by the run's realtime factor, because ``cpu_percent`` is
+per *wall* second and a node that meets fewer step deadlines otherwise reads as cheaper than
+it is:
 
-**A ratio, and what would have to be true for it to work.** The idea worth exploring is that
-the campaign declares **one** reservation, against a reference node type, and each node type
-carries a scalar factor relative to it; the service scales the reservation for whichever pool
-a job is placed on. Authors keep writing one number, operators keep describing their
-hardware once, and no pool name appears in a campaign file. Whether a single scalar can carry
-that is an open question, and a testable one:
+.. list-table::
+   :header-rows: 1
 
-* A pod's requests are fixed **before** Kueue assigns a flavor and are never rewritten
-  afterwards, so a scaled request forces the service to choose the type and stamp the
-  matching ``nodeSelector`` itself. Placement stops being purely Kueue's decision.
-* One factor per node type assumes every container scales the same way. They do not: a
-  MuJoCo step loop is largely bound by one core's speed, while a Nav2 planner spreads across
-  several — so the honest factor may have to be per container, or per resource (core count
-  versus per-core speed), which is where the simplicity the idea was bought for goes.
-* Scaling a reservation **down** for a smaller pool can change the result, not only the
-  runtime: a simulation given fewer cores can drop below realtime pacing. A factor is a
-  statement about *throughput*, and using it as one about *fidelity* is the failure mode to
-  guard.
-* A scaled request that no node in its pool can satisfy has to fail loudly at launch rather
-  than produce a workload that never admits.
+   * - CPU
+     - pod cores per wall-second
+     - realtime factor
+     - pod cores per **simulated** second
+   * - Xeon Gold 5220R @ 2.20GHz
+     - 2.10
+     - 0.947
+     - 2.22
+   * - Core i7-8700K @ 3.70GHz
+     - 1.78
+     - 0.809
+     - 2.19
+   * - Ryzen 9 5950X
+     - 1.38
+     - 0.807
+     - 1.71
+   * - Core i7-14700K
+     - 1.33
+     - 0.966
+     - 1.37
 
-**Which software to measure it with** — the open question that gates the rest. Three
-candidates, in increasing fidelity to what we actually run:
+The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
+together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+Within-node spread was tight (eleven runs on one node spanned 1.13-1.20 cores for the system
+under test), which argues the difference is the machine rather than contention from an uneven
+share of the batch — though equal-concurrency runs would settle that properly.
 
-* Synthetic CPU benchmarks (``sysbench``, ``stress-ng``, ``coremark``). Cheap, standing, and
-  wrong where it matters: they measure the machine, not the simulator, so a factor derived
-  from them predicts sweep throughput only by luck.
-* A ``roqsim`` micro-benchmark — one fixed world, fixed seed, fixed duration, run headless
-  with no stack, reporting realtime factor. Cheap enough to run on every pool at setup, and
-  it measures the bottleneck that actually governs a campaign.
-* The substrate's own example campaigns (``configs/examples/basic_nav``,
-  ``growth_sim``, ``quadrotor_landing``) as reference workloads. Most faithful, and the only
-  way to learn whether *one* factor generalizes across a sim-bound and a stack-bound
-  campaign.
+**A cached per-node factor is refuted, and that is the most useful result here.** Every
+design that stores a number and reuses it — a scalar per node, a
+``robovast.io/cpu-factor`` label written at setup, a reference campaign run once — assumes a
+figure that transfers between campaigns. Measured against two unlike campaigns on the same
+cluster, it does not:
 
-The experiment that would settle it: run one reference campaign on each pool, record wall
-time and realtime factor per run, derive the factor from the micro-benchmark, then check
-whether it predicts the other campaigns' throughput within a stated error band. If a single
-scalar holds across a sim-bound and a stack-bound campaign, the ratio design is sound; if it
-does not, the honest options are a per-container factor or dropping request scaling and
-keeping per-pool quota alone. Either way the measured factor belongs in a run's provenance
-beside ``instance_type``, since a campaign whose runs were placed by fit has runs on
-different hardware and any comparison has to group by it.
+* Container rankings **invert between nodes**. One machine was the cheapest for the system
+  under test and among the dearest for the simulator, while another was the reverse. No
+  single per-node scalar can be both greater and less than one at the same time, so the
+  per-node factor is wrong at the level of its shape rather than its calibration.
+* Even per ``(node, container)`` it does not transfer. Between two campaigns one node's
+  simulation cost moved +42% while another's moved +1%, flipping their order. The campaigns
+  differed in world *and* in contention, and those cannot be separated from this data — but
+  both causes argue the same way.
 
-**Adjacent, and worth stating because it now cuts the other way.** RoboVAST's own
-infrastructure pods are pinned to one node (:ref:`cluster-node-local-storage`), which makes
-the single summed quota *more* misleading rather than less: the node holding the service, the
-registry and the build cache has materially less left for campaign work than the sum implies,
-and the queue does not know that.
+So the surviving model is **in-campaign calibration**: measure this campaign, on this node,
+for this container, under the contention this campaign actually meets. The probe already
+reads one ``resource_usage_<container>.csv`` per container, so this is the cheaper model as
+well as the correct one.
+
+**Two cautions that would otherwise be learnt expensively.**
+
+* **p95 is the wrong statistic for a hard limit.** Sizing a limit at p95 x 1.25 looks safe
+  and is not: a container clipped at its limit does not lose the clipped work, it queues it,
+  so it stays pegged working the backlog off and the next spike arrives into a full budget.
+  A configuration whose static clip rate was **0.5%** produced **44% saturation and lost 22%
+  of the runs**. Size a hard limit on the peak, or split request from limit.
+* **The system under test is a control variable, not something to optimise.** Its budget must
+  be identical in every run or the allocation becomes a hidden independent variable and the
+  runs stop being comparable. Per-node sizing of the *infrastructure* containers is free of
+  that objection; per-node sizing of the SUT is not, and the two must not be conflated. On
+  measured figures the SUT is ~63% of the pod, so the scalable remainder is the smaller half.
+
+**What would settle the open question.** Equal-concurrency runs pinned per node, to separate
+the machine from the contention. It changes the explanation rather than the design.
+
+**Adjacent, and worth stating.** RoboVAST's own infrastructure pods are pinned to one node
+(:ref:`cluster-node-local-storage`), so that node has materially less left for campaign work
+than an even split implies — another way a single cluster-wide figure misleads.
 
 
 .. _future-gpu-usage:
