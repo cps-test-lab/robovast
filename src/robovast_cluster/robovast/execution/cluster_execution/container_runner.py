@@ -178,14 +178,15 @@ class AuxDiscoveryError(RuntimeError):
 
 
 def required_container_specs(config_path):
-    """Collect the distinct auxiliary ContainerSpecs a campaign's variations need.
+    """Collect the distinct auxiliary ContainerSpecs a campaign needs while it composes.
 
-    Asks each declared variation (via ``get_required_container``) whether it needs a
-    helper image while it runs, and returns a list of ``ContainerSpec`` deduplicated
-    by container name. An empty list means the campaign genuinely declares no aux
-    container. Discovery never *silently* yields an empty list: any failure to load
-    the ``.vast``, resolve a variation, or run the discovery subprocess propagates,
-    so a launch that needs a helper image fails loudly instead of running without it.
+    Asks each declared variation **and each ``execution.generate`` input generator** (via
+    ``get_required_container``) whether it needs a helper image while it runs, and returns
+    a list of ``ContainerSpec`` deduplicated by container name. An empty list means the
+    campaign genuinely declares no aux container. Discovery never *silently* yields an
+    empty list: any failure to load the ``.vast``, resolve a variation or generator, or
+    run the discovery subprocess propagates, so a launch that needs a helper image fails
+    loudly instead of running without it.
 
     When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
     present), the variation names resolve only through the plugin's entry points, and
@@ -248,7 +249,47 @@ def _discover_specs(config_path):
             spec = variation_class.get_required_container(variation_parameters)
             if spec is not None:
                 specs.setdefault(spec.container_name(), spec)
+
+    # ``execution.generate`` asks for a helper image the same way a variation does, and for the
+    # same reason: a generator's tool is routinely absent from the process composing the campaign,
+    # which is the whole point of naming an image there. Omitting these left the caller creating no
+    # aux pod and installing no runner factory, so the campaign failed while composing -- on the
+    # very container it had declared.
+    for spec in _generator_container_specs(parameters, vast_dir):
+        specs.setdefault(spec.container_name(), spec)
     return list(specs.values())
+
+
+def _generator_container_specs(parameters, vast_dir):
+    """ContainerSpecs the campaign's ``execution.generate`` entries declare.
+
+    Resolution mirrors ``run_input_generators``: the same entry parsing, the same registry, and
+    the same ``./path.py:Class`` file references -- so a generator that will need a container at
+    composition time is the one discovered here. A generator that names no ``image`` returns None
+    and contributes nothing, which is the common case.
+
+    Called from :func:`_discover_specs`, so it inherits that function's process: in the subprocess
+    when the ``.vast`` declares ``plugins:``, in-process otherwise. That is the same treatment a
+    ``./path.py:Class`` VARIATION already gets, and the gate is deliberate -- what may not be
+    imported into the long-lived service is a packaged plugin, whose pinned dependencies would win
+    over the service's own.
+    """
+    from robovast.common.input_generation import (load_input_generators,
+                                                  parse_generate_entry,
+                                                  resolve_input_generator)
+
+    entries = (parameters.get("execution", {}) or {}).get("generate") or []
+    if not entries:
+        return []
+    generators = load_input_generators()
+    specs = []
+    for index, entry in enumerate(entries):
+        name, params = parse_generate_entry(entry, index)
+        generator_class = resolve_input_generator(name, vast_dir, generators)
+        spec = generator_class.get_required_container(params)
+        if spec is not None:
+            specs.append(spec)
+    return specs
 
 
 def _discover_specs_subprocess(config_path):
@@ -326,6 +367,20 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     return deleted
 
 
+def _aux_image(image: str) -> str:
+    """An aux container's image as a Pod may carry it: a ``family:`` ref resolved, anything else
+    left exactly as written.
+
+    Left verbatim on purpose when it is not a family ref: an image a campaign names is used as
+    written everywhere else in RoboVAST, and an aux container is no place to start rewriting one.
+    """
+    from robovast.common.execution import is_family_image_ref, resolve_family_image
+
+    if not is_family_image_ref(image):
+        return image
+    return resolve_family_image(image, role="image for an auxiliary container")
+
+
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
                            pull_secret: str = "", s3: tuple | None = None,
@@ -383,7 +438,15 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         container = {
             "name": (container_names or {}).get(spec.container_name(),
                                                 spec.container_name()),
-            "image": spec.image,
+            # A `family:<member>` ref is SYMBOLIC and must be resolved before it reaches a Pod --
+            # kubelet reads an unresolved one as `docker.io/library/family:<member>` and fails the
+            # pull with `insufficient_scope`, which reads like a credentials problem rather than an
+            # unresolved reference. Resolved here, in the service, for the same reason the mc-tools
+            # container below calls resolve_sidecar_image(): this process is the one carrying the
+            # deployment's project and tag. The local lane resolves at runner-creation time
+            # instead (config_generation._make_container_runner), which is why a family ref worked
+            # there and not here.
+            "image": _aux_image(spec.image),
             "imagePullPolicy": "IfNotPresent",
             "command": list(spec.keep_alive_command),
         }
