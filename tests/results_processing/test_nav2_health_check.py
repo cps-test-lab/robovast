@@ -10,7 +10,6 @@ against it.
 
 import sqlite3
 
-import pytest
 
 from robovast.results_processing.health_checks.nav2 import (CHECK_NAME, CONTROL_LOOP_MISS,
                                                             ERROR_AT, ControlLoopRate)
@@ -38,7 +37,7 @@ def _by_run(rows):
 
 # -- what it counts -------------------------------------------------------------------------
 
-def test_a_clean_run_gets_an_ok_ROW():
+def test_a_clean_run_gets_an_ok_row():
     """Rule 2, and the reason it matters here: a run that never missed and a run whose log was
     never converted must not look alike. Only the first is evidence."""
     rows = ControlLoopRate()(_db([("goal-1", 0)], []))
