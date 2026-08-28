@@ -625,3 +625,48 @@ def test_the_digest_is_asked_for_once_per_campaign_not_once_per_batch(monkeypatc
 
     assert calls, "the registry was asked at least once"
     assert len(calls) == len(set(calls)), f"asked the registry twice for one ref: {calls}"
+
+
+# -- a job tag must stay flat, even when the batch tag is not -----------------
+
+def _tag_for(batch_tag, index=0):
+    """``_job_tag`` on a bare runner -- it reads only ``_batch_tag``."""
+    runner = BatchJobRunner.__new__(BatchJobRunner)
+    runner._batch_tag = batch_tag
+    return runner._job_tag(index)
+
+
+def test_a_batched_job_tag_is_flat():
+    assert _tag_for("batch-3", 2) == "batch-3-job-2"
+
+
+def test_an_unbatched_job_tag_is_just_the_index():
+    assert _tag_for("", 2) == "job-2"
+
+
+def test_a_repetitions_group_tag_does_not_leak_a_slash():
+    """``_job_tag`` promises a "flat, slash-free" tag and did not enforce it.
+
+    A batch whose parameter sets ask for different repetition counts is tagged
+    ``batch-<n>/reps-<k>`` -- the grouping is real and the slash is deliberate there. But
+    this tag names two things that cannot contain one: the ``<tag>.params.yaml`` file, where
+    the slash became an unmade directory (`FileNotFoundError` on
+    ``_transient/batch-1/reps-3-job-0.params.yaml``, which killed the campaign before its
+    first run), and the Kubernetes Job name, where a slash is not a legal DNS-1123 label.
+    One cause, two failures, and only reachable once repetitions stopped being uniform.
+    """
+    tag = _tag_for("batch-1/reps-3", 0)
+    assert "/" not in tag, f"slash leaked into a job tag: {tag!r}"
+    assert tag == "batch-1-reps-3-job-0"
+
+
+def test_two_repetition_groups_in_one_batch_get_distinct_tags():
+    """Flattening must not collapse them onto one name -- they are different jobs, and the
+    params file and Job name are keyed on this."""
+    assert _tag_for("batch-1/reps-3", 0) != _tag_for("batch-1/reps-5", 0)
+
+
+def test_the_flattened_tag_is_a_legal_kubernetes_label():
+    import re
+    tag = _tag_for("batch-12/reps-5", 7)
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", tag), tag

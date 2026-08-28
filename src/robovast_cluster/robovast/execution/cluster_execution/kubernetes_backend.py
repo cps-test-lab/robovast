@@ -651,8 +651,22 @@ class BatchJobRunner:
 
         Used for the (globally unique, K8s-safe) job name and the
         ``<tag>.params.yaml`` file, so these never collide across batches.
+
+        **The batch tag is flattened, because it is not always flat.** A batch whose
+        parameter sets ask for different repetition counts is tagged ``batch-<n>/reps-<k>``
+        -- the grouping is real and the slash belongs in ``_jobs/``, where it is a directory
+        (see :meth:`_job_artifact_path`). It cannot survive here: this tag names a *file*,
+        where the slash became an unmade directory and the campaign died on
+        ``_transient/batch-1/reps-3-job-0.params.yaml`` before its first run, and a
+        Kubernetes Job, where a slash is not a legal DNS-1123 label. This method promised
+        "flat, slash-free" and left it to its caller to be true; only a campaign with
+        non-uniform repetitions ever made it false.
         """
-        return f"{self._batch_tag}-job-{index}" if self._batch_tag else f"job-{index}"
+        if not self._batch_tag:
+            return f"job-{index}"
+        # Replaced rather than stripped, so ``batch-1/reps-3`` and ``batch-1/reps-5`` stay
+        # distinct -- they are different jobs and this tag is what keys them apart.
+        return f"{self._batch_tag.replace('/', '-')}-job-{index}"
 
     def _job_artifact_path(self, index: int) -> str:
         """Path of the job's artifact dir under ``_jobs/`` (no leading ``_jobs/``).
@@ -1810,6 +1824,17 @@ class BatchJobRunner:
         """
         if self._resolved_image_digest:
             return  # already captured (search mode calls this per batch)
+        # A ref pinned BEFORE the pods were written is already the digest those pods ran:
+        # a digest ref cannot resolve to different bytes, so there is nothing to read back.
+        # Taking it here is what up-front pinning promised ("execution.yaml records what ran
+        # rather than what was asked for") and what this method did not do -- it read the
+        # digest off the batch's pods instead, which is a race a SHORT batch loses: its pods
+        # are reaped before the read, `image_revision` is written "unknown", and the search
+        # loop's per-batch bag conversion can then resolve no execution image at all -- so
+        # every batch fails to score and the campaign blames the world. The pod read below
+        # still runs: it is the only source of a PER-CONTAINER digest.
+        if self.image and "@sha256:" in self.image:
+            self._resolved_image_digest = self.image
         try:
             pods = self.k8s_client.list_namespaced_pod(
                 self.namespace, label_selector=job_label).items
@@ -1838,7 +1863,7 @@ class BatchJobRunner:
             return
         if per_role:
             self._resolved_image_digests = per_role
-        if digest:
+        if digest and not self._resolved_image_digest:
             self._resolved_image_digest = digest
             logger.info("Pinned SUT image for %s to %s", self.campaign, digest)
 
