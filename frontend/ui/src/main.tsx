@@ -41,7 +41,12 @@ createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={appTheme}>
-        <CssBaseline />
+        {/* `enableColorScheme` puts `color-scheme: dark` on <html>, which is what tells the
+            browser to paint its own widgets dark. Without it the theme is dark but the native
+            scrollbars are not: Safari on macOS draws a light-grey track down the side of every
+            scrolling panel in the run view. It also covers the other UA-painted surfaces --
+            form controls, the text caret, and overscroll. */}
+        <CssBaseline enableColorScheme />
         {/* Last resort: the shell itself (sidebar, providers). A view that throws is caught
             by its own boundary; this catches everything outside them. */}
         <ErrorBoundary label="RoboVAST">
