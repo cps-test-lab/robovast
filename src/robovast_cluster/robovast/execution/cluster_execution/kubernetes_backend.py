@@ -1525,7 +1525,7 @@ class BatchJobRunner:
         if plan is None or not self._sizing_is_calibrated():
             return
         adhoc = sorted(c.name for c in plan.containers
-                       if not (set(getattr(c, "roles", ()) or ()) & set(CONTAINER_ROLES)))
+                       if not set(getattr(c, "roles", ()) or ()) & set(CONTAINER_ROLES))
         if not adhoc:
             return
         logger.warning(
