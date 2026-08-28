@@ -258,12 +258,6 @@ def test_the_ledger_charges_the_node_the_job_was_granted_on():
     assert c.drain() == 1 and len(made) == 1
 
 
-def test_a_node_without_an_identity_label_is_counted_but_not_pinned_to():
-    """A node that joined since the last setup. Its pods and capacity are real, so it must be
-    counted; but with no label there is no selector, and pinning to it is impossible. Refusing
-    to admit anything at all while it is the emptiest node would turn adding capacity into an
-    outage, so the job goes to a node that CAN be named."""
-    p = FakeProvider(per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)])
 def test_a_node_without_an_identity_label_takes_work_unpinned():
     """A node that joined since the last setup, or a whole cluster upgraded without re-running
     it. Its pods and capacity are real, so it is counted AND usable -- it simply cannot be
@@ -526,7 +520,6 @@ def test_the_sizing_callback_may_not_reenter_the_queue():
 
     def _reenters(node_id):
         c.node_ids()          # any public method: they all take the lock
-        return None
 
     c.submit("a", [("a-0", JobSizing(2.0, MIB), lambda n=None: None)],
              started_at=0.0, sizing_for_node=_reenters)
@@ -664,7 +657,6 @@ def test_a_callback_may_ask_the_queue_from_another_thread_while_a_drain_holds_it
     def _sizing(_node_id):
         entered.set()
         release.wait(timeout=5)
-        return None
 
     c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda n=None: None)],
              started_at=0.0, sizing_for_node=_sizing)

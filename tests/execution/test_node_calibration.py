@@ -518,8 +518,7 @@ def test_per_node_sizing_is_on_unless_switched_off(monkeypatch):
     The zero misses are what settles it: the calibrated ceilings -- as low as 0.53 cores
     against a declared 3.0 -- did not starve the stack, which is the failure this default was
     protecting against."""
-    from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_ENV,
-                                                                       calibration_applies)
+    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
 
     monkeypatch.delenv(CALIBRATION_ENV, raising=False)
     assert calibration_applies(50, 4) is True, "unset means the configured default: on"
