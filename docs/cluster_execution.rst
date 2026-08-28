@@ -185,28 +185,17 @@ Kubernetes puts them.
 Pinning the clock
 ^^^^^^^^^^^^^^^^^
 
-``setup`` sets the nodes' CPU governor to ``performance``. **On by default**, which is not
-where this started: unlike everything else setup installs, it reconfigures the host rather
-than reporting something about it. What overrode that is what the measurement showed — a
-cluster used for measurement whose clock moves with load produces numbers that are wrong in a
-way nothing downstream can detect or correct.
+``setup`` sets the nodes' CPU governor to ``performance``. **On by default**, and alone among
+what setup does it reconfigures the host rather than reporting something about it — so it is
+the one step to know about before pointing setup at a machine you share.
 
-A node on a scaling governor runs faster the busier it is, so every per-node figure a campaign
-records — CPU usage, realtime factor, run duration — becomes a function of how much else
-happened to be running. Measured on one node, one scenario, varying only concurrency:
+It is on by default because a cluster used for measurement whose clock moves with load
+produces numbers that are wrong in a way nothing downstream can detect or correct.
 
-===============  ===============  ==============
-concurrent jobs  realtime factor  run duration
-===============  ===============  ==============
-1                0.28             never finished
-2                0.38             252 s
-5                0.81             117 s
-===============  ===============  ==============
-
-Two consequences, neither guessable from a campaign's own numbers. **A lightly loaded
-campaign is the slow case**, so a small pilot can sit near its timeout where a full sweep
-is comfortable. And any measurement taken while a node was quiet describes a state ordinary
-runs never meet.
+A node on a scaling governor changes clock speed with load, so a per-node figure a campaign
+records — CPU usage, realtime factor, run duration — is taken against a clock that was not
+the same for every run. Fixing the governor removes that variable; it does not claim to be
+the only one.
 
 ``--no-performance-governor`` skips it and leaves the hosts alone. Naming
 ``--performance-governor`` explicitly changes the *failure* policy rather than the outcome: a
