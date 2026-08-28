@@ -141,6 +141,13 @@ class NodeCalibration:
         Returns whether anything was stored: a probe that produced no measurement leaves the
         node uncalibrated, so the next job there becomes the probe instead. Silence is not a
         measurement of zero.
+
+        Four things are refused, and each leaves the node on its declared sizing rather than
+        on a figure that would be wrong: a probe whose scenario reached no verdict, one drawn
+        from too few samples, one that produced nothing usable, and one **throttled against
+        its own limit** -- see :data:`PROBE_THROTTLE_REFUSE_RATIO`. A node where the throttle
+        counter cannot be read is calibrated without that last check, because absent is not
+        zero and refusing on absence would leave such a cluster permanently uncalibrated.
         """
         if self._probes.get(node_id) != job_key:
             return False
@@ -159,10 +166,25 @@ class NodeCalibration:
                            "(< %d ticks); node %s stays on the declared sizing",
                            job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
             return False
+        # A probe that hit its own ceiling measured the ceiling. Refused rather than stored,
+        # because the figure would be a limit dressed as a demand and every later run on this
+        # node would inherit it -- and nothing downstream can tell the two apart afterwards.
+        capped = {name: stats["throttled_ratio"]
+                  for name, stats in (measured or {}).items()
+                  if (stats or {}).get("throttled_ratio", 0) > PROBE_THROTTLE_REFUSE_RATIO}
+        if capped:
+            logger.warning(
+                "calibration probe %s was throttled against its own limit (%s); node %s "
+                "stays on the declared sizing, which is what it was measured against",
+                job_key,
+                ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
+                node_id)
+            return False
         figures = {}
         for name, stats in (measured or {}).items():
             kept = {k: max(MIN_CPU, round(v * CALIBRATION_HEADROOM, 3))
-                    for k, v in (stats or {}).items() if v and k != "samples"}
+                    for k, v in (stats or {}).items()
+                    if v and k not in ("samples", "throttled_ratio")}
             if kept:
                 figures[name] = kept
         if not figures:
@@ -237,6 +259,22 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
             and 0 < node_count < total_jobs)
 
 
+#: Fraction of CFS enforcement periods in which the probe's own container was throttled,
+#: above which its measurement is refused.
+#:
+#: **A throttled probe measured its ceiling, not its demand.** The probe runs at the declared
+#: sizing, so if that ceiling binds, the peak it reports is the cap -- and sizing the node
+#: from it would write the cap in as though it were what the container needed. Every later
+#: run on that node then gets a figure derived from a limit rather than from a workload.
+#:
+#: Zero is the wrong threshold: a container is briefly throttled during bring-up on any
+#: machine, and refusing every probe for that would leave a cluster permanently uncalibrated.
+#: This matches ``advice.THROTTLE_WARN_RATIO``, which was calibrated against a sweep in which
+#: the stack's own miss count was counted at each level, and carries the same caveat -- it is
+#: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
+PROBE_THROTTLE_REFUSE_RATIO = 0.005
+
+
 #: The two file names the resource monitor writes per container, as a naming contract rather
 #: than an import: ``monitor_resources`` runs inside the experiment container and this package
 #: must not import it (nor it this one). Restated here, and pinned by a test, because the
@@ -265,6 +303,7 @@ def container_cpu_profile_from_billing(rows) -> dict:
     "not measured", exactly as it treats a missing file, and never as zero.
     """
     samples = []
+    periods, throttled = [], []
     for row in rows or []:
         try:
             ts = float(row["timestamp"])
@@ -272,6 +311,13 @@ def container_cpu_profile_from_billing(rows) -> dict:
         except (KeyError, TypeError, ValueError):
             continue
         samples.append((ts, usec))
+        # Same file, same tick: whether the kernel stopped this container while it was
+        # being measured. Monotonic counters, so the span is last minus first.
+        try:
+            periods.append(float(row["nr_periods"]))
+            throttled.append(float(row["nr_throttled"]))
+        except (KeyError, TypeError, ValueError):
+            pass
     if len(samples) < 2:
         return {}
     samples.sort()
@@ -285,7 +331,12 @@ def container_cpu_profile_from_billing(rows) -> dict:
         return {}
     totals.sort()
     idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
-    return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+    out = {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+    span = (periods[-1] - periods[0]) if len(periods) >= 2 else 0
+    if span > 0:
+        # Absent when the node cannot report it, and absent is NOT zero -- see `record`.
+        out["throttled_ratio"] = max(0.0, (throttled[-1] - throttled[0]) / span)
+    return out
 
 
 def container_cpu_profile(rows, limit_cores=None) -> dict:
