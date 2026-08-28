@@ -25,10 +25,10 @@ def test_each_node_gets_the_same_hash_the_results_record():
     """The whole point of deriving it rather than inventing one: the selector that placed a
     run and ``runs.node_label`` in that run's own results are provably the same machine, with
     no mapping table to keep in step."""
-    core = _core([_node("iras-server-02"), _node("some-other-node")])
+    core = _core([_node("worker-02"), _node("some-other-node")])
     changed = ensure_node_id_labels(core)
 
-    assert changed == {"iras-server-02": node_label("iras-server-02"),
+    assert changed == {"worker-02": node_label("worker-02"),
                        "some-other-node": node_label("some-other-node")}
     for name, value in changed.items():
         core.patch_node.assert_any_call(
@@ -39,7 +39,7 @@ def test_no_node_name_appears_in_the_label_value():
     """Keeping node names out of every sink is why the hash exists, and a nodeSelector IS a
     sink -- it is recorded in the pod spec, which travels with the campaign. Using
     ``kubernetes.io/hostname`` would have been simpler and would have undone that."""
-    name = "iras-server-02"
+    name = "worker-02"
     value = ensure_node_id_labels(_core([_node(name)]))[name]
     assert name not in value
     assert value.startswith("node-")
@@ -48,7 +48,7 @@ def test_no_node_name_appears_in_the_label_value():
 def test_a_node_already_correct_is_not_patched():
     """Idempotent BY VALUE, which is what makes it safe to run on every setup rather than
     only the first: an unchanged cluster is not touched at all."""
-    name = "iras-server-02"
+    name = "worker-02"
     core = _core([_node(name, {NODE_ID_LABEL: node_label(name)})])
     assert ensure_node_id_labels(core) == {}
     core.patch_node.assert_not_called()
@@ -57,13 +57,13 @@ def test_a_node_already_correct_is_not_patched():
 def test_a_wrong_value_is_corrected():
     """A node renamed, or relabelled by hand, must converge rather than keep an identity that
     now points at nothing."""
-    name = "iras-server-02"
+    name = "worker-02"
     core = _core([_node(name, {NODE_ID_LABEL: "node-deadbeefdead"})])
     assert ensure_node_id_labels(core) == {name: node_label(name)}
 
 
 def test_dry_run_reports_without_patching():
-    core = _core([_node("iras-server-02")])
+    core = _core([_node("worker-02")])
     assert ensure_node_id_labels(core, dry_run=True)
     core.patch_node.assert_not_called()
 
