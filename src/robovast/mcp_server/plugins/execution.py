@@ -827,9 +827,17 @@ def get_resource_usage() -> dict:
 
         Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs, jobs_running, jobs_pending, disk, disk_node, store, store_node,
-        disk_unavailable}`` —
-        cores and bytes — or ``{error}``. ``disk`` (what runs write into) and ``store``
+        cpu_reserved, memory_reserved_bytes, cpu_measured, memory_measured_bytes,
+        metrics_unavailable, parallel_runs, jobs_running, jobs_pending, disk, disk_node,
+        store, store_node, disk_unavailable}`` —
+        cores and bytes — or ``{error}``. **Size a sweep against ``*_reserved``, judge a
+        finished one against ``*_measured``**: reserved is what the scheduler committed
+        (what decides whether the next run fits), measured is what is actually being
+        consumed. ``cpu_used`` aliases whichever the lane leads with — the request sum on a
+        cluster, host utilization locally — so it is the one to read when you do not care
+        which. A ``null`` in either pair means the lane has no such reading (nothing
+        reserves locally; a cluster without metrics-server cannot measure, and says why in
+        ``metrics_unavailable``) — never zero. ``disk`` (what runs write into) and ``store``
         (the results store) are ``{capacity_bytes, used_bytes}`` of measured bytes, or
         **null meaning the lane does not report it — never an empty disk**. On a cluster
         ``disk`` is ONE node's filesystem, not a sum: the node carrying the service pod,
