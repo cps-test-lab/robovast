@@ -1529,18 +1529,33 @@ class LocalTransport(RobovastInterface):
         the process starts is ``0.0`` (no prior sample); the TTL cache means that is
         replaced by a real value on the next window. Overridden by
         :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`.
+
+        This lane fills the ``*_measured`` fields and leaves ``*_reserved`` ``None``: it
+        starts run containers without cpu/memory limits, one at a time, so it has a
+        measurement and no reservation. See :class:`ResourceUsage`.
         """
         import psutil  # pylint: disable=import-outside-toplevel
         vm = psutil.virtual_memory()
         cores = psutil.cpu_count(logical=True)
+        # Read ONCE and reused below. `cpu_percent(interval=None)` is stateful: it averages
+        # since the previous call, so asking twice in one reading answers the second with
+        # roughly zero -- `cpu_used` and `cpu_measured` are the same reading, not two.
+        cpu_measured = cores * psutil.cpu_percent(interval=None) / 100.0
         jobs_running, jobs_pending = self._scenario_job_tally()
         disk, disk_unavailable = self._disk_space()
         return ResourceUsage(
             backend="docker",
             cpu_capacity=float(cores),
-            cpu_used=cores * psutil.cpu_percent(interval=None) / 100.0,
+            cpu_used=cpu_measured,
             memory_capacity_bytes=vm.total,
             memory_used_bytes=vm.used,
+            # This lane MEASURES, and reserves nothing: run containers are started without
+            # cpu or memory limits and one at a time, so there is no reservation to report.
+            # `cpu_reserved` stays None rather than echoing the measurement, which would
+            # label consumption as a commitment -- the chart then draws one series here,
+            # which is the truth about this lane and not missing data.
+            cpu_measured=cpu_measured,
+            memory_measured_bytes=vm.used,
             parallel_runs=False,   # Docker backend is single-flight: runs are sequential
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,

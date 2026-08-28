@@ -5,68 +5,17 @@ import Stack from '@mui/material/Stack'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
-import { SERIES } from '@/colors'
 import { robovast, type UsageHistory } from '@/lib/robovastClient'
 import { formatLocalTime } from '@/lib/time'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
+import { USAGE_SPEC, usageRows } from './usageChart'
 
 type Window = '1h' | '24h'
 
-// CPU and memory as a fraction of capacity. Fractions rather than absolutes because cores
-// and bytes share no unit — one axis for both would be two scales — and because "how full
-// is this thing?" is the question the sidebar meters already answer, so it reads the same
-// way here.
-const SPEC = {
-  // The guards live in the spec, not in TS: a sample recorded while the node list was
-  // momentarily empty has capacity 0, and 0/0 would put a NaN through the line rather than
-  // the gap that is the truth.
-  transform: [
-    {
-      calculate: 'datum.cpu_capacity > 0 ? datum.cpu_used / datum.cpu_capacity : null',
-      as: 'cpu',
-    },
-    {
-      calculate:
-        'datum.memory_capacity_bytes > 0'
-        + ' ? datum.memory_used_bytes / datum.memory_capacity_bytes : null',
-      as: 'memory',
-    },
-    { fold: ['cpu', 'memory'], as: ['series', 'fraction'] },
-  ],
-  mark: { type: 'line', interpolate: 'monotone', strokeWidth: 1.5, clip: true },
-  encoding: {
-    x: {
-      field: 'ms',
-      type: 'temporal',
-      title: null,
-      axis: { grid: false, tickCount: 6 },
-    },
-    // Pinned to 0..1. An autoscaled axis draws a cluster at 3% exactly like one at 90%,
-    // which is the only distinction this chart exists to make.
-    y: {
-      field: 'fraction',
-      type: 'quantitative',
-      title: null,
-      scale: { domain: [0, 1] },
-      axis: { format: '%', values: [0, 0.25, 0.5, 0.75, 1] },
-    },
-    // The domain is stated so cpu is always the first colour. Left to fold order it would
-    // depend on which series a given window happened to carry first, and the two would
-    // swap as you toggled between 1h and 24h.
-    color: {
-      field: 'series',
-      type: 'nominal',
-      title: null,
-      scale: { domain: ['cpu', 'memory'], range: [SERIES[0], SERIES[1]] },
-      legend: { orient: 'top', direction: 'horizontal', offset: 0 },
-    },
-    tooltip: [
-      { field: 'ms', type: 'temporal', format: '%Y-%m-%d %H:%M', title: 'time' },
-      { field: 'series', type: 'nominal', title: null },
-      { field: 'fraction', type: 'quantitative', format: '.0%', title: 'used' },
-    ],
-  },
-}
+// CPU and memory as a fraction of capacity, each as a measured fill under a reserved line — see
+// `usageChart.ts` for the rows and the spec. Fractions rather than absolutes because cores and
+// bytes share no unit — one axis for both would be two scales — and because "how full is this
+// thing?" is the question the sidebar meters already answer, so it reads the same way here.
 
 // What the record actually covers, said out loud. The ring lives in the serving process,
 // so a service started ten minutes ago has ten minutes of history and an empty 24h view is
@@ -88,6 +37,20 @@ function coverage(data: UsageHistory, window: Window): string {
   return `one point every ${Math.round(data.step_s)}s — ${volatile}`
 }
 
+// What the fill and the dashed line mean, and — when the lane cannot measure — why there is no
+// fill at all. The reason comes from the live reading rather than the history, because a sample
+// carries no reason: a null there is a gap, and only `/usage` knows whether the cause is a missing
+// metrics-server, RBAC that was never reconciled, or a lane that simply reserves nothing.
+function encodingNote(rows: { kind: string }[], metricsUnavailable?: string | null): string {
+  const has = (kind: string) => rows.some((r) => r.kind === kind)
+  if (has('measured') && has('reserved')) return 'filled = measured, dashed = reserved'
+  if (has('reserved') && metricsUnavailable) return `reserved only — ${metricsUnavailable}`
+  if (has('reserved')) return 'reserved only'
+  // The local lane: it measures and reserves nothing, so one fill is the whole truth.
+  if (has('measured')) return 'filled = measured; this lane reserves nothing'
+  return ''
+}
+
 export function UsageHistoryChart() {
   const [window, setWindow] = useState<Window>('1h')
   const history = useQuery({
@@ -100,6 +63,17 @@ export function UsageHistoryChart() {
     refetchOnWindowFocus: true,
     retry: false,
   })
+  // Only for `metrics_unavailable`, and only to explain a missing fill. `['usage']` and a
+  // 15s interval on purpose: that is the key and cadence the sidebar meter and the Monitor
+  // cards already poll (Sidebar.tsx `ConnectionStatus`), so this shares their one poll
+  // instead of adding a second — a different key or interval would silently split it.
+  const usage = useQuery({
+    queryKey: ['usage'],
+    queryFn: () => robovast.resourceUsage(),
+    refetchInterval: 15000,
+    retry: false,
+  })
+  const rows = usageRows(history.data?.samples ?? [])
 
   return (
     <Stack spacing={1}>
@@ -118,17 +92,12 @@ export function UsageHistoryChart() {
       {history.isSuccess ? (
         <>
           <Box sx={{ minHeight: 200 }}>
-            <VegaLiteChart
-              spec={SPEC}
-              // Epoch seconds on the wire (the convention the status models use), and
-              // Vega-Lite reads a bare number as milliseconds — so the conversion happens
-              // here rather than as a fourth transform nobody would connect to the cause.
-              rows={history.data.samples.map((s) => ({ ...s, ms: s.at * 1000 }))}
-              height={200}
-            />
+            <VegaLiteChart spec={USAGE_SPEC} rows={rows} height={200} />
           </Box>
           <Typography variant="caption" color="text.secondary">
-            {coverage(history.data, window)}
+            {[encodingNote(rows, usage.data?.metrics_unavailable), coverage(history.data, window)]
+              .filter(Boolean)
+              .join(' · ')}
           </Typography>
         </>
       ) : (

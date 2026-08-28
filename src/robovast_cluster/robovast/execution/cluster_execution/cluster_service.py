@@ -103,6 +103,17 @@ class ClusterService(LocalTransport):
     _DISK_NODE_TIMEOUT = 2.0
     _DISK_BUDGET_SECONDS = 5.0
 
+    #: Wall-clock ceiling on the metrics-server read, for the same reason as
+    #: ``_DISK_NODE_TIMEOUT``: ``/usage`` answers "is the backend there?" and must not hang
+    #: because an aggregated API is slow.
+    _METRICS_TIMEOUT = 2.0
+    #: How long "this cluster cannot answer metrics.k8s.io" is remembered. A missing
+    #: metrics-server, or a ClusterRole that was never reconciled, changes only when someone
+    #: installs a component or runs ``vast service upgrade`` -- so retrying every 10 s
+    #: window would spend a round trip and an audit-log line six times a minute to learn the
+    #: same thing. Only *failures* are memoised; a working cluster is read fresh each window.
+    _METRICS_ABSENT_TTL = 600.0
+
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
                  reap_on_start=True, kube_context=None):
@@ -159,6 +170,10 @@ class ClusterService(LocalTransport):
         # ``(monotonic, fields)``. Its own TTL, longer than the usage cache's -- see
         # ``_DISK_CACHE_TTL``. Read under ``_usage_lock``, so it needs no lock of its own.
         self._disk_cache: "tuple[float, dict] | None" = None
+        # Why metrics-server could not be read, as ``(monotonic, reason)`` -- a NEGATIVE memo
+        # only. See ``_METRICS_ABSENT_TTL``: a cluster that does not serve metrics.k8s.io
+        # must not be asked every usage window forever. Read under ``_usage_lock``.
+        self._metrics_absent: "tuple[float, str] | None" = None
         # How far along the blocking work for each campaign currently is — the counts behind
         # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
         # dropped when they finish, so a present entry means "busy right now". In memory on
@@ -308,12 +323,18 @@ class ClusterService(LocalTransport):
         """Cluster CPU/memory capacity + current usage from the Kubernetes API.
 
         Capacity is the sum of every node's ``allocatable`` (the same measure admission
-        sizes against); usage is the sum of resource *requests* of the pods
+        sizes against); ``cpu_reserved`` is the sum of resource *requests* of the pods
         **bound to those same nodes** — what the scheduler has actually committed,
         the number ``kubectl describe node`` calls "Allocated resources". Both are
         read behind :meth:`LocalTransport.resource_usage`'s TTL cache, and the pod
         list is filtered server-side to skip finished pods — so a poll costs at most
-        one ``list_node`` + one filtered ``list_pod`` per cache window.
+        one ``list_node`` + one filtered ``list_pod`` + one metrics-server ``nodes`` list
+        per cache window.
+
+        ``cpu_measured`` is what is actually being consumed, from metrics-server (see
+        :meth:`_measured_cpu_mem`), and is ``None`` on a cluster that cannot answer for it.
+        Reserved is the number that decides whether the next campaign *fits*; measured is
+        the number that says whether the last one needed what it asked for.
 
         Summing over one node set keeps ``used <= capacity``, which a cluster-wide
         pod sum does not: a pod still waiting for a node (or left behind by one that
@@ -322,10 +343,12 @@ class ClusterService(LocalTransport):
         "29.7/24" on a 24-core workstation. Pending work is visible as
         ``jobs_pending`` instead, counted from Jobs by :meth:`_scenario_job_tally`.
 
-        Requires the service's ClusterRole (nodes/pods get,list + nodes/proxy get — see
-        ``service_deploy._service_rbac_manifests``). The proxy grant is for the disk
-        meter's kubelet read, which adds one Summary GET per node per
-        ``_DISK_CACHE_TTL`` on top of the per-window list calls above.
+        Requires the service's ClusterRole (nodes/pods get,list + nodes/proxy get +
+        metrics.k8s.io/nodes get,list — see ``service_deploy._service_rbac_manifests``). The
+        proxy grant is for the disk meter's kubelet read, which adds one Summary GET per node
+        per ``_DISK_CACHE_TTL`` on top of the per-window list calls above; the metrics grant
+        is for ``cpu_measured``, and a deployment that lacks it reports the reason rather
+        than losing the rest of this reading.
         """
         from .kube_client import pod_workload_containers  # pylint: disable=import-outside-toplevel
         from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
@@ -369,12 +392,20 @@ class ClusterService(LocalTransport):
 
         jobs_running, jobs_pending = self._scenario_job_tally()
         measured = self._disk_and_store(node_names, service_node)
+        cpu_metric, mem_metric, metrics_reason = self._measured_cpu_mem(node_names)
         return ResourceUsage(
             backend="kubernetes",
             cpu_capacity=cpu_capacity,
             cpu_used=cpu_used,
             memory_capacity_bytes=mem_capacity,
             memory_used_bytes=mem_used,
+            # The request sum, said in the field that means it. ``cpu_used`` above carries
+            # the same number as the headline every existing consumer reads.
+            cpu_reserved=cpu_used,
+            memory_reserved_bytes=mem_used,
+            cpu_measured=cpu_metric,
+            memory_measured_bytes=mem_metric,
+            metrics_unavailable=metrics_reason,
             parallel_runs=True,   # runs execute in parallel, bounded only by capacity
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,
@@ -384,6 +415,96 @@ class ClusterService(LocalTransport):
             store_node=measured.get("store_node"),
             disk_unavailable=measured.get("unavailable"),
         )
+
+    def _measured_cpu_mem(self, node_names) -> tuple:
+        """Real cpu/memory consumption from metrics-server: ``(cores, bytes, reason)``.
+
+        One ``metrics.k8s.io/v1beta1/nodes`` list for the whole cluster -- not a per-node
+        fan-out like :meth:`_disk_and_store`, which is why this needs no budget: the payload
+        is one small item per node, next to a ``list_pod_for_all_namespaces`` in the same
+        window that carries every non-terminal pod spec in the cluster.
+
+        Summed over ``node_names`` -- the same node set ``cpu_capacity`` is summed over, so
+        capacity, reserved and measured are all statements about one cluster.
+
+        **Either all three numbers or none.** A node in the set with no metrics item, or one
+        whose quantity does not parse, yields ``(None, None, reason)`` rather than a partial
+        sum: :func:`kube_client.parse_resource` answers 0 for unparseable (load-bearing in
+        the fit tests, where an unadvertised resource must read as none available), so
+        summing blind would report a cluster at 60% of its cores as being at 10% -- a wrong
+        answer that looks right. A freshly joined node is missing from metrics for ~15 s, and
+        a gap in the chart is the truth for that window.
+
+        Failures are memoised for ``_METRICS_ABSENT_TTL``; successes are not. Called with
+        ``_usage_lock`` held (see :meth:`LocalTransport.resource_usage`), so both the memo
+        and the read need no lock of their own.
+
+        Requires ``metrics.k8s.io/nodes`` get+list in the service's usage ClusterRole (see
+        ``service_deploy._service_rbac_manifests``). A deployment whose RBAC predates that
+        grant keeps working: it gets a 403, and the reason says which command reconciles it.
+        """
+        from .kube_client import (CONNECT_TIMEOUT_SECONDS,  # pylint: disable=import-outside-toplevel
+                                  parse_resource)
+
+        now = time.monotonic()
+        remembered = self._metrics_absent
+        if remembered is not None and now - remembered[0] < self._METRICS_ABSENT_TTL:
+            return None, None, remembered[1]
+
+        def absent(reason):
+            self._metrics_absent = (time.monotonic(), reason)
+            return None, None, reason
+
+        try:
+            listed = self._k8s_custom().list_cluster_custom_object(
+                "metrics.k8s.io", "v1beta1", "nodes",
+                # A (connect, read) pair rather than a scalar: a scalar replaces BOTH, and
+                # the connect default is the one thing `load_kube_config` installs
+                # process-wide (see kube_client). Only the read is capped here.
+                _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
+        except Exception as e:  # noqa: BLE001 - capacity must still be answerable
+            status = getattr(e, "status", None)
+            if status == 403:
+                return absent("the service's ClusterRole does not grant "
+                              "metrics.k8s.io/nodes -- run `vast service upgrade` to "
+                              "reconcile RBAC")
+            if status == 404:
+                return absent("metrics.k8s.io is not served -- install metrics-server "
+                              "on the cluster to measure real cpu/memory use")
+            # Anything else (a timeout, an unavailable aggregated API mid-restart) is
+            # transient as far as this can tell, so it is reported without being remembered.
+            logger.debug("could not read node metrics: %s", e)
+            return None, None, f"node metrics could not be read: {e}"
+
+        by_node = {(item.get("metadata") or {}).get("name"): item
+                   for item in listed.get("items") or []}
+        cpu = 0.0
+        mem = 0
+        missing = 0
+        for name in node_names:
+            usage = (by_node.get(name) or {}).get("usage") or {}
+            # Both quantities or neither: half a node's reading is not a reading.
+            cores, byts = usage.get("cpu"), usage.get("memory")
+            if not cores or not byts:
+                missing += 1
+                continue
+            node_cpu = parse_resource(cores)          # nanocores ("123456789n")
+            node_mem = int(parse_resource(byts))      # working set ("1234Ki")
+            # A zero working set is how an unparseable quantity arrives here, because
+            # ``parse_resource`` answers 0 rather than raising. It cannot be a real reading:
+            # a node running a kubelet has a resident set. CPU is not checked the same way
+            # -- an idle node's nanocores can legitimately round to nothing.
+            if node_mem <= 0:
+                missing += 1
+                continue
+            cpu += node_cpu
+            mem += node_mem
+        if missing:
+            # Not memoised: a node that just joined is reported seconds later, and this is
+            # the one reason that resolves itself.
+            return None, None, (f"metrics for {missing} of {len(node_names)} nodes were "
+                                "not reported")
+        return cpu, mem, None
 
     def _disk_and_store(self, node_names, service_node=None) -> dict:
         """The kubelet-measured ``disk``/``store`` fields, and which node each came from.
@@ -709,6 +830,12 @@ class ClusterService(LocalTransport):
         from kubernetes import client
         self._load_kube()
         return client.BatchV1Api()
+
+    def _k8s_custom(self):
+        """For ``metrics.k8s.io``, which has no generated typed client of its own."""
+        from kubernetes import client
+        self._load_kube()
+        return client.CustomObjectsApi()
 
     # -- launch hooks (see LocalTransport.create_campaign) -------------------
 

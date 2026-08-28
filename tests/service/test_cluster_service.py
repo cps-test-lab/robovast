@@ -818,6 +818,7 @@ def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch(jobs))
     monkeypatch.setattr(
         cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], pods, job_pods))
+    _stub_metrics(cs, monkeypatch, {"n1": {"cpu": "1", "memory": "1Gi"}})
     usage = cs.resource_usage()
 
     assert (usage.jobs_running, usage.jobs_pending) == (2, 1)
@@ -838,6 +839,7 @@ def test_resource_usage_counts_podless_jobs_as_pending(cs, monkeypatch):
     monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
     monkeypatch.setattr(
         cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [], []))
+    _stub_metrics(cs, monkeypatch, {"n1": {"cpu": "1", "memory": "1Gi"}})
     usage = cs.resource_usage()
 
     assert batch.calls == 1, "the tally must read Jobs — a podless one is invisible to pods"
@@ -892,6 +894,7 @@ def test_resource_usage_counts_blocked_job_as_pending(cs, monkeypatch):
         cs, "_k8s",
         lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [],
                            [_blocked_job_pod("j-stuck")]))
+    _stub_metrics(cs, monkeypatch, {"n1": {"cpu": "1", "memory": "1Gi"}})
     usage = cs.resource_usage()
 
     assert (usage.jobs_running, usage.jobs_pending) == (0, 1)
@@ -953,14 +956,105 @@ def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
         cs, "_k8s",
         lambda: _UsageCore([_usage_node("workstation", "24", str(64 * 1024 ** 3))],
                            pods, job_pods))
+    _stub_metrics(cs, monkeypatch, {"workstation": {"cpu": "1", "memory": "1Gi"}})
     usage = cs.resource_usage()
 
     assert usage.cpu_capacity == 24
     assert usage.cpu_used == 8
     assert usage.memory_used_bytes == 8 * 1024 ** 3
     assert usage.cpu_used <= usage.cpu_capacity
+    # The request sum is also reported under the name that says what it is. `cpu_used` is
+    # the same number, kept as the headline every existing consumer reads.
+    assert usage.cpu_reserved == 8
+    assert usage.memory_reserved_bytes == 8 * 1024 ** 3
     # the queued runs stay visible where pending work belongs
     assert (usage.jobs_running, usage.jobs_pending) == (3, 2)
+
+
+def _metrics_env(cs, monkeypatch, nodes, usage_by_node=None, error=None):
+    """A usage read over *nodes* (8 cores / 16 GiB each), with metrics answering as told."""
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
+    monkeypatch.setattr(
+        cs, "_k8s",
+        lambda: _UsageCore([_usage_node(n, "8", str(16 * 1024 ** 3)) for n in nodes], [], []))
+    return _stub_metrics(cs, monkeypatch, usage_by_node, error)
+
+
+def test_measured_usage_sums_metrics_over_the_capacity_node_set(cs, monkeypatch):
+    """Measured cpu/memory is metrics-server's, summed over the SAME nodes as capacity.
+
+    A node reporting metrics while not being in the node set (drained between the two reads,
+    or belonging to a cluster the capacity sum skipped) must not land in the total: measured
+    would then exceed capacity, which is the same class of wrong answer the request sum
+    avoids by ignoring pods no node has granted.
+    """
+    _metrics_env(cs, monkeypatch, ["n1", "n2"], {
+        "n1": {"cpu": "1500m", "memory": str(2 * 1024 ** 3)},
+        "n2": {"cpu": "500000000n", "memory": str(1024 ** 3)},   # nanocores, as it publishes
+        "gone": {"cpu": "8", "memory": str(16 * 1024 ** 3)},
+    })
+
+    usage = cs.resource_usage()
+
+    assert usage.cpu_measured == pytest.approx(2.0)          # 1.5 + 0.5, not 10.0
+    assert usage.memory_measured_bytes == 3 * 1024 ** 3
+    assert usage.cpu_measured <= usage.cpu_capacity
+    assert usage.metrics_unavailable is None
+
+
+def test_measured_usage_is_absent_not_partial_when_a_node_is_missing(cs, monkeypatch):
+    """A node with no metrics item blanks the reading and says so -- it does not halve it.
+
+    ``parse_resource`` answers 0 for what it cannot parse, so summing blind would report a
+    cluster at 60% of its cores as being at 30%: a wrong answer that looks right. A node that
+    just joined is missing for ~15s, and a gap in the chart is the truth for that window --
+    which is also why this reason is NOT memoised.
+    """
+    api = _metrics_env(cs, monkeypatch, ["n1", "n2"], {
+        "n1": {"cpu": "4", "memory": str(8 * 1024 ** 3)},
+        # n2 absent entirely, and n3 present with a memory quantity that will not parse.
+        "n3": {"cpu": "1", "memory": "not-a-quantity"},
+    })
+
+    usage = cs.resource_usage()
+
+    assert usage.cpu_measured is None
+    assert usage.memory_measured_bytes is None
+    assert "1 of 2 nodes" in usage.metrics_unavailable
+    # Capacity and the request sum are unaffected: one missing reading is not an outage.
+    assert usage.cpu_capacity == 16
+    assert usage.cpu_reserved == 0
+
+    cs._usage_cache = None
+    cs.resource_usage()
+    assert api.calls == 2, "a transient miss must be retried, not remembered"
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (403, "vast service upgrade"),          # RBAC that predates the metrics grant
+    (404, "install metrics-server"),        # a cluster that does not serve the API
+])
+def test_measured_usage_names_the_fix_and_stops_asking(cs, monkeypatch, status, expected):
+    """No metrics API is not an error: the rest of the reading stands, with the reason.
+
+    And the reason is remembered. A missing metrics-server changes only when someone installs
+    one, so retrying every 10s window would spend a round trip and an audit-log line six
+    times a minute to learn the same thing.
+    """
+    api = _metrics_env(cs, monkeypatch, ["n1"], error=_Refused(status=status))
+
+    usage = cs.resource_usage()
+
+    assert usage.cpu_measured is None
+    assert expected in usage.metrics_unavailable
+    # The lane still answers what it can -- a chart with no fill, not a broken meter.
+    assert usage.cpu_capacity == 8
+    assert usage.cpu_reserved == 0
+
+    cs._usage_cache = None
+    again = cs.resource_usage()
+    assert again.metrics_unavailable == usage.metrics_unavailable
+    assert api.calls == 1, "the absent metrics API was asked twice"
 
 
 def _disk_env(cs, monkeypatch, nodes, summaries, service_node, raise_on=None):
@@ -970,6 +1064,8 @@ def _disk_env(cs, monkeypatch, nodes, summaries, service_node, raise_on=None):
                       [_service_pod(service_node)], [],
                       summaries=summaries, raise_on=raise_on)
     monkeypatch.setattr(cs, "_k8s", lambda: core)
+    # These tests are about the disk meter, but a usage read also asks metrics-server.
+    _stub_metrics(cs, monkeypatch, {n: {"cpu": "1", "memory": "1Gi"} for n in nodes})
     return core
 
 
@@ -1067,6 +1163,7 @@ def test_no_service_pod_means_no_disk_and_a_reason_that_says_so(cs, monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
     monkeypatch.setattr(cs, "_k8s", lambda: _UsageCore(
         [_usage_node("n1", "8", "16Gi")], [], [], summaries={"n1": _summary(40, 60)}))
+    _stub_metrics(cs, monkeypatch, {"n1": {"cpu": "1", "memory": "1Gi"}})
 
     usage = cs.resource_usage()
 
@@ -1258,6 +1355,41 @@ class _Refused(Exception):
         super().__init__(reason)
         self.status = status
         self.reason = reason
+
+
+class _MetricsApi:
+    """``metrics.k8s.io`` node metrics, or the failure the cluster answers with.
+
+    Counts calls, because the failure path is memoised (``_METRICS_ABSENT_TTL``) and a memo
+    that quietly stopped working would leave the tests passing while the service asked an
+    absent metrics-server six times a minute forever.
+    """
+
+    def __init__(self, usage_by_node=None, error=None):
+        self._usage = usage_by_node or {}
+        self._error = error
+        self.calls = 0
+
+    def list_cluster_custom_object(self, group, version, plural, **kwargs):
+        assert (group, version, plural) == ("metrics.k8s.io", "v1beta1", "nodes")
+        # Unbounded, this read would turn "is the backend there?" into a hang.
+        assert kwargs.get("_request_timeout")
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return {"items": [{"metadata": {"name": name}, "usage": usage}
+                          for name, usage in self._usage.items()]}
+
+
+def _stub_metrics(cs, monkeypatch, usage_by_node=None, error=None):
+    """Install the metrics fake and hand it back.
+
+    Every test that reads usage needs one: without it ``_measured_cpu_mem`` builds a real
+    client and tries the live cluster, which turns a unit test into a two-second timeout.
+    """
+    api = _MetricsApi(usage_by_node, error)
+    monkeypatch.setattr(cs, "_k8s_custom", lambda: api)
+    return api
 
 
 class _UsageCore:

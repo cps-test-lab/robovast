@@ -235,6 +235,14 @@ returned a permissions error until it was set up again. An upgrade that skipped 
 would reintroduce exactly that, as a runtime 403 that reads like a bug rather than a
 missed migration.
 
+The same endpoint's **measured** CPU/memory (the filled series on the Admin page's chart,
+``cpu_measured`` on the MCP tool) needs two further things, and both fail *soft*: a
+``metrics.k8s.io/nodes`` grant in that ClusterRole, and metrics-server on the cluster —
+which RKE2 ships by default. A service whose RBAC predates the grant, or a cluster with no
+metrics-server, keeps reporting capacity, reservations, disk and job counts, and states
+which of the two is missing instead of a 403 or a zero. So this one is a *reconcile when
+convenient*: run ``vast service upgrade`` and the fill appears.
+
 Before rolling, it asks the service which campaigns are live and names them, because the
 pod being replaced is where their controller runs — the same reason ``--no-restart``
 exists. ``--yes`` skips the question; without it a non-interactive run aborts rather than

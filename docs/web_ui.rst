@@ -120,6 +120,22 @@ answers three questions no other page does.
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
 24 hours of readings, plotted as CPU and memory against capacity over the last hour or day.
 
+One chart for the whole lane — every node summed, one colour per resource — and **two
+readings per resource**: a filled area for what is actually being **consumed**, under a
+dashed line for what has been **reserved**. The gap between them is the number that sizes
+the next sweep: a campaign reserving nine cores per pod and using two draws a chart that
+would otherwise read as a full cluster while it idled. The caption names the encoding, so a
+reader never has to infer which is which.
+
+On a **cluster** the dashed line is the sum of pod requests, and the fill comes from
+metrics-server. Where metrics-server is not installed — or where the service's RBAC predates
+the ``metrics.k8s.io`` grant, which ``vast service upgrade`` reconciles — there is **no fill
+and the caption says why**, rather than a zero line that would read as an idle cluster. A
+single sample can be missing its fill too (a node that joined seconds ago is not in metrics
+yet); that is drawn as a gap. Locally the opposite holds: the Docker lane measures and
+reserves nothing at all — it sets no container limits and runs one scenario at a time — so
+the chart shows the fill alone, and that is the whole truth about that lane.
+
 The recording is **in memory only**, and the caption under the chart says what it actually
 covers: a service started ten minutes ago has ten minutes of history, and an empty 24-hour
 view is the beginning of the record rather than an idle cluster. A restart clears it —
@@ -816,7 +832,11 @@ hover tooltip spelling the numbers out:
   host machine's utilization for a local ``vast serve``, and the cluster's node
   capacity vs. the summed requests of the pods scheduled onto those nodes for an
   in-cluster service (runs still queued for a node show up in the jobs meter as
-  pending, not as CPU in use).
+  pending, not as CPU in use). So on a cluster these meters are what is **reserved**;
+  what is actually being consumed is on the Admin page's chart, beside it (see
+  `The Admin page`_). ``get_resource_usage`` reports both readings as
+  ``cpu_reserved`` / ``cpu_measured``, either of which is null on a lane that has no
+  such reading.
 * **Jobs** — only while there is scenario work, since a permanent ``0/0`` on an
   empty track was indistinguishable from a dead widget. Its total is the
   outstanding work (running + pending), not a capacity, so a full bar means the

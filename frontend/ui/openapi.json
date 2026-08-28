@@ -1979,7 +1979,7 @@
         "type": "object"
       },
       "ResourceUsage": {
-        "description": "Live compute capacity and current usage of the service's execution backend.\n\nBackend-neutral by design: the local\u2194cluster difference is resolved inside the\nservice (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``\nreads the Kubernetes nodes), so a consumer \u2014 the UI chip or the MCP tool \u2014 reads\nthe same fields regardless of where it runs and never branches on ``backend``.\n\n``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same\nquestion (\"how much is currently claimed\"): on the **cluster** they are the sum\nof resource *requests* of the non-terminal pods bound to a node (schedulability,\nmatching how the scheduler reasons about capacity \u2014 pods still queued for a node are\nreported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);\non **local** they are live host utilization. ``cpu_*`` are CPU cores;\n``memory_*`` are bytes.\n\n``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place\nthis model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot\nanswer it: ``ephemeral-storage`` is almost never requested, so a request sum would\nreport a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a\nrun writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying\nthe service pod, deliberately not a sum over the node set -- the workspaces are a\n``hostPath`` there, so that is the disk which decides whether a campaign can be\nwritten, and a total would read as tens of terabytes free while it filled. Locally it\nis the campaign results root's filesystem. ``store`` is the results store, which on the\ncluster is a different thing from ``disk`` -- often on a different node -- and only\nsome providers can measure.\n\n``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means\nscenario runs execute one at a time (local Docker is single-flight), ``True``\nmeans they run in parallel bounded only by free capacity (cluster). How many runs\nactually fit is left to the consumer, which knows each project's per-run\nreservation \u2014 the service does not.\n\n``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign\nthis backend is driving, not one. One definition, both lanes: ``running`` is what is\n**executing right now**, ``pending`` is work the backend has **accepted but is not\nexecuting**. On the cluster that means planned + pod-pending + blocked Jobs;\nlocally it is the remainder of the current batch, with ``running`` 0 or 1 because\nthe Docker lane is single-flight. So the pair can be read \u2014 and summed into an\n\"outstanding work\" total \u2014 without branching on ``backend``.\n\nThe two counts deliberately answer a different question from ``cpu_used`` above:\nthey include work that has been accepted but has no compute granted yet, which is\nwhy counting it as *usage* reported more cores in use than the cluster had.\n``completed`` and ``failed`` runs are past work and appear in neither; the\nper-campaign :class:`JobCounts` is the finer-grained view (it keeps ``waiting`` and\n``blocked`` apart, which a capacity meter has no use for).",
+        "description": "Live compute capacity and current usage of the service's execution backend.\n\nBackend-neutral by design: the local\u2194cluster difference is resolved inside the\nservice (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``\nreads the Kubernetes nodes), so a consumer \u2014 the UI chip or the MCP tool \u2014 reads\nthe same fields regardless of where it runs and never branches on ``backend``.\n\n**Reserved and measured are two different questions, and the field names say which.**\n``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually\nbeing consumed. A cluster campaign that reserves nine cores per pod and uses two\nreports 9 and 2, and the gap between them is the number that sizes the next sweep.\nEither can be ``None``, meaning **this lane has no such reading** rather than zero:\nnothing reserves on the local Docker lane (it sets no container CPU/memory limits and\nis single-flight), and a cluster without metrics-server cannot measure \u2014 see\n``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.\n\n``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**\n\u2014 the request sum on the cluster, host utilization locally \u2014 and exist because every\nconsumer already reads them. They are the headline \"how much is currently claimed\", so\nthey are never null; a consumer that must distinguish the two readings reads the pair\nabove and branches on neither ``backend`` nor these. On the cluster the request sum is\nover the non-terminal pods **bound to a node** (schedulability, matching how the\nscheduler reasons about capacity \u2014 pods still queued for a node are reported by\n``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).\n\n``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place\nthis model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot\nanswer it: ``ephemeral-storage`` is almost never requested, so a request sum would\nreport a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a\nrun writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying\nthe service pod, deliberately not a sum over the node set -- the workspaces are a\n``hostPath`` there, so that is the disk which decides whether a campaign can be\nwritten, and a total would read as tens of terabytes free while it filled. Locally it\nis the campaign results root's filesystem. ``store`` is the results store, which on the\ncluster is a different thing from ``disk`` -- often on a different node -- and only\nsome providers can measure.\n\n``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means\nscenario runs execute one at a time (local Docker is single-flight), ``True``\nmeans they run in parallel bounded only by free capacity (cluster). How many runs\nactually fit is left to the consumer, which knows each project's per-run\nreservation \u2014 the service does not.\n\n``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign\nthis backend is driving, not one. One definition, both lanes: ``running`` is what is\n**executing right now**, ``pending`` is work the backend has **accepted but is not\nexecuting**. On the cluster that means planned + pod-pending + blocked Jobs;\nlocally it is the remainder of the current batch, with ``running`` 0 or 1 because\nthe Docker lane is single-flight. So the pair can be read \u2014 and summed into an\n\"outstanding work\" total \u2014 without branching on ``backend``.\n\nThe two counts deliberately answer a different question from ``cpu_used`` above:\nthey include work that has been accepted but has no compute granted yet, which is\nwhy counting it as *usage* reported more cores in use than the cluster had.\n``completed`` and ``failed`` runs are past work and appear in neither; the\nper-campaign :class:`JobCounts` is the finer-grained view (it keeps ``waiting`` and\n``blocked`` apart, which a capacity meter has no use for).",
         "properties": {
           "backend": {
             "title": "Backend",
@@ -1988,6 +1988,28 @@
           "cpu_capacity": {
             "title": "Cpu Capacity",
             "type": "number"
+          },
+          "cpu_measured": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Measured"
+          },
+          "cpu_reserved": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Reserved"
           },
           "cpu_used": {
             "title": "Cpu Used",
@@ -2049,9 +2071,42 @@
             "title": "Memory Capacity Bytes",
             "type": "integer"
           },
+          "memory_measured_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Measured Bytes"
+          },
+          "memory_reserved_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Reserved Bytes"
+          },
           "memory_used_bytes": {
             "title": "Memory Used Bytes",
             "type": "integer"
+          },
+          "metrics_unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics Unavailable"
           },
           "parallel_runs": {
             "title": "Parallel Runs",
@@ -2089,6 +2144,8 @@
         "required": [
           "backend",
           "cpu_capacity",
+          "cpu_measured",
+          "cpu_reserved",
           "cpu_used",
           "disk",
           "disk_node",
@@ -2097,7 +2154,10 @@
           "jobs_pending",
           "jobs_running",
           "memory_capacity_bytes",
+          "memory_measured_bytes",
+          "memory_reserved_bytes",
           "memory_used_bytes",
+          "metrics_unavailable",
           "parallel_runs",
           "query_containers",
           "store",
@@ -3046,7 +3106,7 @@
         "type": "object"
       },
       "UsageSample": {
-        "description": "One :class:`ResourceUsage` reading, at a point in time.\n\nCapacity is carried **per sample**, and that is the whole reason this is not four\narrays and two scalars: a node joining or being drained changes the denominator, and a\nfraction computed against today's capacity would redraw last night's history as if the\ncluster had always been this size.\n\nA deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the\njob counts are point-in-time facts a trend line has no use for; carrying them would make\na 24 h reply many times the size for nothing anyone plots.",
+        "description": "One :class:`ResourceUsage` reading, at a point in time.\n\nCapacity is carried **per sample**, and that is the whole reason this is not four\narrays and two scalars: a node joining or being drained changes the denominator, and a\nfraction computed against today's capacity would redraw last night's history as if the\ncluster had always been this size.\n\nA deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the\njob counts are point-in-time facts a trend line has no use for; carrying them would make\na 24 h reply many times the size for nothing anyone plots.\n\nThe reserved/measured pair is carried, because the *gap* between them over time is what\nthe chart drawing this exists to show. ``metrics_unavailable`` is not: a per-sample\nreason string would multiply the reply for something only the live reading can act on,\nand a sample whose measurement failed says so by being ``None`` -- which a plot must\ndraw as a **gap**, not as a drop to zero.",
         "properties": {
           "at": {
             "title": "At",
@@ -3056,6 +3116,28 @@
             "title": "Cpu Capacity",
             "type": "number"
           },
+          "cpu_measured": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Measured"
+          },
+          "cpu_reserved": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Reserved"
+          },
           "cpu_used": {
             "title": "Cpu Used",
             "type": "number"
@@ -3063,6 +3145,28 @@
           "memory_capacity_bytes": {
             "title": "Memory Capacity Bytes",
             "type": "integer"
+          },
+          "memory_measured_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Measured Bytes"
+          },
+          "memory_reserved_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Reserved Bytes"
           },
           "memory_used_bytes": {
             "title": "Memory Used Bytes",
@@ -3072,8 +3176,12 @@
         "required": [
           "at",
           "cpu_capacity",
+          "cpu_measured",
+          "cpu_reserved",
           "cpu_used",
           "memory_capacity_bytes",
+          "memory_measured_bytes",
+          "memory_reserved_bytes",
           "memory_used_bytes"
         ],
         "title": "UsageSample",
