@@ -647,19 +647,17 @@ def _node_labels(pairs, flag):
               show_default=True,
               help='Size each container per node, from a probe run there before the campaign '
                    'places work on it, instead of using the declared allocation everywhere. '
-                   'Measured over a matched pair of 200-run campaigns: ~8% faster with zero '
-                   "control-loop misses in either arm, so the calibrated ceilings did not "
-                   'starve the stack. --no-node-calibration honours the declared sizing '
+                   'The gain is the spread between the fastest and slowest node, so it is '
+                   'nothing on a homogeneous cluster. --no-node-calibration honours the '
+                   'declared sizing '
                    'exactly, which is what a campaign wants when the allocation is itself '
                    'the variable under study.')
 @click.option('--performance-governor/--no-performance-governor', 'performance_governor',
               default=None,
               help="Set the nodes' CPU governor to 'performance'. ON by default, because a "
                    'cluster whose clock moves with load produces numbers nothing downstream '
-                   'can detect or correct: measured on one node, one scenario, varying only '
-                   'concurrency, the realtime factor went 0.28 alone / 0.38 at two jobs / '
-                   '0.81 at five -- so a QUIET campaign is the slow case and a small pilot '
-                   'can sit near its timeout where a full sweep is comfortable. Needs a '
+                   'can detect or correct: a per-node figure is then taken against a clock '
+                   'that was not the same for every run. Needs a '
                    'privileged pod with the host /sys writable; a cluster that refuses it '
                    '(managed Kubernetes does) is WARNED about and setup continues. Naming '
                    'the flag makes that refusal an error instead. '

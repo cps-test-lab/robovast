@@ -3,32 +3,20 @@
 """Set the CPU frequency governor on the nodes that run campaigns.
 
 **Why this exists at all**, since reconfiguring someone's hosts is not obviously a test
-framework's business. A node on a scaling governor runs faster the busier it is, so every
-per-node figure a campaign records -- CPU usage, realtime factor, run duration -- becomes a
-function of how much else happened to be running. Measured on 2026-08-27, one node, one
-scenario, varying only how many jobs shared the machine:
+framework's business. A node on a scaling governor changes clock speed with load, so a
+per-node figure a campaign records -- CPU usage, realtime factor, run duration -- is taken
+against a clock that was not the same for every run. Fixing the governor removes that
+variable. It does not claim to be the only one, and it is not a performance feature: what
+it buys is comparability between runs, not speed.
 
-====  =====  ================
-jobs  RTF    run duration
-====  =====  ================
-1     0.28   never finished
-2     0.38   252s
-5     0.81   117s
-====  =====  ================
+A measurement taken while a node was quiet describes a state ordinary runs do not meet, and
+a calibration probe is exactly that measurement -- it runs alone by design.
 
-More load made each run *faster*: the governor was ``powersave``, with an 800 MHz floor
-against a 4.5 GHz ceiling. Two consequences, neither guessable from a campaign's own
-numbers. A lightly loaded campaign is the SLOW case, so a small pilot can sit near its
-timeout where a full sweep is comfortable. And any measurement taken while a node was quiet
-describes a state ordinary runs never meet -- which is why an idle calibration probe reads
-low, and why on the slowest node it could not finish inside its deadline at all.
-
-**On by default, and skippable by name.** It was opt-in first, on the argument that setting a
-host's power policy overrides the operator's own decision about power, heat and cost on a
-machine RoboVAST is a guest on -- unlike advertising a GPU, which only reports a fact. What
-overrode that is what the measurement showed: a cluster used for measurement whose clock moves
-with load produces numbers that are wrong in a way nothing downstream can detect or correct,
-so the default that yields trustworthy results is the one that fixes the clock.
+**On by default, and skippable by name.** Setting a host's power policy overrides the
+operator's own decision about power, heat and cost on a machine RoboVAST is a guest on --
+unlike advertising a GPU, which only reports a fact. It is still the default, because a
+cluster used for measurement whose clock moves with load produces numbers that are wrong in
+a way nothing downstream can detect or correct.
 
 The cost of the default is bounded by the failure policy: a cluster that refuses the DaemonSet
 gets a warning and carries on, exactly as a GPU-less cluster does with the device plugin. Only

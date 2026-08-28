@@ -314,9 +314,8 @@ def test_a_pod_waiting_for_the_node_we_pinned_it_to_is_contention():
     a misconfiguration. The only question is what the ONE matching node said, and here it said
     Insufficient cpu, which clears when a neighbour finishes.
 
-    Reading it as permanent destroyed six runs of a fifty-run campaign on 2026-08-27: each was
-    invalidated after 63 seconds for being unable to start, while waiting for its own node
-    exactly as designed.
+    Read as permanent, a job waiting for its own node is invalidated for being unable to
+    start, while it is waiting exactly as designed.
     """
     assert unschedulable_is_contention(_PINNED_BUSY) is True
 

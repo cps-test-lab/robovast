@@ -40,22 +40,9 @@ def get_cpu_governor() -> Optional[str]:
     """The host's CPU frequency governor, or ``None`` when it cannot be read.
 
     **Recorded because a node whose clock depends on how busy it is confounds every per-node
-    measurement this repository takes.** Measured on 2026-08-27, one node, one scenario,
-    varying only how many jobs shared the machine:
-
-    ====  =====  ================
-    jobs  RTF    run duration
-    ====  =====  ================
-    1     0.28   never finished
-    2     0.38   252s
-    5     0.81   117s
-    ====  =====  ================
-
-    More load made each run FASTER, because an idle node downclocks -- the governor there was
-    ``powersave``, with an 800 MHz floor against a 4.5 GHz ceiling. A calibration probe, which
-    by design runs alone before any campaign work, therefore measures the machine in the one
-    state no campaign run will meet, and on that node could not finish inside its deadline at
-    all. Small pilots are affected too: two concurrent runs took 252s against a 300s timeout.
+    measurement this repository takes.** A node on a scaling governor downclocks when idle,
+    so the same run is not measured against the same clock as a run that shared the machine. A calibration probe is the
+    extreme case: it runs alone, by design, before any campaign work.
 
     Read from cpu0: the governor is per-policy and could in principle differ across cores, but
     a mixed setting is not a configuration anyone chooses, and reporting one value that is

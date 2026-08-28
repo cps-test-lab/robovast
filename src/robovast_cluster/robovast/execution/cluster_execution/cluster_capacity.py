@@ -82,14 +82,14 @@ class ClusterBudgetProvider:
 
         Subtracted here for the same reason it is subtracted from ``budget()``: the reserve is
         never spendable by a campaign, so a node's usable size is ``allocatable - headroom``
-        in both answers. Reporting the raw figure made the two disagree, and the gap between
-        them was a silent hang. A sizing above ``allocatable - headroom`` but at or below
-        ``allocatable`` passed :meth:`~.node_admission.AdmissionController.preflight` -- which
-        exists precisely to tell "wait" from "impossible" -- and then no drain could ever place
-        it. The campaign sat in the admit loop having created ZERO jobs, and every diagnosis
-        path downstream reads pods, so none of them could see it. The calibration probe cannot
-        rescue it either: it runs at the declared sizing and is pinned, so it is unadmittable
-        for the same reason.
+        in **both** answers, and they must agree. If this reported the raw figure, a sizing
+        above ``allocatable - headroom`` but at or below ``allocatable`` would pass
+        :meth:`~.node_admission.AdmissionController.preflight` -- which exists precisely to
+        tell "wait" from "impossible" -- and then no drain could ever place it. The campaign
+        would sit in the admit loop having created ZERO jobs, invisible to every diagnosis
+        path downstream, all of which read pods. The calibration probe cannot rescue it
+        either: it runs at the declared sizing and is pinned, so it is unadmittable for the
+        same reason.
 
         Never below zero: a node smaller than the reserve reports as holding nothing, which is
         the truth, rather than a negative that would read as room.
@@ -135,7 +135,7 @@ class ClusterBudgetProvider:
 
         Per node because a pod runs on one machine. A cluster-wide figure cannot see
         fragmentation, and admitting against it is how jobs end up ``Unschedulable`` while the
-        cluster reports room -- measured here on 2026-08-26 with 11.31 cores free and no node
+        cluster reports room -- the free cores are spread across nodes and no single node
         holding the 4.75 a pod needed.
 
         Headroom is subtracted from **every** node, not once from the total. It protects the

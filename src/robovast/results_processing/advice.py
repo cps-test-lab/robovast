@@ -671,10 +671,9 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
 
     **Only the SUT is reported.** A campaign asks whether the stack under test behaves as
     expected, and nothing else in the results separates "nav2 failed" from "nav2 was cut off
-    mid-plan" -- the run simply fails, plausibly, and is counted against the software. Measured
-    on 2026-08-26: a nav2 container capped at 1.75 cores sat at its ceiling for 44% of ticks
-    and lost 11 runs of 50 to late transforms, while every other signal, realtime factor
-    included, looked healthy.
+    mid-plan" -- the run simply fails, plausibly, and is counted against the software. A container
+    sitting at its ceiling loses runs to late transforms while every other signal, realtime
+    factor included, looks healthy.
 
     The simulator and scenario are deliberately NOT reported here even when throttled harder.
     They are not under test, they are expected to burst and be clipped, and the question of
@@ -857,18 +856,14 @@ GOVERNOR_SQL = """
 def governor_advice(rows: list[dict]) -> list[dict]:
     """Warn when a node measured this campaign on a load-dependent clock.
 
-    **This is a validity warning, not a tuning tip.** A node on a scaling governor runs
-    faster the busier it is, so every per-node figure -- CPU usage, realtime factor, run
-    duration -- becomes a function of how much else happened to be running. Measured on
-    2026-08-27, one node, one scenario, varying only concurrency: 1 job gave a realtime
-    factor of 0.28 and never finished inside its 300s deadline; 2 jobs gave 0.38 and took
-    252s; 5 jobs gave 0.81 and took 117s. More load, faster runs.
+    **This is a validity warning, not a tuning tip.** A node on a scaling governor changes
+    clock speed with load, so a per-node figure -- CPU usage, realtime factor, run duration
+    -- is taken against a clock that was not the same for every run, and the campaign's own
+    numbers cannot show it.
 
-    Two consequences worth stating to whoever reads the advice, because neither is guessable
-    from the campaign's own numbers: a lightly-loaded campaign is the SLOW case, so a small
-    pilot can sit near its timeout while a full sweep is comfortable; and any measurement
-    taken while a node was quiet -- a calibration probe most of all, since it runs alone by
-    design -- describes a machine state no ordinary run will meet.
+    It matters most for a measurement taken while a node was quiet -- a calibration probe
+    above all, since it runs alone by design -- which describes a machine state ordinary
+    runs do not meet.
 
     Silent when the governor could not be read. That is the case in any container without
     ``/sys`` mounted through, and inventing a verdict from a missing measurement is exactly
@@ -887,15 +882,9 @@ def governor_advice(rows: list[dict]) -> list[dict]:
         "title": (f"{len(bad)} node(s) measured this campaign on a scaling CPU governor, so "
                   f"their speed depended on how busy they were: {names}"),
         "detail": (
-            "A node on a scaling governor downclocks when idle, so the same run is faster on "
-            "a busy machine than on a quiet one -- measured at 0.28 realtime alone against "
-            "0.81 with five concurrent runs on one node, a 2.9x spread from load alone. Two "
-            "things follow. A lightly loaded campaign is the SLOW case, so a small pilot can "
-            "run near its timeout where a full sweep would not. And any figure taken while "
-            "the node was quiet describes a state ordinary runs never meet, which is why "
-            "per-node sizing measured by an idle probe reads low. Set the governor to "
-            f"'{WANTED_CPU_GOVERNOR}' on nodes used for measurement to remove the variable; "
-            "it is a host setting, not a RoboVAST one."),
+            "A scaling governor changes clock speed with load, so these runs were not all "
+            f"measured against the same clock. Set it to '{WANTED_CPU_GOVERNOR}' on nodes "
+            "used for measurement -- a host setting, not a RoboVAST one."),
         "evidence": {"nodes": [
             {"node": r.get("node"), "cpu": r.get("cpu"), "governor": r.get("governor")}
             for r in bad]},

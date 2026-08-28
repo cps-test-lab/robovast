@@ -111,11 +111,10 @@ class ControllerState:
             # the wait ends -- which is the worst moment, because the campaign has just
             # started doing the thing it was waiting to do.
             #
-            # Measured on 2026-08-27: a campaign held 300s behind its own calibration probe
-            # reported ``stalled: true`` with both of its runs healthy and seconds old. It
-            # is not calibration-specific -- any campaign queued behind another one for
-            # longer than the per-run budget is accused the same way, which is the
-            # multi-campaign case admission exists to serve.
+            # A campaign held behind its own calibration probe hits this first, but it is
+            # not calibration-specific: any campaign queued behind another for longer than
+            # the per-run budget is accused the same way, which is the multi-campaign case
+            # admission exists to serve.
             if was_queued and not self._status.waiting_for_capacity:
                 self._status.progress_since = time.time()
                 self._progress_mark = self._progress_signal()

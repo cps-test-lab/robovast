@@ -1102,7 +1102,7 @@ a per-campaign override would let one campaign shrink the margin every other one
 **Capacity is counted per node, and each job is pinned to the node it was counted against.**
 A pod runs on one machine, so a cluster-wide figure cannot see fragmentation: it says there
 is room while no single node has enough, and the job is created and then cannot be placed.
-Measured here on 2026-08-26 with 11.31 cores free across the cluster and no node holding the
+It happens whenever the free cores are spread across nodes and no single node holds the
 4.75 a pod needed.
 
 The pin is the label ``robovast.io/node-id``, whose value is the same hash a run records as
@@ -1191,22 +1191,17 @@ How the figure is found:
   second one, so the probe would cost as much as the work it was meant to improve. The
   mechanism is skipped and the campaign behaves as it did before any of this existed.
 
-Measured across a matched pair of 200-run campaigns:
+**Whether it is worth turning on is a question about your cluster, not about RoboVAST.**
+The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
+is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
+under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
+``ROBOVAST_NODE_CALIBRATION`` set, one without, everything else equal — measures it directly,
+and ``run_health`` says whether the tighter ceilings cost the stack anything.
 
-===================  ===============  ===============
-metric               calibration on   calibration off
-===================  ===============  ===============
-wall clock           15m04            16m24
-passed               197/200          199/200
-control-loop misses  0                0
-===================  ===============  ===============
-
-**~8 % faster with no measurable cost to the stack.** The zero misses are the load-bearing
-number: the calibrated ceilings — as low as 0.53 cores against a declared 3.0 — did not starve
-nav2, which is the failure this was feared to cause and the reason it shipped disabled at
-first. (The earlier evidence pointed the other way, and was superseded: every probe then read
-*low* because it measured an idle machine, which was the CPU governor scaling down rather than
-calibration being wrong. See :ref:`cluster-cpu-governor`.)
+**A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
+machine.** That is why this is switchable, and why the probe is one run rather than a
+guarantee. A workload with heavier planning spikes than the one a cluster was measured on has
+not been tested against its own calibration.
 
 **The evidence behind the design**, kept here because it is what rules out the cheaper
 alternatives. Two campaigns of one configuration times twenty runs, so the machine was the only
@@ -1215,29 +1210,10 @@ tick before averaging (a row is one process name, not a container), then divided
 realtime factor -- ``cpu_percent`` is per *wall* second, so a node that meets fewer step
 deadlines otherwise reads as cheaper than it is:
 
-.. list-table::
-   :header-rows: 1
-
-   * - CPU
-     - pod cores per wall-second
-     - realtime factor
-     - pod cores per **simulated** second
-   * - Xeon Gold 5220R @ 2.20GHz
-     - 2.10
-     - 0.947
-     - 2.22
-   * - Core i7-8700K @ 3.70GHz
-     - 1.78
-     - 0.809
-     - 2.19
-   * - Ryzen 9 5950X
-     - 1.38
-     - 0.807
-     - 1.71
-   * - Core i7-14700K
-     - 1.33
-     - 0.966
-     - 1.37
+Measured on one four-node cluster, the same pod cost **1.6x more CPU per simulated second on
+the slowest node than on the fastest** — and the ordering did not follow clock speed. Your own
+figures come from ``get_campaign_summary``; the point is that the spread exists and is not
+guessable from the hardware.
 
 The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
 together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
@@ -1467,25 +1443,22 @@ What does not hold on managed Kubernetes
 
 The admission arithmetic itself is provider-agnostic: allocatable minus bound requests minus
 headroom, per node, measured every cycle. What is built around it was designed against a
-static bare-metal cluster, and four things follow from that. None of them is a crash; each is
+static bare-metal cluster, and these follow from that. None of them is a crash; each is
 a silent degradation, which is why they are written down.
 
-**AWS is not supported.** There is no ``aws`` cluster configuration — the three above plus
-``minikube`` are all that ship. Nothing stops RoboVAST running against an EKS cluster through
-the generic base configuration, but it has no way to ask an autoscaler how large the cluster
-may become (see the next point), so it will hold that cluster at whatever size it currently
-is.
+**A cluster whose configuration cannot report an autoscaler maximum is held at its current
+size.** Admission never creates a job that no current node can hold, which is correct on a
+static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
+exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
+configuration reports that maximum; admission then creates work unpinned and lets the
+autoscaler respond. A configuration that does not implement it, including the generic base
+one an unlisted provider falls back to, gets the static behaviour.
 
-**Autoscaling only works where the cluster can report its maximum, and today nothing can
-report it from inside the service.** Admission never creates a job that no current node can
-hold — which is correct on a static cluster and self-defeating on an elastic one, because a
-pod the scheduler cannot place is exactly what makes an autoscaler add a node. The escape
-hatch is ``get_cluster_allocatable_resources``: a configuration that knows its autoscaler's
-maximum reports it, and admission is then allowed to create work unpinned. The GKE
-implementation shells out to ``gcloud``, and the admission loop runs **inside the service
-pod**, whose image ships no ``gcloud`` and no ``kubectl``. The call fails, the failure is a
-debug line, and the cluster is treated as static. Setup's ``gcloud`` prerequisites are for
-your workstation, which is where ``setup`` runs — not where admission runs.
+**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
+does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
+``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
+static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
+is not where admission runs.
 
 **Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
 is what pins a job to the node its capacity was reserved on, and what a calibration probe

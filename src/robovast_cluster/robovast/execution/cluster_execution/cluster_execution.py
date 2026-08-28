@@ -665,9 +665,9 @@ def unschedulable_is_contention(message: str) -> bool:
     **The selector clause is discounted because RoboVAST now writes that selector itself.**
     Admission pins a job to the node it reserved room on, so "3 node(s) didn't match Pod's
     node affinity/selector" is the pin working, not a misconfiguration -- the question is
-    only what the ONE matching node said. Reading it as a permanent fault destroyed six runs
-    of a fifty-run campaign on 2026-08-27: each was invalidated after 63 seconds for being
-    "unable to start", when it was waiting for its own node exactly as intended.
+    only what the ONE matching node said. Read as a permanent fault, a job waiting for its own
+    node is invalidated for being "unable to start" while it is doing exactly what the pin
+    asks of it.
 
     A selector that matches *nothing* still reads as blocked, and must: with no matching node
     there is no ``Insufficient`` cause to find, so every clause is a mismatch and there is

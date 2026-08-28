@@ -235,7 +235,7 @@ def test_a_job_is_pinned_to_a_node_that_can_hold_it():
 
 
 def test_fragmentation_is_refused_rather_than_admitted_and_left_pending():
-    """The measured failure this exists for: 11.31 cores free across the cluster and no node
+    """The failure this exists for: free cores spread across nodes and no single node
     holding the 4.75 a pod needed. A cluster-wide figure says yes and the scheduler then
     cannot place it."""
     p = FakeProvider(per_node=[("a", 3.0, 10240 * MIB, 0), ("b", 3.0, 10240 * MIB, 0),

@@ -142,7 +142,7 @@ class NodeBudget:
 
     Per node rather than cluster-wide because a pod runs on one machine: a cluster with room
     in total and none on any single node is the state where jobs are admitted and then sit
-    ``Unschedulable``. Measured on 2026-08-26: 11.31 cores free across the cluster and no node
+    ``Unschedulable``: the free cores are spread across nodes and no single node
     holding the 4.75 a pod needed.
 
     *node_id* is the value of ``robovast.io/node-id`` -- the same hash ``runs.node_label``

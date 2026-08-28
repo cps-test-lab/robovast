@@ -11,9 +11,8 @@ def _row(node, governor, cpu="Some CPU"):
 
 
 def test_a_scaling_governor_is_reported():
-    """Measured on 2026-08-27: one node, one scenario, 0.28 realtime alone against 0.81 with
-    five concurrent runs -- a 2.9x spread from load alone, and at the low end the run could
-    not finish inside its deadline."""
+    """A node whose clock moves with load means runs on it were not measured against the
+    same clock, which the campaign's own numbers cannot show."""
     advice = governor_advice([_row("node-abc", "powersave")])
     assert len(advice) == 1
     assert advice[0]["kind"] == "cpu_governor_scaling"
@@ -41,10 +40,10 @@ def test_only_the_offending_nodes_are_named():
     assert nodes == ["node-bad"], "a correct node must not be reported as a problem"
 
 
-def test_the_detail_explains_which_direction_the_bias_runs():
-    """The counter-intuitive half: a QUIET campaign is the slow case, so a small pilot can sit
-    near its timeout where a full sweep is comfortable. A reader who assumes the opposite
-    draws exactly the wrong conclusion from a pilot."""
+def test_the_detail_names_the_setting_and_whose_it_is():
+    """The advice has to be actionable by the person reading it, and the action is not in
+    RoboVAST: the governor is a host setting, so a reader looking for a `.vast` key would
+    find none."""
     detail = governor_advice([_row("node-abc", "powersave")])[0]["detail"]
-    assert "SLOW case" in detail
-    assert WANTED_CPU_GOVERNOR in detail
+    assert WANTED_CPU_GOVERNOR in detail, "must name the value to set"
+    assert "host setting" in detail, "must say where the change belongs"

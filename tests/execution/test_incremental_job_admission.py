@@ -165,7 +165,7 @@ def test_one_container_declaring_nothing_warns_but_proceeds(caplog):
 
 
 def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
-    """The regression this test exists for, and it cost a live run.
+    """The regression this test exists for.
 
     ``self.manifest`` is the BASE manifest: main container only. The sidecars -- the
     simulator and the system under test, i.e. nearly the whole request -- are appended per
@@ -214,7 +214,7 @@ def test_a_queued_batch_publishes_waiting_for_capacity():
 
     A campaign whose jobs are all still PLANNED has no pods, so the pod-based probe could see
     nothing and concluded "not waiting" -- and the per-run deadline then declared a perfectly
-    healthy queued campaign stalled. Measured on 2026-08-26: the third of three concurrent
+    healthy queued campaign stalled: the third of three concurrent
     campaigns reported as wedged while waiting its turn.
 
     ``waiting_for_capacity`` suppresses the stall verdict (``client/status.py``), so the fix is

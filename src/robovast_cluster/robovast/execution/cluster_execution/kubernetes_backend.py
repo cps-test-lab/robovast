@@ -144,8 +144,7 @@ def pull_policy_for(image_ref: str) -> str:
     A batch of thirty-five pods is then ~140 registry round trips delivered in one
     instant, against a kubelet whose image-pull limiter is five per second
     (``registryPullQPS``, burst ten). The pods past the burst come back
-    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch, and
-    it ended a 50-batch search on its 34th (qd-bt-coverage-full-2026-08-24-01031052).
+    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch.
 
     The policy follows the ref rather than being chosen: a digest names the bytes, so
     "if not present" cannot serve anything stale, while a tag can be re-pushed under us
@@ -2228,7 +2227,7 @@ class BatchJobRunner:
                     #
                     # A cause that blocks only SOME of them is, by that fact alone, not in
                     # the configuration — it is the cluster this batch happened to land in.
-                    # Failing the campaign for it ended a 50-batch search on its 34th batch
+                    # Failing the campaign for it ends a long search mid-flight
                     # over two jobs of thirty-five, with eight hours of finished work
                     # behind it. So those jobs are dropped, exactly as a restarted one is,
                     # and the batch runs on with what is left.

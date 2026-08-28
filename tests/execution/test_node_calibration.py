@@ -165,7 +165,7 @@ def _calibrated(declared, name, figures):
 def test_the_system_under_test_is_sized_on_its_peak_and_stays_pinned():
     """Request AND limit, both at the peak. Its budget has to be one it never throttles
     against: a run clipped mid-plan fails in a way that looks like the stack's fault rather
-    than the allocation's, which is the confusion that cost 11 runs on 2026-08-26."""
+    than the allocation's, which is the confusion this separates."""
     got = _calibrated({"cpu": 3, "memory": "640Mi"}, "sut",
                       {"sut": {"sustained": 1.4, "peak": 2.5}})
     assert got["cpu"] == 2.5 and got["cpu_limit"] == 2.5

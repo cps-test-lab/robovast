@@ -9,13 +9,13 @@ the same time and the difference lands entirely in CPU consumed. One declared nu
 therefore wrong on every node but the one it was measured on: sized for the fast node it
 starves the slow one, sized for the slow node it wastes the fast one.
 
-**And it is a validity matter, not only a throughput one.** Measured on 2026-08-26 at a
-uniform 3.0 cores for the system under test: the Xeon was quota-bound in 100% of its runs at
-2.5 and below, while the other three nodes were never quota-bound at any allocation down to
-2.0. Equal *cores* are not equal *compute*, so an equal declaration produces unequal
-conditions -- which is the thing a uniform number was supposed to prevent. Sizing each node
-so the stack meets its deadlines everywhere equalises the behaviour instead of the
-accounting.
+**And it is a validity matter, not only a throughput one.** One declaration applied to unlike
+machines can bind on the slow one while leaving the fast one unconstrained, so the system
+under test meets its deadlines on some nodes and not others -- ``run_validity_view`` reports
+that as ``quota_bound`` per run, per node. Equal *cores* are not equal *compute*, so an equal
+declaration produces unequal conditions, which is the thing a uniform number was supposed to
+prevent. Sizing each node so the stack meets its deadlines everywhere equalises the behaviour
+instead of the accounting.
 
 **How the figure is found: one probe per node, which is never a campaign run.**
 
@@ -188,35 +188,18 @@ class NodeCalibration:
 
 #: Turns per-node *sizing* off. **On by default**, and set by ``vast exec cluster setup``.
 #:
-#: It was off by default first, and the reason was measured rather than assumed: a probe runs
-#: before the campaign places any work, so it measures an idle machine while the runs it sizes
-#: meet a full one. Every probe read LOW -- 0.81x to 0.93x of what its node's own runs then
-#: demanded -- and on one node the probe could not finish at all, costing that node the whole
-#: campaign.
+#: **The probe measures an idle machine, and sizes runs that will meet a busy one.** That is
+#: inherent to probing before work is placed, and it is the reason to know what the mechanism
+#: is worth on a given cluster rather than to assume it: a probe reads what one run costs
+#: with the node to itself, and the runs it sizes do not have that.
 #:
-#: Both causes are now fixed and the evidence reversed. The probe failures were wake-from-idle
-#: latency on a quiet node, not calibration (see the ``dt``/C-state work of 2026-08-27); with
-#: those addressed, 400 runs across a matched pair of 200-run campaigns measured:
-#:
-#: ==================  ===============  ===============
-#: metric              calibration on   calibration off
-#: ==================  ===============  ===============
-#: wall clock          15m04            16m24
-#: passed              197/200          199/200
-#: control-loop misses 0                0
-#: ==================  ===============  ===============
-#:
-#: **~8% faster with no measurable cost to the stack.** The zero misses are the load-bearing
-#: number: they say the calibrated ceilings -- as low as 0.53 cores against a declared 3.0 --
-#: did not starve nav2, which is the failure this was feared to cause and the reason it was
-#: disabled. The 3-vs-1 failure difference is unexplained and has no resource explanation
-#: behind it; at n=200 it is within what a re-run could reverse.
-#:
-#: **What remains true, and is why this stays switchable.** A peak measured on an idle probe
-#: is still an unvalidated basis for a hard limit on a loaded machine. The evidence says it
-#: costs nothing for THIS workload; a scenario with heavier planning spikes has not been
-#: tested against it. Set the variable to a false value to turn it off for a campaign that
-#: needs the declared sizing honoured exactly.
+#: **Why it is switchable.** A peak measured on an idle probe is an unvalidated basis for a
+#: hard limit on a loaded machine: the probe is one run, and a workload with heavier planning
+#: spikes than the one a cluster was measured on has not been tested against its own
+#: calibration. Whether it costs the stack anything is answerable per campaign --
+#: ``run_health`` grades the runs, and a matched pair with the variable set and unset measures
+#: the gain. Set it to a false value for a campaign that needs the declared sizing honoured
+#: exactly.
 CALIBRATION_ENV = "ROBOVAST_NODE_CALIBRATION"
 
 
