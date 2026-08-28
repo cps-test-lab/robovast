@@ -623,7 +623,8 @@ class ResourceUsage(BasePostprocessingPlugin):
         from robovast.common.campaign_data import \
             campaign_container_plan  # pylint: disable=import-outside-toplevel
 
-        from . import resource_usage, run_slices  # pylint: disable=import-outside-toplevel
+        from . import (resource_usage, run_slices,  # pylint: disable=import-outside-toplevel
+                       system_usage)
 
         campaign_path = Path(results_dir)
         if not campaign_path.is_dir():
@@ -654,9 +655,15 @@ class ResourceUsage(BasePostprocessingPlugin):
                     for name in os.listdir(slice_.job_dir)
                     if name.startswith("resource_usage_") and name.endswith(".csv")
                 ) if os.path.isdir(slice_.job_dir) else []
-                job_cache[slice_.job_dir] = (ticks, sources)
+                # The container-level sibling rides along here rather than in a plugin of
+                # its own: one daemon writes both files, so one step should slice both. A
+                # separate plugin would need its own entry point and its own opt-in, and a
+                # campaign that sampled the counters but never declared it would silently
+                # produce no table.
+                sys_columns, sys_samples = system_usage.collect_job_rows(slice_.job_dir)
+                job_cache[slice_.job_dir] = (ticks, sources, sys_columns, sys_samples)
                 totals.add_job(stats)
-            ticks, sources = job_cache[slice_.job_dir]
+            ticks, sources, sys_columns, sys_samples = job_cache[slice_.job_dir]
 
             rows = resource_usage.rows_for_slice(ticks, slice_)
             output = slice_.run_dir / resource_usage.FILENAME
@@ -667,6 +674,24 @@ class ResourceUsage(BasePostprocessingPlugin):
                 "output": os.path.relpath(output, root),
                 "sources": sources,
                 "plugin": "resource_usage",
+                "params": {},
+            })
+
+            # Written even with no columns, so the table's presence says the sampler ran and
+            # its emptiness says this runtime reports nothing -- which a missing file cannot
+            # tell apart from a step that never executed.
+            sys_rows = system_usage.rows_for_slice(sys_columns, sys_samples, slice_)
+            sys_output = slice_.run_dir / system_usage.FILENAME
+            run_slices.write_csv(str(sys_output), system_usage.fieldnames(sys_columns),
+                                 sys_rows)
+            entries.append({
+                "output": os.path.relpath(sys_output, root),
+                "sources": sorted(
+                    os.path.relpath(os.path.join(slice_.job_dir, name), root)
+                    for name in os.listdir(slice_.job_dir)
+                    if name.startswith(system_usage.CSV_PREFIX) and name.endswith(".csv")
+                ) if os.path.isdir(slice_.job_dir) else [],
+                "plugin": "system_usage",
                 "params": {},
             })
 

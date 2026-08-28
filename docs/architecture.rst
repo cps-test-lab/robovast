@@ -697,8 +697,9 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        ``in_window``, ``cpu_percent``, ``memory_rss_bytes``. Built by postprocessing from the
        job's ``resource_usage_<container>.csv``, which stay the record of what was sampled.
        In the DB because it answers a question about a *result*: a lane gives a job fixed
-       cores, so a starved stack is a competing explanation for what a run did, and ruling
-       that out means joining it to ``runs.available_cpus`` and to the behaviour itself.
+       cores, so a stack held at that ceiling is a competing explanation for what a run did,
+       and ruling that out means joining it to ``runs.available_cpus`` and to the behaviour
+       itself (``run_validity_view`` answers the ceiling half directly).
        Unlike ``run_log``, a packed job's ticks are **partitioned** between its runs rather
        than shared — another run's CPU is not this run's. See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``

@@ -64,6 +64,36 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 #: a p95 over seven points is the maximum wearing a percentile's name.
 MIN_TICKS = 30
 
+#: Fraction of a container's CPU enforcement periods that may be throttled before it is worth
+#: reporting. Not zero: a handful of throttled periods during bring-up is normal, and saying so
+#: every time would train a reader to ignore the finding.
+#:
+#: **Calibrated, not guessed** -- an earlier 1% was chosen by intuition and would have stayed
+#: silent on a configuration that lost 6 runs of 50. A CFS period is 100 ms and a nav2 control
+#: loop runs at 20 Hz, so ONE throttled period is two missed deadlines: the scale that matters
+#: is far below a percent. Measured across a five-point sweep of the same campaign, varying
+#: only the SUT's limit:
+#:
+#: ===============  ======  ========  =======
+#: throttled         misses  failures  verdict
+#: ===============  ======  ========  =======
+#: 0.018%                1         0  fine
+#: 0.385%                0         1  fine
+#: 0.580%                5         2  marginal
+#: 0.629%                2         0  marginal
+#: 0.790%               58         6  broken
+#: ===============  ======  ========  =======
+#:
+#: Note it is **not monotone**: throttling varies 1.4x across that range while the stack's own
+#: miss count varies 12x, and 0.580% did more damage than 0.629%. This counter is a blunt
+#: screen, not a predictor -- which is exactly why the finding it raises says "inconclusive,
+#: go and look at the stack's own health". 0.5% sits below the cliff and above the two
+#: configurations that were demonstrably fine.
+#:
+#: Calibrated for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
+#: more, so this is a default rather than a law.
+THROTTLE_WARN_RATIO = 0.005
+
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
 OVER_RESERVED_RATIO = 1.5
@@ -126,6 +156,51 @@ USAGE_SQL = """
 SHM_SQL = """
     SELECT MAX(shm_peak_bytes) AS shm_peak, MAX(shm_limit_bytes) AS shm_limit
     FROM runs
+"""
+
+#: Container memory as the KERNEL accounts it, which is what the limit is enforced against.
+#:
+#: :data:`USAGE_SQL`'s ``mem_peak`` cannot answer this and is not a close-enough approximation.
+#: One ``resource_usage`` row is a process, and RSS counts a shared page once per process, so
+#: summing a tick over a stack of forty ROS nodes -- sharing libraries, and a Fast DDS
+#: shared-memory segment mapped into each of them -- multiplies what the container actually
+#: holds. Measured on one basic_nav campaign: summed RSS peaked at 5147 MiB in a container
+#: running comfortably inside a 2944 MiB limit, whose largest single process held 1014 MiB.
+#: Sizing from that would have told its author to reserve 2.3x what the run needed, on every
+#: job of every sweep.
+#:
+#: Absent for a campaign recorded before the probe existed, and on any runtime without cgroup
+#: v2 -- hence a missing table or an empty result, both of which the caller falls back from
+#: rather than treating as zero.
+SYSTEM_MEM_SQL = """
+    SELECT container, MAX(memory_peak) AS mem_peak
+    FROM system_usage WHERE in_window = 1 AND memory_peak IS NOT NULL
+    GROUP BY container
+"""
+
+#: How much of each container's CPU budget the kernel actually withheld, per run.
+#:
+#: The per-run grouping is load-bearing and easy to get wrong: these are monotonic counters on
+#: a cgroup, and every run is a fresh container, so a delta taken across runs is not a number
+#: at all. Take it inside the run, then pool.
+#:
+#: ``nr_periods`` is the denominator because a throttle count means nothing without it -- two
+#: throttled periods out of two thousand is noise from bring-up, and the same two out of twenty
+#: is a container being held back continuously.
+THROTTLE_SQL = """
+    WITH per_run AS (
+        SELECT config_name, run_id, container,
+               MAX(nr_periods) - MIN(nr_periods) AS periods,
+               MAX(nr_throttled) - MIN(nr_throttled) AS throttled
+        FROM system_usage
+        WHERE in_window = 1 AND nr_periods IS NOT NULL
+        GROUP BY config_name, run_id, container)
+    SELECT container,
+           SUM(periods) AS periods,
+           SUM(throttled) AS throttled,
+           COUNT(*) AS runs,
+           SUM(CASE WHEN throttled > 0 THEN 1 ELSE 0 END) AS runs_throttled
+    FROM per_run GROUP BY container
 """
 
 #: The containers the campaign declared, and what it reserved for each. The bare container
@@ -235,18 +310,29 @@ def _resolve_names(measured: list[str], declared_names: set) -> dict:
     return out
 
 
-def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
+                    system_mem_rows: "list[dict] | None" = None) -> list[dict]:
     """Advice items for one campaign's reservations. Empty when there is nothing to say.
 
     Args:
         usage_rows: rows of :data:`USAGE_SQL`.
         declared_rows: rows of :data:`DECLARED_SQL`.
+        system_mem_rows: rows of :data:`SYSTEM_MEM_SQL`, when the campaign recorded them.
+            Where a container appears here its kernel-accounted peak REPLACES the summed-RSS
+            figure, which over-reports (see :data:`SYSTEM_MEM_SQL`). Falling back rather than
+            refusing keeps this useful on campaigns recorded before the probe existed, but the
+            two are not interchangeable and the advice says which one it used.
     """
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
         return []
     names, declared_cpu, declared_mem, declared_shm = _declared(declared_rows)
     resolved = _resolve_names([r["container"] for r in usable], names)
+    system_mem = {r["container"]: r["mem_peak"]
+                  for r in (system_mem_rows or []) if r.get("mem_peak") is not None}
+    mem_source = "the kernel's own accounting for the container" if system_mem else (
+        "the sum of its processes' RSS, which over-reports shared pages -- no cgroup "
+        "memory figures were recorded for this campaign")
 
     containers, thin = [], []
     for row in usable:
@@ -256,7 +342,9 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
             thin.append(label)
             continue
         cpu_p95 = float(row.get("cpu_p95") or 0.0)
-        mem_peak = float(row.get("mem_peak") or 0.0)
+        cgroup_peak = system_mem.get(row["container"])
+        mem_peak = float(cgroup_peak if cgroup_peak is not None
+                         else (row.get("mem_peak") or 0.0))
         containers.append({
             "container": label,
             "cpu_p95": cpu_p95,
@@ -317,7 +405,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                 "detail": (
                     f"Set execution.containers.<name>.resources.{unit} from what this campaign "
                     f"used: {', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what) + shm_note),
+                    + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
                              **({"shm_size": format_memory(declared_shm)}
@@ -336,7 +424,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                     f"Reducing it would fit {ratio:.1f}x as many jobs in the same quota, on "
                     f"every job of every sweep. Per container: "
                     f"{', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what) + shm_note),
+                    + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
@@ -380,13 +468,22 @@ _UNDER_DETAIL = {
 }
 
 
-def _basis(what: str) -> str:
+def _basis(what: str, mem_source: str = "") -> str:
+    """The one sentence saying how a suggestion was arrived at.
+
+    *mem_source* names WHICH measurement the memory peak came from. It is stated rather than
+    assumed because the two available answers differ by more than a rounding: the kernel's own
+    accounting is what the limit is enforced against, while a sum of per-process RSS counts
+    shared pages once per process and can over-report several-fold on a stack of many nodes.
+    A reader deciding whether to trust a number needs to know which one they were handed.
+    """
     if what == "cpu":
         return (f"Sized on sustained use (p95) plus {round((CPU_HEADROOM - 1) * 100)}% "
                 "headroom, rounded up to a quarter core.")
-    return (f"Sized on the PEAK plus {round((MEM_HEADROOM - 1) * 100)}% headroom, rounded up "
-            "to 128Mi -- the peak and not a percentile, because exceeding a memory limit is "
-            "an OOM kill rather than throttling.")
+    basis = (f"Sized on the PEAK plus {round((MEM_HEADROOM - 1) * 100)}% headroom, rounded up "
+             "to 128Mi -- the peak and not a percentile, because exceeding a memory limit is "
+             "an OOM kill rather than throttling.")
+    return f"{basis} Measured from {mem_source}." if mem_source else basis
 
 
 def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
@@ -485,6 +582,92 @@ _SHM_BASIS = (f"Sized on the PEAK plus {round((SHM_HEADROOM - 1) * 100)}% headro
               "allocates its segments as it starts, and a SIGBUS there loses the run too.")
 
 
+def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+    """Whether the system under test was held at its own CPU limit. Empty when it was not.
+
+    **A screen, not a verdict, and the valuable half is the silence.** Throttling says the
+    allocation was *binding*; it does not say the stack misbehaved. A planner with slack can
+    lose spikes and still meet every deadline that matters. So:
+
+    * **Nothing reported** is a strong negative: no run in this campaign was capped, and a
+      failure can be attributed to the stack rather than to the cluster. That is the result
+      worth having, and it is why this stays quiet in the normal case.
+    * **Something reported** is inconclusive alone. It marks the runs where a resource
+      explanation is *available*, and hands the question to the stack's own health signals --
+      controller frequency, missed control loops, planning failures -- which are what actually
+      say whether it worked. This module cannot know those; they are per-stack.
+
+    **Only the SUT is reported.** A campaign asks whether the stack under test behaves as
+    expected, and nothing else in the results separates "nav2 failed" from "nav2 was cut off
+    mid-plan" -- the run simply fails, plausibly, and is counted against the software. Measured
+    on 2026-08-26: a nav2 container capped at 1.75 cores sat at its ceiling for 44% of ticks
+    and lost 11 runs of 50 to late transforms, while every other signal, realtime factor
+    included, looked healthy.
+
+    The simulator and scenario are deliberately NOT reported here even when throttled harder.
+    They are not under test, they are expected to burst and be clipped, and the question of
+    whether their squeezing hurt is already answered by the realtime factor recorded per run.
+    Reporting them would train a reader to skim past the one line that matters.
+
+    Args:
+        throttle_rows: rows of :data:`THROTTLE_SQL`. Empty for a campaign recorded before the
+            probe existed, or on a host without cgroup v2 -- which is silence, not a pass.
+        declared_rows: rows of :data:`DECLARED_SQL`, to name the container as its author does.
+    """
+    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415 - avoids a config import
+
+    for row in throttle_rows or []:
+        if row.get("container") != SUT_CONTAINER:
+            continue
+        periods = int(row.get("periods") or 0)
+        throttled = int(row.get("throttled") or 0)
+        if periods <= 0 or throttled <= 0:
+            return []
+        ratio = throttled / periods
+        if ratio < THROTTLE_WARN_RATIO:
+            return []
+        runs = int(row.get("runs") or 0)
+        runs_throttled = int(row.get("runs_throttled") or 0)
+        # No name resolution here, unlike resource_advice: the SUT is measured under the same
+        # name it is declared with. Only the MAIN container has the mismatch that needs
+        # translating (declared as its own name, measured as the role name 'robovast').
+        _, declared_cpu, _, _ = _declared(declared_rows)
+        label = SUT_CONTAINER
+        reserved = declared_cpu.get(label)
+        return [{
+            "kind": "sut_throttled",
+            "severity": "warning",
+            "title": (f"The system under test was held at its CPU limit in "
+                      f"{ratio * 100:.1f}% of enforcement periods"),
+            "detail": (
+                f"{runs_throttled} of {runs} run(s) had their '{label}' container held at its "
+                f"CPU limit"
+                + (f" ({format_cores(reserved)})" if reserved is not None else "")
+                + ". This does not by itself mean the stack misbehaved -- it means a "
+                "resource explanation is available for anything that went wrong in those "
+                "runs, and nothing else in the results separates the two. Check the stack's "
+                "own health signals there (controller frequency, missed control loops, "
+                "planning failures); if they are clean, the throttling cost nothing and the "
+                "allocation can stay. If they are not, raise "
+                f"execution.containers.{label}.resources.cpu -- sizing on sustained use is not "
+                "enough, because the limit is a ceiling and a planner's peaks are the work. "
+                "This is the container hitting its OWN ceiling, not other work crowding it "
+                "out: a busy neighbour causes scheduling latency rather than throttling. "
+                "Which runs: SELECT config_name, run_id FROM run_validity_view WHERE "
+                "container = '" + SUT_CONTAINER + "' AND quota_bound = 1."),
+            "evidence": {
+                "container": label,
+                "throttled_periods": throttled,
+                "total_periods": periods,
+                "throttled_fraction": round(ratio, 4),
+                "runs_affected": runs_throttled,
+                "runs": runs,
+                **({"declared_cpu": format_cores(reserved)} if reserved is not None else {}),
+            },
+        }]
+    return []
+
+
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
@@ -492,5 +675,14 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     into a larger summary, and so a future non-resource advice source has somewhere to land.
     """
     declared = query_rows(DECLARED_SQL)
-    return {"advice": (resource_advice(query_rows(USAGE_SQL), declared)
+    try:
+        system_mem = query_rows(SYSTEM_MEM_SQL)
+    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
+        system_mem = []
+    try:
+        throttle = query_rows(THROTTLE_SQL)
+    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
+        throttle = []
+    return {"advice": (throttle_advice(throttle, declared)
+                       + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}
