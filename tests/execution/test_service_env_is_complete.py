@@ -47,17 +47,28 @@ def test_the_pool_is_written_even_when_there_is_none():
         assert name in env
 
 
-def test_per_node_calibration_is_written_explicitly():
-    """On by default, and STATED rather than left to the absence of a variable, so a reader of
-    the Deployment can see what the cluster is set up to do. Turning it off writes "0" for the
-    same reason a cleared node pool writes "": the command is the whole truth about the
-    cluster, so a setting that was changed must be visible as changed."""
-    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
+def test_the_bootstrap_is_written_explicitly():
+    """STATED rather than left to the absence of a variable, so a reader of the Deployment can
+    see what a calibrated campaign starts from before any node has been measured."""
+    from robovast.execution.cluster_execution.node_calibration import (BOOTSTRAP_CPU_ENV,
+                                                                       BOOTSTRAP_MEMORY_ENV)
 
-    assert _env()[CALIBRATION_ENV] == "1"
-    assert _env(node_calibration=False)[CALIBRATION_ENV] == "0"
+    import json
+
+    # Present and empty when the operator named nothing: the deployment states that it
+    # configured no override, rather than the variable being absent and ambiguous.
+    assert BOOTSTRAP_CPU_ENV in _env() and BOOTSTRAP_MEMORY_ENV in _env()
+    assert _env()[BOOTSTRAP_CPU_ENV] == ""
+
+    # Carried from the operator's own environment -- a `.env` line, like the git token --
+    # rather than a setup flag: the value belongs to the cluster, not to a campaign.
+    import os
+    from unittest import mock
+    with mock.patch.dict(os.environ, {BOOTSTRAP_CPU_ENV: '{"sut": 6}'}):
+        named = _env()
+    assert json.loads(named[BOOTSTRAP_CPU_ENV]) == {"sut": 6}
     for name in REQUIRED:
-        assert name in _env(node_calibration=False)
+        assert name in named
 
 
 def test_the_pool_round_trips():

@@ -296,6 +296,11 @@
       "Union[str, NoneType]"
     ],
     [
+      "sizing",
+      false,
+      "Union[Literal[fixed, calibrated], NoneType]"
+    ],
+    [
       "timeout",
       false,
       "Union[int, NoneType]"

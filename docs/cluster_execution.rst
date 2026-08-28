@@ -1152,9 +1152,36 @@ subtraction protects the schedule.
 Per-node container sizing
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-**On by default.** Before a campaign places work on a node, one *calibration probe* runs
-there at the declared sizing; what it measured becomes that node's figures, and every run of
-that campaign on that node is sized from them.
+**A campaign asks for it, per campaign, with** ``execution.sizing: calibrated`` (see
+:ref:`declaring the sizing mode <config-sizing>`). Before it places work on a node, one *calibration probe* runs there;
+what it measured becomes that node's figures, and every run of that campaign on that node is
+sized from them. A campaign that says nothing keeps ``fixed`` and its declared sizing.
+
+The cluster's part is the **bootstrap**: what a container asks for before anything has been
+measured for it, which is what the probe itself runs at.
+
+Set in your ``.env``, like the git token and the ntfy topic — ``setup`` carries it into the
+Deployment, so it is a property of the cluster rather than of any campaign:
+
+.. code-block:: bash
+
+   ROBOVAST_BOOTSTRAP_CPU={"sut": 8, "simulation": 3, "scenario": 1}
+   ROBOVAST_BOOTSTRAP_MEMORY={"simulation": "4Gi"}
+
+A role left out keeps its default rather than disappearing, so raising one cannot silently
+drop another. With neither set the defaults below apply, and the service log says which of
+the two it is using.
+
+Per **role**, because the three want very different amounts and CPU and memory rank them
+differently: the system under test wants cores and little memory, the simulator is the
+opposite — it compiles a world once and then sustains very little CPU. One ranking for both
+would starve whichever resource the other role dominates. A container whose name is not a
+known role takes a small default; it is one probe away from a measured figure, while a
+generous default for every unnamed container is what makes a probe unplaceable.
+
+It is per **container**, so a three-container pod reserves the sum until its node reports —
+which makes the bootstrap the floor on what calibration costs, and a reason not to set it
+generously on a small or busy cluster.
 
 Why per node at all: the same trial costs about **1.6x more CPU on the slowest machine of a
 mixed cluster than on the fastest**, and wall time does not show it — a realtime-paced
@@ -1237,12 +1264,23 @@ configuration whose static clip rate was **0.5 %** produced **44 % saturation an
 the runs**. That is why the system under test takes the peak as request *and* limit, while
 everything else splits the two.
 
-**What remains true, and is why this stays switchable.** A peak measured on an idle probe is
-still an unvalidated basis for a hard limit on a loaded machine. The evidence says it costs
-nothing for a nav2-shaped workload; a scenario with heavier planning spikes has not been
-tested against it. ``vast exec cluster setup --no-node-calibration`` honours the declared
-sizing exactly, which is what a campaign wants when the allocation is itself the variable
-under study.
+**What remains true, and is why a campaign chooses.** A peak measured on an idle probe is
+still an unvalidated basis for a hard limit on a loaded machine; a workload with heavier
+planning spikes than the cluster was measured on has not been tested against its own
+calibration. ``execution.sizing: fixed`` — the default — honours the declared sizing exactly,
+which is what a campaign wants when the allocation is itself the variable under study.
+
+**A probe that measured its own ceiling is refused**, and the node stays on its declared
+sizing rather than being sized from a limit: throttled against its own quota beyond a small
+bring-up allowance, or OOM-killed at all — a memory ceiling that binds kills rather than
+slows, so one is enough. Both counters come from the same file the sizing is read from.
+
+**Where calibration does not apply, the bootstrap stands and is checked.** A campaign with no
+more jobs than the cluster has nodes, or a cluster that can grow, never probes. Those runs use
+the bootstrap, and one that is OOM-killed or throttled hard against it **stops the campaign**
+with an error naming the container. Unlike a declared or measured allocation — where such a
+run is recorded and kept — nobody chose the bootstrap for that workload, so a run that dies
+against it reports that the default does not fit rather than anything about the stack.
 
 .. note::
 

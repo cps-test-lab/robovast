@@ -44,6 +44,11 @@ _DECLARED = {
     "mode": "ros2",
     "runs_per_job": 2,
     "shm_size": "256Mi",
+    # Read by the cluster lane's runner to decide whether a reservation is declared or
+    # measured. Carried like any other field: the local lane ignores it (nothing there
+    # probes a node), but it must still ARRIVE, or a calibrated campaign would silently
+    # run fixed.
+    "sizing": "calibrated",
 }
 
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by

@@ -992,6 +992,57 @@ container actually used and suggests the number to type here (see :doc:`web_ui`)
 lanes take the fractional value — the local lane converts a millicore declaration to
 Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accepts.
 
+.. _config-sizing:
+
+**Not declaring it at all** — ``execution.sizing: calibrated`` measures each container on
+each node instead, from one probe run there before the campaign places work on it.
+
+**You usually do not write the key.** Left out, the mode is read from the file itself: a
+campaign that declares ``resources`` has already answered the question and is ``fixed``; one
+that declares none is asking to be measured and is ``calibrated``. So a new ``.vast`` gets
+measured sizing by saying nothing, and one that already carries numbers keeps meaning what it
+meant. Write the key to be explicit, or to have the mismatch refused rather than inferred.
+
+.. code-block:: yaml
+
+   execution:
+     sizing: calibrated          # default: fixed
+     containers:
+       sut: {image: nav2:latest}          # no `resources:` -- measured per node
+       simulation: {image: sim:latest}
+
+**The reason is portability, not density.** A core count is a fact about the machine it was
+measured on, so a ``.vast`` naming one asserts something it cannot know about the cluster it
+lands on. Under ``calibrated`` the file says what to run and the cluster says how much of
+itself that takes.
+
+**Declaring** ``resources`` **under** ``calibrated`` **is refused, not overridden.** The two
+answer the same question, and a file stating a number nobody honours is worse than one
+stating nothing — the same rule this block applies to an unknown key. ``resources.gpu`` is
+exempt: a device count is a count, not a rate, so nothing measures it.
+
+**What it measures, and what it does not.** CPU only. Memory is taken from the cluster's
+bootstrap figure for the container's role and is not yet measured per node — so a campaign
+whose memory needs are unusual should stay on ``fixed`` and declare them.
+
+**Before a node has been measured** — the probe itself, and every job on a node whose probe
+has not reported — a container asks for the deployment's bootstrap for its role
+(``ROBOVAST_BOOTSTRAP_CPU`` / ``_MEMORY``, see :doc:`cluster_execution`). That figure belongs
+to the cluster rather than the campaign, which is the same argument that takes it out of the
+``.vast``.
+
+**Where calibration cannot run, the bootstrap stands — and is checked.** A campaign with no
+more jobs than the cluster has nodes, or a cluster that can grow, never probes: no node would
+run a second job at the better size, so the probe would cost more than it saves. Those runs
+use the bootstrap, and if one is OOM-killed or throttled hard against it the **campaign
+stops with an error naming the container**. That is deliberately unlike a declared or
+measured allocation, where such a run is recorded and kept: nobody chose the bootstrap for
+this workload, so a run that dies against it says the default does not fit rather than
+anything about the stack — and every remaining run would carry the same fault.
+
+The local Docker lane never probes and is **unconstrained** under ``calibrated``, which is
+what a quick local run already gets when it declares nothing.
+
 .. _config-request-limit-split:
 
 **Splitting the reservation from the ceiling** — and this is a decision about a container's

@@ -1387,7 +1387,7 @@ def published_host(namespace="default", kube_context=None):
 
 
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
-                 job_node_labels=None, node_calibration=True):
+                 job_node_labels=None,):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
     The service (the cluster mode) reconstructs the same cluster config the controller
@@ -1416,12 +1416,20 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     from .node_placement import JOB_NODE_POOL_ENV  # noqa: PLC0415
     env.append({"name": JOB_NODE_POOL_ENV,
                 "value": json.dumps(job_node_labels) if job_node_labels else ""})
-    # Per-node sizing, written explicitly so the deployment states its own configuration
-    # rather than depending on the absence of a variable -- an operator reading the
-    # Deployment can see what the cluster is set up to do. See node_calibration.
-    from .node_calibration import CALIBRATION_ENV  # noqa: PLC0415
-    env.append({"name": CALIBRATION_ENV,
-                "value": "1" if node_calibration else "0"})
+    # What a container asks for under `execution.sizing: calibrated` before its node has
+    # been measured. Written explicitly so the deployment states its own configuration
+    # rather than depending on the absence of a variable: an operator reading the Deployment
+    # can see what a calibrated campaign starts from. See node_calibration.
+    import os  # noqa: PLC0415
+
+    from .node_calibration import BOOTSTRAP_CPU_ENV, BOOTSTRAP_MEMORY_ENV  # noqa: PLC0415
+    # Carried from the operator's own environment -- a `.env` line, like the git token and
+    # the ntfy topic -- rather than a setup flag. The `vast` CLI loads `./.env` before any
+    # command runs, so `setup` already has it, and the value belongs to the CLUSTER rather
+    # than to a campaign. Written even when empty, so the Deployment states that no override
+    # was configured rather than leaving the variable absent and ambiguous.
+    for var in (BOOTSTRAP_CPU_ENV, BOOTSTRAP_MEMORY_ENV):
+        env.append({"name": var, "value": os.environ.get(var, "").strip()})
     return env
 
 
@@ -1479,7 +1487,7 @@ def _host_timezone():
 
 
 def service_manifests(namespace="default", image=None, env=None,
-                      job_node_labels=None, node_calibration=True,
+                      job_node_labels=None,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
@@ -1514,8 +1522,7 @@ def service_manifests(namespace="default", image=None, env=None,
     image = image or resolve_controller_image()
     if env is None:
         env = _cluster_env(namespace, config_name, config_kwargs, kube_context,
-                           job_node_labels=job_node_labels,
-                           node_calibration=node_calibration)
+                           job_node_labels=job_node_labels,)
     # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately: nothing in the pod reads
     # it, so setting it would say something untrue about what this deployment uses. The
     # conversion scripts come from a per-campaign ConfigMap built in the driver's own
@@ -1772,7 +1779,7 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
 
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
-                   job_node_labels=None, node_calibration=True,
+                   job_node_labels=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
@@ -1840,7 +1847,6 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
 
     manifests = service_manifests(
         namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
-        node_calibration=node_calibration,
         config_name=config_name, config_kwargs=config_kwargs,
         kube_context=kube_context, pull_secret=pull_secret,
         auth_token=auth_token, ingress_host=ingress_host,
