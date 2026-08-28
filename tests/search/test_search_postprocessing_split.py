@@ -10,11 +10,10 @@ plugin and cannot work for a rosbag converter: deserializing a bag needs the cam
 ROS 2 image, which is why campaign-level postprocessing dispatches an in-cluster conversion
 Job instead of importing anything.
 
-Measured consequence, on a real campaign: the converter tried to launch its aux container
-from the controller, resolved the image against the *default* project rather than the
-deployment's, and exited 1 -- while the campaign's own three containers in the same log
-resolved correctly. Every downstream plugin then read files that did not exist, and the
-extractor refused the batch for a reason that pointed at the world.
+Launching the aux container from the controller resolves its image against the *default*
+project rather than the deployment's and exits 1 -- while the campaign's own containers in
+the same log resolve correctly. Every downstream plugin then reads files that do not exist,
+and the extractor refuses the batch for a reason that points at the world.
 
 So a search's commands have to be split the same way the campaign-level path splits them.
 This is that split, and it is the part worth testing: the dispatch itself needs a cluster,
@@ -300,3 +299,63 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch):
                         lambda *a, **kw: None)
     obj._run_postprocessing('batch-2/reps-3')
     assert passed == ['batch-2/reps-3']
+
+
+# -- a conversion that could not run is not a conversion that found nothing ---
+
+def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
+    """These are different failures and were reported as the same one.
+
+    A conversion that RAN and produced nothing is the extractor's business -- it refuses the
+    batch and says what was missing. A conversion that could not START is a broken campaign:
+    every batch will hit it, nothing will ever score, and the reason is not in the world.
+
+    Logging it as a warning and carrying on lets the campaign die reporting that no run
+    recorded a value and pointing at the postprocessing plugins, while the actual cause --
+    no execution image recorded in execution.yaml -- sits in a warning line above it. The
+    cost is the diagnosis, not the compute.
+    """
+    from robovast.execution import controller as ctrl
+
+    def _boom():
+        raise ValueError("no execution image recorded in execution.yaml")
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner', _boom)
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+
+    with pytest.raises(RuntimeError) as excinfo:
+        obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')
+    message = str(excinfo.value)
+    assert "execution image" in message, "the original cause must survive in the message"
+    assert "could not" in message.lower() or "cannot" in message.lower()
+
+
+def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeypatch):
+    """Unchanged: the Job started, so this batch's inputs may be partly there and the
+    extractor is the thing that decides whether a batch is scorable."""
+    from robovast.execution import controller as ctrl
+
+    monkeypatch.setattr(
+        ctrl, '_conversion_job_runner',
+        lambda: (lambda *a, **kw: (False, 'conversion exited 1'),
+                 lambda *a, **kw: None, lambda root: 'img'))
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')  # no raise
