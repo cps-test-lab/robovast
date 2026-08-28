@@ -582,6 +582,11 @@
       "Union[int, float, str, list[dict[str, Union[int, float, str]]], NoneType]"
     ],
     [
+      "cpu_limit",
+      false,
+      "Union[int, float, str, list[dict[str, Union[int, float, str]]], NoneType]"
+    ],
+    [
       "gpu",
       false,
       "Union[int, list[dict[str, int]], NoneType]"
@@ -592,9 +597,14 @@
       "Union[str, list[dict[str, str]], NoneType]"
     ],
     [
+      "memory_limit",
+      false,
+      "Union[str, list[dict[str, str]], NoneType]"
+    ],
+    [
       "<extra>",
       false,
-      "ignore"
+      "forbid"
     ]
   ],
   "ResultsConfig": [
