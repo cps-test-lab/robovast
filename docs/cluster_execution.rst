@@ -170,9 +170,7 @@ because the admission controller is what enforces it: the controller counts free
 only on nodes inside the pool, and every job pod carries the labels as a ``nodeSelector``
 so kube-scheduler is bound by the same rule the accounting assumed. Neither half suffices
 alone — filtering capacity would leave the scheduler free to place outside the pool, and
-stamping alone would have admission reserving room on nodes the pods cannot reach. Its
-previous implementation was Kueue's ResourceFlavor, and for one release after Kueue was
-retired setup refused it.
+stamping alone would have admission reserving room on nodes the pods cannot reach.
 
 ``--control-node-label`` places RoboVAST's own infrastructure pods. It narrows rather than
 decides: these are ANDed with the node-local data placement setup chooses (see below).
