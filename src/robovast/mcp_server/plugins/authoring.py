@@ -188,9 +188,9 @@ def validate_project(address: str, check_world: bool = True) -> dict:
     cold one ~2–3 s local / 7–15 s cluster. ``check_world=False`` skips it.
 
     **Each problem names what it could not settle and what would**: an uninstalled ``plugins:``
-    spec names ``preview_configurations(limit=1)`` (which composes, and so *installs* them); a
-    variation needing an aux container names ``start_campaign``, the only caller composing inside
-    a backend's container context; a world only an unbuilt image could describe names
+    spec names ``preview_configurations(limit=1)`` (which composes, and so *installs* them), as
+    does a variation needing an aux container — composing is what runs one; a world only an
+    unbuilt image could describe names
     ``build_experiment_image``, and says it was **not** checked rather than passing.
 
     Args:
@@ -229,23 +229,23 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
     """What would this ``.vast`` actually run? The resolved cells, without running them.
 
     ``validate_project`` gives only the counts; this gives each variation cell's resolved
-    parameters. Check the sweep here before spending compute on it. Nothing is executed
-    and nothing is written.
+    parameters. Check the sweep here before spending compute on it: no trial runs and
+    nothing is written into the project. Not always *free*, though — a variation may need a
+    **helper image** to produce what it varies. ``aux_containers`` names what ran; the
+    composition is cached, so a later ``start_campaign`` reuses it.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
-        limit: Maximum configurations to return. ``configs``, ``runs_per_config`` and
-            ``total_trials`` are always the true totals, so **pass ``limit=1`` when the
-            question is only "does this resolve?"** — the cheapest way to confirm a
-            ``plugins:`` package installed and its variations expand, which
-            ``validate_project`` cannot answer (see there). There is no counts-only mode,
-            and the default ``0`` means ALL: on a sweep of a few hundred cells that is a
-            large reply for an answer the first cell already gives. Raise it when you
-            actually mean to read the fan-out. ``truncated`` marks a shortened list.
+        limit: Maximum configurations to return; the three totals are always true. **Pass
+            ``limit=1`` when the question is only "does this resolve?"** — the cheapest way
+            to confirm a ``plugins:`` package installed and its variations expand, which
+            ``validate_project`` cannot answer (see there). The default ``0`` means ALL,
+            which on a few hundred cells is a large reply for what the first cell already
+            gives. ``truncated`` marks a shortened list.
 
     Returns:
-        ``{configs, runs_per_config, total_trials, configurations, truncated, lane}``,
-        each configuration ``{name, parameters}``; or ``{error}``.
+        ``{configs, runs_per_config, total_trials, configurations, truncated,
+        aux_containers, lane}``, each configuration ``{name, parameters}``; or ``{error}``.
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
@@ -255,6 +255,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         if target is None:
             # A search .vast expands per sampled ParamSet, not from a `configuration:`
             # block; composing a sample is the only preview that reflects what it runs.
+            aux: list = []
             if (load_config(address) or {}).get("search"):
                 from robovast.search.compose import preview_search_sample
                 sample = preview_search_sample(address)
@@ -265,6 +266,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                     variation_file=address, output_dir=None)
                 configs = campaign_data["configs"]
                 runs = campaign_data.get("execution", {}).get("runs", 1)
+                aux = list(campaign_data.get("aux_containers") or [])
             items = [{"name": c["name"], "parameters": c.get("config", {})}
                      for c in configs]
             truncated = bool(limit) and len(items) > limit
@@ -274,6 +276,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                 "total_trials": len(configs) * runs,
                 "configurations": items[:limit] if truncated else items,
                 "truncated": truncated,
+                "aux_containers": aux,
                 "lane": "local file",
             }
         client = service_access.client_or_local()
@@ -289,6 +292,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configurations": [{"name": c.name, "parameters": c.parameters}
                                for c in resp.configurations],
             "truncated": resp.truncated,
+            "aux_containers": list(resp.aux_containers),
             "lane": "workspace",
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client

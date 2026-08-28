@@ -203,17 +203,27 @@ remember and map onto their situation:
   **names** out of that directory: metadata, not an import, because
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
   this process is long-lived.
-* A variation declaring an auxiliary container is exercised by neither ``validate_project`` nor
-  ``preview_configurations``, since a runner for a variation's *helper image* exists only
-  inside a campaign's composition. (The world check is not an exception: it runs a read-only
-  question in a container the service already knows how to start, which is not the same thing
-  as a helper image a variation writes into.) Both refuse naming the variation and the
-  container, via
-  :class:`~robovast.common.errors.AuxContainerUnavailable`, rather than falling through to a
-  ``docker run`` that dies with a bare ``FileNotFoundError``. The refusal is conditional on the
-  runner being genuinely unavailable, so a local host that has ``docker`` is unaffected.
+* A variation declaring an auxiliary container is exercised by ``preview_configurations`` and
+  not by ``validate_project`` — because the difference between them is that preview
+  **composes**. Composing is what asks a variation to produce what it varies, and a variation
+  may need a helper image to do it; ``validate_project`` never gets that far, so it reports the
+  variation tier as unchecked rather than pretending. Preview's reply names what it ran in
+  ``aux_containers``, and the composition is cached, so a following ``start_campaign`` reuses
+  the work.
+* Where the runner for that helper image comes from is the *caller's* business, arranged per
+  span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
+  gets one held by the container-exec manager and reaped on idleness, and a local service
+  needs none because ``docker`` on the host is the fallback. When none of those applies —
+  composing in a process with no backend and no ``docker`` — the refusal is
+  :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
+  container, rather than a ``docker run`` that dies with a bare ``FileNotFoundError``. It says
+  where it ran, since that and not the ``.vast`` is what was missing.
+* The exec lane's **query slot** is not that runner and never was: it runs a read-only question
+  in a campaign's own image with nothing written back. A held **aux** slot in the same manager
+  is, which is why the two live side by side under one reaper rather than one pretending to be
+  the other.
 
-Both carry a ``next_step`` stating what closing the gap **costs** — seconds for a preview, one
+Each carries a ``next_step`` stating what closing the gap **costs** — seconds for a preview, one
 real trial and the lane for a campaign — so a caller who only needed the sweep's shape can
 weigh it rather than reading the hint as an instruction.
 

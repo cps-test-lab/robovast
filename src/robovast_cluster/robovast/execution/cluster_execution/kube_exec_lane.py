@@ -41,7 +41,10 @@ from robovast.service.container_exec import SLOT_USER, POD_LABEL, ExecSpec, cont
 
 logger = logging.getLogger(__name__)
 
-_CONTAINER = "exec"
+#: The single container inside a held pod. Public because the pod name and this name
+#: are one address, and a caller that is handed the pod (an aux runner exec'ing into a
+#: held helper image) has to name the container too.
+HELD_CONTAINER = "exec"
 _PROBE_TIMEOUT_S = 30
 
 #: Key prefix every staged exec tree lives under, inside the lane's bucket.
@@ -158,13 +161,12 @@ class KubeExecLane:
         from .kube_client import wait_pod_ready
         core = self._client()
         self.stop_held(slot)
-        prefix = self._stage(spec, slot)
+        # An aux container stages nothing: its runner mirrors its own workspace through the
+        # object store around each command, so there is no /config tree to put here.
+        prefix = "" if spec.aux_spec is not None else self._stage(spec, slot)
         try:
             core.create_namespaced_pod(
-                self._namespace,
-                _pod_manifest(spec, deadline_s, self._namespace, self._owner_ref,
-                              self._s3, self._bucket, prefix,
-                              pull_secret=self._pull_secret, slot=slot))
+                self._namespace, self._held_manifest(spec, deadline_s, prefix, slot))
         except ApiException as e:
             self._discard_staged(slot)
             raise RuntimeError(f"could not start exec pod: {e.reason}") from e
@@ -175,6 +177,33 @@ class KubeExecLane:
             # caller sees an exception and will not call stop_held itself.
             self.stop_held(slot)
             raise
+
+    def _held_manifest(self, spec: ExecSpec, deadline_s: int, prefix: str,
+                       slot: str) -> dict:
+        """The pod for *slot*: an experiment container, or a variation's helper image.
+
+        The aux form comes from ``build_aux_pod_manifest`` — the campaign path's builder —
+        rather than from :func:`_pod_manifest`, so the pod is the one an aux runner already
+        knows how to use: the ``mc`` init container, and an emptyDir at each of
+        ``AUX_MOUNTABLE_PATHS`` that ``expose()`` stages into. Only the pod's name, its
+        single container's name and its label are this lane's, so every held pod is
+        addressed, probed and swept identically whatever is inside it. Reusing that builder
+        is also what keeps the ``mc`` wiring and the pull secret in one place instead of two.
+        """
+        if spec.aux_spec is None:
+            return _pod_manifest(spec, deadline_s, self._namespace, self._owner_ref,
+                                 self._s3, self._bucket, prefix,
+                                 pull_secret=self._pull_secret, slot=slot)
+
+        from .container_runner import build_aux_pod_manifest
+        aux = spec.aux_spec
+        return build_aux_pod_manifest(
+            slot, [aux], self._namespace, owner_ref=self._owner_ref,
+            deadline_seconds=deadline_s, pull_secret=self._pull_secret,
+            s3=self._s3 if self._has_store else None,
+            pod_name=_pod_name(slot),
+            container_names={aux.container_name(): HELD_CONTAINER},
+            extra_labels=_labels())
 
     def _stage(self, spec: ExecSpec, slot: str = SLOT_USER) -> str:
         """Upload ``/config`` (and the workspace, if any) and return the key prefix.
@@ -227,7 +256,7 @@ class KubeExecLane:
             argv = ["/bin/bash", "-c", spec.detached_start_script()]
         else:
             argv = spec.foreground_argv()
-        return self.exec_in((_pod_name(slot), _CONTAINER), argv, limit_s)
+        return self.exec_in((_pod_name(slot), HELD_CONTAINER), argv, limit_s)
 
     def stop_held(self, slot: str = SLOT_USER) -> bool:
         """Delete the pod, **wait until it is gone**, and drop the staged tree.
@@ -301,7 +330,7 @@ class KubeExecLane:
         pod = _pod_name(slot)
         try:
             _code, out, _err, _timed_out = exec_stream(
-                self._client(), pod, self._namespace, _CONTAINER,
+                self._client(), pod, self._namespace, HELD_CONTAINER,
                 ["/bin/sh", "-c", self._PROCESS_COUNT_SH],
                 limit_s=_PROBE_TIMEOUT_S)
         except ApiException as e:
@@ -431,7 +460,7 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
                 "volumeMounts": init_mounts,
             }],
             "containers": [{
-                "name": _CONTAINER, "image": spec.image,
+                "name": HELD_CONTAINER, "image": spec.image,
                 "imagePullPolicy": "IfNotPresent",
                 # Idle PID 1, so exec'd commands run against a stable container and
                 # anything backgrounded has something to reparent to.

@@ -846,7 +846,8 @@ artifact.
             """Optional: an aux image, when the tool is not installed alongside RoboVAST.
 
             Same contract as a variation's — ephemeral ``docker run`` locally, a
-            container in the campaign's aux pod in-cluster. Reached via
+            container in an aux pod in-cluster (the campaign's during a run; one held by
+            the container-exec manager when a preview composes). Reached via
             ``self.container_runner``,
             whose ``workspace`` is visible at the same path on both sides (use
             ``stage_for_container`` / ``collect_from_container``).

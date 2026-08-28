@@ -21,14 +21,20 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
 })
 
-// Vite fires this when a preloaded chunk cannot be fetched, and its default action is to
-// reload the page. Over a port-forward that turns one dropped request into a full reload
-// of an app the operator was in the middle of using — and, if the drop persists, a loop.
-// `lazyView` already retries the import and shows a boundary with a button, so suppress the
-// default and let the failure reach that instead.
+// Vite fires this when a chunk cannot be fetched. Its default action is to **throw** — the
+// reload in Vite's docs is a suggested handler, not the default — and that throw is the whole
+// error path: it rejects the `import()`, which `lazyView` retries and then shows a boundary
+// for. So this listener only logs.
+//
+// It used to call `event.preventDefault()`, on the belief that the default was a reload.
+// Vite's helper is `baseModule().catch(handlePreloadError)` and `handlePreloadError` rethrows
+// only if the event was *not* default-prevented, so preventing it made the import resolve
+// with `undefined` instead. Every `import(...).then((m) => ({ default: m.Page }))` in the app
+// then threw `m is undefined` — a TypeError, which reads as a code bug rather than a missing
+// chunk, so the retry never ran and the boundary showed "stopped working" with a JS message.
+// A service restarted onto a new build (new asset hashes) hit exactly that.
 window.addEventListener('vite:preloadError', (event) => {
-  event.preventDefault()
-  console.warn('chunk preload failed; the view will retry on demand', event)
+  console.warn('chunk preload failed; lazyView will retry and then offer a reload', event)
 })
 
 createRoot(document.getElementById('root')!).render(

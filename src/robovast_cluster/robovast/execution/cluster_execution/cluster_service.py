@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import shlex
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -799,27 +800,91 @@ class ClusterService(LocalTransport):
         return False
 
     @contextlib.contextmanager
-    def _campaign_context(self, campaign_id, project):
-        """Per-campaign aux pod + the container-runner factory for this worker.
+    def _aux_runner_context(self, tag, project, *, hold=False):
+        """An aux container for *tag*'s span + the container-runner factory for this thread.
 
-        Entered inside the worker thread, so the factory (a ContextVar) is scoped to
-        exactly the composition that reads it — concurrent campaigns never clobber
-        each other's aux target. A campaign whose variations need no helper image
-        creates no pod and installs no factory (the local ``docker run`` fallback is
-        never reached in-cluster because nothing asks for a runner).
+        Entered inside the thread that composes, so the factory (a ContextVar) is scoped to
+        exactly the composition that reads it — concurrent campaigns never clobber each
+        other's aux target, and it is reset on the way out because a request thread is
+        reused while a worker thread is not.
+
+        A project whose variations need no helper image creates nothing and installs no
+        factory. Discovery still runs, and still propagates: "we could not tell whether one
+        is needed" must not read as "none is".
+
+        The two spans differ only in who owns the container's death — see
+        :meth:`LocalTransport._aux_runner_context`. A campaign's pod is deleted here;
+        a held one is released to the exec manager's reaper.
         """
         from robovast.common.config_generation import set_container_runner_factory
+        from robovast.service.world_query import _reset_factory
 
         from .container_runner import AuxPodSession, required_container_specs
 
         specs = required_container_specs(project.config_path)
-        with AuxPodSession(campaign_id, specs, self.namespace,
-                           core_v1=self._k8s() if specs else None,
-                           kube_context=self.kube_context,
-                           **(self._aux_store_kwargs() if specs else {})) as session:
-            if specs:
-                set_container_runner_factory(session.runner_factory())
+        if not specs:
             yield
+            return
+        if hold:
+            with self._held_aux_runners(tag, specs) as factory:
+                token = set_container_runner_factory(factory)
+                try:
+                    yield
+                finally:
+                    _reset_factory(token)
+            return
+        with AuxPodSession(tag, specs, self.namespace, core_v1=self._k8s(),
+                           kube_context=self.kube_context,
+                           **self._aux_store_kwargs()) as session:
+            token = set_container_runner_factory(session.runner_factory())
+            try:
+                yield
+            finally:
+                _reset_factory(token)
+
+    @contextlib.contextmanager
+    def _held_aux_runners(self, tag, specs):
+        """Hold one aux container per spec through the exec manager; yield their factory.
+
+        The manager already owns every held container's lifetime — idle reap, a hard
+        deadline baked into the pod, an LRU cap and a stray sweep after a restart — so this
+        adds no second policy. The specs are held as *query* slots because that policy is
+        already this one: a warm image and nothing else, since a runner mirrors its
+        workspace around each command and leaves nothing behind between them.
+
+        On the way out the slots are released, not stopped: the next preview of the same
+        project reuses a warm pod, and two previews running at once cannot destroy each
+        other's.
+        """
+        from robovast.service.container_exec import ExecSpec, container_name
+
+        from .container_runner import AUX_HOLD_LIMIT_S, ClusterContainerRunner
+        from .kube_exec_lane import HELD_CONTAINER
+        store = self._aux_store_kwargs()
+        slots = {}
+        try:
+            for spec in specs:
+                # The image is what makes the pod worth reusing, and the project is what
+                # keeps two of them apart; the pod holds nothing else that could differ.
+                identity = ("aux", tag, spec.container_name(), spec.image)
+                held = ExecSpec(image=spec.image, command="",
+                                config_dir=tempfile.mkdtemp(prefix="robovast_aux_hold_"),
+                                env=dict(spec.env or {}), config_name=str(tag),
+                                image_identity=spec.image, aux_spec=spec)
+                slots[spec.container_name()] = self._exec_manager.hold(
+                    held, identity, AUX_HOLD_LIMIT_S)
+
+            def factory(spec):
+                return ClusterContainerRunner(
+                    spec, container_name(slots[spec.container_name()]), self.namespace,
+                    self._k8s(), storage=store["storage"], bucket=store["bucket"],
+                    owner_id=str(tag), kube_context=self.kube_context,
+                    container=HELD_CONTAINER)
+
+            yield factory
+        finally:
+            for slot in slots.values():
+                self._exec_manager.release_hold(slot)
 
     def _aux_store_kwargs(self) -> dict:
         """Storage wiring for an aux pod's workspace mirror.
