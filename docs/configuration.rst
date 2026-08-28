@@ -1034,6 +1034,14 @@ harder configurations can therefore exceed the peak a pilot measured, and the ce
 are the interesting ones. ``quota_bound`` is what says it happened; do not read the headroom as
 a guarantee.
 
+**These figures are declarations, not a permanent shape.** Per-node sizing measures each
+container on the machine it is about to run on and lowers the reservation to what it needs
+there; it never raises a ceiling a campaign set. The direction of travel is for a campaign not
+to state these numbers at all — so read a figure here as this deployment's current measurement
+of one world on one cluster, not as a property of the workload worth copying into a new
+campaign. Measure your own: ``get_campaign_summary`` reports what each container actually used
+and suggests the number to type.
+
 **Memory is deliberately not split** in the shipped examples. Exceeding a CPU limit costs
 speed; exceeding a memory limit is an OOM kill, so a request below the limit trades a run for
 density on a node where several containers peak together.
