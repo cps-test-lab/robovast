@@ -1125,10 +1125,9 @@ class BatchJobRunner:
         """
         pool = job_node_pool()
         if not pool and not node_id:
-            # Nothing to confine. Returned untouched rather than reaching into the manifest,
-            # because this is now called unconditionally where the pin used to be guarded by
-            # `if node_id` -- and a caller with a minimal manifest (an offline emit, a test)
-            # would otherwise die on a key it never needed.
+            # Nothing to confine. Returned untouched rather than reaching into the manifest:
+            # this is called unconditionally, and a caller with a minimal manifest (an offline
+            # emit, a test) would otherwise die on a key it never needed.
             return manifest
         spec = manifest.setdefault('spec', {}).setdefault(
             'template', {}).setdefault('spec', {})
@@ -2267,9 +2266,8 @@ class BatchJobRunner:
                         self._batch_tag, len(remaining), len(job_names))
             if admission is not None and planned_count:
                 # WHY nothing was created, not just that nothing was. The queue computes this
-                # on every drain and it used to be thrown away, so the one line explaining a
-                # campaign sitting at "queued for capacity" reached no log at all -- an
-                # operator could see that it was waiting and never what for. Rate-limited to
+                # on every drain; without logging it an operator can see that a campaign is
+                # waiting at "queued for capacity" and never what for. Rate-limited to
                 # the blocked-log interval, because at 2s per iteration it would otherwise
                 # repeat 450 times in a fifteen-minute wait.
                 reason = admission.refusal(self.campaign)

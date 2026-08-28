@@ -1791,77 +1791,6 @@ deadline is suppressed while a batch is entirely queued, because that deadline i
 per-*run* budget and no run of the campaign is running. Getting this wrong is what
 made a healthy third campaign report as wedged behind two others.
 
-**Kueue is gone.** Campaign and postprocessing Jobs carry no ``kueue.x-k8s.io/*``
-label, the per-campaign ``WorkloadPriorityClass`` that used to order them is gone with
-the label that named it, and neither ``setup`` nor ``cleanup`` touches Kueue any more.
-A cluster that already has it installed keeps it until it is removed by hand — see
-the removal note under :ref:`cluster-admission` in the cluster guide.
-
-**Campaign priority (oldest first) — historical.** The paragraphs below describe the
-Kueue mechanism this replaced. Kueue orders a ClusterQueue's pending workloads
-by priority, then by Workload ``creationTimestamp``. That second key is the wrong one for
-a search campaign, whose batches are submitted one after another: campaign A's batch *n+1*
-Jobs are only created once batch *n* has finished, so their Workloads are *younger* than
-those of a campaign B that started later. With equal priorities A then queues behind B's
-whole batch, B behind A's next one, and the two take turns instead of A finishing first.
-
-Every scenario and postprocess Job therefore *used to* also carry the **label**
-``kueue.x-k8s.io/priority-class``, naming a per-campaign ``WorkloadPriorityClass`` whose
-value was ``_PRIORITY_BASE − seconds since _PRIORITY_REF`` — so an earlier start time was a
-higher value. Points worth knowing, since the ordering requirement outlived the mechanism:
-
-* **The value is derived, never stored.** It is computed from the timestamp already in the
-  campaign id (``<name>-YYYY-MM-DD-HHMMSS``) by ``campaign_priority_value()``. Because it
-  is monotone in the start time, the ordering is permanent: no label is ever rewritten as
-  campaigns come and go, and nothing has to know which campaigns are live. The two
-  datetimes are subtracted **naively** rather than via ``.timestamp()``, so the repeated
-  hour of a DST fall-back cannot fold two campaigns onto the same value. Resolution is one
-  second; two campaigns started within the same second tie and fall back to Kueue's second
-  key, which is the pre-existing behaviour for that pair alone.
-* **A ``WorkloadPriorityClass``, not a pod ``PriorityClass``.** The former orders admission
-  only; the latter reaches kube-scheduler and would **preempt** a younger campaign's
-  running scenario pods, discarding compute and leaving partial run data. ``preemption`` is
-  left unset on the ClusterQueue (so ``Never``) for the same reason, and
-  ``queueingStrategy`` is left at Kueue's default ``BestEffortFIFO`` so a high-priority
-  workload that does not fit cannot stall smaller ones behind it.
-* **Why one object per campaign.** Kueue resolves a *Job's* priority only through a named
-  object. A fixed ladder created once at setup cannot express it: fine-grained ordering
-  needs a rung per distinct start time, and coarsening to age buckets ties exactly the
-  campaigns launched minutes apart that this exists to separate. Setting
-  ``Workload.spec.priority`` directly would avoid the object — it is a bare int32 in
-  v1beta2 — but its correctness would rest on Kueue's webhook permitting the update and
-  the Job reconciler not reverting it, neither documented, and the failure mode is silent.
-* **Lifecycle.** ``ensure_campaign_priority_class()`` runs beside the admission preflight,
-  before any Job exists (idempotent; a 409 means an earlier batch created it). It fails
-  loudly, because Kueue *rejects* a Job naming a class that does not exist. The class
-  carries the same ``jobgroup``/``campaign-id`` labels as the campaign's Jobs and Pods, so
-  ``cleanup_campaign_priority_classes()`` removes it with one more label-scoped
-  ``delete_collection`` at the end of the ordinary campaign cleanup — there is no GC pass
-  of its own. It must run **last**: deleting the class cannot disturb workloads Kueue has
-  already created (the resolved value is copied onto each at creation), but removing it
-  while the campaign still submits would break that campaign.
-
-The class was cluster-scoped, so ``create``/``delete`` on ``workloadpriorityclasses`` sat
-on the service's **ClusterRole** — the only write that role ever granted. Both the calls
-and the grant are gone, and the ClusterRole is read-only again. A service deployment older
-than that removal still attempts the create against current RBAC and fails with
-``workloadpriorityclasses.kueue.x-k8s.io is forbidden ... at the cluster scope``; the fix
-is ``vast exec cluster upgrade``, not re-granting the verb.
-
-**Holding the queue during cleanup — historical.** While Kueue admitted the jobs,
-``stopPolicy`` on the single cluster-scoped ``ClusterQueue`` was the only way to pause
-admission, and it paused it for *everyone*. Cleaning up one campaign therefore
-deliberately did not touch it — that would have stalled every other campaign for the
-length of the cleanup, and a cleanup that died in between left the queue held
-permanently, suspending every later campaign forever and looking exactly like a missing
-ClusterQueue. A cluster-wide cleanup did hold it, restoring the previous value in a
-``finally`` so a concurrent teardown's hold survived.
-
-Nothing is paused for the duration any more: a campaign's jobs are created by
-RoboVAST's own admission queue and deleted label-scoped, so removing one campaign
-cannot affect another's and there is no shared switch to leave in the wrong position.
-
-
 .. _web-ui-internals:
 
 Web UI internals
@@ -2066,9 +1995,9 @@ it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, no
 
 That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
 both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Job waiting its
-turn has no pod at all — the state every cluster batch *starts* in, once as a Kueue-suspended
-Job and now as one the admission queue has not created yet — so the original pod-based count
-reported a freshly launched sweep as ``0/0`` with its whole queue waiting for capacity.
+turn has no pod at all — the state every cluster batch *starts* in, because the admission
+queue has not created it yet — so a pod-based count reports a freshly launched sweep as
+``0/0`` with its whole queue waiting for capacity.
 ``ClusterService._scenario_job_tally`` therefore delegates to
 ``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
 consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-

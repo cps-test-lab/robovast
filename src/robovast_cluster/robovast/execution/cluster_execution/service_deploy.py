@@ -1516,13 +1516,12 @@ def service_manifests(namespace="default", image=None, env=None,
         env = _cluster_env(namespace, config_name, config_kwargs, kube_context,
                            job_node_labels=job_node_labels,
                            node_calibration=node_calibration)
-    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. It was carried in for the
-    # postprocessing Job, whose initContainer used to copy robovast out of the controller
-    # image -- but the conversion scripts come from a per-campaign ConfigMap built in the
-    # driver's own process now (postprocess_job.scripts_configmap_manifest, precisely so
-    # there is no controller-image version skew), and the conversion container runs the
-    # *campaign's* recorded execution image. Nothing in the pod reads the variable, so
-    # setting it there says something untrue about what this deployment uses.
+    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately: nothing in the pod reads
+    # it, so setting it would say something untrue about what this deployment uses. The
+    # conversion scripts come from a per-campaign ConfigMap built in the driver's own
+    # process (postprocess_job.scripts_configmap_manifest, precisely so there is no
+    # controller-image version skew), and the conversion container runs the *campaign's*
+    # recorded execution image.
     #
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build

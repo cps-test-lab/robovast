@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The campaign job node pool -- ``vast exec cluster setup --jobs-node-label KEY=VALUE``.
 
-The setting's only implementation used to be Kueue's ResourceFlavor nodeLabels, reached
-through a ``.vast``; for one release after Kueue was retired it was refused outright. It is
-now a property of the CLUSTER, carried to the service in ``ROBOVAST_JOB_NODE_LABELS``, and it
-means what ``docs/configuration.rst`` always claimed: a ``nodeSelector`` on each job pod,
-backed by an admission controller that counts capacity only inside the same pool.
+A property of the CLUSTER rather than of a campaign, carried to the service in
+``ROBOVAST_JOB_NODE_LABELS``: a ``nodeSelector`` on each job pod, backed by an admission
+controller that counts capacity only inside the same pool.
 """
 
 

@@ -270,13 +270,13 @@ def test_a_failed_node_query_propagates_rather_than_reading_as_an_empty_cluster(
 # -- a node that cannot take work -----------------------------------------------------------
 
 def test_a_dead_node_is_not_free_capacity(monkeypatch):
-    """The reading that used to discard runs in a loop.
+    """A dead node must not read as the emptiest one.
 
     A node that dies loses its pods once the eviction timeout passes, so nothing is committed
-    against it any more and it read as FULLY free -- the most attractive node in the cluster.
-    Admission pinned job after job to it; each was refused for an untolerated `not-ready`
-    taint, which is correctly a fault rather than contention, so each was dropped on the short
-    grace window. For as long as the node stayed down.
+    against it and it would read as FULLY free -- the most attractive node in the cluster.
+    Admission would pin job after job to it; each is refused for an untolerated `not-ready`
+    taint, which is correctly a fault rather than contention, so each is dropped on the short
+    grace window, for as long as the node stays down.
     """
     p, _ = _provider([_node("n1", cpu="8"),
                       _node("n2", cpu="8", ready=False,

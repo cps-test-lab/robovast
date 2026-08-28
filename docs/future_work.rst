@@ -315,8 +315,8 @@ rather than two taking turns. For several users it is head-of-line blocking with
 multi-day search started at 09:00 takes every freed slot ahead of a five-run pilot started at
 09:05, across all of its batches, because ``started_at`` is the campaign's rather than the
 batch's. What is *not* obvious is which knob is right -- a priority class re-invites the
-question Kueue's answered badly, and aging trades the finishing property away -- which is why
-this is recorded rather than guessed at.
+question of who gets to jump the queue, and aging trades the finishing property away -- which
+is why this is recorded rather than guessed at.
 
 **Three constants are a nav2 trial's dimensions, and should be derived.**
 
