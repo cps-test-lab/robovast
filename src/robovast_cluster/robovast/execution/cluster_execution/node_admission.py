@@ -298,6 +298,15 @@ class AdmissionController:
         forever having created **zero** jobs, and every diagnosis path downstream is pod-based
         and therefore blind to it.
         """
+        # A zero-cpu pod fits everything, so the queue would stop gating and create the whole
+        # plan at once. The caller that builds a sizing from a manifest refuses this first and
+        # can name the containers; this is the backstop for every other caller, because a
+        # controller that accepts a zero sizing is not a queue.
+        if sizing.cpu <= 0:
+            raise AdmissionRefused(
+                "a job must declare how much cpu it needs; this one asks for none, which "
+                "would admit the entire plan at once. Declare "
+                "execution.containers.<name>.resources.cpu.")
         capacities = self._provider.capacities()
         if not capacities:
             raise AdmissionRefused(

@@ -920,11 +920,33 @@ class BatchJobRunner:
         containers = list(spec.get("containers") or [])
         containers += [c for c in (spec.get("initContainers") or [])
                        if c.get("restartPolicy") == "Always"]
+        unsized = []
         for container in containers:
             requests = (container.get("resources") or {}).get("requests") or {}
-            cpu += parse_resource(requests.get("cpu"))
+            container_cpu = parse_resource(requests.get("cpu"))
+            if container_cpu <= 0:
+                unsized.append(container.get("name") or "<unnamed>")
+            cpu += container_cpu
             memory += int(parse_resource(requests.get("memory")))
             gpu += int(parse_resource(requests.get(GPU_RESOURCE)))
+        # A pod that asks for nothing "fits" every node, so the queue would admit the whole
+        # plan in one pass -- the mass submission it exists to prevent, with no error
+        # anywhere and preflight passing trivially. Refused at launch rather than paced into
+        # a cluster that cannot hold it.
+        if cpu <= 0:
+            raise CampaignConfigError(
+                "No container declares execution.containers.<name>.resources.cpu "
+                f"({', '.join(unsized)}), so this campaign's pod would be admitted as "
+                "needing zero cores and its whole plan created at once. Declare cpu (and "
+                "memory) for the containers that do the work.")
+        if unsized:
+            # Not fatal -- the queue still paces on what was declared -- but it paces on
+            # less than the pod actually takes, so the cluster is oversubscribed by
+            # whatever these use.
+            logger.warning(
+                "Campaign %s: %s declare no resources.cpu, so admission sizes this pod at "
+                "%g cores and undercounts what it really takes. Declare cpu for every "
+                "container.", self.campaign, ", ".join(unsized), cpu)
         return JobSizing(cpu=cpu, memory=memory, gpu=gpu)
 
     def get_remaining_jobs(self, job_names):

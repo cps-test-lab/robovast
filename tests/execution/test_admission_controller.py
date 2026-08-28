@@ -200,3 +200,16 @@ def test_resubmitting_a_plan_does_not_double_it():
         c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda: made.append("a-0"))],
                  started_at=0.0)
     assert c.drain() == 1 and made == ["a-0"]
+
+
+def test_a_zero_cpu_sizing_is_refused_by_preflight():
+    """The controller must not accept a sizing of nothing, whoever built it.
+
+    Zero fits every node, so the queue would admit an entire plan in one pass and stop
+    gating. The manifest-side caller refuses this first and can name the containers; this
+    is the backstop, because a controller that accepts a zero sizing is not a queue.
+    """
+    c = AdmissionController(FakeProvider())
+    with pytest.raises(AdmissionRefused) as err:
+        c.preflight(JobSizing(cpu=0, memory=0))
+    assert "resources.cpu" in str(err.value)

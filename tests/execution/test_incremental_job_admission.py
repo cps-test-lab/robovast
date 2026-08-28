@@ -12,6 +12,7 @@ import types
 
 import pytest
 
+from robovast.execution.backends import CampaignConfigError
 from robovast.execution.cluster_execution import kubernetes_backend as kb
 from robovast.execution.cluster_execution.node_admission import (AdmissionController, Budget,
                                                                  Capacity, JobSizing,
@@ -115,6 +116,49 @@ def test_job_names_are_derived_the_same_way_the_manifest_names_it():
     derived = kb._short_job_name(r.campaign, r._job_tag(3), 3)
     assert derived and len(derived) <= 63
     assert derived == kb._short_job_name(r.campaign, r._job_tag(3), 3), "must be stable"
+
+
+def test_a_pod_that_declares_no_cpu_is_refused_at_launch():
+    """A zero-cpu pod fits every node, so the queue stops being a queue.
+
+    Nothing else catches this: ``preflight`` passes trivially (zero fits anything), every
+    job "fits", and the whole plan is created in one pass -- precisely the mass submission
+    admission exists to prevent, with no error anywhere. It is a configuration fault, so it
+    is refused before a single Job exists rather than paced into a cluster that cannot hold
+    what is really being asked for.
+    """
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-1"
+    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+        "containers": [{"name": "scenario"}],
+        "initContainers": [{"name": "sut", "restartPolicy": "Always"},
+                           {"name": "simulation", "restartPolicy": "Always"}]}}}}
+    with pytest.raises(CampaignConfigError) as err:
+        r._job_sizing(_job(0), 1)
+    assert "resources.cpu" in str(err.value), "must name the key to declare"
+    for name in ("scenario", "sut", "simulation"):
+        assert name in str(err.value), f"must name {name}, which declared nothing"
+
+
+def test_one_container_declaring_nothing_warns_but_proceeds(caplog):
+    """Undercounting is not the same fault as counting nothing.
+
+    The queue still paces on what was declared, so the campaign runs -- but it paces on less
+    than the pod takes, and the cluster is oversubscribed by whatever the silent container
+    uses. Loud enough to find, not fatal.
+    """
+    import logging
+
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-1"
+    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+        "containers": [{"name": "scenario",
+                        "resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
+        "initContainers": [{"name": "sut", "restartPolicy": "Always"}]}}}}
+    with caplog.at_level(logging.WARNING):
+        sizing = r._job_sizing(_job(0), 1)
+    assert sizing.cpu == pytest.approx(1)
+    assert "sut" in caplog.text, "must name the container that declared nothing"
 
 
 def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():

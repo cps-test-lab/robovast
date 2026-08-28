@@ -941,6 +941,12 @@ GPU on a cluster with none — is refused at launch, with the request and each n
 allocatable named. That is a different thing from a cluster that is merely full, which
 is not an error and is simply waited out.
 
+So is a pod that declares **no** CPU at all: a request of nothing fits every node, so the
+queue would create the whole plan in one pass and gate nothing. A campaign whose containers
+declare no ``resources.cpu`` is refused at launch, naming them. If only *some* declare it
+the campaign runs, but the queue paces on less than the pod really takes — that is a
+warning naming the silent containers, not an error.
+
 **Older campaigns finish first.** When several campaigns run at once, the one that
 started earliest is admitted first: each slot that frees up goes to the oldest campaign
 that still has work queued, so a campaign is not overtaken by one launched after it.
