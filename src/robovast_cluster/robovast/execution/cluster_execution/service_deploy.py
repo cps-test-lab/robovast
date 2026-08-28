@@ -340,6 +340,12 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         "metadata": {"name": SERVICE_NAME, "namespace": namespace,
                      "labels": {"app": SERVICE_NAME}},
         "spec": {
+            # Load-bearing for admission correctness, not just a sizing choice. The job
+            # admission queue lives in this process's memory (`node_admission`), so a second
+            # replica would be a second queue spending the same free capacity against the same
+            # cluster -- and the failure is silent: over-admission and pods that cannot be
+            # placed, never an error. RoboVAST is the sole scheduler of its own work by design;
+            # making the queue cluster-wide state is what a second replica would first require.
             "replicas": 1,
             "selector": {"matchLabels": {"app": SERVICE_NAME}},
             "template": {

@@ -1002,6 +1002,35 @@ campaign — the campaign stays ``finished`` with the reason on
    cannot measure the cluster it refuses to submit rather than falling back to creating
    every job at once, which is the one way a campaign could still overload the nodes.
 
+What the queue is not
+~~~~~~~~~~~~~~~~~~~~~
+
+This is a special-purpose queue for RoboVAST's own work, not a general cluster
+scheduler, and two consequences are worth stating rather than discovering.
+
+**The service runs as a single replica, and that is load-bearing.** The queue lives in
+the service process's memory, so a second replica would be a second queue spending the
+same free capacity against the same cluster. Nothing would report an error -- the symptom
+would be over-admission and pods that cannot be placed. Scaling the Deployment past one
+replica requires making the queue cluster-wide state first; the ``replicas: 1`` in the
+service Deployment says so at the line.
+
+**A service restart abandons the campaigns that were running.** This is unchanged by the
+queue and predates it, but the queue changes the shape of what is left behind:
+
+* Jobs already created keep running. They carry no owner reference, so Kubernetes does
+  not collect them, and startup reaping covers aux pods only -- they run to completion,
+  write their results, and hold capacity while nothing is listening.
+* Jobs still queued were never created, so there is nothing to orphan. Under the previous
+  Kueue-based admission the whole plan was created up front, and a restart left the
+  remainder suspended in the cluster; there are strictly fewer leftovers now.
+* The successor process does **not** over-admit against the abandoned Jobs. Capacity is
+  measured from the pods actually bound to nodes rather than bookkept, so their requests
+  are visible to it exactly like any other tenant's.
+
+Surviving a restart with the campaign intact is separate work: it needs the campaign to
+be reattachable, which is a bigger question than the queue.
+
 
 How free capacity is measured, and why it is not the whole cluster
 ------------------------------------------------------------------
