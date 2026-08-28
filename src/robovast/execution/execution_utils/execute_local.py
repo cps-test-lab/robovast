@@ -498,8 +498,11 @@ def _build_packed_compose_yaml(
 
     for sc in sidecars:
         sc_name = sc.name
-        sc_cpu = sc.resources.get('cpu')
-        sc_memory = sc.resources.get('memory')
+        # The CEILING, not the reservation: Compose's deploy.resources.limits is a cap, so
+        # the field that corresponds to it is the limit. Falls back to the request, which is
+        # what a campaign declaring only `cpu` has always meant.
+        sc_cpu = sc.resources.get('cpu_limit') or sc.resources.get('cpu')
+        sc_memory = sc.resources.get('memory_limit') or sc.resources.get('memory')
         sc_gpu = sc.resources.get('gpu')
 
         lines.append(f"  {sc_name}:")
@@ -793,8 +796,9 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     plan = plan_containers(execution_params, images=built_images,
                            explicit_main=docker_image)
     resources = plan.main.resources or {}
-    main_cpu = resources.get("cpu")
-    main_memory = resources.get("memory")
+    # See the sidecar block: Compose caps, so the limit is the corresponding field.
+    main_cpu = resources.get("cpu_limit") or resources.get("cpu")
+    main_memory = resources.get("memory_limit") or resources.get("memory")
     main_gpu = resources.get("gpu")
 
     # Per-step wall-clock limit, or None for no limit.

@@ -169,7 +169,15 @@ execution:
   #
   # To run a whole campaign against another project: `--image-project`, or ROBOVAST_PROJECT.
       resources:
-        cpu: 1
+  # Request the sustained figure, cap generously. The simulator is not under test, and its
+  # peak-to-mean ratio in this world is ~18 (0.34 cores sustained, 5.98 at the startup burst
+  # where depot's geometry compiles) -- so there is no honest single number. Reserving the
+  # peak costs more than the un-tuned campaign did; capping at the sustained figure clips a
+  # burst that changes nothing the robot experiences, because realtime pacing normalises what
+  # the simulated world looks like and runs.clock_map_* records per run whether it kept pace.
+        cpu: 0.5
+        cpu_limit: 6
+        memory: 2944Mi
   # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
   # That is the claim this shape makes -- point it at any nav2 image and it works.
   #
@@ -184,12 +192,35 @@ execution:
   # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
       - ros-jazzy-nav2-minimal-tb4-description
       resources:
-        cpu: 4
+  # NO split here -- but the property being bought is that the ceiling never BINDS, not that
+  # the same number is in force everywhere. An allocation the container never reaches cannot
+  # have shaped the run; equality is the conservative way to get there while nothing measures
+  # what it actually got. (Per-node sizing already varies the figure, so "identical in every
+  # run" was never the rule this could enforce.) Sized above its measured peak of 2.91, and
+  # run_validity_view says per run whether it held: quota_bound for this ceiling, contended
+  # for other work taking cores it had not reserved.
+  #
+  # What that peak does not cover: it comes from a pilot, and clipping is non-linear -- 0.5%
+  # of ticks over the limit cost 22% of runs. A search proposing harder configurations than
+  # the pilot can exceed it, so watch quota_bound rather than assuming the headroom holds.
+        cpu: 3
+        memory: 640Mi
     scenario:
       resources:
-        cpu: 1.25
+  # Same reasoning as the simulator: scenario-execution is not under test. Measured 0.52
+  # sustained, 1.23 peak -- the old flat 1 was under its own peak, so it throttled.
+        cpu: 0.75
+        cpu_limit: 2
+        memory: 896Mi
   mode: ros2
-  runs: 5
+  runs: 10
+  # Without it `stalled` is null, no verdict about a wedged run is possible, and
+  # `vast wait` cannot exit on one -- a campaign that hangs looks like one that is
+  # still working. 300 rather than the searches' 600 because this is batch mode: its
+  # bag conversion runs after the campaign rather than between batches, so progress
+  # never legitimately pauses mid-run. Measured: 50 trials in 373 s at ~25 concurrent,
+  # so a run takes ~150 s and this is a backstop with room, not a bound.
+  timeout: 300
   scenario_file: scenario_roqsim.osc
   run_files:
   # Per-extension rather than "files/*": that glob crosses '/', so it also swept

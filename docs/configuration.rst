@@ -968,8 +968,14 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 **Available fields:**
 
 - ``cpu`` (Optional): Number of CPU cores — whole (``4``), fractional (``0.5``) or in the
-  millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list
-- ``memory`` (Optional): Memory limit (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
+  millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list. This is the
+  **reservation**: what the cluster packs by, and so what decides how many trials run at once.
+  With no ``cpu_limit`` beside it, it is the ceiling as well
+- ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list —
+  and, with no ``memory_limit``, the ceiling too
+- ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
+  reservation. Omitted — the default — the limit equals the request, which is what every
+  campaign meant before these existed. See *Splitting the reservation from the ceiling* below
 - ``gpu`` (Optional): Number of GPUs. **Rarely needed.** Omit it and the container running
   the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
   nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
@@ -985,6 +991,60 @@ paid on **every job of the sweep**. The Monitor's **Details** panel measures wha
 container actually used and suggests the number to type here (see :doc:`web_ui`). Both
 lanes take the fractional value — the local lane converts a millicore declaration to
 Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accepts.
+
+.. _config-request-limit-split:
+
+**Splitting the reservation from the ceiling** — and this is a decision about a container's
+**role**, not a tuning knob.
+
+The reservation is what the scheduler packs by, so lowering it is what buys concurrency. The
+limit only decides when the kernel starts throttling. Which means:
+
+- The **system under test** should keep them equal, sized so it does not throttle. The
+  property that protects the result is that its ceiling is never *binding*: an allocation the
+  container never reaches cannot have shaped what the stack did, and equality is the
+  conservative way to reach that while nothing measures what it actually got. It is worth
+  over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
+  for this ceiling, ``contended`` for other work taking cores it had not reserved.
+- The **simulator and scenario** are not under test and should split. Measured on the shipped
+  ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
+  the world's geometry compiles — a ratio of ~18, so there is no honest single number.
+  Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
+  clips a burst that changes nothing the robot experiences. What makes the soft limit safe is
+  already recorded: realtime pacing normalises what the simulated world looks like, and
+  ``runs.clock_map_*`` says per run whether the simulator kept pace.
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       simulation:                                   # not under test: split
+         resources: {cpu: 0.5, cpu_limit: 6, memory: 2944Mi}
+       sut:                                          # under test: do not split
+         resources: {cpu: 3, memory: 640Mi}
+
+The size of the win depends on the world: the same simulator peaks at 5.98 cores in
+``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
+different figures and gain differently from the split.
+
+**The system under test's ceiling is set from a pilot**, which is the assumption to keep in
+view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of
+the runs, because clipped work queues rather than vanishing. A campaign that searches toward
+harder configurations can therefore exceed the peak a pilot measured, and the cells that do so
+are the interesting ones. ``quota_bound`` is what says it happened; do not read the headroom as
+a guarantee.
+
+**These figures are declarations, not a permanent shape.** Per-node sizing measures each
+container on the machine it is about to run on and lowers the reservation to what it needs
+there; it never raises a ceiling a campaign set. The direction of travel is for a campaign not
+to state these numbers at all — so read a figure here as this deployment's current measurement
+of one world on one cluster, not as a property of the workload worth copying into a new
+campaign. Measure your own: ``get_campaign_summary`` reports what each container actually used
+and suggests the number to type.
+
+**Memory is deliberately not split** in the shipped examples. Exceeding a CPU limit costs
+speed; exceeding a memory limit is an OOM kill, so a request below the limit trades a run for
+density on a node where several containers peak together.
 
 **Per-cluster resource values** are supported when multiple clusters need different
 allocations. See :ref:`cluster-execution` for the full syntax.

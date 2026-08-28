@@ -94,6 +94,25 @@ MIN_TICKS = 30
 #: more, so this is a default rather than a law.
 THROTTLE_WARN_RATIO = 0.005
 
+#: Fraction of a trial window in which EVERY task in a container was runnable and none was
+#: running -- PSI ``cpu.pressure`` ``full`` -- before it is worth reporting as contention.
+#:
+#: **Not calibrated, unlike :data:`THROTTLE_WARN_RATIO`, and the difference is deliberate.**
+#: That one comes from a five-point sweep in which the stack's own miss count was counted at
+#: each level; nothing equivalent has been run for this counter, because it did not exist to
+#: measure. What is written here is a floor derived from the control loop rather than from
+#: observed damage: a 20 Hz loop has a 50 ms budget, so 1% of a 150 s run is 1.5 s of total
+#: blackout, which is 30 missed deadlines if it arrives in one burst and none if it is spread
+#: a microsecond at a time. That range is exactly why this is a SCREEN and its finding says
+#: "go and look at the stack's own health" rather than asserting harm.
+#:
+#: To calibrate it the way the throttle threshold was: run one configuration at a fixed
+#: allocation against varying co-tenancy, and count control-loop misses per stall level. Until
+#: that exists, treat a crossing as a question rather than an answer, and treat the number as
+#: provisional -- it is placed to be crossed rarely on a healthy node, not to mark a cliff
+#: anybody has seen.
+STALL_WARN_RATIO = 0.01
+
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
 OVER_RESERVED_RATIO = 1.5
@@ -202,6 +221,59 @@ THROTTLE_SQL = """
            SUM(CASE WHEN throttled > 0 THEN 1 ELSE 0 END) AS runs_throttled
     FROM per_run GROUP BY container
 """
+
+#: How much of each run's window the container spent runnable with nothing running, per
+#: container, beside the throttling that partly explains it.
+#:
+#: Same per-run delta discipline as :data:`THROTTLE_SQL` and for the same reason -- monotonic
+#: counters on a fresh cgroup per run -- with one addition: the window's own wall span, which
+#: is to a stall total what ``nr_periods`` is to a throttle count. Without it a microsecond
+#: figure cannot be compared between a 30 s run and a 300 s one, and pooling them would report
+#: the long runs' stalls as the campaign's.
+#:
+#: The node's own pressure rides along because it is what makes the finding actionable: a
+#: container stalling while its machine was idle is a different problem (its own request is
+#: too small) from one stalling while the machine was saturated (the node is oversubscribed),
+#: and the remedies point in opposite directions.
+def contention_sql(with_node: bool = True) -> str:
+    """The query, with or without the node's own pressure column.
+
+    Two forms rather than one because the two counters come from different files and can fail
+    independently: ``/proc/pressure/cpu`` is masked in some container runtimes while the
+    cgroup's own PSI reads fine. Naming it unconditionally would make that absence take the
+    whole finding down with it -- and the finding is worth having without it, just less
+    specific about whose problem it is.
+    """
+    node = ("MAX(node_cpu_stall_some_usec) - MIN(node_cpu_stall_some_usec) AS node_stalled"
+            if with_node else "NULL AS node_stalled")
+    return f"""
+    WITH per_run AS (
+        SELECT config_name, run_id, container,
+               MAX(cpu_stall_full_usec) - MIN(cpu_stall_full_usec) AS stalled,
+               MAX(nr_periods) - MIN(nr_periods) AS periods,
+               MAX(nr_throttled) - MIN(nr_throttled) AS throttled,
+               {node},
+               (MAX(CAST(wall_ts AS REAL)) - MIN(CAST(wall_ts AS REAL))) * 1000000.0 AS span
+        FROM system_usage
+        WHERE in_window = 1 AND cpu_stall_full_usec IS NOT NULL
+        GROUP BY config_name, run_id, container)
+    SELECT container,
+           SUM(stalled) AS stalled,
+           SUM(span) AS span,
+           SUM(node_stalled) AS node_stalled,
+           SUM(throttled) AS throttled,
+           SUM(periods) AS periods,
+           COUNT(*) AS runs,
+           SUM(CASE WHEN span > 0
+                         AND CAST(stalled AS REAL) / span >= {STALL_WARN_RATIO}
+                    THEN 1 ELSE 0 END) AS runs_stalled
+    FROM per_run WHERE span > 0 GROUP BY container
+"""
+
+
+#: The full form. :func:`contention_sql` is what a caller that must survive a masked procfs
+#: uses; this is the name to read.
+CONTENTION_SQL = contention_sql()
 
 #: The containers the campaign declared, and what it reserved for each. The bare container
 #: rows matter most when there is no reservation row: a ``.vast`` need not declare
@@ -668,6 +740,109 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
     return []
 
 
+def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+    """The finding ``throttle_advice`` structurally cannot make: the SUT was crowded out.
+
+    Throttling is a container hitting its own ceiling. Once a container may reserve less than
+    its limit, the other failure exists too -- its neighbours take the cores it did not
+    reserve -- and the two point OPPOSITE ways, because a container that cannot get CPU never
+    reaches its quota and so throttles less while running worse. A campaign could therefore
+    report every container clean while the system under test was being starved, which is the
+    blind spot this closes.
+
+    **Only the SUT**, for the reason ``throttle_advice`` gives at length: the simulator and
+    scenario are expected to lose their burst to a busy node, and whether that cost anything
+    is answered by the realtime factor recorded per run.
+
+    **Silent when the SUT was itself quota_bound.** Throttling raises the stall counter too,
+    so the two cannot be separated by subtraction; reporting both would hand the reader two
+    remedies pointing in opposite directions for one number. The ceiling wins because its
+    remedy is a line in the campaign's own file.
+
+    Args:
+        contention_rows: rows of :data:`CONTENTION_SQL`. Empty for a campaign recorded before
+            the PSI probe, on cgroup v1, or on a kernel without cgroup-level ``full`` -- all
+            of which are silence rather than a pass.
+        declared_rows: rows of :data:`DECLARED_SQL`, to name the reservation in the advice.
+    """
+    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415 - avoids a config import
+
+    for row in contention_rows or []:
+        if row.get("container") != SUT_CONTAINER:
+            continue
+        span = float(row.get("span") or 0)
+        stalled = float(row.get("stalled") or 0)
+        if span <= 0 or stalled <= 0:
+            return []
+        ratio = stalled / span
+        if ratio < STALL_WARN_RATIO:
+            return []
+        periods = int(row.get("periods") or 0)
+        throttled = int(row.get("throttled") or 0)
+        if periods > 0 and throttled / periods >= THROTTLE_WARN_RATIO:
+            return []  # its own ceiling explains it; throttle_advice owns that case
+        runs = int(row.get("runs") or 0)
+        runs_stalled = int(row.get("runs_stalled") or 0)
+        raw_node = row.get("node_stalled")
+        node = None if raw_node is None else float(raw_node) / span
+        _, declared_cpu, _, _ = _declared(declared_rows)
+        reserved = declared_cpu.get(SUT_CONTAINER)
+        # Whose problem it is. The container's own request is too small when it was starved on
+        # a machine that had room; the node is oversubscribed when everything on it was
+        # waiting too. Same symptom, opposite remedies, and only the node's own pressure
+        # separates them -- which is why it is collected despite not being a container fact.
+        #
+        # Unmeasured is said as unmeasured. Treating a missing node reading as an idle one
+        # would name a remedy from a number nobody recorded, and it would do so in the
+        # confident direction: "your request is too small" is exactly the wrong advice on an
+        # oversubscribed node, where raising it makes the packing worse.
+        if node is None:
+            where = ("the node's own pressure was not recorded here, so which of the two this "
+                     "is cannot be told apart: compare against a run on an emptier node "
+                     "before either raising "
+                     f"execution.containers.{SUT_CONTAINER}.resources.cpu or admitting fewer "
+                     "jobs per node")
+        elif node >= ratio:
+            where = ("the NODE was saturated at the same time (its own pressure ran at "
+                     f"{node * 100:.1f}%), so this is the machine being oversubscribed rather "
+                     "than this container asking for too little: admit fewer jobs per node, "
+                     "or raise the requests of whatever else runs beside it")
+        else:
+            where = (f"the node itself was comparatively idle (pressure {node * 100:.1f}%), "
+                     "so the shortfall is this container's own reservation: raise "
+                     f"execution.containers.{SUT_CONTAINER}.resources.cpu, which is what the "
+                     "scheduler packs by and what CFS weights it by under contention")
+        return [{
+            "kind": "sut_contended",
+            "severity": "warning",
+            "title": (f"The system under test was runnable but got no CPU in "
+                      f"{ratio * 100:.1f}% of its trial window"),
+            "detail": (
+                f"{runs_stalled} of {runs} run(s) had every task in '{SUT_CONTAINER}' waiting "
+                "for CPU at once"
+                + (f", against a reservation of {format_cores(reserved)}" if reserved
+                   is not None else "")
+                + ". This is NOT the container hitting its own limit -- it was not throttled "
+                "-- it is other work on the node taking cores it had not reserved, which "
+                "nothing else in the results reports. "
+                f"Here {where}. "
+                "Like throttling this is a screen and not a verdict: check the stack's own "
+                "health signals in those runs (controller frequency, missed control loops, "
+                "planning failures) before concluding it cost anything. "
+                "Which runs: SELECT config_name, run_id FROM run_validity_view WHERE "
+                f"container = '{SUT_CONTAINER}' AND contended = 1."),
+            "evidence": {
+                "container": SUT_CONTAINER,
+                "stall_ratio": round(ratio, 4),
+                "node_stall_ratio": None if node is None else round(node, 4),
+                "runs_affected": runs_stalled,
+                "runs": runs,
+                **({"declared_cpu": format_cores(reserved)} if reserved is not None else {}),
+            },
+        }]
+    return []
+
+
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
@@ -683,6 +858,17 @@ def campaign_advice(query_rows) -> dict[str, Any]:
         throttle = query_rows(THROTTLE_SQL)
     except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
         throttle = []
+    try:
+        contention = query_rows(CONTENTION_SQL)
+    except Exception:  # noqa: BLE001 - no such table/column on a campaign predating the probe
+        try:
+            # The node column alone may be missing where procfs is masked; the container's own
+            # stall is still worth reporting, and dropping the whole finding for the less
+            # important half of it would be the silent-fallback failure this codebase refuses.
+            contention = query_rows(contention_sql(with_node=False))
+        except Exception:  # noqa: BLE001 - genuinely nothing recorded
+            contention = []
     return {"advice": (throttle_advice(throttle, declared)
+                       + contention_advice(contention, declared)
                        + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}

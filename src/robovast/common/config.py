@@ -100,6 +100,18 @@ class ConfigurationConfig(BaseModel):
 class ResourcesConfig(BaseModel):
     """Resource limits for a container.
 
+    **Unknown keys are refused.** Pydantic's default is to ignore them, and for this block
+    that is the worst of the options: a resource a deployment does not understand is dropped
+    in silence, and the campaign runs with a different allocation than its file asks for.
+    That is not hypothetical -- ``cpu_limit`` was added to a tree whose deployed service did
+    not have it yet, and the effect there was a container capped BELOW the figure it had been
+    running at, which no error and no log would have mentioned. A typo (``cpu_limits``) has
+    the same shape and is more likely.
+
+    The cost is that a ``.vast`` using a field a deployment predates now fails to launch
+    instead of quietly running differently -- which is the correct trade for a block whose
+    whole purpose is to say how much of the machine a run may have.
+
     Each field accepts either a plain scalar (the default, works for all
     clusters) or a per-cluster list when different clusters need different
     allocations::
@@ -128,8 +140,41 @@ class ResourcesConfig(BaseModel):
     # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
     # "4" to "4.0" for no reason.
+    model_config = ConfigDict(extra='forbid')
+
+    #: The **reservation**: what the cluster packs by, and so what decides how many trials run
+    #: at once. With no :attr:`cpu_limit` beside it this is the ceiling as well -- the two are
+    #: stamped equal, which is what every campaign meant before that field existed.
     cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
+    #: The memory reservation, and -- with no :attr:`memory_limit` -- the ceiling too. The
+    #: shipped examples deliberately never split it: exceeding a CPU limit costs speed,
+    #: exceeding a memory limit is an OOM kill.
     memory: Optional[Union[str, list[dict[str, str]]]] = None
+    #: The ceiling, when it should differ from the reservation above. Omitted -- the default,
+    #: and what every campaign did before these existed -- the limit equals the request.
+    #:
+    #: **Splitting the two is a decision about the container's ROLE, not a tuning knob.**
+    #:
+    #: * The **system under test** keeps ``requests == limits``, sized so it does not
+    #:   throttle. The property that protects the result is that its ceiling never *binds*:
+    #:   an allocation the container never reaches cannot have shaped what the stack did, and
+    #:   equality is the conservative way to reach that while nothing measures what it
+    #:   actually got. Worth over-reserving for. The peak it is sized from comes from a pilot
+    #:   and clipping is not proportional, so a search proposing harder configurations can
+    #:   exceed it -- ``run_validity_view.quota_bound`` says when that happened.
+    #: * The **simulator and scenario** are not under test and should split. The simulator's
+    #:   peak-to-mean ratio is roughly 18 (measured: 0.34 cores sustained, 5.98 at its
+    #:   startup burst), so there is no honest single number: reserving the peak costs more
+    #:   than the un-tuned campaign did, and capping at the sustained figure clips a burst
+    #:   that changes nothing the robot experiences. Realtime pacing already normalises what
+    #:   the simulated world looks like, and ``runs.clock_map_*`` records per run whether it
+    #:   kept pace -- so the guard that makes a soft limit safe here is already in the data.
+    #:
+    #: The reservation is what the cluster packs by, so lowering it is what buys concurrency;
+    #: the limit only decides when the kernel starts throttling.
+    cpu_limit: Optional[Union[int, float, str,
+                              list[dict[str, Union[int, float, str]]]]] = None
+    memory_limit: Optional[Union[str, list[dict[str, str]]]] = None
     #: Whole GPUs for this container. Omit it and the container running the simulator gets
     #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
     #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
@@ -137,7 +182,7 @@ class ResourcesConfig(BaseModel):
     #: documented option only worked where a lane happened to read the raw mapping.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
-    @field_validator('cpu')
+    @field_validator('cpu', 'cpu_limit')
     @classmethod
     def validate_cpu_quantity(cls, v):
         """Reject a cpu value that is not a CPU quantity.
@@ -161,6 +206,32 @@ class ResourcesConfig(BaseModel):
         else:
             check(v)
         return v
+
+    @model_validator(mode="after")
+    def validate_limits_are_not_below_requests(self):
+        """A ceiling under its own reservation is refused here rather than by the cluster.
+
+        Kubernetes rejects such a pod outright, so the campaign would fail at submission with
+        an API message naming a container and a quantity -- true, and several layers from the
+        two lines in the ``.vast`` that disagree. Only the scalar forms are compared: a
+        per-cluster list is resolved per context much later, and guessing which entry pairs
+        with which here would report a conflict that the active cluster may not have.
+        """
+        pairs = (("cpu", self.cpu, self.cpu_limit, to_cores),
+                 ("memory", self.memory, self.memory_limit, to_bytes))
+        for name, request, limit, convert in pairs:
+            if request is None or limit is None:
+                continue
+            if isinstance(request, list) or isinstance(limit, list):
+                continue
+            lo, hi = convert(request), convert(limit)
+            if lo is None or hi is None or hi >= lo:
+                continue
+            raise ValueError(
+                f"{name}_limit ({limit}) is below {name} ({request}): a limit is the "
+                f"ceiling and cannot be under the reservation. Either raise {name}_limit "
+                f"or lower {name}.")
+        return self
 
 
 #: The container that runs scenario-execution. Always present; when a simulator backend

@@ -217,6 +217,36 @@ def _run_output_dir_env(job) -> tuple:
     return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
 
 
+def stamp_resources(spec: dict, resources: dict) -> None:
+    """Put *resources* on one container spec as separate requests and limits.
+
+    ``cpu_limit`` / ``memory_limit`` are the ceiling and default to the reservation, which is
+    what every campaign declared before they existed and keeps those manifests byte-identical.
+
+    The two are stamped in one place for both the main container and the sidecars so they
+    cannot drift: the request is what the cluster packs by -- and what RoboVAST's own
+    admission measures a job with, via the rendered manifest -- while the limit only decides
+    when the kernel starts throttling. Getting that backwards would either over-admit (pack by
+    a ceiling nothing reserves) or throttle a container that reserved room it is not allowed to
+    use.
+
+    **Neither may be left empty.** ``JOB_TEMPLATE`` reads ``AVAILABLE_CPUS`` / ``AVAILABLE_MEM``
+    from ``resourceFieldRef: limits.cpu / limits.memory``, and the downward API substitutes the
+    NODE's allocatable for an unset limit -- so a scenario would size itself to the whole
+    machine and be wrong in a way that looks right.
+    """
+    res = spec.setdefault('resources', {})
+    requests = res.setdefault('requests', {})
+    limits = res.setdefault('limits', {})
+    for key, limit_key in (('cpu', 'cpu_limit'), ('memory', 'memory_limit')):
+        request = resources.get(key)
+        if not request:
+            continue
+        limit = resources.get(limit_key) or request
+        requests[key] = str(request)
+        limits[key] = str(limit)
+
+
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
@@ -738,12 +768,7 @@ class BatchJobRunner:
                 },
                 'volumeMounts': shared_volume_mounts,
             }
-            if sc_resources.get('cpu'):
-                secondary_spec['resources']['requests']['cpu'] = str(sc_resources['cpu'])
-                secondary_spec['resources']['limits']['cpu'] = str(sc_resources['cpu'])
-            if sc_resources.get('memory'):
-                secondary_spec['resources']['requests']['memory'] = sc_resources['memory']
-                secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
+            stamp_resources(secondary_spec, sc_resources)
             self._apply_gpu_to_container(secondary_spec, secondary_env,
                                          self._gpu_request(sc_resources, sc))
             if self.run_as_user is not None:
@@ -1090,12 +1115,7 @@ class BatchJobRunner:
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
 
-        if resources.get('cpu'):
-            main_container['resources']['requests']['cpu'] = str(resources['cpu'])
-            main_container['resources']['limits']['cpu'] = str(resources['cpu'])
-        if resources.get('memory'):
-            main_container['resources']['requests']['memory'] = resources['memory']
-            main_container['resources']['limits']['memory'] = resources['memory']
+        stamp_resources(main_container, resources)
         # In the stepped shape the simulator IS this container, so this is where its GPU
         # goes; in the ROS shape the sidecar below carries it instead.
         main_env = main_container.setdefault('env', [])

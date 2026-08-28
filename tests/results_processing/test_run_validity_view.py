@@ -162,3 +162,83 @@ def test_the_view_is_described_so_it_is_discoverable(tmp_path):
     # flags rather than filters.
     assert "sut" in desc
     assert "Never drop a run" in desc
+
+
+# -- the other half: crowded out rather than capped --------------------------------------
+
+def _campaign_psi(tmp_path: Path, ticks) -> Path:
+    """As :func:`_campaign`, for a store recorded by a sampler that had the PSI probe:
+    ``(cfg, run, container, in_window, wall_ts, periods, throttled, stall_full)``."""
+    exec_dir = tmp_path / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(exec_dir / "data.db")
+    conn.execute("CREATE TABLE system_usage (config_name TEXT, run_id INTEGER, "
+                 "timestamp REAL, wall_ts REAL, in_window INTEGER, container TEXT, "
+                 "nr_periods INTEGER, nr_throttled INTEGER, throttled_usec INTEGER, "
+                 "cpu_stall_some_usec INTEGER, cpu_stall_full_usec INTEGER)")
+    conn.executemany(
+        "INSERT INTO system_usage VALUES (?,?,0,?,?,?,?,?,0,?,?)",
+        [(c, r, w, k, n, p, t, s * 2, s) for c, r, n, k, w, p, t, s in ticks])
+    conn.commit()
+    conn.close()
+    return tmp_path
+
+
+def test_contention_is_the_stall_the_containers_own_ceiling_does_not_explain(tmp_path):
+    """The case no throttle counter can report: never capped, and yet runnable with nothing
+    running for a fifth of the window, because other work took the cores it had not reserved.
+
+    100 s of window, 20 s of it with EVERY task in the cgroup waiting -- and 0 throttled
+    periods, which is what makes the existing screen read clean.
+    """
+    d = _campaign_psi(tmp_path, [
+        # (cfg, run, container, in_window, wall_ts, periods, throttled, stall_full_usec)
+        ("cfg-a", 0, "sut", 1, 1000.0, 0, 0, 0),
+        ("cfg-a", 0, "sut", 1, 1100.0, 1000, 0, 20_000_000),
+    ])
+    row, = _rows(d, "SELECT * FROM run_validity_view")
+    assert row["quota_bound"] == 0, "it never reached its own quota -- that is the point"
+    assert row["stalled_full_usec"] == 20_000_000
+    assert row["stall_ratio"] == pytest.approx(0.2)
+    assert row["contended"] == 1
+
+
+def test_the_ceiling_is_attributed_first_when_a_container_is_both(tmp_path):
+    """Throttling raises the stall counter too, so the two cannot be separated by
+    subtraction. ``contended`` is the residue, and a container held at its own limit is
+    reported as that -- the remedy is a line in the campaign's own file."""
+    d = _campaign_psi(tmp_path, [
+        ("cfg-a", 0, "sut", 1, 1000.0, 0, 0, 0),
+        ("cfg-a", 0, "sut", 1, 1100.0, 1000, 500, 20_000_000),
+    ])
+    row, = _rows(d, "SELECT * FROM run_validity_view")
+    assert row["quota_bound"] == 1
+    assert row["stall_ratio"] == pytest.approx(0.2), "still recorded, just not attributed"
+    assert row["contended"] == 0
+
+
+def test_a_store_recorded_before_the_psi_probe_answers_null_rather_than_clean(tmp_path):
+    """The whole reason the columns are selected as NULL instead of dropped: the view keeps
+    ONE column set across store versions, so a reader writes one query -- and an older
+    campaign says "not measured" where a 0 would have said "no contention"."""
+    d = _campaign(tmp_path, [
+        ("cfg-a", 0, "sut", 1, 1000, 0, 0),
+        ("cfg-a", 0, "sut", 1, 1100, 0, 0),
+    ])
+    row, = _rows(d, "SELECT * FROM run_validity_view")
+    assert row["quota_bound"] == 0, "the half it can answer is unaffected"
+    assert row["stalled_full_usec"] is None
+    assert row["stall_ratio"] is None
+    assert row["contended"] is None
+
+
+def test_the_two_flags_are_documented_as_opposite_diagnoses(tmp_path):
+    """They point different ways and have different remedies: a bigger limit for one, a
+    bigger request or a quieter node for the other. A reader who conflates them tunes the
+    wrong number, which is the mistake the naming exists to prevent."""
+    from robovast.results_processing.data_query import _TABLE_DESCRIPTIONS
+
+    desc = _TABLE_DESCRIPTIONS[("temp", "run_validity_view")]
+    assert "does NOT mean other campaigns crowded it out" in desc  # quota_bound
+    assert "contended=1 is the OPPOSITE diagnosis" in desc
+    assert "not a bigger limit" in desc

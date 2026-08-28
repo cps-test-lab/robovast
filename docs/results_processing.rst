@@ -698,15 +698,72 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
    ├── sysinfo.yaml                          # Hardware info (platform, CPU, memory) — stable
    ├── resource_usage_main.csv               # Main container CPU/memory over the job
    ├── resource_usage_<secondary>.csv        # Per secondary container [if multi-container]
+   ├── system_usage_main.csv                 # Main container cgroup counters over the job
+   ├── system_usage_<secondary>.csv          # Per secondary container [if multi-container]
    └── logs/
        ├── system.log                        # Main container system log
        ├── system_<secondary>.log            # Secondary container log [if multi-container]
        └── rosout_bag/                       # /rosout recording [ROS mode]
 
 ``resource_usage_*.csv`` files have columns ``timestamp`` (wall epoch seconds), ``pid``,
-``name``, ``cpu_percent`` and ``memory_rss_bytes``, one row per process per ~1 s, one file
-per container. For a packed job these span the whole job; the ``resource_usage``
-post-processing step slices them to each run (see :ref:`per-run-resource-usage`).
+``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
+one row per process per ~1 s, one file per container. For a packed job these span the whole
+job; the ``resource_usage`` post-processing step slices them to each run (see
+:ref:`per-run-resource-usage`).
+
+``system_usage_*.csv`` is the sibling for figures belonging to the **container as a whole**
+rather than to a process — one row per ~1 s, no ``pid``. It is separate because
+``resource_usage`` is per-process *by contract*: every reader aggregates it that way, so a
+container-level figure written there would be summed as though it were one process among
+many. Its columns are whatever the node could answer, so a column may be absent entirely
+rather than empty — a runtime that cannot report and a container that never stalled are
+different facts, and a zero would make the first indistinguishable from the second:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Columns
+     - What they answer
+   * - ``nr_periods``, ``nr_throttled``, ``throttled_usec``
+     - Did the kernel STOP this container because it hit **its own** CPU limit? Throttling
+       does not fail a run, it just makes it slower, so nothing else records it.
+   * - ``memory_current``, ``memory_peak``, ``memory_max``
+     - Memory as the KERNEL accounts it, which the per-process rows cannot give: RSS counts a
+       shared page once per process, so summing it over a stack of ROS nodes sharing
+       libraries and a DDS shared-memory segment over-reports badly. ``memory_max`` is absent
+       rather than huge when no limit is in force.
+   * - ``memory_anon``, ``memory_file``, ``memory_shmem``, ``memory_slab``
+     - What that memory is MADE OF, which decides how much of it must be reserved:
+       ``anon + shmem + slab`` survives reclaim, ``file`` is page cache the kernel drops
+       under pressure. Sizing a limit from ``memory_current`` reserves the cache too.
+   * - ``cpu_usage_usec``
+     - CPU time the kernel billed the cgroup — exact, where summing ``cpu_percent`` over the
+       processes is a sampled estimate that misses anything short-lived.
+   * - ``cpu_stall_some_usec`` / ``_full_usec``, and the same for ``memory`` and ``io``
+     - PSI: how long tasks were runnable but **not running** — the container crowded out,
+       which the throttle counters cannot show. ``full`` (every task waiting) is the figure
+       that carries a finding; ``some`` is high in normal operation for a container running
+       many processes against few cores.
+   * - ``node_cpu_stall_some_usec``
+     - The whole **machine's** pressure. A node fact repeated on every row of every
+       container, so never sum it across a pod — it is what separates "this pod asked for too
+       little" from "this node is oversubscribed".
+   * - ``memory_events_max``, ``_oom``, ``_oom_kill``
+     - Allocations the kernel refused, and processes it killed for them. Memory is sized on
+       the peak because exceeding it is a kill rather than a slowdown; this is the only place
+       a mid-trial death names its cause.
+
+Everything above except the three memory figures is a **monotonic counter**, so read a delta
+within the trial window, never a ``SUM`` and never a bare ``MAX`` (``memory_current`` is a
+gauge, ``memory_peak`` a high-water mark, and the ``memory.stat`` breakdown gauges; those
+are read as they come). Prefer ``run_validity_view``, which takes that delta and
+applies the thresholds for you. It derives two flags, and they are **opposite diagnoses with
+opposite remedies**: ``quota_bound`` means the container exhausted the quota its own
+``limits.cpu`` buys — raise the limit; ``contended`` means it was runnable and got no CPU
+*without* having hit that ceiling — other work took cores it had not reserved, so raise its
+``resources.cpu`` request, or put fewer jobs on the node. A container can be both, and the
+ceiling is reported first because that remedy is a line in the campaign's own ``.vast``.
 
 
 .. _reading-result-files:
