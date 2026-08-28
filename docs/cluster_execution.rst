@@ -59,8 +59,9 @@ them. Internally:
    config files from storage and a main ``robovast`` container that executes the
    scenario. (Variations that declare an auxiliary container get a per-campaign
    aux pod the driver execs into during composition.)
-3. **Queueing (Kueue)** — Jobs are admitted only when sufficient CPU/memory is
-   available, so a campaign cannot oversubscribe the cluster.
+3. **Queueing** — a Job is created only when sufficient CPU/memory is available,
+   so a campaign cannot oversubscribe the cluster. Step 2 therefore paces itself
+   against this rather than creating the whole plan up front.
 4. **Result collection** — Jobs upload result files back to the storage bucket,
    and the driver publishes the **canonical campaign** (``campaign.db`` +
    ``_execution`` + results) there. The **object store is the durable home and
@@ -103,8 +104,8 @@ cluster execution:
        wait for pods)
      - `kubectl install guide <https://kubernetes.io/docs/tasks/tools/>`_
    * - ``helm``
-     - Install and upgrade Kueue (the job-queueing controller) and, on a GPU
-       cluster, the NVIDIA device plugin, via the Helm chart registry
+     - Install and upgrade the NVIDIA device plugin on a GPU cluster, via the
+       Helm chart registry
      - `helm install guide <https://helm.sh/docs/intro/install/>`_
    * - ``k9s`` *(recommended)*
      - Terminal UI for monitoring pods, jobs, and logs in real time — not
@@ -125,7 +126,7 @@ Everything above the host is provisioned by setup; see :ref:`cluster-gpu` below.
 Cluster Setup
 -------------
 
-Before the first run, deploy the MinIO S3 server and Kueue into the cluster:
+Before the first run, deploy the MinIO S3 server into the cluster:
 
 .. code-block:: bash
 
@@ -139,16 +140,14 @@ Available cluster configs (``--list``):
 
 Setup acts on the *cluster*, not on a project: it neither needs nor reads a ``vast
 init`` / ``.robovast_project``, and runs from any directory. Its one optional input
-from a ``.vast`` is the node labels, taken only from a config you name explicitly
-(:ref:`below <cluster-node-labels>`).
+from a ``.vast`` is the control-pod node labels, taken only from a config you name
+explicitly (:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
 * Deploys a ``robovast`` pod containing the MinIO S3 server (embedded-storage
   configs such as ``rke2``). External-storage configs (e.g. GCS) deploy no
   helper pod — the bucket is used directly.
-* Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and sizes its job
-  queue to the cluster's available CPU/memory — and to its GPUs, where it has any.
 * Makes GPUs schedulable where the cluster has them, so a simulation container renders in
   hardware instead of in software (:ref:`below <cluster-gpu>`). A cluster without GPUs is
   left exactly as it was.
@@ -158,10 +157,13 @@ The setup command:
 Pinning pods to a node pool
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Node selectors for the job pods and the control pod come from
-``execution.kubernetes.jobs.node_labels`` / ``execution.kubernetes.control.node_labels``
-(see :doc:`configuration`) and are baked into the cluster at setup. Name that ``.vast``
-explicitly — it is the only config setup will read:
+The control pod's node selector comes from
+``execution.kubernetes.control.node_labels`` (see :doc:`configuration`) and is baked into
+the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
+read:
+
+To keep campaign jobs off particular machines, taint those machines — job pods carry the
+campaign toleration, so an untainted pool still takes them.
 
 .. code-block:: bash
 
@@ -310,7 +312,7 @@ in software on a CPU one.
 
 What that does, when a GPU is found: installs the `NVIDIA device plugin
 <https://github.com/NVIDIA/k8s-device-plugin>`_ with time-slicing so several pods can share
-one card, adds ``nvidia.com/gpu`` to the Kueue quota, and puts ``runtimeClassName: nvidia``
+one card, and puts ``runtimeClassName: nvidia``
 plus ``NVIDIA_DRIVER_CAPABILITIES=all`` on the pods that ask for one. That capability is the
 load-bearing part: the container runtime's default (``compute,utility``) hands over the
 device *without* the GL half of the driver, so the container gets a GPU it cannot render on
@@ -903,29 +905,53 @@ appended when the client produced none.
    avoids this.
 
 
-Job Queueing with Kueue
------------------------
+Job Queueing
+------------
 
-Cluster jobs are queued by `Kueue <https://kueue.sigs.k8s.io/>`_, which ``vast
-execution cluster setup`` installs and sizes to the cluster. It admits jobs only
-when there is CPU and memory for them — and GPUs, on a cluster that has them — so a
-large campaign cannot oversubscribe the nodes, and several campaigns launched at once
-share the cluster instead of fighting over it. There is nothing to configure: every job
-RoboVAST creates is submitted to the queue automatically, and the queue is sized from
-what the nodes advertise.
+.. note::
 
-One consequence is worth knowing, because Kueue's answer to it is silence. A job that
-asks for a resource the ClusterQueue does not cover is not rejected — it is **suspended,
-indefinitely**, and a suspended job still counts as active, so a campaign would report
-"still running" forever with nothing to show. RoboVAST therefore checks coverage before
-creating any job and fails with the remedy instead. If you see that error, re-run
-``vast execution cluster setup`` (or ``upgrade``, which reconciles the queues too).
+   **If your cluster has Kueue installed, remove it by hand, once.** Nothing here
+   installs or removes it, so a cluster that has it keeps a controller pod and its CRDs
+   indefinitely — inert, since no job carries a queue label, but running.
 
-**Older campaigns finish first.** When several campaigns run at once, Kueue admits the
-one that started earliest first. Every job carries a priority derived from its campaign's
-start time, so each slot that frees up goes to the oldest campaign that still has work
-queued — a campaign is no longer overtaken by one launched after it. There is nothing to
-configure and no way to get it wrong: the priority comes from the campaign id.
+   .. code-block:: bash
+
+      helm uninstall kueue -n kueue-system
+      kubectl delete crd -l app.kubernetes.io/name=kueue
+
+   Delete RoboVAST's own ``ClusterQueue`` and ``ResourceFlavor`` first if the CRD delete
+   hangs — an orphaned custom resource is what holds its CRD open. Check for a leftover
+   ``kueue`` mutating/validating webhook afterwards: that is the one leftover that would
+   actually break Job creation, rather than merely idling.
+
+   A cluster set up fresh needs none of this.
+
+Cluster jobs are queued by RoboVAST itself. A job is **created only once the cluster
+has room for it** — CPU and memory, and GPUs on a cluster that has them — so a large
+campaign cannot oversubscribe the nodes, and several campaigns launched at once share
+the cluster instead of fighting over it. There is nothing to configure and nothing to
+install: the queue lives in the RoboVAST service and is sized from what the nodes
+advertise, each cycle rather than once at setup.
+
+Creating jobs as capacity appears, rather than creating them all and letting them wait,
+also means a campaign never asks one kubelet for a thousand image pulls at once.
+
+A request no node could **ever** satisfy — more CPU than the largest machine has, or a
+GPU on a cluster with none — is refused at launch, with the request and each node's
+allocatable named. That is a different thing from a cluster that is merely full, which
+is not an error and is simply waited out.
+
+So is a pod that declares **no** CPU at all: a request of nothing fits every node, so the
+queue would create the whole plan in one pass and gate nothing. A campaign whose containers
+declare no ``resources.cpu`` is refused at launch, naming them. If only *some* declare it
+the campaign runs, but the queue paces on less than the pod really takes — that is a
+warning naming the silent containers, not an error.
+
+**Older campaigns finish first.** When several campaigns run at once, the one that
+started earliest is admitted first: each slot that frees up goes to the oldest campaign
+that still has work queued, so a campaign is not overtaken by one launched after it.
+There is nothing to configure and no way to get it wrong — the order comes from the
+campaign id, which carries its start time.
 
 Two properties are worth stating, because they are what make this safe to leave on:
 
@@ -947,18 +973,19 @@ the cluster to hold capacity for a campaign that is not yet asking for it.
 is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
 and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,
 distinct from ``pending`` (a pod exists and is being scheduled) and from ``blocked``
-(the job cannot start and needs a human). Kueue's own reason rides along as the
-job's ``detail``.
+(the job cannot start and needs a human). The reason capacity was refused rides along
+as the job's ``detail``.
 
-A ``waiting`` job has no pod, so it appears in the web UI only as the ``waiting N``
-counter, never as a row: the per-job list mirrors the jobs that actually exist on the
-cluster (what ``k9s`` shows), and those are the ones with a pod and a log to read.
-``list_campaign_jobs`` still returns every one of them with its reason.
+A campaign that is *entirely* queued is also not reported as stalled. The no-progress
+deadline measures how long a **run** has gone without completing, and while nothing of
+the campaign is running it is timing a queue rather than a run — so the verdict is
+withheld and ``stall_verdict`` says why, instead of accusing a healthy campaign that is
+simply behind an older one.
 
-If the queue is genuinely unusable — setup was never run, or the campaign targets
-a namespace that was never set up — the campaign fails at launch with a message
-naming what is missing, rather than hanging. ``setup`` checks the same thing
-before reporting success.
+A ``waiting`` job has not been created on the cluster yet, so it appears in the web UI
+only as the ``waiting N`` counter, never as a row: the per-job list mirrors the jobs that
+actually exist there (what ``k9s`` shows), and those are the ones with a pod and a log to
+read. ``list_campaign_jobs`` still returns every one of them with its reason.
 
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
@@ -974,35 +1001,66 @@ campaign — the campaign stays ``finished`` with the reason on
 
 .. note::
 
-   Without Kueue installed, jobs are still created but never queued: they all
-   start at once and can overload the cluster.
+   Admission does not depend on anything being installed in the cluster. If the service
+   cannot measure the cluster it refuses to submit rather than falling back to creating
+   every job at once, which is the one way a campaign could still overload the nodes.
+
+What the queue is not
+^^^^^^^^^^^^^^^^^^^^^
+
+This is a special-purpose queue for RoboVAST's own work, not a general cluster
+scheduler, and two consequences are worth stating rather than discovering.
+
+**The service runs as a single replica, and that is load-bearing.** The queue lives in
+the service process's memory, so a second replica would be a second queue spending the
+same free capacity against the same cluster. Nothing would report an error -- the symptom
+would be over-admission and pods that cannot be placed. Scaling the Deployment past one
+replica requires making the queue cluster-wide state first; the ``replicas: 1`` in the
+service Deployment says so at the line.
+
+**A service restart abandons the campaigns that were running.** What is left behind:
+
+* Jobs already created keep running. They carry no owner reference, so Kubernetes does
+  not collect them, and startup reaping covers aux pods only -- they run to completion,
+  write their results, and hold capacity while nothing is listening.
+* Jobs still queued were never created, so there is nothing to orphan.
+* The successor process does **not** over-admit against the abandoned Jobs. Capacity is
+  measured from the pods actually bound to nodes rather than bookkept, so their requests
+  are visible to it exactly like any other tenant's.
+
+Surviving a restart with the campaign intact is separate work: it needs the campaign to
+be reattachable, which is a bigger question than the queue.
 
 
-How the quota is sized, and why it is not the whole cluster
------------------------------------------------------------
+How free capacity is measured, and why it is not the whole cluster
+------------------------------------------------------------------
 
-The ClusterQueue may only promise capacity the scheduler can actually hand out. Kueue
-accounts for the workloads it admits and for nothing else, so everything sharing the
-nodes — its own controller, the CNI and ingress DaemonSets, MinIO, the RoboVAST service
-— holds CPU and memory that the scheduler has already subtracted and the queue knows
-nothing about. ``setup`` therefore sizes the quota as **allocatable minus what pods
-outside the queue reserve**, and logs all three numbers:
+Admission may only hand out capacity the scheduler can actually place against, so free
+capacity is **allocatable minus the requests of every pod already bound to a node**, minus
+a small headroom. Everything sharing the nodes counts: the CNI and ingress DaemonSets,
+MinIO, the RoboVAST service, the build daemon, and the campaign pods themselves.
 
-.. code-block:: text
+Counting at 100 % of allocatable instead admits one job more than the nodes can hold as
+soon as anything else runs — the extra pod is created, the scheduler has nowhere to put
+it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the failure a single
+campaign rarely reaches and several concurrent ones reach reliably, which is what makes it
+look like a concurrency bug rather than an arithmetic one.
 
-   Cluster allocatable: 96.0 CPU(s), 125 GiB across 1 node(s); reserved by pods Kueue
-   does not manage: 2.2 CPU(s), 6 GiB; quota: 93 CPU(s), 119Gi
+**It is measured every cycle, not snapshotted at setup.** This replaced a fixed quota
+sized once when the cluster was set up, which had to be re-sized by hand after anything
+long-lived was added to or removed from the nodes, and was silently wrong until someone
+did. Nothing needs re-running now.
 
-Sized at 100 % of allocatable instead, the queue admits one job more than the nodes can
-hold as soon as anything else runs — the extra pod is admitted, the scheduler has
-nowhere to put it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the
-failure a single campaign rarely reaches and several concurrent ones reach reliably,
-which is what makes it look like a concurrency bug rather than an arithmetic one.
+**Headroom** protects the shared tenants no campaign owns, and is set on the service
+deployment: ``ROBOVAST_NODE_HEADROOM_CPU`` (default ``1``) and
+``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``). Deliberately not a ``.vast`` setting —
+a per-campaign override would let one campaign shrink the margin every other one depends on.
 
-Campaign pods are deliberately *not* subtracted: those are Kueue's to account for, and
-taking off the ones that happen to be running would shrink the quota permanently to fit
-one moment's load. Re-run ``vast execution cluster setup`` (or ``upgrade``) after adding
-or removing anything long-lived on the nodes — the quota is a snapshot, not a watch.
+**One thing this cannot see is fragmentation.** The figure is cluster-wide, while a pod runs
+on one node, so a cluster with enough total capacity and no single node big enough will
+still produce an occasional ``Unschedulable`` pod. It is transient and recovers on its own:
+such a pod fits an empty node, so it is treated as contention rather than a fault, and it is
+placed as soon as a neighbour finishes.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
 ``capacity`` minus what the kubelet was told to hold back for the OS, the kubelet and
@@ -1019,11 +1077,11 @@ it can do reaches the setting that fixes it. On RKE2/k3s, reserve it in
      - "kube-reserved=cpu=1,memory=2Gi"
 
 Applying it restarts the kubelet, which restarts every pod on the node: do it in a
-maintenance window, not while campaigns are running. Afterwards re-run ``vast execution
-cluster setup`` so the quota follows the new ``allocatable`` (``kubectl get node <name>
--o jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of
-the subtraction above and complements it: the kubelet reservation protects the machine,
-the subtraction protects the schedule.
+maintenance window, not while campaigns are running. The new ``allocatable`` is picked up
+by the next measurement with nothing to re-run (``kubectl get node <name> -o
+jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of the
+subtraction above and complements it: the kubelet reservation protects the machine, the
+subtraction protects the schedule.
 
 
 Which image bytes a run uses
@@ -1064,10 +1122,11 @@ Three things a job that has not started can be doing, and the run loop treats th
 differently:
 
 ``waiting``
-   Kueue has not admitted it. Normal, and unbounded — see above.
+   Planned, but not created yet: the cluster has no room for it. Normal, and unbounded
+   — see above.
 
 busy
-   Admitted, but waiting its turn — for a node or for a pull. Either the resource exists
+   Created, but waiting its turn — for a node or for a pull. Either the resource exists
    on a node and something else is holding it, usually another campaign's run; or the
    image exists and the credential works, and the pull is rate-limited behind the other
    pulls a whole batch of jobs asked for at the same instant (the kubelet's own

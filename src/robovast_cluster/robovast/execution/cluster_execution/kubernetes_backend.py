@@ -87,10 +87,12 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .kubernetes_kueue import (KUEUE_PRIORITY_LABEL, KUEUE_QUEUE_NAME,
-                               campaign_priority_class_name,
-                               ensure_campaign_priority_class)
 from .manifests import JOB_TEMPLATE
+# Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
+# import inside the loop would be noise. node_admission imports nothing from this package,
+# so there is no cycle to route around by importing late.
+from .node_admission import CREATED as _ADMIT_CREATED
+from .node_admission import PLANNED as _ADMIT_PLANNED
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +282,31 @@ def resolve_image_digest(container_statuses, image: str) -> str | None:
     return None
 
 
+
+def all_jobs_waiting_for_capacity(remaining, contended) -> bool:
+    """Whether NOTHING of this batch can currently run because it is queued.
+
+    True only when every remaining job is *contended* -- waiting its turn for capacity or
+    for an image pull the kubelet is rate-limiting, both of which recover on their own. While
+    that holds, no run of this campaign can complete, so the per-run no-progress deadline is
+    measuring a queue rather than the campaign, and a reader must not return a verdict.
+
+    False while ANY job can run: that job completing is exactly the progress the deadline
+    watches for, so the verdict stands.
+
+    False for a job that is *blocked* but not contended -- an image that does not exist, a
+    request no node can hold. Those look the same in ten minutes as in one, and hiding them
+    behind a queue that does not exist is how a dead campaign gets a health certificate.
+
+    False when the probe could not read the cluster (``contended`` is None): unknown is not
+    "queued", and treating it as such would silence the deadline exactly when the cluster is
+    unreadable.
+    """
+    if not remaining or not contended:
+        return False
+    return all(job in contended for job in remaining)
+
+
 class BatchJobRunner:
     """Build, submit and clean up the Kubernetes Jobs for **one** batch.
 
@@ -288,6 +315,12 @@ class BatchJobRunner:
     (no archiver) and the Kubernetes client uses the in-cluster service account.
     Building manifests touches no API; only :meth:`run_batch_in_pod` does.
     """
+
+    #: The process-wide admission queue, or ``None`` for "create every job at once".
+    #: A class attribute so that every construction path has it -- ``for_batch`` sets it, and
+    #: the offline callers that build a bare runner (manifest emit, ``vast prepare``, the
+    #: tests) inherit the old behaviour without having to know the queue exists.
+    admission = None
 
     #: Cooperative-stop signal, set by :meth:`for_batch`. Class-level default so a
     #: runner built another way (offline manifest emit, tests) has no stop wired.
@@ -315,11 +348,6 @@ class BatchJobRunner:
     #: :data:`~.cluster_execution.CONTENDED_GRACE_SECONDS`.
     _CONTENDED_GRACE_SECONDS = CONTENDED_GRACE_SECONDS
 
-    #: How often the wait loop re-checks the Kueue admission path and reports why jobs
-    #: are still suspended. Much slower than the 2s poll: a queue does not break every
-    #: two seconds, and a normal quota wait must not spam the campaign log.
-    _SUSPEND_CHECK_INTERVAL_SECONDS = 30.0
-
     #: Jobs already dropped by :meth:`_drop_job` -- a restarted container or a pod that
     #: never started. Either keeps being reported on every poll until its pod is gone, and
     #: deleting a Job is asynchronous, so without this one fault is recorded -- and its
@@ -337,8 +365,13 @@ class BatchJobRunner:
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
-                  built_images=None, image_digest_cache=None):
+                  built_images=None, image_digest_cache=None, admission=None):
         self = cls()
+        # The process-wide admission queue, or None. None means "create every job at once",
+        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
+        # and what the cluster lane did before the queue existed -- so this parameter arriving
+        # changes nothing until a caller actually passes one.
+        self.admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
         # Used only for resolve_resources() (per-cluster resource lists); the
@@ -497,6 +530,17 @@ class BatchJobRunner:
         s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
 
         spec = job_manifest['spec']['template']['spec']
+
+        # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
+        # injects it, and a deployment that taints its campaign nodes without it does not
+        # fail loudly -- its pods simply never place. Additive and idempotent, so it is
+        # safe to apply to a spec that already carries it.
+        from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
+        existing = list(spec.get('tolerations') or [])
+        for toleration in CAMPAIGN_NODE_TOLERATIONS:
+            if dict(toleration) not in existing:
+                existing.append(dict(toleration))
+        spec['tolerations'] = existing
 
         # Pull secret for an agent-built experiment image pushed to a private
         # registry (see RegistryConfig). Only present when a registry with auth was
@@ -837,27 +881,106 @@ class BatchJobRunner:
             transient_dir, jobs, self._batch_tag,
             base=read_job_links(campaign_root) if campaign_root else None)
 
+    def _publish_capacity_wait(self, waiting: bool) -> None:
+        """Tell the status whether this batch is queued, if anyone is listening.
+
+        Best-effort and idempotent: a campaign driven without a control state (the local
+        lane, a unit test) simply has nobody to tell, and reporting a queue must never be
+        able to fail a batch.
+        """
+        if self._state is None:
+            return
+        try:
+            self._state.update(waiting_for_capacity=waiting)
+        except Exception:  # noqa: BLE001 - status reporting must not fail a batch
+            logger.debug("Could not publish capacity wait for batch %s",
+                         self._batch_tag, exc_info=True)
+
+    def _job_sizing(self, job, total_jobs):
+        """What one of this batch's pods asks the scheduler for, summed over its containers.
+
+        Takes a *rendered* job manifest, not ``self.manifest``. That distinction cost a live
+        run: the base manifest carries only the main container, because the sidecars -- where
+        the simulator and the system under test live, and so nearly all of the request -- are
+        appended per job in :meth:`_build_job_manifest`. Sizing from the base counted 1 core
+        of a 4.75-core pod, and the queue admitted a whole batch at once.
+
+        Every job of a batch is the same shape, so one rendering serves the batch.
+
+        Native sidecars are included: Kubernetes adds a ``restartPolicy: Always`` init
+        container's requests to the pod's effective total, and so does the scheduler.
+        """
+        from .kube_client import parse_resource  # noqa: PLC0415
+        from .node_admission import JobSizing  # noqa: PLC0415
+
+        spec = self.create_job_manifest(job, total_jobs)["spec"]["template"]["spec"]
+        cpu = 0.0
+        memory = 0
+        gpu = 0
+        containers = list(spec.get("containers") or [])
+        containers += [c for c in (spec.get("initContainers") or [])
+                       if c.get("restartPolicy") == "Always"]
+        unsized = []
+        for container in containers:
+            requests = (container.get("resources") or {}).get("requests") or {}
+            container_cpu = parse_resource(requests.get("cpu"))
+            if container_cpu <= 0:
+                unsized.append(container.get("name") or "<unnamed>")
+            cpu += container_cpu
+            memory += int(parse_resource(requests.get("memory")))
+            gpu += int(parse_resource(requests.get(GPU_RESOURCE)))
+        # A pod that asks for nothing "fits" every node, so the queue would admit the whole
+        # plan in one pass -- the mass submission it exists to prevent, with no error
+        # anywhere and preflight passing trivially. Refused at launch rather than paced into
+        # a cluster that cannot hold it.
+        if cpu <= 0:
+            raise CampaignConfigError(
+                "No container declares execution.containers.<name>.resources.cpu "
+                f"({', '.join(unsized)}), so this campaign's pod would be admitted as "
+                "needing zero cores and its whole plan created at once. Declare cpu (and "
+                "memory) for the containers that do the work.")
+        if unsized:
+            # Not fatal -- the queue still paces on what was declared -- but it paces on
+            # less than the pod actually takes, so the cluster is oversubscribed by
+            # whatever these use.
+            logger.warning(
+                "Campaign %s: %s declare no resources.cpu, so admission sizes this pod at "
+                "%g cores and undercounts what it really takes. Declare cpu for every "
+                "container.", self.campaign, ", ".join(unsized), cpu)
+        return JobSizing(cpu=cpu, memory=memory, gpu=gpu)
+
     def get_remaining_jobs(self, job_names):
+        """Which of *job_names* are still running. Same answer as before, one API call.
+
+        **Only ever pass names that were actually created.** A name absent from the listing
+        counts as finished -- which is right for a Job that was dropped or garbage-collected,
+        and catastrophically wrong for one that has not been created yet: under admission
+        every planned job would read as done and the batch would "finish" with zero results,
+        silently. The caller keeps planned and created apart for exactly this reason.
+
+        One ``list`` rather than a status read per name: at ``runs_per_job: 1`` a campaign has
+        ~1435 jobs and this loop runs every two seconds, so the per-name version was the
+        dominant API cost of a large batch.
+        """
+        wanted = set(job_names)
+        if not wanted:
+            return []
+        label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
+        listing = self.k8s_batch_client.list_namespaced_job(namespace=self.namespace,
+                                                            label_selector=label)
+        by_name = {j.metadata.name: j for j in listing.items if j.metadata.name in wanted}
         running_jobs = []
         for job_name in job_names:
-            try:
-                job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace=self.namespace)
-            except client.exceptions.ApiException as exc:
-                if exc.status == 404:
-                    # Job no longer exists: it finished and was garbage-collected
-                    # (e.g. an external job-TTL policy) or was cleaned up. Either
-                    # way it is no longer running, so just skip it.
-                    logger.debug("Job %s not found (404); treating as finished.", job_name)
-                    continue
-                raise
-
-            self._log_if_deadline_killed(job_name, job_status.status)
-
-            # Check if job is still active/running
-            if job_status.status.active is not None and job_status.status.active >= 1:
+            job = by_name.get(job_name)
+            if job is None:
+                # Gone: finished and garbage-collected, or cleaned up. Either way not running.
+                logger.debug("Job %s not in the listing; treating as finished.", job_name)
+                continue
+            status = job.status
+            self._log_if_deadline_killed(job_name, status)
+            if status.active is not None and status.active >= 1:
                 running_jobs.append(job_name)
-            # Check if job has not completed yet (no completion_time and no failure)
-            elif job_status.status.completion_time is None and (job_status.status.failed is None or job_status.status.failed == 0):
+            elif status.completion_time is None and (status.failed is None or status.failed == 0):
                 running_jobs.append(job_name)
         return running_jobs
 
@@ -959,16 +1082,11 @@ class BatchJobRunner:
                                        min_compat_version=MIN_IMAGE_COMPAT)
         manifest = yaml.safe_load(yaml_str)
 
-        # Kueue keys queue membership off the label (not an annotation); an
-        # annotation is not honored by Kueue 0.16.x, so the job would never be
-        # suspended/admitted and would run unmanaged.
-        job_labels = manifest.setdefault("metadata", {}).setdefault("labels", {})
-        job_labels["kueue.x-k8s.io/queue-name"] = KUEUE_QUEUE_NAME
-        # Read off a label for the same reason. Orders this campaign's pending jobs
-        # against every other campaign's by campaign start time, so the oldest campaign
-        # takes each slot that frees; it never preempts, so a younger campaign's runs
-        # finish undisturbed. See kubernetes_kueue.campaign_priority_value.
-        job_labels[KUEUE_PRIORITY_LABEL] = campaign_priority_class_name(self.campaign)
+        # No queue-membership label, deliberately: this Job is admitted by RoboVAST's own
+        # controller (node_admission.AdmissionController), which creates it only once the
+        # cluster has room for it, so there is nothing left for an external queue to gate.
+        # Ordering across concurrent campaigns is the controller's too, by campaign start
+        # time, which is why the priority-class label that used to carry it is gone as well.
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
@@ -1189,9 +1307,9 @@ class BatchJobRunner:
         if not count:
             return
         # Both requests and limits. Kubernetes defaults one from the other when a *Pod* is
-        # created, but Kueue computes a workload's quota from the Job's pod *template*,
-        # which no pod has been created from yet -- so a request left empty is accounted as
-        # zero GPUs and admitted straight past the quota.
+        # created, but admission sizes a job from the Job's pod *template*, which no pod has
+        # been created from yet -- so a request left empty is measured as zero GPUs and the
+        # job is admitted onto a node with none.
         spec['resources'].setdefault('requests', {})[GPU_RESOURCE] = str(count)
         spec['resources'].setdefault('limits', {})[GPU_RESOURCE] = str(count)
         # NVIDIA_VISIBLE_DEVICES is deliberately NOT set, and the asymmetry with the
@@ -1223,9 +1341,10 @@ class BatchJobRunner:
     def gpu_resources_requested(self) -> bool:
         """Whether any container of this campaign requests a GPU.
 
-        Used to tell the Kueue pre-flight which resources the ClusterQueue must cover: an
-        uncovered request is suspended forever rather than rejected, so it has to be caught
-        before any job is created.
+        No longer feeds an admission pre-flight: the GPU count now travels in the
+        ``JobSizing`` the controller admits against, so a request no node can satisfy is
+        caught by ``preflight`` alongside cpu and memory rather than by a separate check
+        that a queue's quota covered the resource at all.
         """
         plan = getattr(self, "plan", None)
         if plan is None:
@@ -1276,75 +1395,6 @@ class BatchJobRunner:
             logger.info("Pinned SUT image for %s to %s", self.campaign, digest)
 
     # -- in-pod execution ---------------------------------------------------
-
-    def _verify_admission_path(self):
-        """Fail the batch if Kueue cannot admit its jobs; warn if it cannot be checked.
-
-        A missing read permission must not stop a campaign that would otherwise run —
-        that would trade a rare hang for a common outage — so
-        :class:`KueueCheckUnavailable` is downgraded to a warning naming what could not
-        be read. Only a queue that is provably broken raises.
-        """
-        from .kubernetes_kueue import KueueCheckUnavailable, verify_kueue_admission_ready
-
-        # A GPU request the ClusterQueue does not cover is not rejected by Kueue -- it is
-        # suspended, permanently, while the Job reports active. Checked here so it costs one
-        # error before any job exists rather than a whole sweep's worth of hung ones.
-        required = (GPU_RESOURCE,) if self.gpu_resources_requested() else ()
-        try:
-            verify_kueue_admission_ready(namespace=self.namespace,
-                                         kube_context=self.kube_context,
-                                         required_resources=required)
-        except KueueCheckUnavailable as exc:
-            logger.warning("Batch %s: cannot verify the Kueue admission path (%s); "
-                           "proceeding. If jobs never start, check that ClusterQueue "
-                           "and LocalQueue exist.", self._batch_tag, exc)
-
-    def _ensure_priority_class(self):
-        """Create this campaign's Kueue priority class, so its jobs can name it.
-
-        A method rather than a bare call for the same reason :meth:`_verify_admission_path`
-        is one: it is a side-effecting cluster step in the middle of batch submission, and
-        the callers that build a runner without one -- manifest emit, tests -- stub it out.
-
-        Unlike that check this one does not tolerate failure. Kueue rejects a Job whose
-        priority-class label names a class that does not exist, so a batch submitted
-        without it fails job-by-job with a webhook error instead of once, here, with the
-        reason.
-        """
-        ensure_campaign_priority_class(self.campaign, kube_context=self.kube_context)
-
-    def _report_suspended_jobs(self, remaining):
-        """Log why still-suspended jobs are waiting, and re-check the admission path.
-
-        Kueue holds a Job suspended both for the normal reason (the queue is busy) and
-        for terminal ones (no ClusterQueue, queue held, flavor missing). The two are
-        indistinguishable from the Job alone, and Kueue's own wait message is not a
-        stable enough API to tell them apart, so the structural re-check makes the
-        fail-or-wait decision and the message is only ever logged.
-        """
-        suspended = []
-        for job_name in remaining:
-            try:
-                job = self.k8s_batch_client.read_namespaced_job(name=job_name,
-                                                                namespace=self.namespace)
-            except client.exceptions.ApiException as exc:
-                if exc.status == 404:
-                    continue
-                logger.debug("Could not read job %s for suspend check: %s", job_name, exc)
-                continue
-            if getattr(getattr(job, "spec", None), "suspend", False):
-                suspended.append(job_name)
-        if not suspended:
-            return
-        from .kubernetes_kueue import workload_wait_reasons
-        reasons = workload_wait_reasons(self.namespace, job_names=suspended)
-        detail = ("; ".join(sorted(set(reasons.values()))) if reasons
-                  else "Kueue has not reported a reason")
-        logger.warning("Batch %s: %d/%d job(s) suspended by Kueue, not yet admitted — "
-                       "%s", self._batch_tag, len(suspended), len(remaining), detail)
-        # Raises when the queue is structurally broken; a busy queue keeps waiting.
-        self._verify_admission_path()
 
     def _invalidate_restarted_jobs(self, job_label, job_names, jobs_by_name,
                                    campaign_root, storage, bucket_name,
@@ -1529,32 +1579,60 @@ class BatchJobRunner:
                         self._batch_tag, n, bucket_name, campaign_prefix)
 
         # 3. Build and submit one Job per packed job, then wait.
-        # Every job is labeled into the Kueue LocalQueue, so a broken admission path
-        # does not fail the submit — it silently suspends all of them forever. Check
-        # before creating anything, so the campaign dies here with the reason instead
-        # of in the wait loop with none.
-        self._verify_admission_path()
-        # Same reasoning one step further: every job also names this campaign's priority
-        # class, and Kueue rejects a job whose class does not exist. Creating it here
-        # (idempotent, so every batch may call it) keeps that a single up-front failure
-        # rather than one per job.
-        self._ensure_priority_class()
+        # The up-front "can these jobs ever be admitted?" check is admission.preflight()
+        # below: it asks whether the request fits any node's allocatable, which is the
+        # question, asked of the cluster directly.
         jobs = self._build_jobs()
         total_jobs = len(jobs)
-        job_names = []
-        for job in jobs:
+        # Derived rather than read back off a rendered manifest: under admission a job's
+        # manifest is not built until there is room for it, but its name has to exist now --
+        # the plan, the artifact paths and job_links all key on it, and they must agree.
+        job_names = [_short_job_name(self.campaign, self._job_tag(job.index), job.index)
+                     for job in jobs]
+
+        def _create_job(job, name):
             manifest = self.create_job_manifest(job, total_jobs)
-            name = manifest["metadata"]["name"]
-            job_names.append(name)
             try:
-                self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=manifest)
+                self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
+                                                            body=manifest)
             except client.exceptions.ApiException as exc:
                 if exc.status == 409:
                     logger.debug("Batch %s: job %s already exists.", self._batch_tag, name)
                 else:
                     raise
-        logger.info("Batch %s: created %d job(s); waiting for completion...",
-                    self._batch_tag, len(job_names))
+
+        admission = self.admission
+        if admission is None:
+            # No queue: create everything at once, exactly as before. This is the path every
+            # offline caller and every existing test takes.
+            for job, name in zip(jobs, job_names):
+                _create_job(job, name)
+            created_names = list(job_names)
+            planned_count = 0
+            logger.info("Batch %s: created %d job(s); waiting for completion...",
+                        self._batch_tag, len(job_names))
+        else:
+            from functools import partial  # noqa: PLC0415
+
+            from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
+
+            sizing = self._job_sizing(jobs[0], total_jobs)
+            try:
+                admission.preflight(sizing)
+            except AdmissionRefused as exc:
+                # Before a single job exists, because a request no node can hold otherwise
+                # leaves the campaign waiting forever having created nothing -- and every
+                # diagnosis path downstream reads pods, so none of them can see it.
+                raise CampaignConfigError(str(exc)) from exc
+            admission.submit(
+                self.campaign,
+                [(name, sizing, partial(_create_job, job, name))
+                 for job, name in zip(jobs, job_names)],
+                started_at=campaign_start_key(self.campaign))
+            created_names = []
+            planned_count = len(jobs)
+            logger.info("Batch %s: queued %d job(s) for admission; creating as room appears...",
+                        self._batch_tag, len(job_names))
         # Job name -> its planned work, so a restart can be resolved to the runs it ruins
         # and to the artifact dir the ledger keys on. Built here and NOT read back from
         # ``_transient/job_links.yaml``: that manifest is downloaded after this loop
@@ -1567,13 +1645,30 @@ class BatchJobRunner:
         # timer answered for all of them and so had to pick the shortest.
         blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
-        last_suspend_check = time.monotonic()
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                       f"{self._batch_tag}")
-            remaining = self.get_remaining_jobs(job_names)
-            if not remaining:
+            if admission is not None:
+                # Works the GLOBAL queue, so this may create another campaign's jobs too --
+                # that is what makes the ordering cluster-wide while keeping the queue
+                # thread-free.
+                admission.drain()
+                states = admission.states(self.campaign)
+                created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
+                planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)
+            remaining = self.get_remaining_jobs(created_names)
+            if admission is not None:
+                # Release the reservation of anything that has finished, so the capacity it
+                # held is spendable again on the next drain.
+                for name in set(created_names) - set(remaining):
+                    admission.finished(name)
+            if not remaining and not planned_count:
+                # Cleared on the way out, not left to the next batch's first probe: between
+                # those two moments the campaign is still in `running`, and a flag that
+                # outlived its wait would suppress a verdict for a batch that is not queued
+                # at all. Same failure `stage` had before a phase change learned to clear it.
+                self._publish_capacity_wait(False)
                 break
             # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
             # "active" with a Pending pod forever, so this loop would otherwise spin
@@ -1589,7 +1684,11 @@ class BatchJobRunner:
                 # the same reason ``restarted_job_forensics`` takes ``job_names``.
                 # Without it an earlier batch's job could be counted against this
                 # one's tally, which is what decides config fault vs cluster.
-                blocked = {k: v for k, v in blocked.items() if k in set(job_names)}
+                # CREATED names, not planned ones: a job that does not exist cannot be
+                # blocked, and counting it in the whole-batch tally below would fail a
+                # healthy campaign the moment its first job stalled while the rest were
+                # still queued.
+                blocked = {k: v for k, v in blocked.items() if k in set(created_names)}
                 contended = {k: v for k, v in contended.items() if k in blocked}
             except Exception as exc:  # noqa: BLE001 - probe failed this iteration
                 # Could not check pods this cycle. Treat as "unknown", NOT as
@@ -1599,6 +1698,17 @@ class BatchJobRunner:
                 logger.warning("Batch %s: could not check for blocked jobs: %s",
                                self._batch_tag, exc)
                 blocked, contended = None, {}
+            # Publish whether this batch can run at all. A reader cannot judge a per-run
+            # deadline while every job is queued for capacity, and only this loop knows.
+            # Written every cycle, including the False case, so the flag never outlives the
+            # wait that set it -- the failure `stage` had, where a marker true once was
+            # still being reported long after.
+            waiting = all_jobs_waiting_for_capacity(remaining, contended)
+            if admission is not None and planned_count and not remaining:
+                # A fact the queue holds, not something inferred from pods that do not exist.
+                # Inferring it is what made a merely-queued campaign report as stalled.
+                waiting = True
+            self._publish_capacity_wait(waiting)
             if blocked:
                 now = time.monotonic()
                 reasons = "; ".join(sorted(set(blocked.values())))
@@ -1683,13 +1793,10 @@ class BatchJobRunner:
                 job_label, job_names, jobs_by_name, campaign_root,
                 storage, bucket_name, campaign_prefix)
             # blocked is None (probe failed) => leave blocked_since unchanged.
-            # A Kueue-suspended Job has no pod at all, so the probe above cannot see it
-            # and activeDeadlineSeconds never fires (its timer does not run while
-            # suspended). Report it separately, and re-check the admission path so a
-            # queue deleted or held *mid-campaign* fails the batch instead of hanging it.
-            if time.monotonic() - last_suspend_check >= self._SUSPEND_CHECK_INTERVAL_SECONDS:
-                last_suspend_check = time.monotonic()
-                self._report_suspended_jobs(remaining)
+            # Nothing suspends a Job any more, so the pod-based probe above is no longer
+            # blind to a waiting job: a job that has not been created yet is PLANNED in the
+            # controller, which _publish_capacity_wait reads directly rather than inferring
+            # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             time.sleep(2)
@@ -1821,7 +1928,11 @@ class KubernetesBackend(ExecutionBackend):
     """
 
     def __init__(self, *, cluster_config, namespace="default", kube_context=None,
-                 log_tree=False, state=None):
+                 log_tree=False, state=None, admission=None):
+        # Owned by the service, not built here: one queue serves every campaign in the
+        # process, and a backend built per campaign would give each its own -- which is
+        # exactly the per-caller arbitration the queue exists to replace.
+        self._admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
         self.kube_context = kube_context
@@ -1915,8 +2026,21 @@ class KubernetesBackend(ExecutionBackend):
             state=self._state,
             built_images=options.images,
             image_digest_cache=self._image_digest_cache,
+            admission=self._admission,
         )
-        runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
+        try:
+            runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
+        finally:
+            # Every exit, not just the happy one. A batch that raises on its way out --
+            # stopped, a config error, anything unexpected -- would otherwise leave its
+            # reservations held for the life of the process, shrinking every other campaign's
+            # usable capacity invisibly and cumulatively. Here rather than inside the runner
+            # because the backend owns the queue, and a search builds a fresh runner per batch.
+            if self._admission is not None:
+                dropped = self._admission.cancel(campaign_id)
+                if dropped:
+                    logger.info("Batch %s: released %d job(s) that were never created",
+                                batch_tag, dropped)
 
         # Record _execution/execution.yaml now (not at finalize), so the campaign
         # root is complete before the controller chains analysis postprocessing —

@@ -54,6 +54,15 @@ from typing import NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
+#: The taint a campaign node may carry, and so what anything running *where campaigns run*
+#: must tolerate. The taint is a property of the cluster's nodes and outlives whatever admits
+#: the jobs, which is why it lives here. ``image_warm`` reads it so its DaemonSet cannot drift
+#: from the job pods and skip precisely the nodes worth warming.
+#:
+#: **A job pod must carry this itself.** Nothing else injects it, and a deployment that taints
+#: its campaign nodes without it does not fail loudly -- its pods simply never place.
+CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "NoSchedule"},)
+
 #: The node holding the service pod (workspaces + registry) and, where it is node-local,
 #: the results store. One label for both because they are one decision: the disk meter
 #: reports the service's node, so splitting them would make the meter answer about a node

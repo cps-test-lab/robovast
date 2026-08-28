@@ -60,8 +60,8 @@ def _manifest_for(cpu):
     runner = object.__new__(BatchJobRunner)
     runner.namespace = "robovast"
     runner.kube_context = None
-    # Named on the job's Kueue priority-class label, which orders concurrent campaigns
-    # by start time; the id's timestamp is what that priority is derived from.
+    # Concurrent campaigns are ordered by start time, which is derived from the
+    # timestamp in the campaign id.
     runner.campaign = "camp-2026-07-17-120000"
     return runner.get_job_manifest("img:1", {"cpu": cpu, "memory": None}, [])
 

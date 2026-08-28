@@ -24,7 +24,6 @@ toolkit that actually builds/submits Jobs lives in
 :mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
 """
 
-import contextlib
 import logging
 import re
 import signal as _signal
@@ -39,8 +38,6 @@ from robovast.common.execution import node_label
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kube_client import pod_workload_containers
-from .kubernetes_kueue import (cleanup_campaign_priority_classes, cleanup_kueue_workloads,
-                               cluster_queue_held)
 from .manifests import MAIN_CONTAINER_NAME
 
 logger = logging.getLogger(__name__)
@@ -61,7 +58,7 @@ def job_phase(job, pod_phases=None) -> str:
     Shared by the aggregate counter and the per-job lister so the two never drift.
 
     A Job's ``status.active`` counts pods that are Pending *or* Running, so a Job whose
-    pod is still unscheduled / pulling its image / freshly Kueue-admitted looks "active"
+    pod is still unscheduled or pulling its image looks "active"
     while ``k9s`` shows the pod ``Pending``. When *pod_phases* is supplied (Job name →
     its pod's phase — see :func:`_pod_signals`), an active Job is classified by that pod
     instead, so ``pending`` means exactly one thing: **the pod has not started yet**.
@@ -725,7 +722,7 @@ def pod_fits_any_node(pod, nodes) -> bool:
     a reservation larger than the biggest machine — is not contention and no amount of
     waiting produces it, so the caller must fail such a job rather than sit on it.
     """
-    from .kubernetes_kueue import _parse_resource  # noqa: PLC0415 - avoids a cycle
+    from .kube_client import parse_resource as _parse_resource  # noqa: PLC0415
     from .kube_client import pod_workload_containers  # noqa: PLC0415
 
     required = {}
@@ -886,23 +883,6 @@ def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -
                                        job_names).items()}
 
 
-def _suspended_job_reasons(job_list, namespace) -> dict:
-    """Job name → Kueue's wait message, for each Job still ``spec.suspend`` true.
-
-    Kept advisory (an unreadable Workload just yields a generic message) because this
-    only enriches a listing; the campaign-level fail decision belongs to the run loop's
-    admission re-check, not to a display path.
-    """
-    suspended = [job.metadata.name for job in job_list.items
-                 if getattr(getattr(job, "spec", None), "suspend", False)]
-    if not suspended:
-        return {}
-    from .kubernetes_kueue import workload_wait_reasons
-    reasons = workload_wait_reasons(namespace, job_names=suspended)
-    return {name: reasons.get(name, "waiting for Kueue admission")
-            for name in suspended}
-
-
 def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     """List scenario-run Jobs matching *label_selector*, each with its phase + detail.
 
@@ -928,13 +908,12 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     the ``waiting`` phase below. How long the run loop tolerates either lives there,
     not here (:data:`CONTENDED_GRACE_SECONDS` vs :data:`BLOCKED_GRACE_SECONDS`).
 
-    A Kueue-**suspended** Job is its own phase, ``waiting``, carrying Kueue's wait
-    message as ``detail``. It has no pod at all, so the pod-level probe cannot see it
-    and it would otherwise report ``pending`` — indistinguishable from a job about to
-    start, which is how a batch that could never be admitted looked like a slow one.
-    It is deliberately *not* ``blocked``: waiting for quota is Kueue's normal operating
-    state (every cluster batch starts there), so calling it blocked made the healthy
-    case indistinguishable from the broken one and trained readers to ignore both.
+    The ``waiting`` phase is **not** assigned here, and cannot be: a job queued for
+    capacity has no Kubernetes object for this listing to classify, because RoboVAST's
+    admission controller does not create one until there is room. Only the controller
+    knows those exist, so ``ClusterService._planned_jobs`` contributes them and this
+    function reports on what the cluster actually holds. That division is why the two
+    cannot drift into disagreeing about the same job.
 
     ``blocked`` is its own status, distinct from ``failed``: Kubernetes still counts
     the Job active (it keeps retrying the pull), so it has neither completed nor been
@@ -944,9 +923,8 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
     the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
     error), pending for a stated reason (contended: unschedulable or a throttled pull),
-    waiting for Kueue admission, or failed for an infrastructure reason (OOMKilled /
-    evicted / deadline), in which case it carries Kubernetes' or Kueue's own
-    explanation.
+    or failed for an infrastructure reason (OOMKilled / evicted / deadline), in which
+    case it carries Kubernetes' own explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
@@ -965,22 +943,12 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
         phases, blocked, terminated, restarted, contended = None, {}, {}, {}, {}
-    suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
         name = job.metadata.name
         detail = blocked.get(name)
         if detail and name not in contended:
             phase = "blocked"
-        # The `not detail` guard matters only because the branch above no longer
-        # swallows every job that has one. This branch assigns `detail`
-        # unconditionally, so without it a contended job that also appeared in
-        # `suspended` would have the scheduler's message replaced by Kueue's. A
-        # suspended Job has no pod and so cannot be contended, which makes that
-        # unreachable rather than a live bug -- the guard is what keeps the branch
-        # from silently starting to lie if that ever stops being true.
-        elif not detail and name in suspended:
-            phase, detail = "waiting", suspended[name]
         else:
             # No impediment, or one that clears by itself: the pod's own phase is the
             # truth, and a contended job keeps the scheduler's message as its reason.
@@ -999,44 +967,32 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 
 
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
-    """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
+    """Clean up scenario run jobs and pods from the cluster.
 
-    Holds the ClusterQueue for the duration **only when cleaning the whole cluster**
-    (*campaign* is ``None``), where pausing all admissions is the intent.
-
-    A single campaign's cleanup deliberately does not touch it. ``stopPolicy`` lives on
-    one cluster-scoped ClusterQueue shared by every campaign, so holding it to delete
-    one campaign's jobs stops *every* other campaign's jobs being admitted for the
-    length of the cleanup — and left behind by a failed cleanup, forever. Per-campaign
-    quota safety does not need it: the deletions are label-scoped and already ordered
-    Workloads-before-Jobs, which is what lets Kueue release that campaign's quota
-    cleanly. See :func:`~...kubernetes_kueue.cluster_queue_held`.
+    Nothing is paused for the duration. Admission measures the cluster each cycle rather
+    than tracking a quota, so a deletion in flight is simply capacity that has not come
+    back yet and the next measurement sees it -- there is no cluster-wide switch a failed
+    cleanup could leave stuck.
 
     Args:
         namespace: Kubernetes namespace.
-        campaign: If given, clean only this run's jobs/pods/workloads.
+        campaign: If given, clean only this run's jobs and pods.
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    with contextlib.ExitStack() as stack:
-        if campaign is None:
-            stack.enter_context(cluster_queue_held(kube_context=context))
-        _cleanup_cluster_campaign_resources(namespace=namespace, campaign=campaign,
-                                            context=context)
+    _cleanup_cluster_campaign_resources(namespace=namespace, campaign=campaign,
+                                        context=context)
 
 
 def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, context=None):
-    """Delete scenario run jobs, pods, and Kueue workloads (steps 2-7 and 9).
+    """Delete scenario run jobs and pods.
 
-    Called by :func:`cleanup_cluster_campaign`, which owns holding and resuming the
-    ClusterQueue around it.
+    Called by :func:`cleanup_cluster_campaign`.
 
-    Cleanup order is designed to avoid confusing Kueue's quota tracking:
-    2. Delete Workloads first so Kueue releases quota before Jobs disappear.
-    3. Force-clear finalizers on stuck Workloads.
-    4. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
-    5. Force-clear finalizers on stuck Jobs.
-    6. Delete Pods.
-    7. Force-clear finalizers on stuck Pods.
+    Order:
+    1. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
+    2. Force-clear finalizers on stuck Jobs.
+    3. Delete Pods.
+    4. Force-clear finalizers on stuck Pods.
 
     If campaign is given, removes only resources for that run (label
     ``jobgroup=scenario-runs,campaign-id=<campaign>``) plus that campaign's
@@ -1045,7 +1001,7 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
 
     Args:
         namespace: Kubernetes namespace.
-        campaign: If given, clean only this run's jobs/pods/workloads.
+        campaign: If given, clean only this run's jobs and pods.
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
     # In-cluster first (the service drives campaigns in-pod), else the host context.
@@ -1058,17 +1014,6 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     if campaign is not None:
         label_safe = _label_safe_campaign(campaign)
         label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
-
-    # Step 2+3: Delete Workloads FIRST so Kueue can release quota cleanly
-    # before the underlying Jobs disappear. Hard finalizer cleanup is handled
-    # inside cleanup_kueue_workloads.
-    logger.info("Deleting Kueue workloads before jobs (quota-safe order)")
-    cleanup_kueue_workloads(
-        namespace=namespace,
-        label_selector=label_selector,
-        campaign_id=campaign,
-        k8s_batch_client=k8s_batch_client,
-    )
 
     # Step 4: Delete Jobs with Foreground propagation so the Job controller
     # reaps pods before the Job object itself is removed.
@@ -1192,13 +1137,9 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Failed to clean up aux pods: %s", exc)
 
-    # Step 10: The campaign's Kueue priority class, scoped by the same
-    # jobgroup/campaign-id labels as everything above. LAST, after the Workloads and Jobs
-    # are gone: deleting it cannot disturb work Kueue has already queued (the resolved
-    # value is copied onto each Workload at creation), but a Job created against a
-    # missing class is rejected, so removing it any earlier could break a campaign that
-    # is still submitting.
-    cleanup_campaign_priority_classes(campaign=campaign, kube_context=context)
+    # Campaign ordering belongs to the admission queue and is held in memory for as long
+    # as the campaign runs, so a cleanup has no cluster-side ordering object to remove --
+    # and no way to break a campaign that is still submitting by removing one too early.
 
 
 #: One counter per phase :func:`list_jobs_with_phase` can report.
@@ -1239,7 +1180,7 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
 
     per_run = {}
 
-    # ``detail`` (the third element) is per-job prose -- why a job is blocked, what Kueue
+    # ``detail`` (the third element) is per-job prose -- why a job is blocked, or what it
     # is waiting for -- which a per-campaign count has nowhere to put. Unpacking two from
     # a three-tuple is what raised ValueError on every call.
     for job, phase, _detail in jobs:

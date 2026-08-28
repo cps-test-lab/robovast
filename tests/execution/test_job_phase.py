@@ -17,7 +17,6 @@
 """Pod-accurate classification shared by the service lister and the CLI monitor."""
 
 import types
-from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,
@@ -279,65 +278,8 @@ def test_list_jobs_with_phase_explains_oom_killed_failure():
         "failed", "OOMKilled: container robovast exceeded its memory limit")
 
 
-def test_list_jobs_with_phase_marks_kueue_suspended_job_waiting():
-    """A Kueue-suspended Job has no pod, so the pod probe cannot see it and it used to
-    report ``pending`` — indistinguishable from a job about to start. It is ``waiting``
-    (its own phase, not ``blocked``: queueing for capacity is healthy) with Kueue's own
-    wait message."""
-    jobs = [_job("queued-job", suspend=True), _job("running-job", active=1)]
-    core = _Core([_pod("running-job", "Running")])
-    with mock.patch(
-        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
-        return_value={"queued-job": "insufficient unused quota for cpu"},
-    ):
-        result = {j.metadata.name: (p, d)
-                  for j, p, d in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
-    assert result["queued-job"] == ("waiting", "insufficient unused quota for cpu")
-    assert result["running-job"] == ("running", None)
-
-
-def test_suspended_job_without_workload_still_reports_waiting():
-    """An unreadable / absent Workload must not downgrade the job back to pending: the
-    status is what makes a batch that never starts visible, the message only explains
-    it."""
-    jobs = [_job("queued-job", suspend=True)]
-    with mock.patch(
-        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
-        return_value={},
-    ):
-        result = {j.metadata.name: (p, d)
-                  for j, p, d in list_jobs_with_phase(_Batch(jobs), _Core([]), "ns", "sel")}
-    phase, detail = result["queued-job"]
-    assert phase == "waiting"
-    assert "Kueue admission" in detail
-
-
-def test_suspended_job_with_unstartable_pod_stays_blocked():
-    """``blocked`` outranks ``waiting``: a pod-level error is the reason a human is
-    needed, and it must not be softened into "queued for capacity"."""
-    jobs = [_job("queued-job", suspend=True)]
-    core = _Core([_pod("queued-job", waiting=("ErrImagePull", "not found"))])
-    with mock.patch(
-        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
-        return_value={"queued-job": "insufficient unused quota for cpu"},
-    ):
-        result = {j.metadata.name: (p, d)
-                  for j, p, d in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
-    assert result["queued-job"] == ("blocked", "ErrImagePull: not found")
-
-
-def test_unsuspended_jobs_never_query_kueue():
-    """The common case must not pay for a Workload list on every poll."""
-    jobs = [_job("a", active=1)]
-    with mock.patch(
-        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
-    ) as wl:
-        list_jobs_with_phase(_Batch(jobs), _Core([_pod("a", "Running")]), "ns", "sel")
-    wl.assert_not_called()
-
-
 def test_unschedulable_pod_is_blocked_with_the_schedulers_own_message():
-    """A pod Kueue admitted but the scheduler cannot place.
+    """A pod that was created but the scheduler cannot place.
 
     This is the shape every capacity or quota mistake takes, and before it was reported
     the batch logged "still running" until activeDeadlineSeconds fired an hour later and

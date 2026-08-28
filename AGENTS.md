@@ -80,6 +80,14 @@ one resolver instead of every route.
 When behaviour changes, update the user page(s) **and** the developer docs; don't mix
 implementation detail into user pages or leave internals undocumented.
 
+**Docs describe the is-state.** Write what the system does now, not what it used to do or
+what replaced what. A reader wants the current behaviour; a removed component, a renamed
+key or a superseded mechanism is noise to them and goes stale on its own. So: no "this
+used to", no "previously", no "**Removed.**" entries for keys that no longer exist -- delete
+the entry instead. Two things are *not* history and stay: a **migration step** the reader
+must still perform (their cluster has something ours no longer installs), and an error
+message telling them what to do about a setting they still have. Git carries the rest.
+
 ## 3. Keep the code clean — no deprecated paths, no fallbacks
 
 Change code in place and delete what it replaces. Fix problems at the root — one

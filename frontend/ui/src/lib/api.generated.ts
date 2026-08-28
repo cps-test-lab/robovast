@@ -3350,6 +3350,11 @@ export interface components {
             } | null;
             /** Updated At */
             updated_at: number;
+            /**
+             * Waiting For Capacity
+             * @default false
+             */
+            waiting_for_capacity: boolean;
         };
         /** UpdatePanelsSourceRequest */
         UpdatePanelsSourceRequest: {

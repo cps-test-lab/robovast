@@ -119,6 +119,11 @@ class ClusterService(LocalTransport):
             "--context" if kube_context
             else "ROBOVAST_KUBE_CONTEXT" if os.environ.get("ROBOVAST_KUBE_CONTEXT")
             else "active kubeconfig context")
+        # Built on first use rather than here: constructing it touches the Kubernetes client,
+        # and a service must come up to report that the cluster is unreachable rather than
+        # failing to start because it is.
+        self._admission = None
+        self._admission_lock = threading.Lock()
         self._config_name = cluster_config_name or os.environ.get(
             "ROBOVAST_CLUSTER_CONFIG_NAME")
         self._config_kwargs = cluster_config_kwargs
@@ -277,7 +282,7 @@ class ClusterService(LocalTransport):
         return ActionResult(ok=True, message=(
             f"rolling robovast-service (restartedAt {stamped}). Kubernetes starts the new "
             f"pod before stopping this one, so the API stays up; watch the running digest "
-            f"for the handover. RBAC, the Kueue queues, the registry route, the env "
+            f"for the handover. RBAC, the registry route, the env "
             f"Secrets and the build daemon are NOT reconciled -- "
             f"'vast exec cluster upgrade' is what does that."))
 
@@ -301,8 +306,8 @@ class ClusterService(LocalTransport):
     def _compute_resource_usage(self) -> ResourceUsage:
         """Cluster CPU/memory capacity + current usage from the Kubernetes API.
 
-        Capacity is the sum of every node's ``allocatable`` (the same measure Kueue
-        quota is derived from); usage is the sum of resource *requests* of the pods
+        Capacity is the sum of every node's ``allocatable`` (the same measure admission
+        sizes against); usage is the sum of resource *requests* of the pods
         **bound to those same nodes** — what the scheduler has actually committed,
         the number ``kubectl describe node`` calls "Allocated resources". Both are
         read behind :meth:`LocalTransport.resource_usage`'s TTL cache, and the pod
@@ -323,7 +328,7 @@ class ClusterService(LocalTransport):
         """
         from .kube_client import pod_workload_containers  # pylint: disable=import-outside-toplevel
         from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
-        from .kubernetes_kueue import _parse_resource  # pylint: disable=import-outside-toplevel
+        from .kube_client import parse_resource as _parse_resource  # pylint: disable=import-outside-toplevel
         v1 = self._k8s()
 
         cpu_capacity = 0.0
@@ -507,8 +512,8 @@ class ClusterService(LocalTransport):
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` over every scenario-run Job in this namespace.
 
-        Counted from **Jobs**, not pods, because a Kueue-suspended Job has no pod at
-        all (see :func:`list_jobs_with_phase`) — and that is the state every cluster
+        Counted from **Jobs**, not pods, because a Job whose pod is not bound yet has no
+        pod at all (see :func:`list_jobs_with_phase`) — and that is the state every cluster
         batch *starts* in. Reading pods therefore reported a freshly launched 25-run
         sweep as ``0/0`` while its whole queue waited for quota, which is exactly the
         "nothing is happening" the sidebar's jobs bar is there to contradict.
@@ -722,7 +727,48 @@ class ClusterService(LocalTransport):
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,
                                  kube_context=self.kube_context,
-                                 state=state)
+                                 state=state,
+                                 admission=self._admission_controller())
+
+    def _admission_controller(self):
+        """The process-wide admission queue, built once.
+
+        On the service because it is the one object with process lifetime that every campaign
+        thread reaches, and because the queue only orders correctly if there is exactly one of
+        it: a controller per campaign would order by whichever thread asked first, which is
+        the behaviour it exists to replace.
+
+        **Its own lock, never ``_usage_lock``.** That one is held across a resource reading
+        that talks to every kubelet in turn (see ``_DISK_BUDGET_SECONDS``), and sharing it
+        would let one unresponsive node block every campaign's job creation.
+
+        **Raises rather than falling back.** Nothing gates job creation behind this, so a
+        ``None`` here would mean creating a campaign's entire plan -- for a one-run-per-job
+        sweep, upwards of a thousand Jobs -- in one unthrottled loop against a cluster sized
+        for a few dozen. A service that cannot measure the cluster must refuse to submit
+        to it.
+        """
+        with self._admission_lock:
+            if self._admission is None:
+                from kubernetes import client
+
+                from .cluster_capacity import ClusterBudgetProvider
+                from .kube_client import load_kube_config
+                from .node_admission import AdmissionController
+
+                def _core():
+                    # Per call, not cached: the config load is idempotent and a client
+                    # held across a service's lifetime outlives token rotation.
+                    load_kube_config(self.kube_context)
+                    return client.CoreV1Api()
+
+                # The cluster config comes along so an autoscaling deployment is sized
+                # by what it can become rather than by the nodes it currently has --
+                # see ClusterBudgetProvider._declared_total.
+                self._admission = AdmissionController(ClusterBudgetProvider(
+                    _core, cluster_config=self._cluster_config(),
+                    kube_context=self.kube_context))
+            return self._admission
 
     def _run_options(self, request):
         from robovast.execution.backends import RunOptions
@@ -1055,14 +1101,15 @@ class ClusterService(LocalTransport):
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
         label = (f"jobgroup=scenario-runs,"
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
-        # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled /
-        # image-pulling / freshly Kueue-admitted) reports pending, not running.
+        # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
+        # image-pulling) reports pending, not running.
         jobs = [
             JobSummary(job_name=job.metadata.name, status=phase,
                        display_name=self._job_display_name(campaign_id, job),
                        detail=detail)
             for job, phase, detail in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
+        jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
         counts = JobCounts(
             running=sum(1 for j in jobs if j.status == "running"),
             pending=sum(1 for j in jobs if j.status == "pending"),
@@ -1072,6 +1119,30 @@ class ClusterService(LocalTransport):
             blocked=sum(1 for j in jobs if j.status == "blocked"),
             total=len(jobs))
         return ListJobsResponse(jobs=jobs, counts=counts)
+
+    def _planned_jobs(self, campaign_id, created) -> list:
+        """The campaign's admitted-but-not-yet-created jobs, as ``waiting`` summaries.
+
+        These have **no Kubernetes object at all**, so unlike every other status here they
+        cannot come from a listing -- the controller is the only thing that knows they
+        exist. Reporting them is what keeps ``waiting`` meaning "queued for capacity"
+        rather than silently becoming a count that is always zero.
+
+        Never *builds* the controller. This is a read path -- a job listing behind a web
+        UI -- and a cluster that cannot be measured must degrade to "nothing planned"
+        rather than raise; refusing is the submit path's job. If no campaign has submitted
+        yet there is nothing planned either way, so the two answers agree.
+        """
+        from .node_admission import PLANNED
+
+        with self._admission_lock:
+            admission = self._admission
+        if admission is None:
+            return []
+        return [JobSummary(job_name=name, status="waiting", display_name=None,
+                           detail="queued for cluster capacity")
+                for name, state in sorted(admission.states(campaign_id).items())
+                if state == PLANNED and name not in created]
 
     @staticmethod
     def _job_display_name(campaign_id, job) -> "str | None":
@@ -1897,7 +1968,7 @@ class ClusterService(LocalTransport):
         write. That flag alone only ends a *search* between generations, though — a
         batch campaign's wait loop blocks until its Jobs finish on their own, so the
         flag would appear to do nothing. We therefore also tear down the campaign's
-        cluster workloads (the same Kueue-aware cleanup ``vast exec cluster
+        cluster workloads (the same cleanup ``vast exec cluster
         run-cleanup`` performs): the running pods terminate now, the batch wait loop
         unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
         driver winds the campaign down.
@@ -2096,8 +2167,8 @@ class ClusterService(LocalTransport):
         gone Job as finished (``get_remaining_jobs``), so the remaining Jobs run to
         completion and the batch still projects its results.
 
-        ``Background`` propagation so the pod — and, through its owner reference, the
-        Kueue Workload — is collected with the Job. Whatever this job's runs had already
+        ``Background`` propagation so the pod is collected with the Job, through its
+        owner reference. Whatever this job's runs had already
         uploaded to the object store survives: each job uploads its own results.
         """
         from kubernetes import client
@@ -2181,7 +2252,7 @@ class ClusterService(LocalTransport):
         return ""
 
     def _teardown_campaign_jobs(self, campaign_id: str) -> None:
-        """Delete one campaign's in-flight cluster workloads (Kueue-aware, scoped).
+        """Delete one campaign's in-flight cluster workloads (label-scoped).
 
         Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast exec cluster
         run-cleanup`` performs — so the running pods terminate now and the driver's

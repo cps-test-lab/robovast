@@ -680,10 +680,56 @@ def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
-        # suspend: Kueue creates every Job suspended and un-suspends it on admission.
-        # A suspended Job has no pod, so only this flag reveals it exists.
+        # suspend is vestigial -- nothing suspends a Job now -- but the field is part of
+        # the Job shape the code reads, so the fake keeps it rather than diverging.
         spec=types.SimpleNamespace(suspend=suspend, template=types.SimpleNamespace(
             metadata=types.SimpleNamespace(annotations=ann))))
+
+
+def test_list_jobs_reports_planned_jobs_as_waiting(cs, monkeypatch):
+    """A job queued for capacity must be visibly ``waiting``, and only the controller knows.
+
+    A batch that has not started must not read as "nothing is happening". A PLANNED
+    job has no Kubernetes object at all -- so the listing has to ask the controller or the
+    count silently becomes permanently zero, which is the failure this pins.
+    """
+    from robovast.execution.cluster_execution.node_admission import CREATED, PLANNED
+
+    class _Admission:
+        def states(self, owner):
+            assert owner == "camp-2026-07-17-120000"
+            return {"j-run": CREATED, "j-planned-b": PLANNED, "j-planned-a": PLANNED}
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[_job("j-run", active=1)])
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-run")]))
+    cs._admission = _Admission()
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert (resp.counts.running, resp.counts.waiting, resp.counts.total) == (1, 2, 3)
+    waiting = [j for j in resp.jobs if j.status == "waiting"]
+    # Sorted, so a listing does not reshuffle between polls for no reason.
+    assert [j.job_name for j in waiting] == ["j-planned-a", "j-planned-b"]
+    assert all(j.detail for j in waiting), "a waiting job must say why it is waiting"
+
+
+def test_list_jobs_without_a_built_controller_reports_no_waiting(cs, monkeypatch):
+    """A read path must degrade, not raise. If no campaign has submitted there is no
+    controller and nothing planned -- the same answer either way, which is what lets the
+    listing avoid building one just to ask."""
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[_job("j-run", active=1)])
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-run")]))
+    cs._admission = None
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert (resp.counts.waiting, resp.counts.total) == (0, 1)
 
 
 def test_list_jobs_classifies_and_counts(cs, monkeypatch):
@@ -769,7 +815,6 @@ def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
     job_pods = [_job_pod("j-run-1"), _job_pod("j-run-2"),
                 _job_pod("j-admitted", phase="Pending")]
 
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch(jobs))
     monkeypatch.setattr(
         cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], pods, job_pods))
@@ -778,24 +823,24 @@ def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
     assert (usage.jobs_running, usage.jobs_pending) == (2, 1)
 
 
-def test_resource_usage_counts_kueue_suspended_jobs_as_pending(cs, monkeypatch):
-    """A Kueue-suspended Job has **no pod**, and must still count as pending.
+def test_resource_usage_counts_podless_jobs_as_pending(cs, monkeypatch):
+    """A Job whose pod does not exist yet must still count as pending.
 
-    Regression: the tally read pods, so the state every cluster batch *starts* in —
-    the whole batch suspended, waiting for quota — reported ``0/0``, and the sidebar's
-    jobs bar said nothing was happening while 3 runs were queued.
+    Regression: the tally read pods, so freshly created Jobs whose pods the scheduler had
+    not bound yet reported ``0/0``, and the sidebar's jobs bar said nothing was happening
+    while 3 runs were starting. A just-created Job is an active Job with no pod, so the
+    tally has to read Jobs.
     """
-    jobs = [_job("j-queued-1", suspend=True), _job("j-queued-2", suspend=True),
-            _job("j-queued-3", suspend=True)]
+    jobs = [_job("j-queued-1", active=1), _job("j-queued-2", active=1),
+            _job("j-queued-3", active=1)]
     batch = _UsageBatch(jobs)
 
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
     monkeypatch.setattr(
         cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [], []))
     usage = cs.resource_usage()
 
-    assert batch.calls == 1, "the tally must read Jobs — pods cannot see a suspended one"
+    assert batch.calls == 1, "the tally must read Jobs — a podless one is invisible to pods"
     assert (usage.jobs_running, usage.jobs_pending) == (0, 3)
 
 
@@ -842,7 +887,6 @@ def test_resource_usage_counts_blocked_job_as_pending(cs, monkeypatch):
     The per-campaign ``JobCounts`` keeps ``blocked`` apart because that view has to act
     on it; a capacity meter only needs "not executing".
     """
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([_job("j-stuck", active=1)]))
     monkeypatch.setattr(
         cs, "_k8s",
@@ -852,15 +896,6 @@ def test_resource_usage_counts_blocked_job_as_pending(cs, monkeypatch):
 
     assert (usage.jobs_running, usage.jobs_pending) == (0, 1)
 
-
-def _fake_kueue(monkeypatch):
-    """Stub Kueue's wait-reason lookup — it builds a CustomObjectsApi against whatever
-    kube config the host has, which no test has (it degrades to ``{}``, but only after
-    trying to reach an API server)."""
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
-        lambda namespace, job_names=None, k8s_custom=None: {
-            name: "insufficient unused quota for cpu" for name in (job_names or ())})
 
 
 def _blocked_job_pod(job_name):
@@ -913,7 +948,6 @@ def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
            [_job(f"j-queued-{i}", suspend=True) for i in range(2)]
     job_pods = [_job_pod(f"j-run-{i}") for i in range(3)]
 
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch(jobs))
     monkeypatch.setattr(
         cs, "_k8s",
@@ -931,7 +965,6 @@ def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
 
 def _disk_env(cs, monkeypatch, nodes, summaries, service_node, raise_on=None):
     """A usage read with the service pod placed on *service_node*. Returns the fake core."""
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
     core = _UsageCore([_usage_node(n, "8", str(16 * 1024 ** 3)) for n in nodes],
                       [_service_pod(service_node)], [],
@@ -1031,7 +1064,6 @@ def test_no_service_pod_means_no_disk_and_a_reason_that_says_so(cs, monkeypatch)
     Reported rather than silently omitted: a blank disk row with no explanation reads as a
     full disk to some people and a broken meter to others.
     """
-    _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
     monkeypatch.setattr(cs, "_k8s", lambda: _UsageCore(
         [_usage_node("n1", "8", "16Gi")], [], [], summaries={"n1": _summary(40, 60)}))

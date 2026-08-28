@@ -150,8 +150,8 @@ def test_an_ingress_is_applied_not_just_built(monkeypatch):
 def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
     """A pure argument error must not cost a half-set-up cluster.
 
-    The check used to live only inside the manifest builder, which runs after Kueue is
-    installed and the flavor's storage deployed — so `--ingress-host` without TLS
+    The check used to live only inside the manifest builder, which runs after the device
+    plugin is installed and the storage deployed — so `--ingress-host` without TLS
     modified the cluster and *then* refused.
     """
     from unittest import mock
@@ -159,8 +159,8 @@ def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
     from robovast.execution.cluster_execution import cluster_setup, service_deploy
 
     installed = []
-    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
-                        lambda *a, **k: installed.append("kueue"))
+    monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
+                        lambda *a, **k: installed.append("gpu-plugin"))
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(cluster_setup, "get_cluster_config", mock.Mock())

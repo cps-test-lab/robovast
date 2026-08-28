@@ -421,10 +421,10 @@ class BaseConfig(object):
         return None, None
 
     def get_cluster_allocatable_resources(self, kube_context=None):
-        """Return the total CPU and memory quota for Kueue.
+        """Return the total CPU and memory capacity admission should size against.
 
-        Called by ``apply_kueue_queues`` to determine the ClusterQueue quota
-        before submitting jobs.  The default implementation returns
+        Called by ``ClusterBudgetProvider`` to decide how large the cluster can
+        get.  The default implementation returns
         ``(None, None)``, which instructs the caller to fall back to querying
         the Kubernetes node API (total allocatable across all current nodes).
 

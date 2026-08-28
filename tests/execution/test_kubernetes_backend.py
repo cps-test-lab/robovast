@@ -43,8 +43,6 @@ def _runner_for_download_test(configs):
     r.campaign_data = {"execution": {}}
     # Stub every side-effecting step so only the download loop runs.
     r._ensure_k8s_initialized = lambda: None
-    r._verify_admission_path = lambda: None  # no cluster to check the Kueue queues on
-    r._ensure_priority_class = lambda: None  # nor to create the campaign's priority class
     r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")  # embedded: empty prefix
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: []          # no jobs → submission loop is empty
@@ -229,6 +227,12 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend"
         ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
+    # The wait loop derives a job's name rather than reading it back off a rendered manifest
+    # (under admission the manifest does not exist until there is room). Patch the derivation
+    # so these fixtures keep their short synthetic names.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     runner.namespace = "ns"
@@ -239,7 +243,6 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
-    runner._report_suspended_jobs = lambda remaining: None
     return runner, storage
 
 
@@ -402,6 +405,10 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
         "robovast.execution.cluster_execution.kubernetes_backend"
         ".blocked_and_contended_reasons",
         lambda core, ns, label: (dict(blocked), dict(contended or {})))
+    # See the note in _restart_runner: names are derived, not read off the manifest.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     runner.namespace = "ns"
@@ -414,7 +421,6 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
     runner._CONTENDED_GRACE_SECONDS = contended_grace
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
-    runner._report_suspended_jobs = lambda remaining: None
     return runner, storage
 
 
