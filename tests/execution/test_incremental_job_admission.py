@@ -17,7 +17,7 @@ from robovast.execution.cluster_execution.node_admission import (AdmissionContro
                                                                  Capacity, JobSizing,
                                                                  campaign_start_key)
 
-MiB = 1024 ** 2
+MIB = 1024 ** 2
 
 
 class _Provider:
@@ -25,10 +25,10 @@ class _Provider:
         self.cpu = cpu
 
     def budget(self):
-        return Budget(free_cpu=self.cpu, free_memory=1024 * MiB)
+        return Budget(free_cpu=self.cpu, free_memory=1024 * MIB)
 
     def capacities(self):
-        return [Capacity(64.0, 64 * 1024 * MiB)]
+        return [Capacity(64.0, 64 * 1024 * MIB)]
 
 
 def _runner(jobs, admission, *, remaining_script):
@@ -61,7 +61,7 @@ def test_a_planned_job_is_not_mistaken_for_a_finished_one():
     """
     asked = []
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
-    sizing = JobSizing(2.0, MiB)
+    sizing = JobSizing(2.0, MIB)
     c.submit("camp", [(f"j-{i}", sizing, lambda: None) for i in range(3)],
              started_at=campaign_start_key("camp-2026-07-17-120000"))
     c.drain()
@@ -76,7 +76,7 @@ def test_a_planned_job_is_not_mistaken_for_a_finished_one():
 def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
     """Even with nothing running, a batch with planned work is not done."""
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
-    sizing = JobSizing(2.0, MiB)
+    sizing = JobSizing(2.0, MIB)
     c.submit("camp", [(f"j-{i}", sizing, lambda: None) for i in range(3)], started_at=0.0)
     c.drain()
     states = c.states("camp")
@@ -88,7 +88,7 @@ def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
 def test_creation_is_paced_by_capacity_not_by_the_plan_size():
     c = AdmissionController(_Provider(cpu=4.0), clock=lambda: 0.0)
     made = []
-    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MiB), lambda i=i: made.append(i))
+    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda i=i: made.append(i))
                       for i in range(10)], started_at=0.0)
     assert c.drain() == 2, "ten planned, room for two"
     assert len(made) == 2
@@ -98,7 +98,7 @@ def test_finishing_a_job_frees_room_for_the_next():
     p = _Provider(cpu=4.0)
     c = AdmissionController(p, clock=lambda: 0.0)
     made = []
-    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MiB), lambda i=i: made.append(i))
+    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda i=i: made.append(i))
                       for i in range(10)], started_at=0.0)
     c.drain()
     c.finished("j-0")
@@ -145,7 +145,7 @@ def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
     sizing = r._job_sizing(_job(0), 1)
     assert sizing.cpu == pytest.approx(4.75), (
         "must size from the rendered manifest; the base one is missing the sidecars")
-    assert sizing.memory == (1024 + 640 + 2944) * MiB
+    assert sizing.memory == (1024 + 640 + 2944) * MIB
     assert sizing.cpu != pytest.approx(1.0), "sizing from self.manifest is the shipped bug"
 
 

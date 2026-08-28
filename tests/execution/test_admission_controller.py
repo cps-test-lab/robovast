@@ -16,15 +16,15 @@ from robovast.execution.cluster_execution.node_admission import (AdmissionContro
                                                                  AdmissionRefused, Budget,
                                                                  Capacity, JobSizing)
 
-MiB = 1024 ** 2
+MIB = 1024 ** 2
 
 
 class FakeProvider:
     """A budget that only changes when a test says so."""
 
-    def __init__(self, cpu=10.0, memory=10240 * MiB, gpu=0, nodes=None):
+    def __init__(self, cpu=10.0, memory=10240 * MIB, gpu=0, nodes=None):
         self.free = Budget(free_cpu=cpu, free_memory=memory, free_gpu=gpu)
-        self.nodes = nodes if nodes is not None else [Capacity(8.0, 8192 * MiB)]
+        self.nodes = nodes if nodes is not None else [Capacity(8.0, 8192 * MIB)]
         self.reads = 0
 
     def budget(self):
@@ -40,7 +40,7 @@ class FakeProvider:
                            frozenset(keys))
 
 
-def _items(controller, owner, n, cpu=2.0, memory=1024 * MiB, started_at=0.0, priority=0,
+def _items(controller, owner, n, cpu=2.0, memory=1024 * MIB, started_at=0.0, priority=0,
            created=None):
     made = created if created is not None else []
     controller.submit(owner, [(f"{owner}-{i}", JobSizing(cpu, memory),
@@ -76,7 +76,7 @@ def test_a_reservation_stops_being_charged_once_its_pod_is_observed():
     _items(c, "a", 3, cpu=2.0)
     c.drain()
     p.observe("a-0", "a-1")            # the pod pass now subtracts them itself
-    p.free = Budget(free_cpu=1.0, free_memory=10240 * MiB,
+    p.free = Budget(free_cpu=1.0, free_memory=10240 * MIB,
                     counted_jobs=frozenset({"a-0", "a-1"}))
     assert c.drain() == 0, "1 core free is still not 2 -- no double credit"
 
@@ -109,10 +109,10 @@ def test_an_older_campaigns_second_batch_still_beats_a_younger_campaigns_first()
     p = FakeProvider(cpu=2.0)
     c = _controller(p)
     made = []
-    c.submit("young", [("young-0", JobSizing(2.0, MiB), lambda: made.append("young-0"))],
+    c.submit("young", [("young-0", JobSizing(2.0, MIB), lambda: made.append("young-0"))],
              started_at=200.0)
     # The older campaign's SECOND batch, enqueued after the younger campaign's first.
-    c.submit("old", [("old-1", JobSizing(2.0, MiB), lambda: made.append("old-1"))],
+    c.submit("old", [("old-1", JobSizing(2.0, MIB), lambda: made.append("old-1"))],
              started_at=100.0)
     c.drain()
     assert made == ["old-1"]
@@ -133,8 +133,8 @@ def test_a_job_that_does_not_fit_is_skipped_not_blocked_behind():
     p = FakeProvider(cpu=3.0)
     c = _controller(p)
     made = []
-    c.submit("a", [("big", JobSizing(8.0, MiB), lambda: made.append("big")),
-                   ("small", JobSizing(2.0, MiB), lambda: made.append("small"))],
+    c.submit("a", [("big", JobSizing(8.0, MIB), lambda: made.append("big")),
+                   ("small", JobSizing(2.0, MIB), lambda: made.append("small"))],
              started_at=0.0)
     assert c.drain() == 1 and made == ["small"]
 
@@ -151,16 +151,16 @@ def test_no_room_now_is_an_ordinary_answer():
 def test_a_job_no_node_could_ever_run_raises_instead():
     """Otherwise the campaign waits forever having created zero jobs, and every diagnosis path
     downstream is pod-based and so cannot see it."""
-    c = _controller(FakeProvider(nodes=[Capacity(4.0, 4096 * MiB)]))
+    c = _controller(FakeProvider(nodes=[Capacity(4.0, 4096 * MIB)]))
     with pytest.raises(AdmissionRefused, match="no node is that large"):
-        c.preflight(JobSizing(9.0, MiB))
-    c.preflight(JobSizing(4.0, MiB))          # exactly fits: allowed
+        c.preflight(JobSizing(9.0, MIB))
+    c.preflight(JobSizing(4.0, MIB))          # exactly fits: allowed
 
 
 def test_a_cluster_with_no_nodes_raises_rather_than_reporting_busy():
     c = _controller(FakeProvider(nodes=[]))
     with pytest.raises(AdmissionRefused, match="no nodes"):
-        c.preflight(JobSizing(1.0, MiB))
+        c.preflight(JobSizing(1.0, MIB))
 
 
 # -- ownership ----------------------------------------------------------------------------
@@ -185,11 +185,11 @@ def test_a_create_that_raises_leaves_the_job_planned_and_holds_no_reservation():
     def boom():
         raise RuntimeError("api said no")
 
-    c.submit("a", [("a-0", JobSizing(2.0, MiB), boom)], started_at=0.0)
+    c.submit("a", [("a-0", JobSizing(2.0, MIB), boom)], started_at=0.0)
     assert c.drain() == 0
     assert c.states("a") == {"a-0": "planned"}
     ok = []
-    c.submit("a", [("a-1", JobSizing(2.0, MiB), lambda: ok.append(1))], started_at=0.0)
+    c.submit("a", [("a-1", JobSizing(2.0, MIB), lambda: ok.append(1))], started_at=0.0)
     assert c.drain() == 1, "the failure must not have consumed capacity"
 
 
@@ -197,6 +197,6 @@ def test_resubmitting_a_plan_does_not_double_it():
     c = _controller(FakeProvider(cpu=100.0))
     made = []
     for _ in range(2):
-        c.submit("a", [("a-0", JobSizing(1.0, MiB), lambda: made.append("a-0"))],
+        c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda: made.append("a-0"))],
                  started_at=0.0)
     assert c.drain() == 1 and made == ["a-0"]

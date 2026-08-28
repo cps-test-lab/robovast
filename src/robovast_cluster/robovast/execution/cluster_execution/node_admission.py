@@ -36,7 +36,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)

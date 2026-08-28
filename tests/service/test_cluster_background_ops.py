@@ -83,7 +83,7 @@ def test_postprocess_job_loads_the_given_context(monkeypatch):
     class _Stop(Exception):
         pass
 
-    def _load(context=None, *args, **kwargs):
+    def _load(context=None, **kwargs):
         seen["context"] = context
         raise _Stop
 

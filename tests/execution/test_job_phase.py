@@ -17,7 +17,6 @@
 """Pod-accurate classification shared by the service lister and the CLI monitor."""
 
 import types
-from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,

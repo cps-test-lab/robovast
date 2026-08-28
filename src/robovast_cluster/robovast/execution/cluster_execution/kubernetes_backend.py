@@ -88,6 +88,11 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .manifests import JOB_TEMPLATE
+# Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
+# import inside the loop would be noise. node_admission imports nothing from this package,
+# so there is no cycle to route around by importing late.
+from .node_admission import CREATED as _ADMIT_CREATED
+from .node_admission import PLANNED as _ADMIT_PLANNED
 
 logger = logging.getLogger(__name__)
 
@@ -276,11 +281,6 @@ def resolve_image_digest(container_statuses, image: str) -> str | None:
                 return digest
     return None
 
-
-#: Re-exported so the poll loop reads as prose. Imported here rather than inline because the
-#: loop consults them every two seconds and an import inside it would be noise.
-from .node_admission import CREATED as _ADMIT_CREATED  # noqa: E402
-from .node_admission import PLANNED as _ADMIT_PLANNED  # noqa: E402
 
 
 def all_jobs_waiting_for_capacity(remaining, contended) -> bool:

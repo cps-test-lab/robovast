@@ -24,7 +24,6 @@ toolkit that actually builds/submits Jobs lives in
 :mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
 """
 
-import contextlib
 import logging
 import re
 import signal as _signal

@@ -12,7 +12,7 @@ import pytest
 from robovast.execution.cluster_execution import cluster_capacity
 from robovast.execution.cluster_execution.cluster_capacity import ClusterBudgetProvider
 
-MiB = 1024 ** 2
+MIB = 1024 ** 2
 
 
 def _node(name, cpu="8", memory="16Gi", gpu=None):
@@ -64,7 +64,7 @@ def test_free_is_allocatable_minus_committed_minus_headroom(monkeypatch):
                      [_pod("n1", _c(cpu="2", memory="4Gi"))], monkeypatch)
     b = p.budget()
     assert b.free_cpu == pytest.approx(8 - 2 - 1)          # default headroom 1 cpu
-    assert b.free_memory == (16 - 4) * 1024 * MiB - 2 * 1024 * MiB   # default 2Gi
+    assert b.free_memory == (16 - 4) * 1024 * MIB - 2 * 1024 * MIB   # default 2Gi
 
 
 def test_native_sidecars_count(monkeypatch):
@@ -131,7 +131,7 @@ def test_headroom_is_configurable(monkeypatch):
                           cluster_capacity.HEADROOM_MEMORY_ENV: "1Gi"})
     b = p.budget()
     assert b.free_cpu == pytest.approx(5)
-    assert b.free_memory == 15 * 1024 * MiB
+    assert b.free_memory == 15 * 1024 * MIB
 
 
 def test_an_unparseable_headroom_raises_rather_than_meaning_none(monkeypatch):
@@ -213,7 +213,7 @@ def test_a_cluster_with_no_allocatable_cpu_refuses_instead_of_admitting(monkeypa
     # AdmissionRefused here, not CampaignConfigError: the controller states the fact and the
     # backend seam is what turns a permanent refusal into the campaign-facing error.
     with pytest.raises(AdmissionRefused, match="no node is that large"):
-        AdmissionController(p).preflight(JobSizing(cpu=1.0, memory=MiB, gpu=0))
+        AdmissionController(p).preflight(JobSizing(cpu=1.0, memory=MIB, gpu=0))
 
 
 def test_a_failed_node_query_propagates_rather_than_reading_as_an_empty_cluster(monkeypatch):
