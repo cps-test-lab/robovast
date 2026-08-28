@@ -11,10 +11,9 @@ against it.
 import sqlite3
 
 
-from robovast.results_processing.health_checks.nav2 import (CHECK_NAME, CONTROL_LOOP_MISS,
-                                                            ERROR_AT, ControlLoopRate)
 from robovast.results_processing.run_health import (LEVELS, TABLE,
                                                     build_run_health_table)
+from robovast_nav.health_checks import CHECK_NAME, CONTROL_LOOP_MISS, ERROR_AT, ControlLoopRate
 
 _LINE = f"[controller_server]: {CONTROL_LOOP_MISS}, achieved 12.4Hz"
 

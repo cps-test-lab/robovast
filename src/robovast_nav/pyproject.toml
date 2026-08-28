@@ -49,6 +49,9 @@ costmap = "robovast_nav.service_endpoints:CostmapEndpoint"
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 nav2_bt_tree = "robovast_nav.postprocessing:Nav2BtTree"
 
+[tool.poetry.plugins."robovast.health_checks"]
+nav2_control_loop_rate = "robovast_nav.health_checks:ControlLoopRate"
+
 [tool.poetry.plugins."robovast.mcp_plugins"]
 nav = "robovast_nav.mcp_plugin:NavMCPPlugin"
 
