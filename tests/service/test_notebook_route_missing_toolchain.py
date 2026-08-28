@@ -25,8 +25,6 @@ _CAMPAIGN = "camp-2026-01-01-000000"
 
 @pytest.fixture(name="client")
 def _client(monkeypatch, tmp_path):
-    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
-                        staticmethod(lambda *a, **k: None))
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
     transport = LocalTransport(store=store)
     # ``None`` in sys.modules is how the import system is told a module is absent.

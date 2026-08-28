@@ -67,7 +67,8 @@ So the way to run a campaign against a different project is **not** to edit the 
 
 .. code-block:: bash
 
-   vast exec cluster run --image-project ghcr.io/cps-test-lab campaign.vast
+   vast workspace run my-experiment campaign.vast \
+       --image-project ghcr.io/cps-test-lab
 
 and the way to stop that working is to write a fixed ``image:``. If a ``.vast`` of yours
 names a family image, delete the line.
@@ -101,7 +102,7 @@ Three uses, three layers
      - Lifetime
    * - "this cluster pulls from our registry"
      - ``ROBOVAST_PROJECT`` in the service pod env, put there by
-       ``vast exec cluster upgrade``
+       ``vast service upgrade``
      - until changed
    * - "run *this* campaign against my dev build"
      - ``--image-project`` on the run, or ``ROBOVAST_PROJECT`` in the client's environment
@@ -121,7 +122,7 @@ Where the settings are read
 
 Highest precedence first:
 
-1. ``--image-project`` / ``--image-project-tag`` on ``vast exec cluster run`` — this run only;
+1. ``--image-project`` / ``--image-project-tag`` on ``vast workspace run`` — this run only;
 2. a real environment variable (``export ROBOVAST_PROJECT=...``);
 3. ``./.env`` — **the current directory only**, so this is the *project's* setting;
 4. ``~/.config/robovast/env`` — the *user's* setting, read whatever directory ``vast`` runs
@@ -221,7 +222,7 @@ Moving a cluster's images
 
 .. code-block:: bash
 
-   ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade
+   ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast service upgrade
 
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
 configuration and ingress host *from the cluster*, then touches only the Deployment's
@@ -260,7 +261,7 @@ campaign generally *should* pick up the current patch release. What must not be 
 **re-run**: asking for ``numpy<=1.13`` again a year later gets a different version, silently. The
 lock records what actually ran, so those specs can be replaced by exactly those versions.
 
-``vast exec check-retrigger`` reports which recorded images carry a lock, because that is what
+``vast campaign rerun --check`` reports which recorded images carry a lock, because that is what
 decides whether a rebuild would install the same software or merely something compatible.
 
 A campaign's own ``_execution/image_build_refs`` records the same facts per container, read from

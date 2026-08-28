@@ -20,6 +20,7 @@ top-level packages, so `robovast.service.client` sailed through and proved nothi
 
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import patch
@@ -116,15 +117,23 @@ def test_every_client_module_imports_without_the_core(without_core, module):
 
 @pytest.mark.parametrize("argv", [
     ["--help"], ["login", "--help"], ["logout", "--help"], ["doctor", "--help"],
-    ["workspace", "--help"], ["files", "--help"], ["wait", "--help"],
+    ["workspace", "--help"], ["files", "--help"], ["campaign", "wait", "--help"],
     ["--version"],
-    # The launch path, one level per entry: `exec` is the client's group now, `cluster`
-    # is reached through `robovast.exec_plugins`, and `run` is the verb this whole
-    # distribution exists to make reachable.
-    ["exec", "--help"], ["exec", "cluster", "--help"],
-    ["exec", "cluster", "run", "--help"], ["exec", "cluster", "stop", "--help"],
-    ["exec", "cluster", "stop-job", "--help"], ["exec", "cluster", "log", "--help"],
-    ["exec", "cluster", "download-cleanup", "--help"],
+    # The launch path: `workspace run` is the verb this whole distribution exists to
+    # make reachable, and it is the client's own -- no entry point in between.
+    ["workspace", "run", "--help"],
+    # The groups are named after what they act on; all four are the client's, and the
+    # ones that span distributions still list their client half without the other.
+    ["campaign", "--help"], ["campaign", "stop", "--help"],
+    ["campaign", "stop-job", "--help"], ["campaign", "log", "--help"],
+    ["campaign", "list", "--help"], ["campaign", "status", "--help"],
+    ["campaign", "rerun", "--help"], ["campaign", "download", "--help"],
+    ["service", "--help"], ["service", "log", "--help"],
+    ["service", "info", "--help"], ["service", "resources", "--help"],
+    ["service", "restart", "--help"],
+    ["cluster", "--help"], ["cluster", "store-cleanup", "--help"],
+    ["container", "--help"], ["container", "exec", "--help"],
+    ["container", "stop", "--help"],
 ])
 def test_the_cli_runs_without_the_core(without_core, argv):
     """`--help` still builds the command and its options, which is where a module-level
@@ -141,44 +150,50 @@ def test_the_cli_runs_without_the_core(without_core, argv):
 
 def test_launching_a_campaign_gets_as_far_as_the_service(without_core, monkeypatch,
                                                         tmp_path):
-    """`exec cluster run` DRIVEN, not merely `--help`-ed.
+    """`workspace run` DRIVEN, not merely `--help`-ed.
 
-    The verb that justifies the whole distribution, and the one whose old home made it
-    unreachable. Its body defers four imports (`campaign_wait`, `service.interface`,
-    `service.project_push` twice) and any one of them reaching for the core would pass an
-    import check and a `--help`, then fail at the only moment that matters. This is the
-    class of leak the file exists for: found at call time, not import time.
+    The verb that justifies the whole distribution. Its body defers several imports
+    (`campaign_wait`, `service.interface`, `service.project_push`) and any one of them
+    reaching for the core would pass an import check and a `--help`, then fail at the only
+    moment that matters. This is the class of leak the file exists for: found at call time,
+    not import time.
     """
     import contextlib  # pylint: disable=import-outside-toplevel
 
-    from robovast.client import cluster_cli  # pylint: disable=import-outside-toplevel
+    from robovast.client import cli as root_cli  # pylint: disable=import-outside-toplevel
 
-    vast = tmp_path / "demo.vast"
-    vast.write_text("version: 3\n")
     launched = {}
 
-    def fake_run(client, config_path, **kwargs):  # noqa: ARG001
-        launched.update(kwargs, config_path=config_path)
-        return "camp-1"
+    class _Ref:
+        campaign_id = "camp-1"
+        note = ""
 
-    monkeypatch.setattr("robovast.service.project_push.run_project_via_service", fake_run)
+    class _Ws:
+        workspace_id = "ws-1"
+        name = "demo"
+        running_campaigns = ()
+
+    class _Service:
+        def list_workspaces(self):
+            return SimpleNamespace(workspaces=[_Ws()])
+
+        def create_campaign(self, request):
+            launched["workspace_id"] = request.workspace_id
+            launched["config_path"] = request.config_path
+            launched["description"] = request.description
+            return _Ref()
 
     @contextlib.contextmanager
     def _client(*_a, **_k):
-        yield object(), "fake service"
+        yield _Service(), "fake service"
 
-    monkeypatch.setattr(cluster_cli, "service_client", _client)
-    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
-                        classmethod(lambda cls, start_dir=None: None))
+    monkeypatch.setattr(root_cli, "service_client", _client)
 
-    # `obj={'vast_file': ...}` is the `-V` override, which is how a client-only user names
-    # a project: `vast init` is a core verb they do not have.
-    result = CliRunner().invoke(cluster_cli.cluster,
-                                ["run", "--description", "pilot"],
-                                obj={"vast_file": str(vast)})
+    result = CliRunner().invoke(
+        root_cli.workspace, ["run", "demo", "my.vast", "--description", "pilot"])
     assert result.exit_code == 0, result.output
-    assert launched["config_path"] == str(vast)
-    assert launched["description"] == "pilot"
+    assert launched == {"workspace_id": "ws-1", "config_path": "my.vast",
+                        "description": "pilot"}
 
 
 def test_the_waiting_half_of_wait_and_download_needs_no_core(without_core):

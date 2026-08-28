@@ -113,7 +113,7 @@ def get_cli_help(command: str = "") -> dict:
     """``vast`` CLI reference: the command tree, or one command's full ``--help``.
 
     Args:
-        command: Space-separated path, e.g. ``"exec cluster run"``. Empty lists every
+        command: Space-separated path, e.g. ``"workspace run"``. Empty lists every
             command with its one-line help.
 
     Returns:

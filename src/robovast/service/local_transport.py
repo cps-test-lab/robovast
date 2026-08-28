@@ -20,10 +20,10 @@ Executes local Docker campaigns by driving
 :func:`robovast.execution.controller.run_batch_campaign` in a background thread,
 serving live status from the same
 :class:`~robovast.execution.control_server.ControllerState` the cluster controller
-uses. This backs ``vast exec local run`` (mode 1); campaigns die with the process.
-:class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
-        subclasses this, reusing
-its driver-hosting shape and overriding only the launch hooks.
+uses. This is the lane behind ``vast serve --backend local``; campaigns die with the
+service process.
+:class:`~robovast.execution.cluster_execution.cluster_service.ClusterService` subclasses
+this, reusing its driver-hosting shape and overriding only the launch hooks.
 
 Split out of the former single ``client`` module; ``client`` now re-exports
 ``LocalTransport`` so existing imports keep working.
@@ -273,7 +273,7 @@ def _no_timeout_note(raw_config: dict) -> str:
 
     ``execution.timeout`` is what makes ``stalled`` a verdict rather than ``null``, and
     ``null`` is the one answer nobody acts on: a campaign that declared no budget gets no
-    stall verdict, and so ``vast wait`` can never end on one. Told here because the fix is
+    stall verdict, and so ``vast campaign wait`` can never end on one. Told here because the fix is
     a line in the ``.vast`` and this is the last moment before the compute is spent; four
     minutes into a wedged sweep it is only an explanation.
 
@@ -286,7 +286,7 @@ def _no_timeout_note(raw_config: dict) -> str:
     if not isinstance(execution, dict) or declared_per_run_seconds(execution):
         return ""
     return ("this project declares no execution.timeout, so no stall verdict is possible "
-            "for it — `vast wait` cannot end on one, and get_campaign_status reports "
+            "for it — `vast campaign wait` cannot end on one, and get_campaign_status reports "
             "stalled: null, which is not 'healthy'. Declare it to get a verdict. (A "
             "simulator that reports on itself is unaffected: its own findings still end "
             "the wait.)")
@@ -363,7 +363,7 @@ class WorkspaceTarget:
     """What the service resolved a request to: one workspace's ``.vast``.
 
     Deliberately just the config path. This used to be a ``ProjectConfig`` — the CLI's
-    type, where ``.robovast_project`` genuinely binds a config *and* a results dir — but
+    type, back when ``.robovast_project`` bound a config *and* a results dir — but
     the service synthesized one per call with a constant ``results_dir``, so the type
     implied a choice that was never made. Every campaign lands in the shared
     ``_campaigns_root()``; a caller needing that asks for it, rather than reading a copy
@@ -476,8 +476,8 @@ class LocalTransport(RobovastInterface):
     A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
     project binding this service accepts (see :meth:`_resolve_project`), and
     ``config_path``/``vast_path`` selects among several ``.vast`` files in that
-    workspace. ``.robovast_project`` is a CLI-side concept and never selects what the
-    service runs — its one remaining role is the *results root* (see
+    workspace. Nothing ambient selects what the service runs; the results root is
+    named by ``vast serve --results-dir`` (see
     :func:`~robovast.common.results_root.local_results_root`).
     """
 
@@ -499,7 +499,11 @@ class LocalTransport(RobovastInterface):
     #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
     _JOB_LOG_CACHE_MAX = 128
 
-    def __init__(self, store=None, workspace_dir=None):
+    def __init__(self, store=None, workspace_dir=None, results_dir=None):
+        #: Where local campaigns land, when the caller pinned one (``vast serve
+        #: --results-dir``). ``None`` leaves it to the service-owned default; see
+        #: :meth:`_campaigns_root`.
+        self._results_dir = results_dir
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
         # Incremental job-log tails, so a log panel polling twice a second folds in only
@@ -577,17 +581,14 @@ class LocalTransport(RobovastInterface):
         entirely, so a caller naming one ``.vast`` silently got whichever one had been
         initialized -- a campaign that ran the wrong simulator and looked successful.
         Its stated justification ("``vast exec local run`` back-compat") was false:
-        that command drives the controller in-process and never reaches this method.
+        that command drove the controller in-process and never reached this method.
         """
         if not workspace_id:
             raise ValueError(
                 "workspace_id is required: the service runs a workspace's project. "
                 "List them with 'vast workspace list' / list_workspaces(); pin a "
                 "directory in place with 'vast serve --workspace-dir <dir>', or "
-                "upload one with 'vast workspace init <dir>'. "
-                "('.robovast_project' / 'vast init' binds the "
-                "CLI's project, not the service's -- it never selected what the "
-                "service runs.)")
+                "upload one with 'vast workspace init <dir>'.")
         return self._project_for_workspace(workspace_id, vast_path)
 
     def _campaigns_root(self) -> Path:
@@ -599,9 +600,11 @@ class LocalTransport(RobovastInterface):
         under ``<workspace>/results`` instead would both hide them from the
         service's readers and let ``delete_workspace`` take the campaigns with it.
 
-        The precedence lives in :func:`~robovast.common.results_root.local_results_root`,
-        shared with the MCP results reader so the two cannot disagree about where a
-        campaign is.
+        ``vast serve --results-dir`` wins when it was given: the caller naming a directory
+        on the serve host is the most specific answer there is, and it is the only one now
+        that a project file no longer binds a results dir. Otherwise the precedence lives in
+        :func:`~robovast.common.results_root.local_results_root`, shared with the MCP results
+        reader so the two cannot disagree about where a campaign is.
 
         Pure path resolver — the dir is materialized lazily by ``CampaignStore``
         on first run, so simply asking where campaigns live (e.g. from
@@ -609,6 +612,8 @@ class LocalTransport(RobovastInterface):
         creates a stray local directory.
         """
         from robovast.common.results_root import local_results_root
+        if self._results_dir:
+            return Path(self._results_dir)
         return local_results_root(self.store.registry.root)
 
     def _project_for_workspace(self, workspace_id: str, vast_path: str = ""):
@@ -1169,7 +1174,7 @@ class LocalTransport(RobovastInterface):
 
         So the evidence stays where the evidence goes: in the campaign, next to the log
         that explains it. It behaves like any other failed campaign, including being
-        removed by ``vast results delete``, and the archive is untouched, so a retry with
+        removed by ``vast campaign delete``, and the archive is untouched, so a retry with
         force costs only the transfer.
 
         "In the campaign" has to mean *where clients read the campaign*, which is the half
@@ -1234,7 +1239,7 @@ class LocalTransport(RobovastInterface):
             detail = failure_detail(e)
             logger.error("\u2717 import of %s failed: %s", campaign_id, e)
             logger.error("The campaign is kept as failed so this log survives; remove it "
-                         "with 'vast results delete %s', or retry with force.", campaign_id)
+                         "with 'vast campaign delete %s', or retry with force.", campaign_id)
             remove_campaign_log_handler(handler)
             handler = None
             # Durable, so the failure still reads as a failure after a service restart --
@@ -1394,7 +1399,7 @@ class LocalTransport(RobovastInterface):
         # there is no registry, no Ingress and nothing an operator can misconfigure, so
         # the capability is a property of the lane rather than of this deployment. A dead
         # daemon is *liveness* — `resource_usage`, the run preflight and `vast doctor`
-        # each answer that — and `check_docker_access` shells out with a 15 s timeout,
+        # each answer that — and asking the daemon means shelling out with a timeout,
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),

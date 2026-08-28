@@ -21,9 +21,6 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 def transport(monkeypatch, tmp_path):
     # No CWD project → _campaigns_root falls back to the dir beside the workspaces
     # (here <tmp_path>/results, kept unique per test by rooting under tmp_path).
-    monkeypatch.setattr(
-        "robovast.client.project_config.ProjectConfig.load",
-        staticmethod(lambda *a, **k: None))
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
     return LocalTransport(store=store)
 

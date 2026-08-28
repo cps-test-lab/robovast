@@ -120,9 +120,9 @@ that matters — can decline what it does not.
 
 | Distribution | Contains | Adds |
 |---|---|---|
-| `robovast-client` | the `vast` root command group and every verb that only drives a service (login, workspace, files, image, wait, doctor, **and `exec cluster run/stop/stop-job/log/download-cleanup`**), the `exec` and `exec cluster` group shells, the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
-| `robovast` | service core, config/variation, results, MCP, controller, the share (`vast share` + its providers), the local Docker lane (`exec local`) | no kubernetes |
-| `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the operator verbs (`exec cluster setup/cleanup/upgrade/token/run-cleanup/monitor`) | `kubernetes`, `boto3`, `google-cloud-storage` |
+| `robovast-client` | the `vast` root command group and every verb that only drives a service — `login`, `doctor`, `files`, `image`, and the whole of `workspace` (incl. **`workspace run`**, the one launch verb), `campaign`, `container`, plus the client halves of `service` (`log/info/resources/restart`) and `cluster` (`store-cleanup`) — the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
+| `robovast` | service core, config/variation, results, MCP, controller, the share (`vast share` + its providers), the local Docker execution lane behind `vast serve --backend local` | no kubernetes |
+| `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the operator verbs (`cluster setup/cleanup/jobs-cleanup/monitor`, `service upgrade/token`) | `kubernetes`, `boto3`, `google-cloud-storage` |
 | `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
 | `robovast-sim-roqsim` | the roqsim simulator backend | `pydantic` only |
 
@@ -145,15 +145,16 @@ Four rules keep this working:
   available, in processes that may have no Docker and no kubeconfig; reaching for either belongs in
   the factory that runs once a caller has asked for that plugin by name. Stated for simulators in
   `common/simulators.py` and for execution lanes in `service/serve_backends.py`.
-- **Missing means missing, not broken.** With a lane absent, `vast` must still start, `vast exec`
+- **Missing means missing, not broken.** With a lane absent, `vast` must still start, each group
   must list only what is installed, `vast doctor` must warn rather than fail, and asking for the
   absent lane must name the lanes that exist — never a `ModuleNotFoundError` for a module the
-  caller never mentioned. This now holds at **two** levels: `vast exec` lists `cluster` without
-  `local` on a client-only install, and `vast exec cluster` lists `run` without `setup`. The
-  mechanism is one reusable `client/lazy_group.py:LazyPluginGroup`, parameterised by entry-point
-  group (`robovast.exec_plugins`, then `robovast.cluster_plugins`). Core degrading correctly is
-  covered by `tests/execution/test_core_without_cluster_package.py` and
-  `tests/execution/test_lazy_exec_subgroups.py`; keep it that way.
+  caller never mentioned. Two groups span distributions on purpose, because a group is named
+  after the **object** it acts on rather than after what you installed: `vast cluster` lists
+  `store-cleanup` without `setup` on a client-only install, and `vast service` lists `restart`
+  without `upgrade`. The mechanism is one reusable `client/lazy_group.py:LazyPluginGroup`,
+  parameterised by entry-point group (`robovast.cluster_plugins`, `robovast.service_plugins`).
+  Core degrading correctly is covered by `tests/execution/test_core_without_cluster_package.py`
+  and `tests/execution/test_lazy_plugin_subgroups.py`; keep it that way.
 - **A distribution's own verbs are not entry points.** Entry points are for crossing a
   distribution boundary. A verb defined in the same module as its group stays an ordinary
   `@group.command()`, because entry points live in *installed metadata*: declaring your own there

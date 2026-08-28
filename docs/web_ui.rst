@@ -88,7 +88,7 @@ It provides four views:
   ``_config/<name>.vast``, with no override file and no revision history. It is the one
   narrow exception to the snapshot being a record of what ran, and it is why the
   read-only config view calls that snapshot *frozen* rather than *immutable*. The
-  browser equivalent of ``vast exec cluster monitor``.
+  browser equivalent of ``vast cluster monitor``.
   Its **Export to share** entry names the variant it will write — *(raw)* or
   *(postprocessed)*. That is not a setting: which one a campaign yields is read off the
   campaign itself, and once postprocessing has written into its tree the raw campaign no
@@ -96,8 +96,7 @@ It provides four views:
   campaign end (before postprocessing, hence raw) and exported again afterwards.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, *Postprocess when done* and *Upload to share when done*
-  toggles) and watches its live status. The browser equivalent of ``vast exec
-  cluster run``. *Upload to share when done* streams a raw, pre-postprocessing
+  toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share when done* streams a raw, pre-postprocessing
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
 * **Config** — a workspace-based ``.vast`` editor with live validation, a
@@ -138,8 +137,9 @@ to date": that would tell you a fix you have just published is not there.
 
 **Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
 annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the
-registry ingress route, the credential Secrets and the build daemon are untouched, so a version needing a permission the last one did not will deploy and then fail
-at runtime with a 403. ``vast exec cluster upgrade`` is the command that reconciles all of
+registry ingress route, the credential Secrets and the build daemon are untouched, so a
+version needing a permission the last one did not will deploy and then fail at runtime with
+a 403. ``vast service upgrade`` is the command that reconciles all of
 it, and the credential Secrets in particular can *only* be done there — they are rebuilt
 from the operator's environment, which the pod does not have.
 
@@ -161,7 +161,7 @@ here live, over the same stream the campaign logs use.
 Two limits, both stated on the page: it holds what *this process* logged, so a container
 that has already died is only in ``kubectl logs -p deploy/robovast-service``; and a busy
 multi-campaign run fills the buffer quickly, since every campaign's records are interleaved
-in it. ``vast service-log [-f]`` prints the same thing from a terminal, against whichever
+in it. ``vast service log [-f]`` prints the same thing from a terminal, against whichever
 service the CLI resolves.
 
 .. _web-ui-freshness:
@@ -210,7 +210,7 @@ The **import menu** at the right-hand end of the campaign list offers the two wa
 campaign gets here. *Import archive…* takes a campaign archive (``.tar.gz``) off your
 machine — a colleague's results, a published dataset, or a campaign from a service you have
 since torn down. It is the other direction of a campaign card's **Download**, and it is the
-same operation as ``vast results import`` and the ``import_campaign`` MCP tool: the browser
+same operation as ``vast campaign import`` and the ``import_campaign`` MCP tool: the browser
 is only how the bytes get there (:doc:`http_api`). The other entry, *Import from Share*,
 takes one off the configured share instead and is described under
 :ref:`web-ui-share-import`; there the service does the fetching and no bytes pass through
@@ -758,7 +758,7 @@ Build the UI once, then start the service:
 
 Open the service URL in a browser and you get the UI; the REST API is served
 same-origin under the same URL (OpenAPI at ``/docs``). The in-cluster service
-ships the same build in its image, so mode 3 needs no extra step.
+ships the same build in its image, so the cluster service needs no extra step.
 
 Accessing it — ``vast ui``
 --------------------------
@@ -778,7 +778,7 @@ it:
   then ``vast ui`` to open it. If nothing answers, ``vast ui`` says so and exits
   rather than starting anything — ``vast serve`` is the one command that owns the
   service lifecycle.
-* **Cluster** — deploy and publish it with ``vast exec cluster setup
+* **Cluster** — deploy and publish it with ``vast cluster setup
   --ingress-host``, then open ``https://robovast.<domain>`` and log in. No kubectl,
   no kubeconfig, nothing held open. ``vast login <url>`` points the CLI and MCP at
   the same place.
@@ -974,7 +974,7 @@ alongside the query itself.
    builds ``data.db`` from the raw rosbags. Launching with **Postprocess when done**
    (the default) runs it automatically on both backends; otherwise the Results tab
    offers a **Run postprocessing** button, and the CLI equivalent is
-   ``vast results postprocess --campaign <id>``. To *change* the postprocessing
+   ``vast campaign postprocess <id>``. To *change* the postprocessing
    parameters and re-run, use **Retrigger postprocessing** in the Monitor view's
    campaign actions menu (see above). The rosbag→CSV step always runs in
    the campaign's own execution image (locally in a container, in a cluster as a Job),
@@ -1474,7 +1474,7 @@ Three things to know when charting a ``poses`` table, because every such spec hi
 * **A long run needs ``decimate_hz``, not a bigger ``max_rows``.** The row cap is a ``LIMIT`` applied
   *after* ``ORDER BY`` time, so a run that outgrows it is cut at the **head**: the chart ends
   mid-run while looking complete. Raising ``max_rows`` cannot fix that — the data query clamps at
-  5000 rows whatever a panel asks for, which is why ``vast check`` rejects a larger one.
+  5000 rows whatever a panel asks for, which is why ``vast config validate`` rejects a larger one.
   ``source: {decimate_hz: 5}`` instead keeps one sample per 1/hz second across the *whole* run, in
   SQL. Rule of thumb: ``hz ≈ 4000 / run seconds``; a 460×380 panel resolves nothing past a few
   hundred points anyway. The panel says so itself when a query is truncated.

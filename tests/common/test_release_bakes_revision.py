@@ -3,7 +3,7 @@
 """A locally released image must be able to say which revision it was built from.
 
 The failure this exists for: ``make release-images PROJECT=<registry> PUSH=1`` followed by
-``vast exec cluster upgrade`` deployed a service whose ``code_revision`` was empty, because
+``vast service upgrade`` deployed a service whose ``code_revision`` was empty, because
 only CI passed ``ROBOVAST_GIT_REVISION`` and the build scripts did not. ``get_service_info``
 then reported no revision at all, so "is the change I just made loaded?" -- the one question
 that field exists to answer -- could only be answered by probing for the behaviour.

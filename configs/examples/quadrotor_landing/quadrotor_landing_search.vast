@@ -1,7 +1,8 @@
 version: 3
 metadata:
   name: quadrotor_landing_random
-# Iterative random search. Run with:  vast execution local run
+# Iterative random search. Run with:
+#   vast workspace run <workspace> quadrotor_landing_search.vast
 # A toy 2D quadrotor must hover-and-land on a pad in wind; the search explores
 # the parameter space for the regions that make it fail. Random is the baseline
 # (coverage); see quadrotor_landing_qd.vast (diversity) and

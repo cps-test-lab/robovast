@@ -573,8 +573,8 @@ def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
 
 
 def test_the_toleration_is_not_duplicated(monkeypatch):
-    """Additive and idempotent: while Kueue is still in the path it appends the same
-    toleration, and rendering twice must not accumulate copies."""
+    """Additive and idempotent: the toleration is appended rather than assigned, so
+    rendering twice must not accumulate copies."""
     m = _job_manifest(_runner(monkeypatch))
     tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
     assert len(tolerations) == len({tuple(sorted(t.items())) for t in tolerations})

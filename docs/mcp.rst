@@ -28,10 +28,10 @@ cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several
-``.vast`` files in that workspace. There is no server-side "current project" —
-``.robovast_project`` / ``vast init`` bind the *CLI's* project (for
-``vast exec local run``, ``vast results``) and never select what
-the service runs. Get a ``workspace_id`` either by pinning a directory in place
+``.vast`` files in that workspace. There is no "current project" anywhere — not
+server-side, and no longer CLI-side either: every command names its own input, and
+``vast workspace run`` takes the same workspace-and-path pair this tool does.
+Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
 only for a service running on that host), or by uploading one from the machine
 that holds the project: ``vast workspace init <dir>``. That is the only route for
@@ -56,8 +56,8 @@ The tools live at ``/mcp`` on the service's own port — ``vast serve`` mounts t
 there by default, so one URL and one token reach the web UI, the REST API and the
 MCP tools together. There is no separate server process to start.
 
-Register a client against that URL. ``vast serve``, ``vast login`` and ``vast exec
-cluster token`` each print the invocation, so the port, the path and the header set
+Register a client against that URL. ``vast serve``, ``vast login`` and ``vast service
+token`` each print the invocation, so the port, the path and the header set
 never have to be assembled by hand:
 
 .. code-block:: bash
@@ -84,7 +84,7 @@ soon as the campaign is *named*, so an agent that reads one status and stops has
 user a campaign finished when it had barely begun.
 
 Its hook blocks the first attempt to end a turn on a campaign nobody is waiting for, once,
-and then allows. Three things settle a campaign: backgrounding ``vast wait``, saying
+and then allows. Three things settle a campaign: backgrounding ``vast campaign wait``, saying
 plainly that you are not waiting and that ntfy announces the end, or ``stop_campaign``.
 Blocking until done would hold a three-day sweep's session hostage, which is a worse
 failure than the one being fixed.
@@ -235,7 +235,7 @@ must call the lister to learn the name the getter needs. So an **empty argument 
 
    * - Call
      - Answers
-   * - ``get_cli_help()`` / ``get_cli_help("exec cluster run")``
+   * - ``get_cli_help()`` / ``get_cli_help("workspace run")``
      - the command tree / one command's ``--help``
    * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
      - the page list / matching excerpts / one page in full
@@ -492,12 +492,13 @@ or the deployed one recorded by ``vast login``. The service is
 the single execution authority and owns run-state tracking; there is **no local
 subprocess path**. When no service is reachable the control tools fail loudly
 (``{"error": "no robovast-service reachable — start a 'vast serve' …"}``) rather
-than silently running a divergent local lane. (For a serviceless local run, use
-the ``vast exec local run`` CLI directly.)
+than silently running a divergent local lane. There is no serviceless run at all: a
+local service on its Docker lane is the same path as a remote one, differing only in
+which service answers.
 
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with
-``vast wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
+``vast campaign wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
 elapsed), which returns only once the campaign is genuinely over, past
 postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
 run for days, and a blocking tool call would occupy its caller for the whole of
@@ -526,7 +527,7 @@ one that stops being read.
 Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
-``get_campaign_download``, which hands back the route, the ``vast results download``
+``get_campaign_download``, which hands back the route, the ``vast campaign download``
 command with the id filled in, and a URL when this deployment declares an origin to build
 one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
 a copy there is not a fact the service records, so claiming one would be advertising what
@@ -537,14 +538,14 @@ somebody else produced and registers it, so it lists, displays and can be re-run
 one that ran here. It has two sources and **neither carries bytes, for the same reason
 the download is link-only** — a campaign archive is routinely gigabytes.
 ``archive_path`` is a path on the *service host*; an archive on your own machine goes
-through ``vast results import`` or the web UI's campaign view, both of which upload it
+through ``vast campaign import`` or the web UI's campaign view, both of which upload it
 over a side channel (:doc:`http_api`) and then call this same operation.
 ``share_archive`` names one on the configured share, which the **service** downloads
 itself — so a campaign moving between two servers never travels through anybody's
 laptop, and needs no share credentials of yours.
 
 The tool returns a ``campaign_id`` rather than a report, because the import is a
-tracked operation: watch it with ``vast wait <campaign_id>``, and read the per-stage
+tracked operation: watch it with ``vast campaign wait <campaign_id>``, and read the per-stage
 verdicts from the campaign's ``_execution/import.json``. Per stage because an archive
 carries three version surfaces of its own and each can independently be older, newer,
 absent or corrupt; a *degraded* import is usable-but-incomplete rather than a failure,
@@ -554,6 +555,13 @@ There is no MCP tool for listing or downloading from the share. That is delibera
 it is the same rule as the wait tools: a share listing is a CLI call
 (``vast share list``), and a transfer that can outlive a turn is a shell command
 (``vast share download``, ``vast share import``), which costs this surface nothing.
+
+``vast share`` is the one command group that does **not** go through the service: it
+speaks to Nextcloud, GCS or Zenodo directly, with the caller's own credentials, which is
+why it ships with the full ``robovast`` distribution rather than with ``robovast-client``.
+An agent holding only the client can therefore have its campaigns *uploaded* to a share
+(that path runs in the service, as a launch flag) but cannot list or fetch from one. Say
+so rather than suggesting the command, if that is the install you are on.
 
 Pass a ``description`` (≤ 200 characters) saying what the run is *for*. It is
 recorded on the campaign row in its ``campaign.db``, so it travels with the
@@ -664,7 +672,7 @@ owns, with no log reading at all:
    passing the budget there says only that the phase outlasted a single run. Converting a
    large campaign's rosbags always does, and asserting a stall over it reported a healthy
    campaign as wedged — pointing the reader at a job that had already finished, and ending
-   ``vast wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
+   ``vast campaign wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
    ``get_campaign_log`` for what the phase is doing.
 
 That backstop is not wasted — it is simply a different job. Both lanes now *enforce* a
@@ -700,7 +708,7 @@ status read even by its own timeout.
 
    {"level": "error", "check": "sim-time-rate", "detail": "sim advanced 3.1s in 60s of wall time"}
 
-RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast wait`` (exit 5);
+RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (exit 5);
 ``warn`` never does, and surfaces on ``get_job_state`` and the campaign's own exit.
 ``check`` is a stable slug the simulator owns — carried through untouched, so it is matched
 and reported, never interpreted — and ``detail`` is its observation in its own words. There
@@ -722,7 +730,7 @@ edited. The precedent is :mod:`robovast.common.scenario_markers`, for the same r
 
    A check the simulator says it **did not run** is the same trap one level down, and it is
    reported as its own thing rather than as a finding: ``health_checks_not_run`` on
-   ``get_campaign_status`` and a ``check did not run`` line from ``vast wait``, each carrying
+   ``get_campaign_status`` and a ``check did not run`` line from ``vast campaign wait``, each carrying
    the simulator's own reason. Never turned into a ``warn`` -- a finding has a ``level`` its
    simulator chose, and manufacturing one for a check that reached no verdict would put
    RoboVAST's word in the simulator's mouth. roqsim's ``robot-motion`` is the case to know:
@@ -992,7 +1000,7 @@ The assistant may even skip step 2: ``start_campaign`` on a ``build:<tag>`` proj
 the cluster), and the assistant **never handles a registry reference or
 credentials** — the symbolic ``build:<tag>`` is all it ever sees. Requires a
 reachable ``robovast-service`` (a ``vast serve`` or a tunnel); on the cluster it
-also requires a registry configured at ``vast exec cluster setup`` (see
+also requires a registry configured at ``vast cluster setup`` (see
 :doc:`cluster_execution`).
 
 .. _mcp-describe-world:

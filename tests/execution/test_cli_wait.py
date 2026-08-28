@@ -17,7 +17,7 @@ import time
 import pytest
 from click.testing import CliRunner
 
-from robovast.client import cli as client_cli
+from robovast.client import campaign_cli
 from robovast.client.status import Phase, Status
 
 
@@ -37,14 +37,14 @@ def service(monkeypatch):
         def _client(*_a, **_k):
             yield _Client(), "fake service"
 
-        monkeypatch.setattr(client_cli, "service_client", _client)
+        monkeypatch.setattr(campaign_cli, "service_client", _client)
         return seen
     return _install
 
 
 # both _run() and _run(name, *flags) are used
 def _run(campaign="c1", *args):  # pylint: disable=keyword-arg-before-vararg
-    return CliRunner().invoke(client_cli.cli,
+    return CliRunner().invoke(campaign_cli.campaign,
                               ["wait", campaign, "--interval", "0.01", *args])
 
 
@@ -148,7 +148,7 @@ def statuses(monkeypatch):
         def _client(*_a, **_k):
             yield _Client(), "fake service"
 
-        monkeypatch.setattr(client_cli, "service_client", _client)
+        monkeypatch.setattr(campaign_cli, "service_client", _client)
         return seen
     return _install
 
@@ -216,7 +216,7 @@ def test_a_fresh_error_finding_ends_the_wait_with_its_own_code(statuses):
     # Three things the message must say, and each was got wrong by a draft of it.
     assert "NOT touched" in result.output, "a waiter stopping must not read as a run stopping"
     assert "STILL RUNNING" in result.output
-    assert "vast wait c1" in result.output, "the way back has to be named"
+    assert "vast campaign wait c1" in result.output, "the way back has to be named"
 
 
 def test_a_finding_exit_says_what_to_do_next_from_what_the_finding_already_told_you(statuses):

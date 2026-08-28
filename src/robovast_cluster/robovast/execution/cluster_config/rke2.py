@@ -124,7 +124,7 @@ class Rke2ClusterConfig(BaseConfig):
             f"cannot be moved by re-applying its manifest -- an existing pod is kept as it "
             f"is, so the new placement would be reported but never take effect. Delete it "
             f"(`kubectl delete pod {pod_name} -n {namespace}`) or run "
-            f"`vast exec cluster cleanup` first; the store is a transfer buffer, so nothing "
+            f"`vast cluster cleanup` first; the store is a transfer buffer, so nothing "
             f"durable is lost.")
 
     def setup_cluster(self, **kwargs):
@@ -280,7 +280,7 @@ MinIO console is available at port 9001.
         if not pod_ok:
             raise RuntimeError(
                 f"{pod_msg}. The RKE2 MinIO storage pod is required. "
-                "Set it up with: vast execution cluster setup rke2"
+                "Set it up with: vast cluster setup rke2"
             )
         logging.debug(pod_msg)
 

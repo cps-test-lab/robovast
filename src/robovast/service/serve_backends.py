@@ -32,7 +32,7 @@ class ServeBackend(Protocol):
     """Builds the :class:`~robovast.service.interface.RobovastInterface` for one lane."""
 
     def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None):
+              workspace_dir=None, results_dir=None):
         """Return the service implementation for this lane.
 
         Args:
@@ -42,6 +42,9 @@ class ServeBackend(Protocol):
             store: A prepared :class:`~robovast.service.workspaces.WorkspaceStore`, or
                 ``None`` to let the lane make its own.
             workspace_dir: A directory pinned in place instead of uploaded.
+            results_dir: Where local campaigns land, or ``None`` for the lane's default.
+                Only the local lane has one; a cluster campaign's results live in the
+                object store.
         """
 
     #: One word for the storage this lane uses, for the startup line.

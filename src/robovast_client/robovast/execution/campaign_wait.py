@@ -126,7 +126,7 @@ def wait_for_campaign_outcome(campaign_id: str, *, client=None, service_url: str
     """Block until *campaign_id* is over; report ``"succeeded"`` or ``"failed"``.
 
     The two-value reduction of :func:`wait_for_campaign_status`, for callers that branch
-    rather than inspect -- ``vast exec cluster run --wait-and-download`` is the one that
+    rather than inspect -- ``vast workspace run --wait-and-download`` is the one that
     exists. It also echoes the failure reason, which is on the Status and would otherwise
     be dropped by the reduction.
 

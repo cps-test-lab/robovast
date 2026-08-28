@@ -119,7 +119,7 @@ def test_published_but_no_prefix_names_upgrade(deployment):
     check = _by_name(doc.check_deployment(), "build registry")
     assert check.ok is False
     assert "published at robovast.example.org" in check.detail
-    assert "vast exec cluster upgrade" in check.fix
+    assert "vast service upgrade" in check.fix
     assert "setup" not in check.fix, (
         "with the Ingress readable, this check knows which remedy applies -- offering "
         "both here would put the ambiguity back that it exists to resolve")
@@ -130,7 +130,7 @@ def test_not_published_names_setup_with_its_tls_options(deployment):
 
     check = _by_name(doc.check_deployment(), "build registry")
     assert check.ok is False
-    assert "vast exec cluster setup" in check.fix
+    assert "vast cluster setup" in check.fix
     assert "--ingress-host" in check.fix
     assert "upgrade" not in check.fix
     # Publishing over plain HTTP is refused, so naming --ingress-host alone would send the
@@ -147,7 +147,7 @@ def test_a_broken_route_is_reported_only_once_there_is_a_registry(deployment):
     route = _by_name(checks, "registry route")
     assert route.ok is False
     assert "/v2" in route.detail
-    assert "vast exec cluster upgrade" in route.fix
+    assert "vast service upgrade" in route.fix
 
     deployment.prefix = ""
     assert not [c for c in doc.check_deployment() if c.name == "registry route"], (
@@ -233,7 +233,7 @@ def test_an_incapable_service_carries_its_reason():
 
     checks = _client_checks(VersionInfo(
         robovast_version="2.0.0", can_build_images=False,
-        build_unavailable="nowhere to push it. … 'vast exec cluster upgrade' …"))
+        build_unavailable="nowhere to push it. … 'vast service upgrade' …"))
     assert checks[0].ok is False
     assert "upgrade" in checks[0].fix
     assert checks[0].optional, "a service without a registry is not a broken install"

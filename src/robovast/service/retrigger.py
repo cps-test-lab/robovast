@@ -397,7 +397,7 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
             f"cannot retrigger {source_id!r}: its config cannot be brought forward "
             f"automatically. {e}\n"
             f"  Materialise it as a workspace to finish by hand:\n"
-            f"      vast exec retrigger {source_id} --to-workspace <name>") from e
+            f"      vast campaign rerun {source_id} --to-workspace <name>") from e
     config_migration = _config_migration_of(vast_path)
 
     # The images first: it is the refusal most likely to fire, and it needs no directory.

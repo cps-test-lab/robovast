@@ -21,7 +21,7 @@
 campaign as Kubernetes Jobs and leaves results at
 ``<campaign_root>/<config>/<run>/`` so the controller's scoring and store are
 backend-agnostic. It is meant to run **inside the controller pod**
-(``vast exec cluster run``), where the storage backend is reachable directly and
+(a cluster campaign), where the storage backend is reachable directly and
 with full bandwidth.
 
 The job-manifest toolkit lives here in :class:`BatchJobRunner` (built only via

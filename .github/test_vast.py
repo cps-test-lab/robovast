@@ -4,8 +4,12 @@
 import argparse
 import math
 import os
+import re
+import secrets
+import signal
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -229,94 +233,261 @@ def check_job_directories(campaign_dir):
     return True
 
 
+def capture_command(cmd, repo_root, cwd=None):
+    """Run a command and return ``(exit_code, stdout)``, without raising."""
+    print(f"Running: {cmd}")
+    result = subprocess.run(
+        ['poetry', 'run', '--directory', str(repo_root),
+         'bash', '-c', f'cd {cwd} && {cmd}'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+    return result.returncode, result.stdout or ""
+
+
+class LocalService:
+    """A ``vast serve`` on the local Docker lane, for the duration of the test.
+
+    A campaign runs through a service -- that is the only execution path there is -- so an
+    end-to-end test needs one. Started here rather than assumed, so the test is
+    self-contained and so CI fails on "the service did not come up" with that sentence
+    rather than with a connection error from whatever ran next.
+
+    The auth token is generated here and put in the environment of both halves: the
+    service has no unauthenticated mode, and a token it invents at startup would only be
+    printed, not readable by the client this script then runs.
+
+    ``ROBOVAST_AUTH_TOKEN`` is what the *service* reads; the client reads a stored login,
+    so this also runs ``vast login`` with that token. Into ``ROBOVAST_CONFIG`` under the
+    test directory rather than ``~/.config``, so running this script on a developer's
+    machine does not overwrite the login they already have.
+    """
+
+    def __init__(self, repo_root, results_dir, cwd):
+        self.repo_root = repo_root
+        self.results_dir = results_dir
+        self.cwd = cwd
+        self.proc = None
+        self.log = None
+
+    def __enter__(self):
+        os.environ.setdefault('ROBOVAST_AUTH_TOKEN', secrets.token_urlsafe(16))
+        os.environ['ROBOVAST_CONFIG'] = os.path.join(self.cwd, 'robovast-login.json')
+        self.log = open(os.path.join(self.cwd, 'serve.log'), 'w', encoding='utf-8')
+        cmd = (f'vast serve --backend local --no-mcp '
+               f'--results-dir {self.results_dir}')
+        print(f"Starting: {cmd}")
+        self.proc = subprocess.Popen(
+            ['poetry', 'run', '--directory', str(self.repo_root),
+             'bash', '-c', f'cd {self.cwd} && {cmd}'],
+            stdout=self.log, stderr=subprocess.STDOUT, text=True,
+            start_new_session=True,
+        )
+        self._wait_until_answering()
+        return self
+
+    def _wait_until_answering(self, timeout=180):
+        """Block until the service answers *and* this client is logged in to it.
+
+        ``vast login`` is the readiness probe rather than ``vast doctor``: it verifies the
+        service with a real request before storing anything, so a zero exit means both
+        halves of "can I use it" at once. ``vast doctor`` cannot be the probe here because
+        it fails on a missing login -- which is the very thing this establishes -- so it
+        would have waited out the full timeout on a service that was up all along.
+
+        ``--no-link``: logging in would otherwise symlink ``vast`` onto the PATH, which is
+        a change to the machine and nothing this test needs.
+        """
+        # The port `vast serve` binds, from the constant it binds it with, rather than an
+        # 8800 written here that would keep pointing at the old port if it ever moved.
+        from robovast.service.interface import DEFAULT_PORT
+
+        url = f"http://127.0.0.1:{DEFAULT_PORT}"
+        token = os.environ['ROBOVAST_AUTH_TOKEN']
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(
+                    f"vast serve exited with {self.proc.returncode} before answering; "
+                    f"its log follows:\n{self._read_log()}")
+            code, _ = capture_command(
+                f"vast login {url} --token {token} --name ci --no-link",
+                self.repo_root, cwd=self.cwd)
+            if code == 0:
+                print("✓ robovast-service is answering, and this client is logged in")
+                # Now that there are credentials, doctor can say what it was going to say.
+                capture_command('vast doctor', self.repo_root, cwd=self.cwd)
+                return
+            time.sleep(3)
+        raise RuntimeError(
+            f"vast serve did not answer within {timeout}s; its log follows:\n"
+            f"{self._read_log()}")
+
+    def _signal_group(self, sig):
+        try:
+            os.killpg(os.getpgid(self.proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            # Already gone, or never became a group leader; the direct signal is all
+            # that is left and is right in both cases.
+            self.proc.send_signal(sig)
+
+    def _read_log(self):
+        try:
+            with open(os.path.join(self.cwd, 'serve.log'), encoding='utf-8') as fh:
+                return fh.read()[-4000:]
+        except OSError as exc:
+            return f"(could not read serve.log: {exc})"
+
+    def __exit__(self, *_exc):
+        # The whole group, not ``self.proc``: what Popen holds is the ``poetry run bash``
+        # wrapper, and signalling it leaves the ``vast serve`` underneath running. It kept
+        # port 8800 for the rest of the job, so the *next* LocalService died on "address
+        # already in use" -- a failure that named neither this teardown nor the test that
+        # actually leaked. ``start_new_session=True`` above is what makes the group killable.
+        if self.proc is not None and self.proc.poll() is None:
+            self._signal_group(signal.SIGTERM)
+            try:
+                self.proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self._signal_group(signal.SIGKILL)
+                self.proc.wait(timeout=10)
+        if self.log is not None:
+            self.log.close()
+        # The service log is where several failures are only visible, so surface it
+        # whatever happened -- a green run costs a few lines, a red one needs them.
+        print("--- vast serve log (tail) ---")
+        print(self._read_log())
+        return False
+
+
 def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
-    """Test complete VAST workflow: init -> execution -> postprocessing."""
+    """Test the complete workflow: serve -> workspace init -> workspace run -> postprocess.
+
+    This is the only end-to-end test of the whole stack, so it drives the real path a user
+    takes: a campaign runs a *workspace's* project through a service. It used to call
+    ``vast exec local run``, an in-process Docker lane with no service and no workspace,
+    which no longer exists -- and which tested a path the documentation did not describe.
+    """
     print("\n" + "="*60)
     print("Testing: Complete VAST workflow")
     print("="*60)
     print(f"Test directory: {test_directory}")
     print(f"VAST file: {vast_file_path}")
-    
-    # Get the config path and repo root
+
     repo_root = Path(__file__).parent.parent
     config_path = Path(vast_file_path)
     results_dir = os.path.join(test_directory, "results")
-    
-    # Handle relative paths
+
     if not config_path.is_absolute():
         config_path = repo_root / config_path
-    
+
     if not config_path.exists():
         print(f"✗ Config file not found: {config_path}")
         return False
-    
+
     print(f"✓ Config file found: {config_path}")
-    
+
+    project_dir = config_path.parent
+    workspace_name = f"citest-{project_dir.name}"
+
     try:
-        # Step 1: vast init
-        print("\n--- Step 1: vast init ---")
-        cmd_init = f"vast init {config_path}"
-        
-        result = run_command(cmd_init, repo_root, cwd=test_directory)
-        
-        if result != 0:
-            print("✗ vast init failed")
-            return False
-        
-        print("✓ vast init executed successfully")
-        
-        # Check for .robovast_project file (critical for execution step)
-        if not os.path.exists(os.path.join(test_directory, '.robovast_project')):
-            print("✗ .robovast_project file not found - execution step will fail")
-            return False
-        
-        print("✓ .robovast_project file exists - environment is properly initialized")
-    
-        # Step 2: vast exec local run
-        # Use a temporary directory for output
-        print("\n--- Step 2: vast exec local run ---")
-        
-        cmd_exec = f'vast exec local run'
-        if runs:
-            cmd_exec += f' -r {runs}'
-        
-        # Add config option if provided
-        if config:
-            cmd_exec += f' -c {config}'
-        
-        result = run_command(cmd_exec, repo_root, cwd=test_directory, stream_output=True)
-        
-        if result != 0:
-            print("✗ vast exec local run failed")
-            return False
-        
-        print("✓ vast exec local run executed successfully")
-        
-        # Check output structure
+        with LocalService(repo_root, results_dir, test_directory):
+            # Step 1: push the workspace. A service cannot read the caller's disk, so
+            # this is the one step that has to happen client-side.
+            #
+            # Every later step addresses the workspace by the id `init` reports, never by
+            # the name asked for: the service auto-suffixes a name that is taken
+            # (`foo` -> `foo-2`), so on the second workflow of a run the requested name
+            # still resolves -- to the *previous* workflow's workspace. The packing test
+            # runs two workflows over the same name, and its packed half silently
+            # re-ran the baseline's project that way: same job count, and a comparison
+            # that looked like a packing regression rather than a stale workspace.
+            print("\n--- Step 1: vast workspace init ---")
+            code, out = capture_command(
+                f"vast workspace init {project_dir} --name {workspace_name}",
+                repo_root, cwd=test_directory)
+            if code != 0:
+                print("✗ vast workspace init failed")
+                return False
+            workspace_id = _workspace_id_from_init(out)
+            if not workspace_id:
+                print(f"✗ could not read the workspace id out of:\n{out}")
+                return False
+            print(f"✓ workspace pushed as {workspace_id}")
+
+            # Step 2: validate before spending any compute. Reports every problem at
+            # once, and costs nothing.
+            print("\n--- Step 2: vast workspace validate ---")
+            code = run_command(
+                f"vast workspace validate {workspace_id} {config_path.name}",
+                repo_root, cwd=test_directory, check=False)
+            if code != 0:
+                print("✗ vast workspace validate failed")
+                return False
+            print("✓ project validates")
+
+            # Step 3: launch, then wait for it as its own command. `vast campaign wait`
+            # exits only once the campaign is genuinely over, and its exit code is the
+            # answer.
+            print("\n--- Step 3: vast workspace run ---")
+            cmd_run = f"vast workspace run {workspace_id} {config_path.name}"
+            if runs:
+                cmd_run += f" -r {runs}"
+            if config:
+                cmd_run += f" --filter {config}"
+            cmd_run += ' --description "CI: end-to-end workflow"'
+            code, out = capture_command(cmd_run, repo_root, cwd=test_directory)
+            if code != 0:
+                print("✗ vast workspace run failed")
+                return False
+            campaign_id = _campaign_id_from_launch(out)
+            if not campaign_id:
+                print(f"✗ could not read the campaign id out of:\n{out}")
+                return False
+            print(f"✓ launched {campaign_id}")
+
+            print("\n--- Step 4: vast campaign wait ---")
+            # Run as the whole command, unwrapped: anything appended would report the
+            # wrapper's status and turn a failed campaign into a reported success.
+            code = run_command(f"vast campaign wait {campaign_id}", repo_root,
+                               cwd=test_directory, check=False, stream_output=True)
+            if code != 0:
+                print(f"✗ vast campaign wait exited {code} "
+                      "(1 failed/stopped, 2 timeout, 3 no phase, 4 stalled, "
+                      "5 health finding)")
+                return False
+            print("✓ campaign finished")
+
+            # Step 5: re-run postprocessing through the service. Inside the service
+            # block, because postprocessing acts on a campaign, on whichever lane its runs
+            # executed -- it used to be `vast results postprocess` against the results
+            # tree, which is why this step used to sit after the shutdown.
+            #
+            # Dispatched, not awaited, exactly like a launch: the campaign re-enters its
+            # postprocessing phase, so the wait is what says it worked.
+            print("\n--- Step 5: vast campaign postprocess ---")
+            code = run_command(f"vast campaign postprocess {campaign_id}",
+                               repo_root, cwd=test_directory)
+            if code != 0:
+                print("✗ vast campaign postprocess failed")
+                return False
+            code = run_command(f"vast campaign wait {campaign_id}", repo_root,
+                               cwd=test_directory, check=False, stream_output=True)
+            if code != 0:
+                print(f"✗ wait after postprocess exited {code}")
+                return False
+            print("✓ postprocessing re-ran through the service")
+
+        # The service is down from here: this reads the results tree directly.
         if not check_results_dir_structure(results_dir):
             return False
-        
         print("✓ Output structure is valid")
-        
-        # Step 3: vast results postprocess
-        print("\n--- Step 3: vast results postprocess ---")
 
-        cmd_postprocess = f'vast results postprocess'
-
-        # Execute in the test directory where .robovast_project exists
-        result = run_command(cmd_postprocess, repo_root, cwd=test_directory)
-
-        if result != 0:
-            print("\u2717 vast results postprocess failed")
-            return False
-
-        print("\u2713 vast results postprocess executed successfully")
-        
-        print("✓ Postprocessing completed successfully")
-        
         print("\n✓ Complete workflow succeeded!")
         return True
-        
+
     except subprocess.CalledProcessError as e:
         print(f"✗ Command failed with exit code {e.returncode}")
         return False
@@ -324,6 +495,27 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
         print(f"✗ Unexpected error: {e}")
         traceback.print_exc()
         return False
+
+
+def _workspace_id_from_init(output):
+    """The workspace id from ``workspace init``'s confirmation line.
+
+    It prints ``workspace <id> (<name>) initialized from <dir> (<n> files)``. The id and
+    not the name, because the name it reports may not be the name that was asked for.
+    """
+    match = re.search(r"^workspace (\S+) \(", output, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _campaign_id_from_launch(output):
+    """The campaign id from ``workspace run``'s confirmation line.
+
+    It prints ``Launched campaign '<id>'.``; the id is not otherwise knowable, because the
+    *service* names the campaign -- CreateCampaignRequest carries no id, so the caller
+    cannot choose one up front.
+    """
+    match = re.search(r"Launched campaign '([^']+)'", output)
+    return match.group(1) if match else ""
 
 
 def _find_campaign_dir(results_dir):
@@ -516,19 +708,19 @@ def main():
         '-c', '--config',
         type=str,
         default=None,
-        help='Configuration to run (will be passed as -c <config> to vast exec)'
+        help='Configuration to run (passed as --filter <config> to vast workspace run)'
     )
     parser.add_argument(
         '-d', '--test-directory',
         type=str,
         required=True,
-        help='Directory for test output (will be passed as -d <directory> to vast exec)'
+        help='Directory the test runs in and writes its output to'
     )
     parser.add_argument(
         '-r', '--runs',
         type=int,
         default=None,
-        help='Number of runs (will be passed as -r <runs> to vast exec)'
+        help='Number of runs (passed as -r <runs> to vast workspace run)'
     )
     parser.add_argument(
         '--no-packing-test',

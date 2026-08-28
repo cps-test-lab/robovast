@@ -301,7 +301,7 @@ export interface ContainerCpu {
 export interface CpuSummary {
   containers: ContainerCpu[]
   /** Summed across containers, because a Kubernetes pod's request is the sum of its
-   *  containers' and that is the figure that divides into the Kueue quota. Either is null
+   *  containers' and that is the figure admission measures against a node. Either is null
    *  unless every container contributed — a partial sum is not comparable to a whole one. */
   declaredPod: number | null
   suggestedPod: number | null

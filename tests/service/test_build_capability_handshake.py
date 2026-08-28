@@ -69,8 +69,8 @@ def test_the_local_lane_can_always_build(local):
 
 
 def test_it_does_not_probe_docker(local, monkeypatch):
-    """The regression that matters. `check_docker_access` shells out with a 15 s timeout,
-    and this is the call that must answer instantly."""
+    """The regression that matters. Asking the Docker daemon means shelling out with a
+    timeout, and this is the call that must answer instantly."""
     import subprocess
 
     def _boom(*_a, **_k):
@@ -118,9 +118,9 @@ def test_a_cluster_without_one_says_why_and_how_to_fix_it():
     assert v.build_unavailable
     # Both remedies, because the in-pod service cannot tell the two states apart.
     # pylint: disable-next=unsupported-membership-test  -- build_unavailable is asserted truthy three lines up
-    assert "vast exec cluster upgrade" in v.build_unavailable
+    assert "vast service upgrade" in v.build_unavailable
     # pylint: disable-next=unsupported-membership-test  -- as above
-    assert "vast exec cluster setup" in v.build_unavailable
+    assert "vast cluster setup" in v.build_unavailable
 
 
 def test_the_reason_carries_no_registry_detail():

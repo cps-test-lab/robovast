@@ -78,7 +78,7 @@ def _attach_objective_history(result: dict, client, campaign_id: str) -> None:
     reversal. The first design put it in a separate ``get_search_progress`` on the grounds that a
     per-batch array does not belong on a polled payload — true of the HTTP status, which every
     campaign card fetches every 1.5s, and false here: this is an occasional agent call, and the
-    tooling steers agents to ``vast wait`` rather than to polling it. Meanwhile a second tool has to
+    tooling steers agents to ``vast campaign wait`` rather than to polling it. Meanwhile a second tool has to
     be *discovered*, and an agent that must remember to make a follow-up call does not make it —
     which is the same lesson ``_wait_next_step`` exists for.
 
@@ -154,7 +154,7 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # CLI monitor and this tool cannot disagree about whether a run is wedged.
     result.update(stall_report(st))
     # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast wait` (exit 5), so a reader of this tool has to be shown the same thing
+    # is what stops `vast campaign wait` (exit 5), so a reader of this tool has to be shown the same thing
     # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
     # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
     findings = error_findings(st)
@@ -212,7 +212,7 @@ def _wait_next_step(campaign_id: str) -> str:
     and be notified when it exits. Same poll loop either way (``execution.campaign_wait``);
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
-    return (f"run in the background: vast wait {campaign_id} "
+    return (f"run in the background: vast campaign wait {campaign_id} "
             f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
 
 
@@ -224,10 +224,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    from_campaign: str = "") -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
-    This is how a RoboVAST experiment is executed — a ``docker compose`` or a local script
-    produces no pinned image, no provenance and no repetitions, so its output compares with
-    nothing. Size the lane with ``get_resource_usage`` first, and pilot one configuration
-    before the full sweep (``config_filter`` + ``runs=1``).
+    The only way an experiment is executed: a ``docker compose`` produces no pinned image,
+    no provenance and no repetitions, so its output compares with nothing. Size the lane
+    with ``get_resource_usage`` first, and pilot one configuration before the full sweep
+    (``config_filter`` + ``runs=1``).
 
     **It is not over when this returns** — background the ``next_step`` command to be told
     when it truly is. Not waiting is fine if you *say* so (ntfy announces the end); stopping
@@ -353,7 +353,7 @@ def _campaign_next_step(result: dict) -> str:
 def get_campaign_status(campaign_id: str) -> dict:
     """Is it progressing, is it wedged, and are there results? One read, no waiting.
 
-    To *wait*, background ``vast wait <campaign_id>``: it exits when the campaign is
+    To *wait*, background ``vast campaign wait <campaign_id>``: it exits when the campaign is
     genuinely over. This is a single look at one you are not waiting on.
 
     Three fields decide what to do next, and ``status`` is none of them.
@@ -367,7 +367,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     lane does not enforce it, so a stalled local run stays alive to inspect.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
-    itself; what ends a ``vast wait`` (exit 5), and it needs no declared timeout.
+    itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
     ``get_job_state`` is the fuller read.
 
     ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the

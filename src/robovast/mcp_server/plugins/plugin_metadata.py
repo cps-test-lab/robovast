@@ -51,7 +51,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
     "robovast.cli_plugins": {
         "description": (
             "CLI sub-commands exposed under the ``vast`` entry point "
-            "(e.g. ``vast execution``, ``vast results``)."
+            "(e.g. ``vast cluster``, ``vast results``)."
         ),
         "loader_module": "robovast.client.cli",
     },

@@ -2,7 +2,8 @@ version: 3
 metadata:
   name: quadrotor_landing_optuna
 # Optuna TPE search. Run with:
-#   vast execution local run    (needs the 'optuna' extra: pip install 'robovast[optuna]')
+#   vast workspace run <workspace> quadrotor_landing_optuna.vast
+# (needs the 'optuna' extra: pip install 'robovast[optuna]')
 # Sample-efficiently drives toward the SINGLE most failure-prone configuration
 # (exploitation) — the complement to random (coverage) and qd (diversity). Same
 # scenario/sim/extract; only strategy + strategy_parameters differ. Configurations

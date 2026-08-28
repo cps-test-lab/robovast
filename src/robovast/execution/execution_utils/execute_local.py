@@ -14,152 +14,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import fnmatch
 import logging
 import os
 import shlex
-import sys
-import tempfile
 
 import yaml
 
-from robovast.client.project_config import get_project_config
 from robovast.common import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COMPAT,
                              generate_execution_yaml_script, get_execution_env_variables,
-                             load_config, plan_containers, prepare_campaign_configs,
-                             scenario_env)
+                             plan_containers, scenario_env)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
                                     declared_job_seconds)
-from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents, dump_multi_document_yaml,
                                        job_artifact_rel, local_parameter_overrides, read_job_links,
-                                       resolve_robovast_image, sidecar_backend_env,
-                                       write_job_links_manifest)
+                                       sidecar_backend_env, write_job_links_manifest)
 from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
 from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
-
-
-def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
-                               skip_resource_allocation=True, log_tree=False, debug=False,
-                               gui=False):
-    """Initialize common setup for local execution commands.
-
-    Performs all common setup steps including:
-    - Loading project and execution configuration
-    - Validating config exists
-    - Creating output directory
-    - Preparing run configuration files
-    - Generating config path
-
-    Args:
-        config: The config name to execute
-        output_dir: Directory where output files will be written, if none a temporary directory is created
-        runs: Number of runs per config
-        feedback_callback: Function to call for feedback messages (e.g., print or click.echo)
-
-    Raises:
-        SystemExit: If initialization fails
-    """
-    if output_dir:
-        logger.info(f"Initializing local execution environment in '{output_dir}'...")
-    else:
-        logger.info("Initializing local execution environment in temporary directory...")
-    # Load configuration
-    project_config = get_project_config()
-    config_path = project_config.config_path
-    logger.debug(f"Loading config from: {config_path}")
-    execution_parameters = load_config(config_path, "execution")
-    docker_image = resolve_robovast_image(
-        config_image=_declared_scenario_image(execution_parameters))
-    pre_command = execution_parameters.get("pre_command")
-    post_command = execution_parameters.get("post_command")
-    results_dir = project_config.results_dir
-
-    # Use execution_parameters value if runs is not provided
-    if runs is None:
-        if "runs" not in execution_parameters:
-            logger.error("Number of runs not specified in command or config")
-            feedback_callback("Error: Number of runs not specified in command or config.")
-            sys.exit(1)
-        else:
-            runs = execution_parameters["runs"]
-
-    logger.debug(f"Using Docker image: {docker_image}")
-
-    # Generate and filter configs
-    logger.debug("Generating scenario variations")
-    temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    campaign_data = generate_scenario_variations(
-        variation_file=config_path,
-        progress_update_callback=None,
-        output_dir=temp_dir.name
-    )
-
-    if not campaign_data["configs"]:
-        logger.error("No configs found in vast-file")
-        feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
-        sys.exit(1)
-
-    # Filter to configs matching the pattern if requested
-    if config:
-        matched = [cfg for cfg in campaign_data["configs"] if fnmatch.fnmatch(cfg['name'], config)]
-
-        if not matched:
-            feedback_callback(f"Error: No configs matched pattern '{config}'.", file=sys.stderr)
-            feedback_callback("Available configs:")
-            for cfg in campaign_data["configs"]:
-                feedback_callback(f"  - {cfg['name']}")
-            sys.exit(1)
-
-        campaign_data["configs"] = matched
-
-    logger.debug(f"Preparing {len(campaign_data['configs'])} configs from {config_path}...")
-    logger.debug(f"Output directory: {output_dir}")
-
-    # Create temp directory for run() or use output_dir for prepare_run()
-    temp_path = None
-    if not output_dir:
-        temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_", delete=False)
-        logger.debug(f"Using temporary directory for config files: {temp_path.name}")
-        logger.debug(f"Temp path: {temp_path.name}")
-        config_dir = temp_path.name
-    else:
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except Exception as e:  # pylint: disable=broad-except
-            feedback_callback(f"Error creating output directory: {e}", file=sys.stderr)
-            sys.exit(1)
-        config_dir = output_dir
-
-    try:
-        config_path_result = os.path.join(config_dir, "out_template")
-        prepare_campaign_configs(config_path_result, campaign_data, gui=gui)
-        logger.debug(f"Config path: {config_path_result}")
-    except Exception as e:  # pylint: disable=broad-except
-        feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    logger.debug(f"Configuration files prepared in: {config_dir}")
-
-    # Check if run_as_user differs from local user and warn about potential permission issues
-    execution_params = campaign_data.get("execution", {})
-    run_as_user = execution_params.get("run_as_user", 1000)
-    host_uid = os.getuid()
-    if run_as_user != host_uid:
-        logger.warning(f"Container will run as UID {run_as_user}, but host user is UID {host_uid}. "
-                       f"This may cause permission issues with bind-mounted directories. "
-                       f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
-
-    generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
-                                docker_image, results_dir, os.path.join(config_dir, "run.sh"),
-                                skip_resource_allocation=skip_resource_allocation,
-                                log_tree=log_tree, debug=debug, gui=gui)
-    return os.path.join(config_dir, "run.sh")
 
 
 RUN_SCRIPT_HEADER = """#!/usr/bin/env bash

@@ -23,7 +23,7 @@ import pytest
 from click.testing import CliRunner
 
 from robovast.client import cli as root_cli
-from robovast.client import exec_cli
+from robovast.client import container_cli
 
 
 class _Recorder:
@@ -59,7 +59,7 @@ def recorder(monkeypatch):
         yield rec, "fake service"
 
     monkeypatch.setattr(root_cli, "service_client", _client)
-    monkeypatch.setattr(exec_cli, "service_client", _client)
+    monkeypatch.setattr(container_cli, "service_client", _client)
     monkeypatch.setattr(root_cli, "_resolve_workspace_id", lambda _c, w: w,
                         raising=False)
     return rec
@@ -80,7 +80,7 @@ def test_exec_command_does_not_pin_the_cluster_lane(recorder):
     with the dual-lane service, which resolves the bug structurally -- so what is worth
     holding is that it does not come back.
     """
-    CliRunner().invoke(exec_cli.execution, ["command", "true"])
+    CliRunner().invoke(container_cli.container, ["exec", "true"])
     request = recorder.calls.get("exec_in_container")
     assert request is not None, "the command never reached the client"
     assert not hasattr(request, "backend"), (
@@ -89,6 +89,6 @@ def test_exec_command_does_not_pin_the_cluster_lane(recorder):
 
 
 def test_stop_container_does_not_pin_the_cluster_lane(recorder):
-    CliRunner().invoke(exec_cli.execution, ["stop-container"])
+    CliRunner().invoke(container_cli.container, ["stop"])
     assert recorder.calls.get("stop_exec_container"), (
         "never reached the client -- or was called with a lane it no longer takes")

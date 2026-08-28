@@ -20,7 +20,6 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
@@ -187,9 +186,9 @@ def get_kubernetes_node_labels_from_config(config_path=None):
     """
     if config_path is None:
         logger.info(
-            "No .vast config named ('vast -V <file>') — no node labels applied. Pass "
-            "'vast -V <file>' to pin pods to a node pool via "
-            "execution.kubernetes.{jobs,control}.node_labels.")
+            "No .vast config named ('--vast <file>') — no node labels applied. Pass "
+            "'vast cluster setup --vast <file>' to pin the control pod to a node pool "
+            "via execution.kubernetes.control.node_labels.")
         return None, None
     try:
         execution = load_config(config_path, subsection="execution", allow_missing=True)
@@ -199,8 +198,8 @@ def get_kubernetes_node_labels_from_config(config_path=None):
         # setup reported success — the failure has to surface here.
         raise ValueError(
             f"could not read node labels from '{config_path}': {exc}\n"
-            "Fix that .vast, or name another one with 'vast -V <file>'. Cluster setup "
-            "needs no config at all — drop the '-V' to deploy with no node selectors."
+            "Fix that .vast, or name another one with '--vast <file>'. Cluster setup "
+            "needs no config at all — drop '--vast' to deploy with no node selectors."
         ) from exc
     k8s = (execution or {}).get("kubernetes") or {}
     jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None
@@ -299,6 +298,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
+                 vast_path=None,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -376,12 +376,12 @@ def setup_server(config_name=None, list_configs=False, force=False,
         raise RuntimeError(
             f"Cluster is already set up with '{existing_config}' config{key_label}.\n"
             "To roll out a new image or refresh credentials, use:\n"
-            "    vast exec cluster upgrade\n"
+            "    vast service upgrade\n"
             "It recovers this cluster's own settings and cannot lose them, which a\n"
             "re-run of `setup` can: setup takes --ingress-host/--registry-* as\n"
             "arguments and re-provisions with whatever it is given this time.\n"
             "To genuinely re-provision, pass --force (supply the original flags too),\n"
-            "or 'vast exec cluster cleanup' first to start from nothing."
+            "or 'vast cluster cleanup' first to start from nothing."
         )
 
     # Before anything is installed or deployed. A refused Ingress combination is a pure
@@ -401,13 +401,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     cluster_config = get_cluster_config(config_name)
 
     # Node labels are the only thing this deploy reads from a .vast, and it reads them
-    # ONLY from a config the operator named with 'vast -V <file>'. Never from an ambient
-    # project: a .robovast_project is discovered by walking up to the filesystem root,
-    # so a project one directory — or ten — above a CWD that has nothing to do with
-    # this cluster would otherwise decide which nodes its pods may run on, or (via a
-    # stale pointer) fail the deploy over a file the operator never mentioned.
+    # ONLY from a config the operator named with '--vast <file>'. There is no ambient
+    # project to fall back on and there must not be one: which nodes a cluster's pods
+    # may run on is not a thing a file in some parent directory of the CWD gets to decide.
     jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
-        get_vast_file_override())
+        vast_path)
     if jobs_node_labels:
         # Refused rather than ignored: nothing applies it, and accepting it silently would
         # place campaign jobs on every node of the cluster while setup reported success --
@@ -489,7 +487,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     )
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
-    # its own RBAC) so clients drive campaigns over HTTP (mode 3), reached via
+    # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via
     # `kubectl port-forward svc/robovast-service`. Requires a controller image
     # that contains the `robovast.service` package + `vast serve`; set
     # ROBOVAST_PROJECT to run the family from your own registry.

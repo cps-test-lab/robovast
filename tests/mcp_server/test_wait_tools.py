@@ -14,7 +14,7 @@ most 600s, and a ROS build doing apt + pip + colcon came back unfinished, to be 
 (``get_image_build_status``) already existed, so the blocking loop was a third thing beside
 it rather than the missing one.
 
-So both are shell commands now (``vast wait``, ``vast image wait``), over loops in
+So both are shell commands now (``vast campaign wait``, ``vast image wait``), over loops in
 ``robovast_client`` that a harness can background, and what each tool owes its caller is
 the *command*, in band, with the ids already filled in. Waiting for the loops themselves is
 tested in ``tests/execution/test_cli_wait`` and ``tests/execution/test_image_build_wait``.
@@ -31,7 +31,7 @@ def test_starting_a_campaign_hands_back_the_command_that_waits_for_it():
     tool call would occupy the caller for as long as the campaign runs.
     """
     step = execution._wait_next_step("camp-1")
-    assert "vast wait camp-1" in step
+    assert "vast campaign wait camp-1" in step
     assert "background" in step
 
 

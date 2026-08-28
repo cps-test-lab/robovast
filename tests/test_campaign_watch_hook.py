@@ -76,12 +76,13 @@ def test_every_pending_campaign_is_named_not_just_the_first(hook, capsys):
         _start(hook, cid)
     reason = _check(hook, capsys)["reason"]
     assert all(cid in reason for cid in ("camp-a", "camp-b", "camp-c"))
-    assert reason.count("vast wait") == 3, "each needs its own runnable command"
+    assert reason.count("vast campaign wait") == 3, "each needs its own runnable command"
 
 
 @pytest.mark.parametrize("command", [
     "vast exec wait camp-a --interval 10",
-    "vast wait camp-a --interval 10",           # after waiting leaves the exec group
+    "vast wait camp-a --interval 10",           # after waiting left the exec group
+    "vast campaign wait camp-a --interval 10",  # and after it landed under `campaign`
     "/home/u/.venv/bin/vast exec wait camp-a",  # an explicit path still counts
 ])
 def test_a_backgrounded_waiter_stands_the_hook_down(hook, capsys, command):
@@ -152,12 +153,12 @@ def _rearm(hook, campaign, stalled, session="s1"):
 
 
 def test_a_stall_re_arms_a_campaign_the_waiter_handed_off(hook, capsys):
-    """`vast wait` exits 4 on a stall, which leaves the campaign alive and still marked
+    """`vast campaign wait` exits 4 on a stall, which leaves the campaign alive and still marked
     handed-off. Without re-arming, the guard is spent and the agent can stop silently on a
     wedged campaign — the exact failure this hook exists to prevent."""
     _start(hook, "camp-a")
     hook.delegated({"session_id": "s1",
-                    "tool_input": {"command": "vast wait camp-a"}}, _ledger(hook))
+                    "tool_input": {"command": "vast campaign wait camp-a"}}, _ledger(hook))
     assert _check(hook, capsys) is None          # handed off: nothing to say
     _rearm(hook, "camp-a", True)
     decision = _check(hook, capsys)
@@ -170,7 +171,7 @@ def test_a_healthy_status_read_does_not_re_arm(hook, capsys):
     nothing is wrong is one agents learn to ignore."""
     _start(hook, "camp-a")
     hook.delegated({"session_id": "s1",
-                    "tool_input": {"command": "vast wait camp-a"}}, _ledger(hook))
+                    "tool_input": {"command": "vast campaign wait camp-a"}}, _ledger(hook))
     assert _check(hook, capsys) is None
     for verdict in (False, None):                # inside budget / no verdict possible
         _rearm(hook, "camp-a", verdict)
@@ -192,13 +193,13 @@ def _rearm_response(hook, campaign, response, session="s1"):
 def _handed_off(hook, capsys, campaign="camp-a"):
     _start(hook, campaign)
     hook.delegated({"session_id": "s1",
-                    "tool_input": {"command": f"vast wait {campaign}"}}, _ledger(hook))
+                    "tool_input": {"command": f"vast campaign wait {campaign}"}}, _ledger(hook))
     assert _check(hook, capsys) is None
     return campaign
 
 
 def test_an_error_finding_re_arms_too(hook, capsys):
-    """`vast wait` exits 5 on one, leaving the campaign live and still marked handed-off — the
+    """`vast campaign wait` exits 5 on one, leaving the campaign live and still marked handed-off — the
     same hole a stall opens, so it needs the same patch. Claiming both and covering one would
     make the guard's own docstring wrong."""
     campaign = _handed_off(hook, capsys)

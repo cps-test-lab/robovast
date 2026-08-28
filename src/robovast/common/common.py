@@ -27,7 +27,7 @@ from .file_cache import FileCache
 
 # numpy and scenario_execution are deliberately NOT imported here. This module is what
 # `from robovast.common import <name>` resolves to, so a module-level import of either
-# is paid by every `vast` invocation -- `vast wait` and `vast --help` included -- for a
+# is paid by every `vast` invocation -- `vast campaign wait` and `vast --help` included -- for a
 # simulator stack and an array library they never touch. See the two use sites below.
 
 

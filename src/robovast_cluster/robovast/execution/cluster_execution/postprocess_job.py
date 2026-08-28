@@ -60,7 +60,7 @@ def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) ->
 
     Reuses the same batching the local path uses (``_batch_rosbags_commands`` merges
     every ``rosbags_*`` entry into one ``rosbags_process`` call per ``bag_dir``), so
-    the Job runs exactly what ``vast results postprocess`` would. Returns a list of
+    the Job runs exactly what ``vast campaign postprocess`` dispatches. Returns a list of
     ``{plugins, bag_dir?, workers?}`` dicts — empty when the campaign configures no
     rosbag conversion (then no Job is needed).
     """

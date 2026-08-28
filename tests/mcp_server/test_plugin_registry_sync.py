@@ -23,6 +23,7 @@ from robovast.mcp_server.server import create_server
 _PLUGINS_DIR = pathlib.Path(__file__).resolve().parents[2] / \
     "src" / "robovast" / "mcp_server" / "plugins"
 _DOCS_DIR = pathlib.Path(__file__).resolve().parents[2] / "docs"
+_SKILLS_DIR = pathlib.Path(__file__).resolve().parents[2] / "skills"
 
 # Phantom tool names that previously leaked into docstrings/prompts/docs. They
 # name tools that never existed (or were renamed away); guard against their return.
@@ -252,6 +253,14 @@ def _llm_facing_text() -> dict[str, str]:
     # ``cleanup_campaign_data`` are current method names — correct there, and a name
     # that survives as a method is not a name an LLM is being offered as a tool.
     text["mcp.rst"] = (_DOCS_DIR / "mcp.rst").read_text(encoding="utf-8")
+
+    # The skills this server ships. They are loaded verbatim into an agent's context and
+    # tell it what to run, so they are LLM-facing in the same way the prompts are -- and
+    # they are where this guard's own failure mode showed up: the campaign-waiting skill
+    # kept telling agents to background `vast wait` for a whole refactor, because every
+    # surface here was scanned except the one written specifically to instruct them.
+    for skill in sorted(_SKILLS_DIR.rglob("SKILL.md")):
+        text[f"skill {skill.parent.name}"] = skill.read_text(encoding="utf-8")
 
     # Strings a tool *returns* to an LLM, not just ones it documents. `next_step` is the
     # sharpest example: it is the command an agent runs verbatim after start_campaign,

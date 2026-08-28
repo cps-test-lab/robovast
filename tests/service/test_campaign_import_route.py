@@ -71,8 +71,6 @@ def _transport(tmp_path):
 @pytest.fixture(name="env")
 def _env(monkeypatch, tmp_path):
     # No CWD project, so nothing outside tmp_path can be discovered as the results root.
-    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
-                        staticmethod(lambda *a, **k: None))
     # Postprocessing is a different subject with its own tests, and a raw fixture would drag a
     # whole pipeline into every case here. Stubbed to a no-op so what is under test is the
     # import: the chain itself is asserted once, in its own test below.

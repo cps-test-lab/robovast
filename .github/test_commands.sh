@@ -38,31 +38,44 @@ echo ""
 # Array of commands to test
 commands=(
     "vast"
-    "vast init"
     "vast config"
     "vast config list"
     "vast config generate"
     "vast config variation-types"
     "vast config variation-points"
-    "vast exec"
-    "vast exec local"
-    "vast exec local run"
-    "vast exec local prepare-run"
-    "vast exec cluster"
-    "vast exec cluster setup"
-    "vast exec cluster cleanup"
-    "vast exec cluster run"
-    "vast exec cluster monitor"
-    "vast exec cluster upgrade"
+    "vast workspace"
+    "vast workspace init"
+    "vast workspace validate"
+    "vast workspace preview"
+    "vast workspace run"
+    "vast campaign"
+    "vast campaign list"
+    "vast campaign status"
+    "vast campaign wait"
+    "vast campaign stop"
+    "vast campaign log"
+    "vast campaign rerun"
+    "vast campaign download"
+    "vast campaign postprocess"
+    "vast campaign import"
+    "vast campaign delete"
+    "vast service"
+    "vast service log"
+    "vast service info"
+    "vast service resources"
+    "vast service upgrade"
+    "vast cluster"
+    "vast cluster setup"
+    "vast cluster cleanup"
+    "vast cluster monitor"
+    "vast cluster store-cleanup"
+    "vast container"
+    "vast container exec"
     "vast results"
-    "vast results download"
-    "vast results postprocess"
     "vast results publish"
     "vast image"
-    "vast workspace"
     "vast files"
     "vast doctor"
-    "vast wait"
 )
 
 # Test each command
@@ -80,15 +93,17 @@ for cmd in "${commands[@]}"; do
 done
 
 
+# Run from a directory that is not the checkout, so a verb that silently fell back to an
+# ambient project would fail here rather than pass on the repo it happened to be run in.
 cd "$TEMP_DIR"
-vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
-vast config validate
-vast config info
-vast config list
+VAST="$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
+vast config validate "$VAST"
+vast config info "$VAST"
+vast config list "$VAST"
 vast config variation-types
-vast config generate ./test_generated
+vast config generate "$VAST" ./test_generated
 # No `vast config variation-points` here: it reads the variation points out of the
-# scenario files, and growth_sim -- the example this initializes -- is a plain simulation
+# scenario files, and growth_sim -- the example used here -- is a plain simulation
 # with no scenario at all, so the command correctly fails with "No scenario file found".
 
 

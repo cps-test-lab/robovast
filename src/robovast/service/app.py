@@ -21,8 +21,8 @@ implementation and exposes it over the :class:`~robovast.service.interface.Route
 contract, so the same app serves:
 
 * a **local** ``vast serve`` (impl = :class:`~robovast.service.client.LocalTransport`,
-  Docker backend, local filesystem) — persistent single-host service (mode 2);
-* a **cluster** deployment (impl = the cluster service core) — mode 3.
+  Docker backend, local filesystem) — a persistent single-host service;
+* a **cluster** deployment (impl = the cluster service core).
 
 This generalizes the per-campaign FastAPI control channel in
 :mod:`robovast.execution.control_server` into a persistent, campaign-spanning
@@ -1200,7 +1200,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def download_campaign_archive(campaign_id: str):
         """Stream a ``tar.gz`` of the campaign, on either lane.
 
-        Backs ``vast results download`` and the web UI's download button. What comes
+        Backs ``vast campaign download`` and the web UI's download button. What comes
         out is the campaign as this service holds it -- postprocessed, if it has been.
         Internal ``_postproc/`` staging is excluded so the archive is the clean
         campaign layout.
@@ -1516,7 +1516,7 @@ def _mount_ui(app) -> None:
 
 
 #: Where the origin comes from, for a service that was deployed rather than started by
-#: hand: ``vast exec cluster setup`` bakes it from the Ingress, because an in-pod service is
+#: hand: ``vast cluster setup`` bakes it from the Ingress, because an in-pod service is
 #: given no RBAC to read its own. Named here as well as in the cluster lane that writes it,
 #: since this is the side that reads it and the core must not import a lane.
 PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
@@ -1550,7 +1550,7 @@ def startup_banner(base_url: str, token: str, *, ephemeral: bool,
     A **browser** gets a link with the token in it, so "no token was configured" is
     answered by something to click rather than a secret to hunt for -- the shape Jupyter
     has used for years. An **agent** cannot click, so it gets the registration command
-    instead, rendered by the same helper ``vast login`` and ``vast exec cluster token``
+    instead, rendered by the same helper ``vast login`` and ``vast service token``
     use: three places hand out access to this service and the header set must not drift
     between them.
 
@@ -1628,7 +1628,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     Every request needs the shared token; when none is configured one is minted and
     printed as a clickable login URL, so there is no unauthenticated mode to start by
     accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
-    deliberate act (``vast exec cluster setup --ingress-host``, which insists on TLS).
+    deliberate act (``vast cluster setup --ingress-host``, which insists on TLS).
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.

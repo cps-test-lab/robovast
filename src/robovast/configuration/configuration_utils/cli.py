@@ -26,7 +26,6 @@ import click
 import yaml
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import get_project_config
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations, get_scenario_parameters,
                              prepare_campaign_configs)
@@ -39,18 +38,14 @@ def configuration():
 
 
 @configuration.command(name='list')
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
 @click.option('--debug', is_flag=True, help='Show internal values starting with _')
-def list_cmd(debug):
-    """List scenario configs without generating files.
+def list_cmd(vast, debug):
+    """List the configurations VAST expands to, without generating files.
 
-    This command shows all configs that would be generated from the
-    configuration file without actually creating the output files.
-
-    Requires project initialization with ``vast init`` first.
+    Shows what would be generated, creating none of it.
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
+    config = vast
 
     try:
         campaign_data = generate_scenario_variations(
@@ -81,15 +76,10 @@ def list_cmd(debug):
 
 
 @configuration.command(name='info')
-def info():
-    """Show overview of configuration.
-
-    Displays the number of configurations and runs that would be generated
-    from the current project configuration.
-    """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
+def info(vast):
+    """Show how many configurations and runs VAST expands to."""
+    config = vast
 
     try:
         campaign_data = generate_scenario_variations(
@@ -115,10 +105,9 @@ def info():
 
 
 @configuration.command(name='validate')
-@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
-              help='.vast file to validate. Defaults to the project config file.')
-def validate(input_file):
-    """Validate a .vast file, reporting ALL problems at once.
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
+def validate(vast):
+    """Validate VAST, reporting ALL problems at once.
 
     Runs the same collect-all linter as the ``validate_project`` MCP tool: YAML,
     schema, the scenario file and its parameter references, and every plugin
@@ -129,8 +118,7 @@ def validate(input_file):
     from robovast.common.config_validation import \
         validate_project_file  # pylint: disable=import-outside-toplevel
 
-    config = input_file or get_project_config().config_path
-    report = validate_project_file(config)
+    report = validate_project_file(vast)
 
     problems = report.get("problems", [])
     if report.get("valid"):
@@ -153,12 +141,11 @@ def validate(input_file):
 
 
 @configuration.command(name='upgrade')
-@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
-              help='.vast file to upgrade. Defaults to the project config file.')
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
 @click.option('--dry-run', is_flag=True,
               help='Report what would change without writing the file.')
-def upgrade(input_file, dry_run):
-    """Bring a .vast file to the current config version, in place.
+def upgrade(vast, dry_run):
+    """Bring VAST to the current config version, in place.
 
     Only for a file you are AUTHORING. An archived campaign under ``<campaign>/_config/``
     is migrated automatically when read and is deliberately never rewritten -- it is the
@@ -171,7 +158,7 @@ def upgrade(input_file, dry_run):
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
         SUPPORTED_CONFIG_VERSION, ConfigVersionError, config_version, upgrade_config_file)
 
-    config = input_file or get_project_config().config_path
+    config = vast
     try:
         with open(config, 'r', encoding='utf-8') as handle:
             before = (list(yaml.safe_load_all(handle)) or [{}])[0] or {}
@@ -275,8 +262,11 @@ def _plugin_doc_summary(ep, max_lines: int = 1):
 
 @configuration.command(name='export-configs')
 @click.argument('args', nargs=-1, required=True, metavar='PATTERN... OUTPUT')
-@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
-              help='Source .vast file. Defaults to the project config file.')
+@click.option('--vast', 'input_file', required=True,
+              type=click.Path(exists=True, dir_okay=False), metavar='VAST',
+              help='The .vast to export configurations from. An option rather than a '
+                   'positional because PATTERN... OUTPUT is already variadic, and a '
+                   'third positional could not be told from a pattern.')
 @click.option('--remove', is_flag=True, default=False,
               help='Remove the exported configurations from the source .vast file.')
 def export_configs(args, input_file, remove):
@@ -288,8 +278,9 @@ def export_configs(args, input_file, remove):
 
     Example::
 
-        vast config export-configs unirandom* new.vast
-        vast config export-configs --remove 'office*' 'hospital*' subset.vast
+    \b
+        vast config export-configs --vast mine.vast unirandom* new.vast
+        vast config export-configs --vast mine.vast --remove 'office*' subset.vast
     """
     if len(args) < 2:
         raise click.UsageError(
@@ -300,12 +291,7 @@ def export_configs(args, input_file, remove):
     patterns = args[:-1]
     output = args[-1]
 
-    # Determine source file
-    if input_file:
-        source_path = input_file
-    else:
-        project_config = get_project_config()
-        source_path = project_config.config_path
+    source_path = input_file
 
     try:
         with open(source_path, 'r', encoding='utf-8') as f:
@@ -370,24 +356,22 @@ def export_configs(args, input_file, remove):
 
 
 @configuration.command(name='import-configs')
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
 @click.argument('source', type=click.Path(exists=True), metavar='SOURCE')
-def import_configs(source):
-    """Import configurations from SOURCE .vast file into the project .vast file.
+def import_configs(vast, source):
+    """Import configurations from SOURCE into VAST.
 
-    Reads all ``configuration`` entries from SOURCE, validates that they
-    produce valid scenario configurations (via a dry-run expansion), and
-    appends the passing entries to the current project's .vast file.
-
-    Configs whose names already exist in the project file are skipped.
+    Reads all ``configuration`` entries from SOURCE, validates that they produce valid
+    scenario configurations (via a dry-run expansion), and appends the passing entries
+    to VAST. Configs whose names already exist there are skipped.
 
     Example::
 
-        vast config import-configs other.vast
+        vast config import-configs mine.vast other.vast
     """
     import tempfile  # pylint: disable=import-outside-toplevel
 
-    project_config = get_project_config()
-    dest_path = project_config.config_path
+    dest_path = vast
 
     # Load source file
     try:
@@ -491,22 +475,15 @@ def import_configs(source):
 
 
 @configuration.command()
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
 @click.argument('output-dir', type=click.Path())
 @click.option('--keep-transient', is_flag=True, default=False,
               help='Keep and display temporary folders used during generation (e.g. by FloorplanGeneration).')
 @click.option('--no-cache', is_flag=True, default=False,
               help='Skip cache lookup and force a fresh generation even if inputs are unchanged.')
-def generate(output_dir, keep_transient, no_cache):
-    """Generate run configurations and output files.
-
-    Creates all configurations and associated files in the
-    configured results directory.
-
-    Requires project initialization with ``vast init`` first.
-    """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
+def generate(vast, output_dir, keep_transient, no_cache):
+    """Generate VAST's run configurations and output files into OUTPUT_DIR."""
+    config = vast
 
     click.echo(f"Generating scenario configurations...")
 
@@ -611,17 +588,13 @@ def variation_types():
 
 
 @configuration.command(name='variation-points')
-def variation_points():
-    """List possible variation points from the scenario files.
+@click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
+def variation_points(vast):
+    """List the variation points VAST's scenarios offer.
 
-    Shows all available variation points (scenario parameters) that can be
-    varied in the scenarios as defined in the vast configuration file.
-
-    Requires project initialization with ``vast init`` first.
+    Shows every scenario parameter that can be varied.
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
+    config = vast
 
     click.echo("Loading scenario parameter template...")
     click.echo("")

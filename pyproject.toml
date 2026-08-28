@@ -138,7 +138,6 @@ env-file = "robovast.common.env_file:load_env_file"
 # The verbs that need the core -- a service implementation, Docker, the UI build, the
 # results reader. They attach to the client's root group like any other plugin, so a
 # client-only install simply does not have them rather than having them and failing.
-init = "robovast.common.cli.core_commands:init"
 serve = "robovast.common.cli.core_commands:serve"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
@@ -147,14 +146,12 @@ results = "robovast.results_processing.cli:results"
 # the core. `export`/`import` only drive the service and could live in the client, but
 # one group split across two distributions is worse than the asymmetry.
 share = "robovast.execution.share_cli:share"
-# No `execution` here: `vast exec` is the client's group now, because the launch path
-# (push a project, ask the service to run it) needs nothing the core provides. What
-# needed the core was `vast exec local`, which attaches below.
-
-# `vast exec local`. Attached to the client's `exec` group lazily, so Docker and the
-# config schema stay out of every other `vast` invocation.
-[tool.poetry.plugins."robovast.exec_plugins"]
-local = "robovast.execution.execution_utils.cli:local"
+# No `execution` here: `vast container` is the client's group, and nothing the core provides
+# attaches to it any more. `vast exec local` used to -- an in-process Docker lane with no
+# service, no workspace and no CampaignOrigin. It is gone: a campaign runs a workspace's
+# project through a service, and a local `vast serve` is that service on a Docker lane.
+# So the core contributes nothing to `robovast.exec_plugins`; `vast cluster` is
+# the client's and remains its only member.
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to
 # import the cluster package to start a service -- see service/serve_backends.py.

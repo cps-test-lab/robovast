@@ -841,7 +841,7 @@ def campaign_index_bucket(cluster_config) -> str:
         raise ValueError(
             f"campaign discovery on the '{backend}' storage backend needs a bucket "
             "configured for this deployment (there is no private namespace to create one "
-            "in). Set it at 'vast exec cluster setup' (GCS: -o gcs_bucket=… or "
+            "in). Set it at 'vast cluster setup' (GCS: -o gcs_bucket=… or "
             "ROBOVAST_GCS_BUCKET).")
     return CAMPAIGN_INDEX_BUCKET
 

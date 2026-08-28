@@ -152,13 +152,13 @@ def check_cluster(context: str | None = None) -> list[Check]:
     failure it cannot have.
     """
     if not cluster_lane_installed():
-        # Not "to deploy or drive a cluster" any more: driving one is `vast exec cluster
+        # Not "to deploy or drive a cluster" any more: driving one is `vast cluster
         # run`, which this distribution ships. What needs the lane is OWNING a cluster --
         # deploying the service into it and operating it. Saying otherwise sent exactly
         # the audience this install is for after 290 MB they do not need.
         return [Check("cluster support", False, "not installed",
                       "This install has no cluster lane, and does not need one to run "
-                      "campaigns ('vast exec cluster run' works). Install it to deploy "
+                      "campaigns ('vast workspace run' works). Install it to deploy "
                       "or operate a cluster of your own.", optional=True)]
 
     try:
@@ -216,7 +216,7 @@ def _check_rbac() -> Check:
         return Check("permissions", True, "can create ClusterRoles")
     return Check(
         "permissions", False, "cannot create ClusterRoles",
-        "`vast exec cluster setup` creates cluster-scoped RBAC, so it needs a "
+        "`vast cluster setup` creates cluster-scoped RBAC, so it needs a "
         "cluster-admin-ish kubeconfig. Ask an administrator to run setup, or to grant "
         "this subject cluster-admin.")
 
@@ -304,7 +304,7 @@ def check_deployment(namespace: str = "default",
         return []
     if not config_name:
         return [Check("build registry", False, f"no service in namespace {namespace!r}",
-                      "Nothing is deployed here. Run 'vast exec cluster setup <flavor>', "
+                      "Nothing is deployed here. Run 'vast cluster setup <flavor>', "
                       "or pass -n <namespace> if it is deployed elsewhere.",
                       optional=True)]
 
@@ -321,12 +321,12 @@ def check_deployment(namespace: str = "default",
             return [Check(
                 "build registry", False, f"no prefix (published at {host})",
                 "The service is published but its registry prefix is unset, so builds "
-                "cannot push. 'vast exec cluster upgrade' re-bakes it from the live "
+                "cannot push. 'vast service upgrade' re-bakes it from the live "
                 "Ingress.", optional=True)]
         return [Check(
             "build registry", False, "not published, so no registry",
             "The registry is reached over the service's own Ingress, and there is none. "
-            "Re-run 'vast exec cluster setup <flavor> --force --ingress-host <host>' with "
+            "Re-run 'vast cluster setup <flavor> --force --ingress-host <host>' with "
             "--issuer or --tls-secret (or --insecure-http on a trusted network).",
             optional=True)]
 
@@ -365,7 +365,7 @@ def _check_build_daemon(namespace: str, context: str | None) -> list[Check]:
     return [Check(
         "build daemon", False, f"{buildkitd_deploy.BUILDKITD_NAME} has no ready pod",
         "Nothing can build until it is back: campaigns whose containers add packages are "
-        "refused at submit. 'vast exec cluster upgrade' re-applies it. If it is there but "
+        "refused at submit. 'vast service upgrade' re-applies it. If it is there but "
         "not ready, its store may be on a node it is pinned to and cannot reach -- check "
         f"'kubectl -n {namespace} describe deploy/{buildkitd_deploy.BUILDKITD_NAME}'.",
         optional=True)]
@@ -395,7 +395,7 @@ def _check_registry_route(namespace: str, context: str | None) -> list[Check]:
     return [Check("registry route", False, "; ".join(defects),
                   "The registry has a prefix but the Ingress does not route to it "
                   "correctly, so pushes fail even though builds start. "
-                  "'vast exec cluster upgrade' reconciles it.", optional=True)]
+                  "'vast service upgrade' reconciles it.", optional=True)]
 
 
 def check_client() -> list[Check]:
@@ -432,7 +432,7 @@ def check_client() -> list[Check]:
         checks.append(Check(
             "service", False, f"{target} not answering",
             f"The URL is configured but nothing replied ({type(err).__name__}). If this is "
-            "a cluster, the pod may be mid-roll or down: 'vast exec cluster upgrade' after "
+            "a cluster, the pod may be mid-roll or down: 'vast service upgrade' after "
             "it settles, or check the ingress. If it is local, start it with 'vast serve'."))
     else:
         checks.append(Check(
@@ -554,7 +554,7 @@ def _check_service_revision(info: "VersionInfo | None",
             "loaded?\" has no answer from it — probe for the behaviour instead. Images "
             "built before the revision was baked in report nothing: re-release the family "
             "('make release-images PROJECT=<registry> PUSH=1') and roll onto it "
-            "('vast exec cluster upgrade') to get the answer back.",
+            "('vast service upgrade') to get the answer back.",
             optional=True)]
 
     if not here:
@@ -583,7 +583,7 @@ def _check_service_revision(info: "VersionInfo | None",
         "service revision", False, f"{deployed} deployed, {here} here",
         "The service loaded its code at startup, so nothing edited since then is in it. "
         "Roll it onto this revision: 'make release-images PROJECT=<registry> PUSH=1' then "
-        "'vast exec cluster upgrade' for a cluster, or restart 'vast serve' for a local "
+        "'vast service upgrade' for a cluster, or restart 'vast serve' for a local "
         "one. Expected, and fine, when you are pointed at someone else's deployment.",
         optional=True)]
 
@@ -677,7 +677,7 @@ def run_checks(flavor: str = "", context: str | None = None,
     cluster = check_cluster(context)
     lane = cluster_lane_installed()
     # With no lane, the binaries it shells out to are moot rather than merely advisory:
-    # `kubectl` and `helm` are what `vast exec cluster setup` runs, and there is no `setup`
+    # `kubectl` and `helm` are what `vast cluster setup` runs, and there is no `setup`
     # in this install to run them -- so "Install helm: setup uses it" answers
     # a question this user cannot ask, one line under a check that just said the lane is
     # missing. Fatal, it was worse: a client user whose only real problem was that they had

@@ -14,7 +14,7 @@ import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
 // How long to keep watching for the new pod before saying we cannot tell. Matches the
-// default `vast exec cluster upgrade --timeout`, so both surfaces give up at the same
+// default `vast service upgrade --timeout`, so both surfaces give up at the same
 // point and an operator comparing them is not told two different stories.
 const ROLL_TIMEOUT_MS = 180_000
 
@@ -79,9 +79,9 @@ export function AdminPage() {
             </p>
           )}
           <p>
-            This does <b>not</b> reconcile RBAC, the Kueue queues, the registry route, the
-            credential Secrets or the build daemon. For any of those, run{' '}
-            <code>vast exec cluster upgrade</code>.
+            This does <b>not</b> reconcile RBAC, the registry route, the credential Secrets
+            or the build daemon. For any of those, run{' '}
+            <code>vast service upgrade</code>.
           </p>
         </>
       ),
@@ -124,7 +124,7 @@ export function AdminPage() {
     // Deliberately not phrased as a failure. The roll may simply be slow, and the command
     // that can actually say why is the one named here.
     setRollNote(
-      'the new pod has not taken over yet. `vast exec cluster upgrade` reports the reason'
+      'the new pod has not taken over yet. `vast service upgrade` reports the reason'
       + ' Kubernetes gave — an image it cannot pull, a node it cannot schedule on, a'
       + ' crash-loop.',
     )

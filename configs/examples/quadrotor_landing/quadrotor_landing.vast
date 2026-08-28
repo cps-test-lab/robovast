@@ -2,7 +2,7 @@ version: 3
 metadata:
   name: quadrotor_landing
 # Batch-mode example (no search block). Run with:
-#   vast execution local run
+#   vast workspace run <workspace> quadrotor_landing.vast
 # A fixed grid over the parameters (cartesian product of the ParameterVariationList
 # entries below) that exercises the nominal landing and all three failure modes
 # (see files/quadrotor_sim.py). For the closed-loop search that *discovers* the

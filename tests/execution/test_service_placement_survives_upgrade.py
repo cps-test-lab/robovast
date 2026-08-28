@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """An upgrade must not move the service pod, nor the volumes under it.
 
-The bug: `vast exec cluster upgrade` called `deploy_service` with neither the node pin nor
+The bug: `vast service upgrade` called `deploy_service` with neither the node pin nor
 the storage classes, and "not passed" meant "unpinned, on a hostPath". One upgrade therefore
 unpinned the service pod and reverted a PVC-backed registry -- silently, on the deployment
 whose data was the reason those flags were given in the first place.

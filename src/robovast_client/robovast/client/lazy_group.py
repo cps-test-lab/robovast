@@ -3,8 +3,8 @@
 
 """A click group whose subcommands are listed without being imported.
 
-Some subcommands cost real weight to import -- ``vast exec local`` pulls Docker and the
-config schema, ``vast exec cluster setup`` pulls the Kubernetes client -- and they live in
+Some subcommands cost real weight to import -- ``vast workspace run`` pulls Docker and the
+config schema, ``vast cluster setup`` pulls the Kubernetes client -- and they live in
 distributions the client does not depend on. Registering them eagerly would put those
 imports back on every ``vast`` invocation, since `load_plugins()` imports the group's
 module each time, for a subcommand almost nobody in a given run is about to type.
@@ -30,8 +30,8 @@ class LazyPluginGroup(click.Group):
     Pass the group name as ``plugin_group``; click forwards unknown decorator kwargs to
     ``cls(**attrs)``, so::
 
-        @click.group(cls=LazyPluginGroup, plugin_group="robovast.exec_plugins")
-        def execution():
+        @click.group(cls=LazyPluginGroup, plugin_group="robovast.cluster_plugins")
+        def cluster():
             ...
 
     Eagerly-registered commands win over entry points of the same name, so a

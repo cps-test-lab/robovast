@@ -198,7 +198,7 @@ def gpu_runtime_class_for(kube_context=None):
             "Could not read the cluster's RuntimeClasses, so whether '%s' exists is unknown; "
             "setting runtimeClassName anyway for the GPU pods. If those pods are rejected for "
             "a missing RuntimeClass, this cluster does not need it. Grant the service read "
-            "access to runtimeclasses (node.k8s.io) -- 'vast exec cluster upgrade' does.",
+            "access to runtimeclasses (node.k8s.io) -- 'vast service upgrade' does.",
             NVIDIA_RUNTIME_CLASS)
         return NVIDIA_RUNTIME_CLASS
     return None
@@ -269,7 +269,7 @@ def ensure_nvidia_device_plugin(kube_context=None, gpu_replicas=None, skip=False
     """Make GPUs schedulable if this cluster has any. Returns the advertised count or ``None``.
 
     ``gpu_replicas`` is the operator's explicit request; ``None`` means "decide for me",
-    which is the path a plain ``vast exec cluster setup`` takes. That distinction sets the
+    which is the path a plain ``vast cluster setup`` takes. That distinction sets the
     failure policy, and it is the whole reason a GPU-less cluster keeps working exactly as
     before:
 

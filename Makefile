@@ -57,7 +57,7 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
 	# environment that looked like broken code.
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
-	# with no execution lane but `local`, so `vast exec cluster` disappears and the
+	# with no execution lane but `local`, so `vast cluster` disappears and the
 	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
 	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
 	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
@@ -204,7 +204,7 @@ release-images:
 #
 # `release-images` above stays the RELEASE path and publishes all four, because
 # ROBOVAST_PROJECT moves all four. These two exist because iterating does not need that:
-# `vast exec cluster upgrade` rolls only robovast-controller, and the other three members are
+# `vast service upgrade` rolls only robovast-controller, and the other three members are
 # pulled by campaign job pods. So a change to robovast's own source needs the controller image
 # and nothing else, and a roqsim change needs robovast-roqsim and nothing else -- which is the
 # difference between publishing 0.56 GB and publishing 4.35 GB.
@@ -214,7 +214,7 @@ release-images:
 # as a set. `make image-digests PROJECT=... TAG=...` is the check for it.
 .PHONY: release-image-controller
 release-image-controller:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast exec cluster upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast service upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
 	./container/controller/build.sh \
 		-t "$(patsubst %/,%,$(PROJECT))/robovast-controller:$(if $(TAG),$(TAG),latest)" \
 		$(if $(PUSH),--push,--ask-push)
@@ -262,46 +262,72 @@ publish-client-test-venv:
 		robovast-client
 	@echo "The surface is the client's, and nothing else..."
 # The VERB LIST, not the help text. Grepping the whole `--help` for "^  <verb>" reads the
-# prose too: the `--vast-file` paragraph wraps onto a line beginning "  configuration file
-# instead of...", so an absence check for `config` matched documentation and failed a
-# perfectly good install. Only the `Commands:` section is a list of verbs, and only its
-# first column is a verb name -- so extract that and compare whole lines.
+# prose too, so an absence check for `config` once matched a documentation paragraph and
+# failed a perfectly good install. Only the `Commands:` section is a list of verbs, and
+# only its first column is a verb name -- so extract that and compare whole lines.
 	@/tmp/robovast-client-test-venv/bin/vast --help > /tmp/robovast-client-help.txt
 	@awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' \
 		/tmp/robovast-client-help.txt | sort -u > /tmp/robovast-client-verbs.txt
-	@for verb in login logout workspace files wait doctor image exec; do \
+	@for verb in login logout workspace campaign service cluster container files doctor image; do \
 		if ! grep -qx "$$verb" /tmp/robovast-client-verbs.txt; then \
 			echo "❌ '$$verb' missing from vast --help"; exit 1; fi; \
 	done
 # `if`, not `grep && { exit 1; }`. The latter returns GREP's status, so an absence loop
 # whose last verb is correctly absent exits 1 and fails the target on the passing path --
 # which is why this check had never once run green.
-	@for verb in serve init config results ui import-results; do \
+#
+# `wait`, `service-log` and `exec` are absent because they MOVED, not because they need the
+# core: `campaign wait`, `service log`, `container exec`. Asserting their absence is what
+# stops a stale alias creeping back in.
+	@for verb in serve init config results ui import-results wait service-log exec; do \
 		if grep -qx "$$verb" /tmp/robovast-client-verbs.txt; then \
 			echo "❌ '$$verb' present in a client-only install"; exit 1; fi; \
 	done
-# `exec` being present is not the whole claim -- it must resolve down two lazy levels to
-# the verb a user actually types, and must NOT expose the halves that need Docker or a
-# kubeconfig. `run --help` is checked by RUNNING it, because a group lists a subcommand it
-# cannot load and still exits 0 on its own `--help`.
-	@echo "...that 'exec' reaches the launch verb, and stops short of the operator's..."
-	@/tmp/robovast-client-test-venv/bin/vast exec cluster run --help > /dev/null \
-		|| { echo "❌ 'vast exec cluster run' does not resolve on a client-only install"; exit 1; }
-	@/tmp/robovast-client-test-venv/bin/vast exec --help \
-		| awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' | sort -u \
-		> /tmp/robovast-client-exec-verbs.txt
-	@if grep -qx "local" /tmp/robovast-client-exec-verbs.txt; then \
-		echo "❌ 'exec local' present without the core (it needs Docker)"; exit 1; fi
-	@/tmp/robovast-client-test-venv/bin/vast exec cluster --help \
+# A group being listed is not the whole claim -- it must resolve to the verb a user types.
+# Checked by RUNNING each `--help`, because a group lists a subcommand it cannot load and
+# still exits 0 on its own `--help`.
+	@echo "...that the launch verb resolves, and the groups stop short of the operator's..."
+	@/tmp/robovast-client-test-venv/bin/vast workspace run --help > /dev/null \
+		|| { echo "❌ 'vast workspace run' does not resolve on a client-only install"; exit 1; }
+	@for verb in validate preview init update; do \
+		/tmp/robovast-client-test-venv/bin/vast workspace $$verb --help > /dev/null \
+			|| { echo "❌ 'vast workspace $$verb' does not resolve"; exit 1; }; \
+	done
+	@for verb in wait status list stop stop-job log rerun download; do \
+		/tmp/robovast-client-test-venv/bin/vast campaign $$verb --help > /dev/null \
+			|| { echo "❌ 'vast campaign $$verb' does not resolve"; exit 1; }; \
+	done
+	@for verb in log info resources restart; do \
+		/tmp/robovast-client-test-venv/bin/vast service $$verb --help > /dev/null \
+			|| { echo "❌ 'vast service $$verb' does not resolve"; exit 1; }; \
+	done
+	@/tmp/robovast-client-test-venv/bin/vast cluster store-cleanup --help > /dev/null \
+		|| { echo "❌ 'vast cluster store-cleanup' does not resolve"; exit 1; }
+	@for verb in exec stop; do \
+		/tmp/robovast-client-test-venv/bin/vast container $$verb --help > /dev/null \
+			|| { echo "❌ 'vast container $$verb' does not resolve"; exit 1; }; \
+	done
+# The halves that need a kubeconfig must NOT be here. `service` and `cluster` each span two
+# distributions on purpose -- the group is named after its object, not after the install --
+# so what must hold is that this install is short the operator verbs, not short the group.
+	@/tmp/robovast-client-test-venv/bin/vast cluster --help \
 		| awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' | sort -u \
 		> /tmp/robovast-client-cluster-verbs.txt
-	@for verb in run stop stop-job log download-cleanup; do \
-		if ! grep -qx "$$verb" /tmp/robovast-client-cluster-verbs.txt; then \
-			echo "❌ 'exec cluster $$verb' missing from a client-only install"; exit 1; fi; \
-	done
-	@for verb in setup cleanup upgrade token monitor run-cleanup; do \
+	@for verb in setup cleanup jobs-cleanup monitor; do \
 		if grep -qx "$$verb" /tmp/robovast-client-cluster-verbs.txt; then \
-			echo "❌ 'exec cluster $$verb' present without robovast-cluster"; exit 1; fi; \
+			echo "❌ 'cluster $$verb' present without robovast-cluster"; exit 1; fi; \
+	done
+	@/tmp/robovast-client-test-venv/bin/vast service --help \
+		| awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' | sort -u \
+		> /tmp/robovast-client-service-verbs.txt
+	@for verb in upgrade token; do \
+		if grep -qx "$$verb" /tmp/robovast-client-service-verbs.txt; then \
+			echo "❌ 'service $$verb' present without robovast-cluster"; exit 1; fi; \
+	done
+# Launching moved out of every old path; nothing may answer to it there.
+	@for group in cluster service container; do \
+		if /tmp/robovast-client-test-venv/bin/vast $$group run --help > /dev/null 2>&1; then \
+			echo "❌ '$$group run' still resolves; the launch verb is 'workspace run'"; exit 1; fi; \
 	done
 # `--version` used to name the `robovast` distribution, which a client-only install does
 # not have -- click resolves that lazily, so it raised only when asked. Cheap to assert.

@@ -18,10 +18,14 @@ class ClusterServeBackend:
     storage = "object store"
 
     def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None):  # noqa: ARG002 - pinning is a local-lane affordance
+              workspace_dir=None,
+              results_dir=None):  # noqa: ARG002 - pinning and a results dir are local-lane affordances
         """In-pod the config comes from the pod env; off-cluster it is read from the
         deployed service, which is the authoritative record -- so no local setup is
         needed, on any host with kubeconfig access.
+
+        ``results_dir`` is ignored: a cluster campaign's results live in the object store,
+        which is the whole reason this lane needs no local directory.
         """
         import click  # pylint: disable=import-outside-toplevel
 
@@ -36,7 +40,7 @@ class ClusterServeBackend:
             for_ctx = f" in context {context!r}" if context else ""
             raise click.ClickException(
                 f"no robovast-service found{for_ctx} (namespace {namespace!r}) to read "
-                f"the cluster config from — deploy one with 'vast exec cluster setup "
+                f"the cluster config from — deploy one with 'vast cluster setup "
                 f"<cluster-config>{f' -x {context}' if context else ''}', or check "
                 "--context/--namespace.")
         # Off-cluster the driver reaches the cluster's object store through a kubectl

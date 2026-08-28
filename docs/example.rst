@@ -12,27 +12,25 @@ To run the example, execute the following commands in the base folder of the Rob
 
 .. code-block:: bash
 
-   # initialize project
-   vast init configs/examples/growth_sim/growth_sim.vast
-
    # show the configurations that will be executed
-   vast config list
+   vast config list configs/examples/growth_sim/growth_sim.vast
 
    # setup pods in cluster (kubernetes required)
-   vast exec cluster setup minikube
-    
-   # execute the tests in the cluster (fire-and-forget: returns immediately)
-   vast exec cluster run --description "growth_sim: first pass"
-   vast exec cluster monitor       # shows progress per run
-   vast exec cluster run-cleanup   # run this after jobs complete
+   vast cluster setup minikube
+
+   # push the project, then execute it (fire-and-forget: returns immediately)
+   vast workspace init configs/examples/growth_sim --name growth_sim
+   vast workspace run growth_sim growth_sim.vast --description "growth_sim: first pass"
+   vast cluster monitor       # shows progress per run
+   vast cluster jobs-cleanup   # run this after jobs complete
 
    # Multiple campaigns can run in parallel by default.
 
    # optionally: remove result buckets from S3
-   vast exec cluster download-cleanup
+   vast cluster store-cleanup
 
    # cleanup pods in cluster
-   vast exec cluster cleanup
+   vast cluster cleanup
 
    # read the results in the browser
    vast ui
@@ -46,20 +44,13 @@ The overall workflow in RoboVAST consists of three main steps:
 
 For each step, RoboVAST provides dedicated tools to facilitate the process. For details on specific tools, please refer to :doc:`how_to_run`.
 
-Before running any tests, you must initialize the RoboVAST project configuration:
+There is nothing to initialize. Every command names its own input: the local verbs take the
+``.vast`` as an argument, and a campaign runs a *workspace's* project, named by the pair
+(workspace, path).
 
 .. code-block:: bash
 
-   vast init <config>
-
-This command sets up the required configuration files and prepares your project for further steps.
-
-For a one-off run there is nothing to initialize: name the ``.vast`` directly and the
-command needs no project.
-
-.. code-block:: bash
-
-   vast -V <config> exec cluster run --description "what this run is for"
+   vast workspace run <workspace> <config> --description "what this run is for"
 
 Run Description
 ---------------
@@ -130,7 +121,7 @@ Before starting the execution in the cluster, it is recommended to first check t
 
 .. code-block:: bash
 
-   vast config list
+   vast config list configs/examples/growth_sim/growth_sim.vast
 
 
 Check Result of a Single Execution
@@ -142,7 +133,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast exec local run --config config1 output_config1
+   vast workspace run growth_sim growth_sim.vast --filter config1 --runs 1
 
 
 Cluster Execution
@@ -152,7 +143,7 @@ To execute all tests in the cluster, run:
 
 .. code-block:: bash
 
-   vast exec cluster run
+   vast workspace run growth_sim growth_sim.vast
 
 This command is *fire-and-forget*: it starts the campaign on the
 ``robovast-service`` (which drives it in-process) and returns immediately, printing
@@ -164,13 +155,13 @@ The campaign runs entirely in the cluster. Track its progress with:
 
 .. code-block:: bash
 
-   vast exec cluster monitor
+   vast cluster monitor
 
 To clean up a run's scenario jobs/pods (and any auxiliary-container pod):
 
 .. code-block:: bash
 
-   vast exec cluster run-cleanup
+   vast cluster jobs-cleanup
 
 This removes the scenario execution jobs and their associated pods from the cluster.
 
@@ -181,7 +172,7 @@ Ask the service for the campaign's archive:
 
 .. code-block:: bash
 
-   vast results download <campaign-id>
+   vast campaign download <campaign-id>
 
 That writes ``<campaign-id>.tar.gz`` into the current directory and stops there — the
 archive is yours to unpack, keep, or hand to a colleague.
@@ -209,13 +200,14 @@ First, the results can optionally be postprocessed to simplify later evaluation.
 
 .. code-block:: bash
 
-   vast results postprocess
+   vast campaign postprocess <campaign-id>
 
+It runs automatically when the campaign's runs finish, so this is for running it *again*.
 Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
 .. code-block:: bash
 
-   vast results postprocess --force
+   vast campaign postprocess <campaign-id> --force
 
 After postprocessing, the actual evaluation can be performed. Open the web UI and use the
 Results **Explorer**: it executes the campaign's analysis notebooks server-side, one per

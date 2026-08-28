@@ -19,7 +19,7 @@
 
 The root group lives in the client distribution because every audience has one. A
 service user installs ``robovast-client`` and gets ``vast login``, ``vast workspace``,
-``vast files`` and ``vast wait``; the core, the execution lanes and the operator
+``vast files`` and ``vast campaign wait``; the core, the execution lanes and the operator
 commands each attach their own verbs to this same group through the
 ``robovast.cli_plugins`` entry point. One command name for everybody, and the surface
 grows with what is installed rather than listing verbs that cannot run.
@@ -36,8 +36,8 @@ from importlib.metadata import entry_points
 import click
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.logging_config import (get_logger, setup_logging,
-                                            setup_logging_from_project_config)
+from robovast.client.logging_config import (get_logger, setup_default_logging,
+                                            setup_logging)
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_chunks
@@ -54,8 +54,7 @@ def configure_logging(ctx, param, value):
         ctx.ensure_object(dict)
         ctx.obj['log_level'] = value
     else:
-        # No log level specified, use project config
-        setup_logging_from_project_config()
+        setup_default_logging()
     return value
 
 
@@ -83,33 +82,32 @@ def _print_version(ctx, param, value):  # pylint: disable=unused-argument
               callback=configure_logging,
               is_eager=True,
               expose_value=False)
-@click.option('--vast-file', '-V', type=click.Path(exists=True), default=None,
-              help='Override the .vast configuration file (instead of project default)')
 @click.option('--version', is_flag=True, is_eager=True, expose_value=False,
               callback=_print_version,
               help='Show the version and exit.')
 @click.pass_context
-def cli(ctx, vast_file):
+def cli(ctx):
     """VAST - RoboVAST Command-Line Interface.
 
     Main command for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
 
-    The global ``--log-level`` option can be used to control logging verbosity
-    for any command, overriding the project configuration.
+    The global ``--log-level`` option controls logging verbosity for any command.
 
-    Use ``--vast-file`` / ``-V`` to temporarily use a different ``.vast``
-    configuration file instead of the one stored in the project.
+    Every command names its own input: there is no ambient project, so nothing in a
+    parent directory of your CWD decides which ``.vast`` a command reads or where its
+    results go. A campaign runs a *workspace's* project (``vast workspace run``); the
+    local verbs take the file as an argument (``vast config list my.vast``).
 
     Every command reads ``./.env`` first, so anything RoboVAST takes from the
     environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
     be kept there instead of exported by hand.
 
+    \b
     Examples:
-      vast --log-level DEBUG execution cluster cleanup
-      vast --log-level INFO init config.yaml
-      vast -V other.vast config list
-      vast -V other.vast exec cluster run
+      vast --log-level DEBUG cluster cleanup
+      vast config list my.vast
+      vast workspace run my-experiment my.vast --description "pilot"
 
     See ``vast --help`` for a list of available commands.
     """
@@ -124,10 +122,7 @@ def cli(ctx, vast_file):
     # python-dotenv into a distribution whose whole point is three dependencies.
     run_startup_hooks()
 
-    # Ensure context object exists
     ctx.ensure_object(dict)
-    if vast_file:
-        ctx.obj['vast_file'] = os.path.abspath(vast_file)
 
 
 @cli.command()
@@ -189,38 +184,6 @@ def _login_remedy(exc):
     if "401" in text or "Unauthorized" in text:
         return "The service answered, but rejected the token. Ask the operator for the current one."
     return "Check the URL and the token the operator gave you."
-
-
-@cli.command('service-log')
-@click.option('--follow', '-f', is_flag=True,
-              help='Keep printing new output until interrupted.')
-@target_options
-def service_log(follow, namespace, context):
-    """Print what the robovast-service itself has been doing.
-
-    Not a campaign's log -- this is the service process: what it decided, what it refused,
-    and the reason behind a failure whose visible half was one terse line. Several failures
-    say so in as many words ("the real reason is only in the service log"), and until now
-    there was no way to read it short of ``kubectl logs``.
-
-    The service keeps the last few hundred kilobytes in memory, so this covers what it has
-    been doing recently, not its whole life, and a restart clears it. A container that has
-    already died is only in ``kubectl logs -p deploy/robovast-service``: a buffer inside a
-    process cannot outlive the process.
-    """
-    try:
-        # require_service, because there is no such thing as the log of a service that is
-        # not running: with no URL this layer yields an in-process transport, which has no
-        # serving process whose stderr this would be.
-        with service_client(namespace, context, require_service=True) as (client, target):
-            _echo_target(target)
-            tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
-                        lambda text: click.echo(text, nl=False), follow=follow)
-    # pylint: disable-next=try-except-raise
-    except (click.UsageError, click.ClickException):
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
 
 
 @cli.command()
@@ -462,7 +425,7 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
 
     File by file over the existing calls rather than as one archive: a workspace is a source
     project, where that is adequate. A campaign is the case that needs an archive, because it
-    holds rosbags -- see ``vast results download``.
+    holds rosbags -- see ``vast campaign download``.
 
     \b
       vast workspace download growth-sim ./growth-sim
@@ -543,6 +506,256 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
             for row in rows:
                 values = {k: v for k, v in row.items() if k not in ("name", "body")}
                 click.echo(f"  {namespace_name} {row.get('name')}: {values}")
+
+
+@workspace.command('validate')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--no-world-check', is_flag=True,
+              help='Skip the world check, which builds the model in a container. Faster, '
+                   'and the only part of validation that costs more than a moment.')
+@target_options
+def workspace_validate(workspace, vast_path, no_world_check, namespace, context):  # pylint: disable=redefined-outer-name
+    """Check a project before spending any compute on it.
+
+    Reports **every** problem at once rather than the first, because they fail
+    independently and fixing them one launch at a time is the expensive way to find out.
+
+    Computed service-side: the checks need the config schema, the scenario parser and
+    (unless ``--no-world-check``) the simulator, none of which a client install has. So
+    this works the same whether the service is local or remote.
+    """
+    try:
+        from robovast.service.project_push import \
+            _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+            workspace_id = _resolve_workspace_id(client, workspace)
+            report = client.validate_project(
+                workspace_id, path=vast_path, check_world=not no_world_check)
+
+            for problem in report.problems:
+                where = " ".join(p for p in (problem.config, problem.field) if p)
+                location = f" [{where}]" if where else ""
+                click.echo(f"  {problem.stage}{location}: {problem.message}")
+
+            if not report.valid:
+                raise click.ClickException(
+                    f"{len(report.problems)} problem(s) — fix them and validate again.")
+            click.echo(
+                f"✓ valid: {report.configs} configuration(s) × "
+                f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@workspace.command('preview')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--max-configs', type=int, default=0, show_default=True,
+              help='Show at most this many configurations (0 = all).')
+@target_options
+def workspace_preview(workspace, vast_path, max_configs, namespace, context):  # pylint: disable=redefined-outer-name
+    """Show what the sweep expands to, without running any of it.
+
+    The answer to "how many configurations will this be" — asked before a launch rather
+    than discovered from a campaign that turned out to be ten times the intended size.
+    """
+    try:
+        from robovast.service.project_push import \
+            _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+            workspace_id = _resolve_workspace_id(client, workspace)
+            preview = client.preview_configurations(
+                workspace_id, max_configs=max_configs, path=vast_path)
+            for configuration in preview.configurations:
+                click.echo(f"  {configuration.name}")
+            if preview.truncated:
+                click.echo(f"  … (--max-configs {max_configs} reached)")
+            click.echo(f"{preview.configs} configuration(s) × "
+                       f"{preview.runs_per_config} run(s) = "
+                       f"{preview.total_trials} trial(s)")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@workspace.command('run')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--push', 'push_dir', default=None, metavar='DIR',
+              type=click.Path(exists=True, file_okay=False),
+              help='Sync DIR into WORKSPACE before launching, creating the workspace if '
+                   'it does not exist. The two-step form (workspace init/update, then '
+                   'run) is the same thing spelled out.')
+@click.option('--filter', 'config_filter', default='', metavar='GLOB',
+              help='Run only configurations matching this name or glob (e.g. hall*).')
+@click.option('--runs', '-r', type=int, default=None,
+              help="Override execution.runs (default: the value in the .vast).")
+@click.option('--campaign-name', default=None,
+              help='Override the campaign name; the id becomes <name>-<timestamp>.')
+@click.option('--description', default=None, metavar='TEXT',
+              help='One line saying what this run is for. It is what tells two '
+                   'same-day <name>-<timestamp> campaigns apart in the web UI.')
+@click.option('--upload-to-share', 'upload_to_share', is_flag=True,
+              help='Stream a raw (pre-postprocess) archive to the configured share '
+                   'when the campaign finishes.')
+@click.option('--show-gui', 'show_gui', is_flag=True,
+              help="Watch ONE run in the simulator's window (never a sweep). Honoured "
+                   'only by a service on a local Docker lane, which is the only '
+                   'deployment whose docker process sits at a screen; every other lane '
+                   'refuses rather than running windowless.')
+@click.option('--allow-opaque-image', is_flag=True,
+              help='Launch even though a container names an image that declares no '
+                   "provenance:. Refused by default because nothing in the results "
+                   'could then say what ran; the exemption is recorded on the campaign.')
+@click.option('--image-project', 'image_project', default=None, metavar='PROJECT',
+              help='Registry/namespace to take the RoboVAST images from for this run, '
+                   'overriding ROBOVAST_PROJECT. Affects only images RoboVAST '
+                   'publishes — a container image your .vast names is run as written.')
+@click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',
+              help='Tag to take those images at (default: ROBOVAST_PROJECT_TAG, else '
+                   'latest).')
+@click.option('--wait-and-download', 'wait_and_download', is_flag=True,
+              help='Block until the campaign finishes and its results are uploaded, '
+                   'then download its archive into the current directory.')
+@click.option('--poll-interval', type=float, default=5.0, show_default=True,
+              help='Seconds between status polls when --wait-and-download is set.')
+@target_options
+def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
+                  campaign_name, description, upload_to_share, show_gui,
+                  allow_opaque_image, image_project, image_project_tag,
+                  wait_and_download, poll_interval, namespace, context):
+    """Run a ``.vast`` — the one way to start a campaign from a project.
+
+    WORKSPACE is a ``ws-…`` id or a workspace name. VAST is the path to the ``.vast``
+    *within* that workspace; omit it when the workspace holds exactly one and the
+    service will resolve it, naming the candidates if there are several.
+
+    A workspace is a directory holding files and possibly several ``.vast`` files; a
+    project is one ``.vast`` and the files it references. So the pair (workspace, path)
+    names the project to run, which is exactly what the service accepts —
+    ``workspace_id`` is the only project binding it takes.
+
+    Fire-and-forget by default: it returns once the campaign is launched. Track it with
+    ``vast campaign wait <campaign-id>`` or the web UI. ``--wait-and-download`` instead blocks
+    until it finishes and pulls the archive down.
+
+    \b
+      vast workspace init .                      # push a workspace
+      vast workspace run my-experiment my.vast --description "pilot"
+      vast workspace run my-experiment --push .  # push and launch in one step
+    """
+    try:
+        from robovast.execution.campaign_wait import \
+            wait_for_campaign_outcome  # pylint: disable=import-outside-toplevel
+        from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+            DESCRIPTION_MAX_LEN, CreateCampaignRequest, CreateWorkspaceRequest)
+        from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
+            _resolve_workspace_id, download_campaign_archive,
+            sync_directory_to_workspace)
+
+        # Checked here rather than left to the request model: this says what to do
+        # instead of surfacing a pydantic validation string, and it refuses before
+        # anything is pushed or launched.
+        if description and len(description) > DESCRIPTION_MAX_LEN:
+            raise click.ClickException(
+                f"--description is {len(description)} characters; the limit is "
+                f"{DESCRIPTION_MAX_LEN} — shorten it to one line.")
+
+        # The flag beats ROBOVAST_PROJECT; unset means "whatever the .env said".
+        # Resolved client-side because the service cannot see the client's .env, and
+        # echoed because an override leaves no trace in the .vast.
+        project = image_project if image_project is not None else os.environ.get(
+            'ROBOVAST_PROJECT', '')
+        project_tag = image_project_tag if image_project_tag is not None else os.environ.get(
+            'ROBOVAST_PROJECT_TAG', '')
+
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+
+            if push_dir is not None:
+                workspace_id = _resolve_or_create_workspace(
+                    client, workspace, CreateWorkspaceRequest)
+                click.echo(f"Pushing {push_dir} into workspace {workspace_id} ...")
+                sync_directory_to_workspace(
+                    client, workspace_id, push_dir,
+                    skip_dirs=_INIT_EXCLUDE_DIRS, echo=click.echo)
+            else:
+                workspace_id = _resolve_workspace_id(client, workspace)
+
+            if project:
+                click.echo(f"Images from {project} at "
+                           f"{project_tag or 'latest'} (this run only).")
+
+            ref = client.create_campaign(CreateCampaignRequest(
+                workspace_id=workspace_id, config_path=vast_path,
+                config_filter=config_filter,
+                # 0, not 1: the service reads a non-positive count as "use the .vast's
+                # execution.runs", and a substitute for "unset" would shrink the
+                # campaign without failing anything.
+                runs=runs or 0,
+                campaign_name=campaign_name or "", description=description or "",
+                upload_to_share=upload_to_share, show_gui=show_gui,
+                allow_opaque_image=allow_opaque_image,
+                image_project=project, image_project_tag=project_tag))
+            cid = ref.campaign_id
+
+            if not wait_and_download:
+                click.echo(f"Launched campaign '{cid}'. "
+                           f"Track it with 'vast campaign wait {cid}' or the web UI.")
+                return
+
+            click.echo(f"Launched campaign '{cid}'. Waiting for it to finish...")
+            outcome = wait_for_campaign_outcome(
+                cid, client=client, interval=poll_interval, feedback=click.echo)
+            if outcome == "failed":
+                raise click.ClickException(
+                    f"Campaign '{cid}' failed. Its status carries the failure reason: "
+                    f"see 'vast campaign log {cid}' or the web UI.")
+
+            click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
+            # The service streams the campaign from the object store — no external
+            # share needed for delivery. An archive, not an unpacked tree: what to do
+            # with it is the caller's, exactly as for `vast campaign download`.
+            dest = download_campaign_archive(
+                client, cid, os.path.join(os.getcwd(), f"{cid}.tar.gz"))
+            click.echo(f"Wrote {dest}")
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself,
+    # printing usage and setting the exit code, so they must pass the broad handler below.
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+def _resolve_or_create_workspace(client, workspace, create_request_cls):
+    """The id for *workspace*, creating it if the name is not taken yet.
+
+    Only for ``--push``: pushing into a name that does not exist yet is the
+    one-command form of ``workspace init``, so refusing would make the flag useless for
+    a first launch. A ``ws-…`` id that does not exist is still an error — that is a typo,
+    not a name to claim.
+    """
+    from robovast.service.project_push import \
+        _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+    try:
+        return _resolve_workspace_id(client, workspace)
+    except ValueError:
+        if workspace.startswith("ws-"):
+            raise
+        created = client.create_workspace(create_request_cls(name=workspace))
+        click.echo(f"Created workspace {created.workspace_id} ({created.name}).")
+        return created.workspace_id
 
 
 @workspace.command('delete')
@@ -771,153 +984,6 @@ def install_completion():
         raise click.ClickException(f"Failed to install completion: {e}") from e
 
 
-@cli.command()
-@click.argument('campaign')
-@click.option('--interval', default=10.0, show_default=True,
-              help='Seconds between status polls.')
-@click.option('--timeout', type=float, default=None,
-              help='Give up after this many seconds (default: wait indefinitely).')
-@target_options
-def wait(campaign, interval, timeout, namespace, context):
-    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
-    waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
-    still running, but no longer being waited on), 5 (a running job's simulator reported
-    something wrong -- likewise still running).
-
-    The lane-agnostic wait: the service drives every campaign, so its phase *is* the
-    campaign's whichever backend the runs execute on. Prints each phase change as it
-    happens and exits when the campaign reaches a terminal one — which now means past
-    postprocessing, not merely past the last run.
-
-    Exists so a *caller* can wait without holding a request open, and is why the MCP
-    offers no campaign-wait tool: an agent harness can background this command and be
-    notified when it exits, hours or days later, where a blocking tool call would occupy
-    the conversation for as long as the campaign ran — and still not outlive the session.
-    The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
-    shared with every other surface that waits.
-
-    **A stall ends the wait too** (exit 4), because a stalled campaign never reaches a
-    terminal phase: it holds ``running`` for its whole life, so a waiter that stopped only
-    on terminality would never return and nobody would be told. The verdict is
-    :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
-
-    **An ``error``-level health finding ends it too** (exit 5), and earlier: a stall is only
-    visible once a run is past its declared budget, and needs one to have been declared at
-    all, while a simulator saying "sim time is not advancing" is true within a minute and
-    needs no budget. Whatever a finding means is the simulator's business -- this reads one
-    word, ``level``, and passes the rest through.
-
-    Only a **new** stall or a **new** finding exits. A campaign already stalled when this
-    command starts is not news -- whoever ran it has just been told -- and exiting on the
-    first poll would make ``vast wait`` unusable for exactly the state it reports: the message
-    says to re-run it after diagnosing, and a fresh waiter would exit immediately, forever. So
-    the first observation is recorded and only a rising edge stops the wait; for findings the
-    edge is per ``check``, so one check firing repeatedly is one exit and not a stream.
-    """
-    from robovast.client.status import (HEALTH_NEXT_STEP, Phase, error_findings,
-                                        finding_summary, is_terminal, stall_report)
-    from robovast.execution.campaign_wait import wait_for_campaign_status
-    from robovast.execution.poll_health import PollsStopped
-
-    seen = {"stalled": None, "checks": None}
-    fired: dict = {}
-
-    def stop_when(current):
-        # Both edges are taken every poll, whichever ends up firing: a baseline that moved only on
-        # the branch that was reached would let the other one exit on a condition it inherited.
-        stalled = stall_report(current).get("stalled") is True
-        previous, seen["stalled"] = seen["stalled"], stalled
-        findings = error_findings(current)
-        baseline = seen["checks"]
-        if baseline is None:
-            # The baseline poll. Whatever a simulator is already complaining about is the state the
-            # caller was just told to come back from, so it cannot be what sends them away again.
-            seen["checks"] = {f.check for f in findings}
-        else:
-            # A finding first when both are true, matching `_campaign_next_step`: it names a fault
-            # class ("sim time is not advancing") where a stall says only "nothing finished in
-            # time".
-            fresh = [f for f in findings if f.check not in baseline]
-            if fresh:
-                fired["finding"] = fresh[0]
-                return True
-        return stalled and previous is False
-
-    try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            status = wait_for_campaign_status(
-                campaign, client=client, interval=interval, timeout=timeout,
-                feedback=click.echo, stop_when=stop_when)
-    except TimeoutError as e:
-        # Not a failure of the campaign, which is still running: the caller asked to stop
-        # waiting. A distinct exit code keeps the two apart for a script branching on it.
-        click.echo(str(e), err=True)
-        raise SystemExit(2) from e
-    except PollsStopped as e:
-        # Same category -- the wait ended, the campaign did not -- so the same code, but
-        # the message must not read as a campaign problem: nothing is known about the
-        # campaign here, because nothing answered.
-        click.echo(str(e), err=True)
-        raise SystemExit(2) from e
-    except Exception as e:  # noqa: BLE001
-        handle_cli_exception(e)
-        return
-    if not is_terminal(status.phase):
-        # stop_when fired: the campaign is alive, and something about it is worth stopping a
-        # wait for. Distinct from every other exit here, all of which mean the campaign is over
-        # or unreachable -- and the message has to say so, or "the waiter returned" reads as
-        # "the run ended".
-        finding = fired.get("finding")
-        if finding is not None:
-            click.echo(f"{campaign}: {finding_summary(finding)}", err=True)
-            # Said before anything else about what to do: a waiter stopping must never read as
-            # a run stopping, and this exit is reached by *reading* a run, with a fixed
-            # read-only command the service chose. Nothing touched the job.
-            click.echo(f"{campaign}: the run was NOT touched — this is what the run's own "
-                       f"simulator reported about itself.", err=True)
-        else:
-            click.echo(f"{campaign}: {stall_report(status).get('stall_reason', 'no progress')}",
-                       err=True)
-        click.echo(
-            f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
-            f"When you are done diagnosing, background `vast wait {campaign}` again, or "
-            f"end it with stop_campaign.", err=True)
-        if finding is not None:
-            # A check the simulator says it did NOT run, reported here and only here in the wait:
-            # this exit means one check fired, and a reader is entitled to know which others
-            # reached no verdict before concluding that the rest of the run is fine.
-            for note in status.health_skipped or []:
-                click.echo(f"{campaign}: check did not run — {note}", err=True)
-            # The stall message carries its ladder inside `stall_reason`; a finding has no such
-            # sentence of its own. Deliberately NOT the stall's step, which reused to send a
-            # reader off to ask what the job was doing -- the question this finding just answered.
-            click.echo(f"{campaign}: next: {HEALTH_NEXT_STEP}", err=True)
-            raise SystemExit(5)
-        raise SystemExit(4)
-    click.echo(f"{campaign}: {status.phase}")
-    if status.phase == Phase.UNKNOWN:
-        # `unknown` is terminal, so the wait ends -- but it does not mean the campaign
-        # failed. The service has no phase for this id at all: either it is a typo, or the
-        # campaign died before it ever wrote to the store. Exiting 1 made both read as "the
-        # campaign ran and failed", sending the caller to look for a failure that never
-        # happened. A distinct code, because 0/1/2 are taken and a script branches on it.
-        click.echo(
-            f"{campaign}: the service knows no phase for this campaign — check the id, "
-            f"or see 'vast exec cluster log {campaign}' if it died before recording one.",
-            err=True)
-        raise SystemExit(3)
-    if status.error:
-        click.echo(f"{campaign}: {status.error}", err=True)
-    if status.postprocessing_error:
-        # A campaign whose runs passed but whose postprocessing failed still *finished*;
-        # saying only "finished" here would send the caller looking for CSVs that a
-        # successful exit code promised and nothing produced.
-        click.echo(f"{campaign}: postprocessing failed: {status.postprocessing_error}",
-                   err=True)
-    raise SystemExit(0 if status.phase == Phase.FINISHED else 1)
-
-
 @cli.group()
 def image():
     """Build the derived images a project's containers declare.
@@ -993,7 +1059,7 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         done = wait_for_image_builds(build_ids, client=client, interval=interval,
                                      timeout=timeout, feedback=click.echo)
     except TimeoutError as e:
-        # As `vast wait`: the caller stopped waiting, the builds did not stop building.
+        # As `vast campaign wait`: the caller stopped waiting, the builds did not stop building.
         # A distinct code keeps that apart from a build that actually failed.
         click.echo(str(e), err=True)
         raise SystemExit(2) from e
@@ -1097,7 +1163,7 @@ def run_startup_hooks():
     distribution's installed metadata, so adding one to `pyproject.toml` does nothing
     until the package is reinstalled -- and an editable checkout looks completely normal
     in the meantime. That silence cost real damage once: with the core installed but its
-    hook unregistered, no `.env` was read, and `vast exec cluster upgrade` concluded the
+    hook unregistered, no `.env` was read, and `vast service upgrade` concluded the
     registry and git credentials "configuration is gone" and deleted both Secrets. So if
     the core is installed and contributed nothing, say so instead of running on.
     """
@@ -1128,10 +1194,11 @@ def _core_installed() -> bool:
 
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
-    # Map of long plugin names to their short aliases
+    # Map of long plugin names to their short aliases. `execution`/`exec` is gone with the
+    # group: every group is now named after what it acts on, and none of those names is
+    # long enough to want a short form.
     aliases = {
         'configuration': 'config',
-        'execution': 'exec',
     }
     try:
         eps = entry_points(group='robovast.cli_plugins')

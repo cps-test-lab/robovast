@@ -29,36 +29,39 @@ it only talks to something that can.
 | Command | Does |
 |---|---|
 | `vast login <url>` / `vast logout` | store or forget the service credentials |
-| **`vast exec cluster run`** | **launch a campaign** — pushes the project and starts it; `--wait-and-download` blocks and fetches the results |
-| `vast exec cluster stop/stop-job/log` | stop a campaign, kill one wedged job, read its infrastructure log |
+| **`vast workspace run`** | **launch a campaign** — pushes the project and starts it; `--wait-and-download` blocks and fetches the results |
+| `vast campaign stop/stop-job/log` | stop a campaign, kill one wedged job, read its infrastructure log |
 | `vast workspace init/update/list/delete` | push a project directory to the service |
 | `vast files get/put` | move a single file by address |
 | `vast image build/wait/status/log` | have the service build a project's derived images |
-| `vast wait <campaign-id>` | block until a campaign is genuinely over |
+| `vast campaign wait <campaign-id>` | block until a campaign is genuinely over |
 | `vast doctor` | check the login, the service and your PATH |
 
-`vast exec` is partly here on purpose: a subcommand exists exactly when something that can
-perform it is installed. The verbs above only drive a service, so they are complete here.
-`vast exec local` (needs Docker) comes with `robovast`; `vast exec cluster
-setup/cleanup/upgrade/token/run-cleanup/monitor` (need a kubeconfig) come with
-`robovast-cluster`. So `vast exec cluster --help` lists `run` and not `setup` — nothing is
-stubbed and nothing fails on use.
+`vast cluster` and `vast service` are partly here on purpose: a subcommand exists exactly
+when something that can perform it is installed. The verbs above only drive a service, so
+they are complete here. `vast cluster setup/cleanup/jobs-cleanup/monitor` and `vast service
+upgrade/token` need a kubeconfig and come with `robovast-cluster`. So `vast cluster --help`
+lists `store-cleanup` and not `setup` — nothing is stubbed and nothing fails on use.
 
-Authoring, validating and querying results are available to an LLM agent through the
-service's MCP endpoint, which needs nothing installed at all. `vast login` prints the
-`claude mcp add` line that registers it.
+Both groups spanning two distributions is the design: a group is named after the **object**
+it acts on, not after what you installed.
 
-Note that `vast init` is a core verb, so name a project with the global `-V` flag instead:
-`vast -V my.vast exec cluster run`.
+There is no ambient project. Every command names its own input, and a campaign runs a
+*workspace's* project — `vast workspace run <workspace> [vast]`.
+
+An LLM agent reaches the same service through its MCP endpoint, which needs nothing
+installed at all. `vast login` prints the `claude mcp add` line that registers it. The
+control verbs are deliberately on both sides; each side additionally owns what only it can
+do — bulk bytes and long waits here, results queries and diff-based authoring there.
 
 ## Waiting for a campaign
 
-A campaign can run for days, so nothing blocks a request on one. `vast wait` polls
+A campaign can run for days, so nothing blocks a request on one. `vast campaign wait` polls
 the service and exits when the campaign is genuinely finished — past postprocessing, not
 merely past its last run:
 
 ```bash
-vast wait basic-nav-2026-08-16-101500
+vast campaign wait basic-nav-2026-08-16-101500
 ```
 
 Its **exit code is the answer**: `0` finished, `1` failed, `2` you interrupted the wait,

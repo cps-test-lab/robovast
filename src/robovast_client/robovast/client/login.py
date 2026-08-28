@@ -144,7 +144,7 @@ def mcp_add_command(url: str, token: str, name: str = "") -> list[str]:
     """The ``claude mcp add`` invocation registering this service with an agent, as lines.
 
     Rendered here because it is printed from two places — after ``vast login`` and by
-    ``vast exec cluster token`` — and a header that drifts out of one copy is a whole
+    ``vast service token`` — and a header that drifts out of one copy is a whole
     class of confusing failure: a missing ``Authorization`` 401s loudly, but a missing
     name silently records every campaign that agent starts as unattributed.
 

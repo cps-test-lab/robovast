@@ -112,7 +112,7 @@ class MinikubeClusterConfig(BaseConfig):
             f"cannot be moved by re-applying its manifest -- an existing pod is kept as it "
             f"is, so the new placement would be reported but never take effect. Delete it "
             f"(`kubectl delete pod {pod_name} -n {namespace}`) or run "
-            f"`vast exec cluster cleanup` first; the store is a transfer buffer, so nothing "
+            f"`vast cluster cleanup` first; the store is a transfer buffer, so nothing "
             f"durable is lost.")
 
     def setup_cluster(self, **kwargs):

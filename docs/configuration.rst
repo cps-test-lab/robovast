@@ -135,8 +135,8 @@ contexts, and it is rebuilt wherever a campaign is composed.
    **Private git repositories.** A ``git+https`` URL to a private repository needs
    credentials. Provide a GitHub token at deployment time — set ``ROBOVAST_GIT_TOKEN``
    (or ``GITHUB_TOKEN`` / ``GH_TOKEN``) in your project's ``.env`` file (or the
-   environment) when you run ``vast exec cluster setup`` **or**
-   ``vast exec cluster upgrade``; it is stored as a Kubernetes Secret, and removing
+   environment) when you run ``vast cluster setup`` **or**
+   ``vast service upgrade``; it is stored as a Kubernetes Secret, and removing
    the variable and upgrading again deletes it.
 
    That one token serves **both** places a private repository is reached, so there is
@@ -975,7 +975,7 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
   the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
   nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
   world, which never renders). Setting it enables the NVIDIA runtime on both lanes. On the
-  Kubernetes lane the GPU must also be schedulable, which ``vast execution cluster setup``
+  Kubernetes lane the GPU must also be schedulable, which ``vast cluster setup``
   arranges — see :ref:`cluster-gpu`, which also covers why the replica count caps
   concurrency without partitioning VRAM, and the comparability caveat for a campaign whose
   cells ran at different GPU concurrency.
@@ -1017,7 +1017,7 @@ local
 
 **Applies to:** Local execution only (ignored for cluster runs)
 
-Configuration options that apply only when running tests locally (e.g. ``vast execution local run``).
+Configuration options that apply only when running tests locally (e.g. ``vast workspace run``).
 
 local.parameter_overrides
 """"""""""""""""""""""""""
@@ -1055,7 +1055,7 @@ parameter that only makes sense with a window belongs, ``headless`` above all: a
 launched headless has no display for the scenario to draw on, and asking it to open a
 window there fails or renders nowhere.
 
-A run has a display when it was launched with one — ``vast execution local run`` (the
+A run has a display when it was launched with one — ``vast workspace run`` (the
 default; ``--no-gui`` opts out) or ``start_campaign(show_gui=True)`` / ``exec_in_container(show_gui=True)``
 against a local ``vast serve``. Cluster runs never do, and never apply either block.
 
@@ -1087,7 +1087,7 @@ kubernetes
 
 **Applies to:** Cluster execution only (ignored for local runs)
 
-Configuration options that apply only when running tests on a Kubernetes cluster (e.g. ``vast execution cluster run``).
+Configuration options that apply only when running tests on a Kubernetes cluster (e.g. ``vast workspace run``).
 
 kubernetes.jobs
 """""""""""""""
@@ -1133,7 +1133,7 @@ node-local data is decided at setup and recorded as a node label (see
 the pool that choice may be made from. On their own they would still let the
 pod float within the pool, which is the same problem at a smaller scale.
 
-Read only from a ``.vast`` named explicitly with ``vast -V <file>``.
+Read only from a ``.vast`` named explicitly with ``--vast <file>``.
 
 .. code-block:: yaml
 

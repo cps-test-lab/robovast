@@ -9,7 +9,7 @@ Each would be individually defensible and would collectively make a local servic
 unusable without a domain.
 
 The refusals that *do* demand TLS and a token are deliberate, and belong to the cluster
-half -- ``vast exec cluster setup`` publishes to other machines, where the token really
+half -- ``vast cluster setup`` publishes to other machines, where the token really
 would cross a network in clear text. This file pins the boundary between the two, not the
 absence of the checks.
 """

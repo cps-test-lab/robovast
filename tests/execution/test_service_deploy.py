@@ -191,7 +191,7 @@ def test_workspace_store_is_mounted_so_an_upgrade_does_not_discard_it():
     """The workspace store must be on a volume, not the container's writable layer.
 
     Regression: it was on the writable layer, and since every upgrade restarts the pod
-    (see ``RESTART_ANNOTATION``), one ``vast exec cluster upgrade`` deleted every pushed
+    (see ``RESTART_ANNOTATION``), one ``vast service upgrade`` deleted every pushed
     project while reporting success. Campaign results live in the object store and were
     untouched, which is what made it easy to miss.
 

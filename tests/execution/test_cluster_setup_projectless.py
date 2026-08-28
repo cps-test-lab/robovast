@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """``cluster setup`` takes its node labels only from an explicitly named ``.vast``.
 
-Setup deploys into a cluster and runs from any directory, so a ``.robovast_project``
-must neither be a precondition nor an input: it is found by walking *up* to the
-filesystem root, so a project one directory — or ten — above an unrelated CWD would
-otherwise decide which nodes a cluster's pods may run on. Only ``vast -V <file>``
-names the config; a named config that cannot be read still fails loudly.
+Setup deploys into a cluster and runs from any directory, so nothing ambient may decide
+which nodes a cluster's pods run on. There is no ambient project at all now; ``--vast
+<file>`` names the config, and a named config that cannot be read still fails loudly.
 """
 
 import json
@@ -152,14 +150,13 @@ def test_jobs_node_labels_are_refused_rather_than_silently_ignored(monkeypatch, 
     vast = tmp_path / "campaign.vast"
     vast.write_text(_VAST, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: str(vast))
 
     with pytest.raises(CampaignConfigError, match="jobs.node_labels"):
-        setup_server(config_name="rke2", namespace="default")
+        setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
 
 
 def test_named_config_supplies_control_labels(tmp_path, monkeypatch, deploy_stubs):
-    """``vast -V <file>`` is the one way control-pod node labels reach the deploy."""
+    """``--vast <file>`` is the one way control-pod node labels reach the deploy."""
     config = deploy_stubs
     vast = tmp_path / "campaign.vast"
     vast.write_text(_VAST.replace("""    jobs:
@@ -167,9 +164,8 @@ def test_named_config_supplies_control_labels(tmp_path, monkeypatch, deploy_stub
         node-pool: primary
 """, ""), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: str(vast))
 
-    setup_server(config_name="rke2", namespace="default")
+    setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
 
     # ANDed with the placement label, not replaced by it: a node pool alone still lets the
     # store pod float within the pool, which is the same bug at a smaller scale.

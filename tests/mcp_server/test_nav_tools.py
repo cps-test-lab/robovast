@@ -43,9 +43,6 @@ def campaign(tmp_path, monkeypatch):
     """A campaign whose data.db holds a ``poses`` table, reached over the local lane."""
     # The results root is derived from the workspaces store, and a CWD .robovast_project
     # would otherwise win the precedence and point the tools at the developer's own tree.
-    monkeypatch.setattr(
-        "robovast.client.project_config.ProjectConfig.load",
-        staticmethod(lambda *a, **k: None))
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
     cdir = tmp_path / "results" / _CAMPAIGN
     (cdir / "_execution").mkdir(parents=True)

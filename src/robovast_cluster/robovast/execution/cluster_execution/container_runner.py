@@ -292,7 +292,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
 
     With *campaign* given, deletes only that campaign's aux pod so concurrent
     campaigns are left untouched; otherwise deletes every aux pod. Backs
-    ``vast exec cluster run-cleanup`` (the successor to the controller-pod reap).
+    ``vast cluster jobs-cleanup`` (the successor to the controller-pod reap).
     """
     from kubernetes import client
 

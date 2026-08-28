@@ -269,7 +269,7 @@ def download_cmd(campaigns, output, force):
     """Download campaign archives from the share to this machine.
 
     Writes ``<campaign-id>.<variant>.tar.gz`` and stops there -- the archive is yours,
-    to keep, copy, or hand to ``vast results import``. Nothing is extracted and no
+    to keep, copy, or hand to ``vast campaign import``. Nothing is extracted and no
     results directory is touched.
 
     An interrupted transfer leaves a ``.part`` file and the next run resumes from it;
@@ -342,7 +342,7 @@ def download_cmd(campaigns, output, force):
 def upload_cmd(archives, force):
     """Upload campaign archive files from this machine to the share.
 
-    ARCHIVES are ``.tar.gz`` files as ``vast results download`` or ``vast share
+    ARCHIVES are ``.tar.gz`` files as ``vast campaign download`` or ``vast share
     download`` produce them. The campaign id is read from the archive's single
     top-level directory and the variant from whether ``_execution/data.db`` is in it,
     so the object is named the way everything else on the share is named -- whatever
@@ -534,14 +534,14 @@ def export_cmd(campaign_id):
     follows, which is why the two can never disagree.
 
     Long-running: it returns as soon as the upload is under way. Watch it with
-    ``vast wait <campaign-id>``, or in the campaign view.
+    ``vast campaign wait <campaign-id>``, or in the campaign view.
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
     from robovast.service.interface import \
         RunShareRequest  # pylint: disable=import-outside-toplevel
 
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         click.echo(f"Exporting {campaign_id} to the share via {label} ...")
         result = client.run_share(RunShareRequest(campaign_id=campaign_id))
     click.echo(("✓ " if result.ok else "✗ ") + (result.message or ""))
@@ -572,7 +572,7 @@ def import_cmd(campaigns, force, rebuild_store):
 
     Long-running: it returns as soon as the import is under way, and the campaign
     appears immediately in the campaign view at phase ``importing``. Watch it with
-    ``vast wait <campaign-id>``.
+    ``vast campaign wait <campaign-id>``.
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
@@ -586,7 +586,7 @@ def import_cmd(campaigns, force, rebuild_store):
     wanted = [(arg, campaign_from_ui_link(arg)) for arg in campaigns]
 
     started, failed = [], False
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         click.echo(f"Importing {len(wanted)} campaign(s) from the share via {label} ...")
         for arg, from_link in wanted:
             if from_link:
@@ -603,6 +603,6 @@ def import_cmd(campaigns, force, rebuild_store):
             started.append(ref.campaign_id)
 
     if started:
-        click.echo("\nWatch them with: " + "  ".join(f"vast wait {c}" for c in started))
+        click.echo("\nWatch them with: " + "  ".join(f"vast campaign wait {c}" for c in started))
     if failed:
         raise SystemExit(1)

@@ -461,7 +461,7 @@ A budget cap is recommended so runtime is bounded; with only ``stopping`` the ru
 is bounded solely by convergence (the controller logs a warning).
 ``target_objective`` / ``no_improvement`` require a single objective (validated).
 
-**Progress + outcome.** On ``vast execution local run`` the controller logs a
+**Progress + outcome.** On ``vast workspace run`` the controller logs a
 progress line after each batch showing every criterion's current value vs its
 limit, e.g.
 ``📊 batches 3/50 | coverage 0.21/0.30 | failure_rate 0.97/0.9``.
@@ -581,7 +581,7 @@ wherever they appear — by entry-point name **or** a local ``./path.py:Class`` 
 reference — via one shared resolver/runner. They are configured in two places:
 
 * ``results_processing.postprocessing`` — runs at analysis time
-  (``vast results postprocess``, then the web UI's Results views).
+  (``vast campaign postprocess``, then the web UI's Results views).
 * ``search.postprocessing`` — runs over each batch's results during a search,
   before ``extract``.
 
@@ -595,11 +595,12 @@ Running a search
 
 .. code-block:: bash
 
-   vast execution local run
+   vast workspace run my-experiment my.vast
 
-``vast execution local run`` is the single entry point: when the project ``.vast``
+``vast workspace run`` is the single entry point: when the workspace's ``.vast``
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
 Results, per-batch outputs and a live-queryable ``campaign.db`` are written
-under a timestamped campaign directory in the project results dir (override the
-parent with ``--output``). See ``configs/examples/quadrotor_landing/`` for runnable random,
-QD and Optuna variants over one shared scenario, sim and extract.
+under a timestamped campaign directory in the service's results root (chosen by
+``vast serve --results-dir``). See ``configs/examples/quadrotor_landing/`` for
+runnable random, QD and Optuna variants over one shared scenario, sim and
+extract.

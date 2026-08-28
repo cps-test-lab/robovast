@@ -1,31 +1,65 @@
 How to run
 ==========
 
+.. click:: robovast.client.cli:workspace
+   :prog: vast workspace
+   :nested: full
+
+.. click:: robovast.client.campaign_cli:campaign
+   :prog: vast campaign
+   :nested: full
+
 .. click:: robovast.configuration.configuration_utils.cli:configuration
    :prog: vast config
    :nested: full
    :commands: generate, variation-points, variation-types, list
 
-
-.. Three directives rather than one, because sphinx-click only falls through to a group's
-   lazily-attached commands when its eager ``commands`` dict is *empty* — so a single
-   ``:commands: local, cluster`` on ``vast exec`` silently rendered neither (both arrive
-   through entry points, from ``robovast`` and ``robovast-client`` respectively). Each is
-   documented from the module that defines it instead.
-
-.. click:: robovast.client.exec_cli:execution
-   :prog: vast exec
+.. click:: robovast.client.container_cli:container
+   :prog: vast container
    :nested: full
-   :commands: command, stop-container
 
-.. click:: robovast.execution.execution_utils.cli:local
-   :prog: vast exec local
-   :nested: full
+.. `vast cluster` and `vast service` each hold BOTH eagerly-defined verbs and lazily
+   attached ones — `store-cleanup` and `restart` are in the group's own module, `setup` and
+   `upgrade` arrive from robovast-cluster through an entry point. sphinx-click reads the
+   eager ``commands`` dict rather than ``list_commands()``, so a group holding even one
+   eager verb renders ONLY that half and drops every lazy one **silently**: the section
+   appears, the page builds clean, and six operator verbs are simply absent. Verified, not
+   assumed — the first draft of this file lost them exactly that way.
+
+   So each operator verb is documented from the module that defines it, as its own
+   directive. Tedious, and the alternative is worse: an undocumented verb nobody notices.
 
 .. click:: robovast.client.cluster_cli:cluster
-   :prog: vast exec cluster
+   :prog: vast cluster
    :nested: full
-   :commands: run, stop, stop-job, log, download-cleanup
+
+.. click:: robovast.execution.cluster_execution.cli:setup
+   :prog: vast cluster setup
+   :nested: full
+
+.. click:: robovast.execution.cluster_execution.cli:cleanup
+   :prog: vast cluster cleanup
+   :nested: full
+
+.. click:: robovast.execution.cluster_execution.cli:run_cleanup
+   :prog: vast cluster jobs-cleanup
+   :nested: full
+
+.. click:: robovast.execution.cluster_execution.cli:monitor
+   :prog: vast cluster monitor
+   :nested: full
+
+.. click:: robovast.client.service_cli:service
+   :prog: vast service
+   :nested: full
+
+.. click:: robovast.execution.cluster_execution.cli:upgrade
+   :prog: vast service upgrade
+   :nested: full
+
+.. click:: robovast.execution.cluster_execution.cli:cluster_token
+   :prog: vast service token
+   :nested: full
 
 .. click:: robovast.results_processing.cli:results
    :prog: vast results

@@ -121,7 +121,7 @@ def test_install_failure_is_actionable(tmp_path, monkeypatch):
         ensure_workspace_plugins(str(tmp_path), ["x @ git+https://github.com/o/r@main"])
     msg = str(ei.value)
     assert "private repository" in msg      # auth detected
-    assert "vast exec cluster setup" in msg  # remedy surfaced
+    assert "vast cluster setup" in msg  # remedy surfaced
 
 
 # The output a real failed clone produces, verbatim in shape: git's reason first, then
@@ -170,7 +170,7 @@ def test_private_repo_clone_failure_is_diagnosed(tmp_path, monkeypatch, reason, 
         ensure_workspace_plugins(str(tmp_path), ["x @ git+https://github.com/o/r@main"])
     msg = str(ei.value)
     assert expect in msg
-    assert "vast exec cluster setup" in msg          # the remedy, not just the symptom
+    assert "vast cluster setup" in msg          # the remedy, not just the symptom
     assert "each spec is reachable" not in msg       # not the wrong-URL advice
     # The cause survives the excerpt even though pip's epilogue follows it.
     assert reason[0] in msg

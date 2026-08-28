@@ -244,7 +244,7 @@ export interface paths {
          * Download Campaign Archive
          * @description Stream a ``tar.gz`` of the campaign, on either lane.
          *
-         *     Backs ``vast results download`` and the web UI's download button. What comes
+         *     Backs ``vast campaign download`` and the web UI's download button. What comes
          *     out is the campaign as this service holds it -- postprocessed, if it has been.
          *     Internal ``_postproc/`` staging is excluded so the archive is the clean
          *     campaign layout.
@@ -2311,7 +2311,7 @@ export interface components {
          *
          *     ``level`` decides what happens, and only these two mean anything here:
          *
-         *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast wait``
+         *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
          *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
          *       still holds ``running`` for its whole life.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
@@ -2818,7 +2818,7 @@ export interface components {
          *     ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
          *     question ("how much is currently claimed"): on the **cluster** they are the sum
          *     of resource *requests* of the non-terminal pods bound to a node (schedulability,
-         *     matching how Kueue reasons about quota — pods still queued for a node are
+         *     matching how the scheduler reasons about capacity — pods still queued for a node are
          *     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
          *     on **local** they are live host utilization. ``cpu_*`` are CPU cores;
          *     ``memory_*`` are bytes.
@@ -2844,7 +2844,7 @@ export interface components {
          *     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
          *     this backend is driving, not one. One definition, both lanes: ``running`` is what is
          *     **executing right now**, ``pending`` is work the backend has **accepted but is not
-         *     executing**. On the cluster that means Kueue-waiting + pod-pending + blocked Jobs;
+         *     executing**. On the cluster that means planned + pod-pending + blocked Jobs;
          *     locally it is the remainder of the current batch, with ``running`` 0 or 1 because
          *     the Docker lane is single-flight. So the pair can be read — and summed into an
          *     "outstanding work" total — without branching on ``backend``.
@@ -3391,12 +3391,12 @@ export interface components {
          *       there is no button rather than hiding one silently.
          *
          *     **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
-         *     and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
-         *     Secrets and the build daemon are untouched, so a version needing a permission the last
-         *     one did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the
-         *     command that reconciles all of it, and the one a consumer must name. The Secrets in
-         *     particular can *never* be done from in here: they are rebuilt from the operator's
-         *     environment, which the pod does not have.
+         *     and nothing else: RBAC, the registry Ingress route, the credential Secrets and the
+         *     build daemon are untouched, so a version needing a permission the last one did not will
+         *     deploy and then 403 at runtime. ``vast service upgrade`` is the command that reconciles
+         *     all of it, and the one a consumer must name. The Secrets in particular can *never* be
+         *     done from in here: they are rebuilt from the operator's environment, which the pod does
+         *     not have.
          */
         UpgradeInfo: {
             /** Active Campaigns */

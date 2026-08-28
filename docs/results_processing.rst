@@ -13,8 +13,8 @@ using the ``vast results`` command group.
 Output Structure
 ----------------
 
-The results directory path is configured during ``vast init`` and stored in
-the ``.robovast_project`` file.
+The results directory is named with ``--results-dir``: on the serve command for where
+campaigns land, and on each ``vast results`` verb for which tree to read.
 
 Top-Level Layout
 ^^^^^^^^^^^^^^^^
@@ -43,12 +43,12 @@ campaign actions menu, ``start_campaign(from_campaign=<id>)`` over MCP, or
 ``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image recorded in
 ``_execution/`` and start a new campaign, leaving this one untouched.
 
-Doing it by hand instead re-points a project at the snapshot:
+Doing it by hand instead pushes the snapshot as a workspace and runs that:
 
 .. code-block:: text
 
-   vast init <campaign-dir>/_config/<config-name>.vast
-   vast execution cluster run
+   vast workspace init <campaign-dir>/_config --name replay
+   vast workspace run replay <config-name>.vast
 
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
 sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
@@ -545,7 +545,7 @@ A run somebody stopped: ``killed``
 
 ``run_view.status`` is ``passed``, ``failed``, ``error``, ``unknown`` — or ``killed``,
 which means an operator ended that run's job by hand while the campaign was running (the
-web UI's per-job **Stop**, the ``stop_job`` MCP tool, or ``vast exec cluster stop-job``).
+web UI's per-job **Stop**, the ``stop_job`` MCP tool, or ``vast campaign stop-job``).
 
 **A killed run is not a trial failure.** Nothing was learned from it about the system
 under test, so it is a *missing measurement*: RoboVAST counts it apart from the failures
@@ -739,7 +739,7 @@ change. Workspace *inputs* live in the writable half of the same address space,
 and per run, so a recursive listing of the root is thousands of entries; it
 reports ``total`` when it truncates. ``cat`` pages text and refuses binary;
 ``get`` writes raw bytes, which is how you fetch one artifact without downloading
-the whole campaign archive (that is ``vast results download <campaign-id>``, which
+the whole campaign archive (that is ``vast campaign download <campaign-id>``, which
 writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
@@ -922,34 +922,43 @@ analysis-friendly formats (e.g. CSV).  Commands are defined in the
 ``results_processing.postprocessing`` section of the ``.vast`` file and executed by plugins
 (see :ref:`extending-postprocessing` for how to write your own).
 
+It runs automatically when a campaign's runs finish. To run it again — after editing a
+postprocessing script, or on a campaign imported raw — name the campaign:
+
 .. code-block:: bash
 
-   vast results postprocess [OPTIONS]
+   vast campaign postprocess CAMPAIGN
 
 **Options**
 
-.. option:: -r, --results-dir PATH
-
-   Directory containing the run results (parent of campaign directories).
-   When omitted the value configured with ``vast init`` is used.
-
 .. option:: -f, --force
 
-   Bypass the postprocessing cache and re-run all commands even if the
-   results directory has not changed since the last postprocessing run.
+   Bypass the per-rosbag caches and reprocess all bags, for example after updating a
+   postprocessing script.
 
-.. option:: -o, --override VAST_FILE
+.. option:: --skip PLUGIN
 
-   Use the given ``.vast`` file instead of the one stored in
-   ``<campaign-name>-<timestamp>/_config/``.  See :ref:`results-override` for details.
+   Skip a postprocessing plugin (repeatable), e.g. ``--skip rosbags_to_webm``.
 
-Postprocessing is **cached** by a hash of the results directory.  When the
-directory is unchanged the step is skipped automatically.  Use ``--force`` (or
-``-f``) to bypass the cache, for example after updating a postprocessing script:
+The campaign is the address and the service is the lane, so the rosbag→CSV step runs
+wherever that campaign's runs ran — in-cluster for a cluster campaign — and ``data.db``
+is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
+so the campaign re-enters its ``postprocessing`` phase and the command returns. Follow it
+exactly as after a launch:
 
 .. code-block:: bash
 
-   vast results postprocess --force
+   vast campaign postprocess my-campaign-2026-03-20-153630
+   vast campaign wait my-campaign-2026-03-20-153630
+
+Postprocessing is **cached** by a hash of the results directory; when nothing changed the
+step is skipped automatically, which is what ``--force`` bypasses.
+
+.. note::
+
+   This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
+   same work in-process against a local results directory. The second could only ever see
+   a local campaign, so there is now one postprocessing path, reached one way.
 
 
 .. _results-retrigger:
@@ -968,7 +977,7 @@ command line and the MCP tools ``run_postprocessing`` and ``run_share``.
 
 A third operation shares their shape without being a *re*-run: **importing** a
 campaign this deployment never ran, from an archive
-(``vast results import <archive>``) or from the share (``vast share import
+(``vast campaign import <archive>``) or from the share (``vast share import
 <campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
 — when what arrived is a raw archive with no ``_execution/data.db`` — rolls straight
 on into ``postprocessing``, because a campaign without its metric tables is not one
@@ -983,7 +992,7 @@ so the entry outlives the failure either way and removing the directory only too
 the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
 an object store the campaign's ``_execution/`` is published so the account is readable
 where the campaign is read, not left on a pod's scratch. Remove it with
-``vast results delete``, or import again with ``--force``.
+``vast campaign delete``, or import again with ``--force``.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
@@ -994,9 +1003,9 @@ immediately** — postprocessing can take minutes to hours, so the campaign simp
 re-enters the ``postprocessing`` (or ``sharing``) phase and you follow its progress and
 log in the campaign view, exactly like the original run; it returns to ``finished`` when
 done. The web *Retrigger postprocessing* dialog therefore closes as soon as you click
-*Run*. A second re-trigger is refused while one is already running. (The
-``vast results postprocess`` CLI is the exception: it runs postprocessing locally and
-synchronously, streaming to the console.)
+*Run*. A second re-trigger is refused while one is already running. ``vast campaign
+postprocess`` is the same dispatch from the CLI, so all three surfaces behave alike --
+there is no longer a local, synchronous path that behaves differently from the rest.
 
 Because a post-run step is separate from the runs themselves, a **failure of one of
 these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
@@ -1047,7 +1056,7 @@ creating zip archives for upload or hand-off.
 .. option:: -r, --results-dir PATH
 
    Directory containing the run results (parent of campaign directories).
-   When omitted the value configured with ``vast init`` is used.
+   Required: there is no project file to take it from.
 
 .. option:: -o, --override VAST_FILE
 
@@ -1113,7 +1122,7 @@ Original campaign-directories are not modified.
 .. option:: -r, --results-dir PATH
 
    Source directory containing campaign directories.  When omitted the value
-   configured with ``vast init`` is used.
+   required: there is no project file to take it from.
 
 
 .. _results-postprocess-commands:
@@ -1135,7 +1144,7 @@ parameters.  Useful for discovering which commands can be used in the
 Using ``--override`` to Supply a Local ``.vast`` File
 ------------------------------------------------------
 
-By default ``vast results postprocess`` reads the ``.vast`` configuration from the
+By default ``vast results publish`` reads the ``.vast`` configuration from the
 **campaign snapshot** stored in
 ``<results-dir>/<campaign-name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
@@ -1146,7 +1155,7 @@ for example your current working copy:
 .. code-block:: bash
 
    # Use a local/updated .vast file
-   vast results postprocess --override my_project.vast
+   vast results publish --override my_project.vast
 
 **When to use ``--override``**
 

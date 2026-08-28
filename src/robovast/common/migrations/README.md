@@ -79,7 +79,7 @@ change does not justify.
   available. And raise with `partial=` holding the config migrated as far as you got, because the
   caller's useful move is to hand that to a person, not to report a dead end.
 
-  **Never silently drop a key.** From there, `vast exec retrigger <campaign> --to-workspace <name>`
+  **Never silently drop a key.** From there, `vast campaign rerun <campaign> --to-workspace <name>`
   materialises the partial config in a workspace with every outstanding decision marked, to finish
   with the ordinary authoring tools. The other fallback is to check out the `robovast_revision` the
   campaign's results recorded and run it there — the ladder and that recorded revision are

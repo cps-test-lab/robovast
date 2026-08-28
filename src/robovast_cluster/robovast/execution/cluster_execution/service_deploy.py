@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deploy the persistent ``robovast-service`` into a cluster (mode 3).
+"""Deploy the persistent ``robovast-service`` into a cluster (the cluster mode).
 
 This is the in-cluster counterpart of ``vast serve``: a long-lived Deployment
 running the same FastAPI app (:mod:`robovast.service.app`), reached over a
@@ -188,7 +188,7 @@ def _service_rbac_manifests(namespace):
                 {"apiGroups": [""], "resources": ["pods/exec"],
                  "verbs": ["create", "get"]},
                 # The service rolls ITSELF, from the web UI's Admin page and from
-                # 'vast exec cluster restart': it stamps its own Deployment's restart
+                # 'vast service restart': it stamps its own Deployment's restart
                 # annotation, which with imagePullPolicy: Always lands the new pod on the
                 # newest bytes at the resolved tag. Scoped by resourceNames to this one
                 # object -- resourceNames restricts exactly the named-object verbs, which
@@ -197,7 +197,7 @@ def _service_rbac_manifests(namespace):
                 # `get` is not decoration: it is how the page reads the image ref to ask
                 # the registry whether anything newer exists, and a 403 on it is how a
                 # deployment predating this grant tells the page to run
-                # 'vast exec cluster upgrade --no-restart' -- which reconciles RBAC
+                # 'vast service upgrade --no-restart' -- which reconciles RBAC
                 # without rolling, and is therefore available mid-campaign.
                 #
                 # Deliberately NOT create/delete, and deliberately not the `apps` group at
@@ -436,7 +436,7 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
             # mid-wait.
             raise RuntimeError(
                 f"no {SERVICE_NAME} Deployment in namespace {namespace!r} to wait for. "
-                "Deploy it with 'vast exec cluster setup <flavor>'.") from exc
+                "Deploy it with 'vast cluster setup <flavor>'.") from exc
         if (status.ready_replicas or 0) >= 1:
             return
         pods = core.list_namespaced_pod(namespace,
@@ -785,7 +785,7 @@ def patch_restart_annotation(namespace="default", kube_context=None) -> str:
     afresh -- so one changed annotation is what moves a floating tag onto new bytes.
 
     Deliberately **not** :func:`deploy_service`, even though that is what
-    ``vast exec cluster upgrade`` calls. That re-renders the entire manifest set from the
+    ``vast service upgrade`` calls. That re-renders the entire manifest set from the
     caller's environment, and the caller here is the pod itself -- whose environment is
     whatever was baked in at the last setup. Re-rendering from it would look like an
     upgrade and would quietly revert anything an operator changed out of band since, and
@@ -1389,7 +1389,7 @@ def published_host(namespace="default", kube_context=None):
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
-    The service (mode 3) reconstructs the same cluster config the controller
+    The service (the cluster mode) reconstructs the same cluster config the controller
     uses, so ``create_campaign`` can stage inputs and controllers can pull them.
 
     ``kube_context`` records the context this service was deployed with, so the
@@ -1977,7 +1977,7 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
         raise
     except HTTPError as exc:
         # An unreachable cluster is **not** "no service deployed": returning (None, {})
-        # here would send the caller off to suggest `vast exec cluster setup` for a
+        # here would send the caller off to suggest `vast cluster setup` for a
         # cluster it cannot even connect to. Say which cluster, and that it did not
         # answer — one line, not a urllib3 stack.
         host = ""

@@ -40,7 +40,7 @@ function runsFromVast(content: string): number | null {
   return null
 }
 
-// The browser analog of `vast exec cluster run`: a compact form over CreateCampaignRequest →
+// The browser analog of `vast workspace run`: a compact form over CreateCampaignRequest →
 // create_campaign, sitting at the top of the Campaigns page. On success it only invalidates the
 // ['campaigns'] list — the launched campaign then shows up as a card below like any other, so there
 // is no second, page-local copy of campaign state to drift out of sync with a delete.

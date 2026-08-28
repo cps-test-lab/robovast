@@ -65,7 +65,7 @@ _CONTEXT_MOUNT = "/context"
 _DOCKER_CONFIG_MOUNT = "/docker"
 #: Where the git token Secret is mounted in the build pod, and the BuildKit secret id the
 #: rendered Dockerfile mounts it under. The path mirrors the service pod's own mount, so one
-#: Secret -- `robovast-git-credentials`, provisioned at `vast exec cluster setup` -- serves the
+#: Secret -- `robovast-git-credentials`, provisioned at `vast cluster setup` -- serves the
 #: composer's plugin clone and a build's private pip install alike.
 _GIT_TOKEN_MOUNT = "/var/run/secrets/robovast-git"
 #: The build image's own CA bundle, and the writable copy we extend with the registry CA
@@ -287,7 +287,7 @@ def build_context_bucket(cluster_config) -> str:
         raise ValueError(
             f"in-cluster image builds on the '{backend}' storage backend need a bucket "
             "configured for this deployment (there is no private namespace to create one "
-            "in). Set it at 'vast exec cluster setup' (GCS: -o gcs_bucket=… or "
+            "in). Set it at 'vast cluster setup' (GCS: -o gcs_bucket=… or "
             "ROBOVAST_GCS_BUCKET).")
     return BUILD_CONTEXT_BUCKET
 
@@ -332,7 +332,7 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
     BuildKit container builds ``Dockerfile`` from it and pushes with the mounted
     push credential. ``push_secret_name`` is a ``kubernetes.io/dockerconfigjson``
-    Secret provisioned at ``vast exec cluster setup`` — the only place registry
+    Secret provisioned at ``vast cluster setup`` — the only place registry
     credentials live.
 
     ``pull_secret_name`` authenticates the *pod's own* image pulls, which is the opposite

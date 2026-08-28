@@ -32,7 +32,9 @@ NAMESPACE_MODULES = {
     "robovast.service.project_push": "robovast-client (src/robovast_client)",
     "robovast.client.scene_markers": "robovast-client (src/robovast_client)",
     "robovast.client.cluster_cli": "robovast-client (src/robovast_client)",
-    "robovast.client.exec_cli": "robovast-client (src/robovast_client)",
+    "robovast.client.campaign_cli": "robovast-client (src/robovast_client)",
+    "robovast.client.service_cli": "robovast-client (src/robovast_client)",
+    "robovast.client.container_cli": "robovast-client (src/robovast_client)",
     "robovast.service.local_transport": "robovast",
 }
 
@@ -54,8 +56,8 @@ def test_the_suite_runs_against_this_checkout(module_name, distribution):
 #: Entry-point groups where two distributions declaring the same name is a real hazard
 #: rather than a merge: the loader builds ``{ep.name: ep}``, so a duplicate resolves
 #: unpredictably to whichever came last.
-SINGLE_PROVIDER_GROUPS = ("robovast.cli_plugins", "robovast.exec_plugins",
-                          "robovast.cluster_plugins")
+SINGLE_PROVIDER_GROUPS = ("robovast.cli_plugins", "robovast.cluster_plugins",
+                          "robovast.service_plugins")
 
 
 @pytest.mark.parametrize("group", SINGLE_PROVIDER_GROUPS)
@@ -63,10 +65,11 @@ def test_no_entry_point_name_has_two_providers(group):
     """Stale metadata is invisible until it resolves the wrong way.
 
     Entry points live in *installed* metadata, so moving one between distributions leaves
-    the old declaration behind until every dist is reinstalled. ``vast exec cluster`` was
-    moved from ``robovast-cluster`` to ``robovast-client`` exactly this way; in the window
-    before a reinstall both declared ``cluster`` under ``robovast.exec_plugins`` and which
-    one won was unspecified. Nothing else in the suite can see that: the modules are fine,
+    the old declaration behind until every dist is reinstalled. ``cluster`` was moved from
+    ``robovast-cluster`` to ``robovast-client`` exactly this way; in the window before a
+    reinstall both declared it and which one won was unspecified. ``service`` now spans two
+    distributions by design, which is why this checks for duplicate *names* rather than for
+    a group having one provider. Nothing else in the suite can see that: the modules are fine,
     the imports are fine, and the CLI lists the verb either way.
     """
     from collections import Counter

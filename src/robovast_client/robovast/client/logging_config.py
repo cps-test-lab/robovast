@@ -147,20 +147,12 @@ def remove_campaign_log_handler(handler: logging.Handler | None) -> None:
         logging.getLogger("robovast").removeHandler(handler)
 
 
-def setup_logging_from_project_config() -> None:
-    """Setup logging using the project configuration if available.
+def setup_default_logging() -> None:
+    """Set the default log level for a command that did not pass ``--log-level``.
 
-    If no project configuration is found, defaults to INFO level.
+    INFO, always. This used to read a level out of a ``.robovast_project`` found by
+    walking up to the filesystem root, so a file in some ancestor directory decided how
+    verbose an unrelated command was -- and silently, since nothing said where the level
+    came from. ``--log-level`` is the one way to change it.
     """
-    try:
-        from robovast.client.project_config import \
-            ProjectConfig  # pylint: disable=import-outside-toplevel
-
-        config = ProjectConfig.load()
-        if config:
-            setup_logging(config.log_level)
-        else:
-            setup_logging("INFO")
-    except Exception:
-        # If we can't load the config, just use INFO level
-        setup_logging("INFO")
+    setup_logging("INFO")

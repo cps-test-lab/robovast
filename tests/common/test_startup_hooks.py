@@ -10,7 +10,7 @@ That indirection has a failure mode worth a test of its own. Entry points are ba
 into a distribution's installed metadata, so adding one to ``pyproject.toml`` does
 nothing until the package is reinstalled, and an editable checkout looks entirely
 normal in the meantime. It happened: with the core installed but its hook
-unregistered, no ``.env`` was read, and ``vast exec cluster upgrade`` -- which
+unregistered, no ``.env`` was read, and ``vast service upgrade`` -- which
 reconciles Secrets from the environment -- concluded the registry and git
 credentials "configuration is gone" and **deleted both**. A silently-unread config
 file is not a degraded feature; it is a wrong answer with consequences.

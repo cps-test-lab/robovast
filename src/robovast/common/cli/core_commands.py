@@ -27,110 +27,17 @@ is complete rather than truncated: the verbs it cannot run are not registered, s
 are absent instead of present-and-failing.
 """
 
-import logging
 import os
 import shutil
-import sys
 
 import click
 
 from robovast.client.logging_config import get_logger
-from robovast.client.project_config import ProjectConfig
 from robovast.client.service_target import _service_alive
-from robovast.client.service_target import echo_target as _echo_target
 from robovast.service.interface import DEFAULT_PORT
 
-from .checks import check_docker_access
 
 logger = get_logger(__name__)
-
-
-@click.command()
-@click.argument('config', type=click.Path(exists=True))
-@click.option('--results-dir', '-r', default="results", type=click.Path(),
-              help='Directory for storing results')
-@click.option('--project-log-level', default="INFO",
-              type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
-              help='Default logging level for the project (saved to project config)')
-@click.option('--force', '-f', is_flag=True,
-              help='Skip Docker and Kubernetes accessibility checks')
-def init(config, results_dir, project_log_level, force):
-    """Initialize a VAST project.
-
-    Creates a `.vast_project` file in the current directory that stores
-    the configuration file path, results directory, and default logging level.
-    These settings will be used by other VAST commands automatically.
-
-    The default log level can be overridden for any command using the global
-    ``--log-level`` flag (e.g., ``vast --log-level DEBUG <command>``).
-
-    By default, performs the following checks before initialization:
-
-    * Docker daemon accessibility and version
-    * Kubernetes cluster connectivity and version
-    * robovast pod is running in the default namespace
-
-    Use the ``--force`` flag to skip all these checks if needed.
-    """
-    # Check Docker and Kubernetes access unless --force is used
-    # Check Docker access
-    if force:
-        click.echo("⚠ Warning: Skipping checks (--force enabled)")
-
-    # check integrity of config file
-    try:
-        from ..common import load_config  # pylint: disable=import-outside-toplevel
-        load_config(config)
-    except Exception as e:
-        click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
-        if not force:
-            sys.exit(1)
-
-    logger.debug("Checking Docker daemon access...")
-    docker_ok, docker_msg = check_docker_access()
-    if not docker_ok and not force:
-        click.echo(f"✗ Error: {docker_msg}", err=True)
-        click.echo("  Docker is required for RoboVAST execution.", err=True)
-        sys.exit(1)
-
-    # Convert to absolute paths
-    project_file_dir = os.path.abspath(os.getcwd())
-    if not os.path.isabs(config):
-        config_path = os.path.abspath(os.path.join(project_file_dir, config))
-    else:
-        config_path = config
-    if not os.path.isabs(results_dir):
-        results_path = os.path.abspath(os.path.join(project_file_dir, results_dir))
-    else:
-        results_path = results_dir
-
-    # Validate config file exists
-    if not os.path.isfile(config_path):
-        click.echo(f"✗ Error: Configuration file not found: {config_path}", err=True)
-        sys.exit(1)
-
-    # Create ProjectConfig and save it
-    project_config = ProjectConfig(config_path=config_path, results_dir=results_path, log_level=project_log_level)
-
-    # Validate the configuration
-    is_valid, error = project_config.validate()
-    if not is_valid:
-        click.echo(f"✗ Error: {error}", err=True)
-        sys.exit(1)
-
-    # Check if .vast_project already exists
-    existing_file = ProjectConfig.find_project_file()
-    if existing_file:
-        click.echo(f"⚠ Warning: Overwriting existing project file: {existing_file}")
-
-    # Save the project file
-    project_file = project_config.save()
-
-    click.echo(f"✓ Project initialized successfully!")
-    logging.debug(f"Configuration: {config_path}")
-    logging.debug(f"Results directory: {results_path}")
-    logging.debug(f"Log level: {project_log_level}")
-    logging.debug(f"Project file: {project_file}")
 
 
 def _ensure_ui_built(rebuild: bool = False) -> None:
@@ -213,6 +120,13 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='Also expose the MCP server at /mcp on this same port, so one '
                    'URL and one token cover the web UI, the REST API, and the MCP '
                    'tools together. Pass --no-mcp to serve the API without them.')
+@click.option('--results-dir', 'results_dir', default=None, metavar='DIR',
+              type=click.Path(file_okay=False),
+              help='Where campaigns this service runs land, on the serve host. Only the '
+                   'local Docker lane has one -- a cluster campaign\'s results live in '
+                   'the object store. Omitted, a service-owned directory beside the '
+                   'workspaces store is used, which is stable but not where you were '
+                   'looking; name one to choose.')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
               callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
@@ -225,21 +139,21 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
 def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
-          workspace_dir, mount_mcp):
+          results_dir, workspace_dir, mount_mcp):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
     runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
-    and campaigns survive client exit (unlike ``vast exec local run``). The
-    service serves the web UI at the same URL — from a source checkout this
-    (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
-    ``--rebuild-ui`` forces it). Ways it makes the port live:
+    and campaigns survive client exit. The service serves the web UI at the same
+    URL — from a source checkout this (re)builds ``frontend/ui/dist`` first when it
+    is missing or stale (needs ``npm``; ``--rebuild-ui`` forces it). Ways it makes
+    the port live:
 
     * **local** (default off-cluster) — runs the app in-process: local Docker +
-      local filesystem (mode 2). Run it on your machine or a remote VM reached
+      local filesystem. Run it on your machine or a remote VM reached
       over an SSH tunnel.
     * **cluster** (default in-pod) — runs the app in-process, driving each
-      campaign against Kubernetes Jobs (mode 3); this is what the in-cluster
+      campaign against Kubernetes Jobs; this is what the in-cluster
       ``robovast-service`` Deployment runs. Run it **off-cluster** with
       ``--backend cluster -x <context>`` to debug the driver locally while
       scenarios execute in that cluster — the cluster config is read from the
@@ -249,7 +163,7 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
     can click — there is no unauthenticated mode. It still binds ``127.0.0.1`` by
-    default; publishing it is ``vast exec cluster setup --ingress-host``, which
+    default; publishing it is ``vast cluster setup --ingress-host``, which
     also insists on TLS. Web UI + OpenAPI docs at ``/`` and ``/docs``; MCP tools at
     ``/mcp`` (see ``--no-mcp``) — one URL reaches all three.
     """
@@ -293,7 +207,8 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
         from robovast.service.workspaces import WorkspaceStore
         store = WorkspaceStore(workspace_dir=workspace_dir)
     impl = lane.build(in_pod=in_pod, context=context, namespace=k8s_namespace,
-                      store=store, workspace_dir=workspace_dir)
+                      store=store, workspace_dir=workspace_dir,
+                      results_dir=os.path.abspath(results_dir) if results_dir else None)
     storage = lane.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""

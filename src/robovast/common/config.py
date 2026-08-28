@@ -1691,7 +1691,7 @@ class ConfigV1(BaseModel):
             "or the third-party dependencies a local './file.py:Class' postprocessing "
             "plugin imports). Each entry is one of: an index pin ('my_plugin==1.2.3'); "
             "a git URL ('scenario_mt @ git+https://github.com/org/repo@ref' — for a "
-            "private repo, provide a GitHub token at 'vast exec cluster setup'); or a "
+            "private repo, provide a GitHub token at 'vast cluster setup'); or a "
             "workspace-relative path to a wheel you uploaded "
             "('./plugins/my_plugin-1.0-py3-none-any.whl'). They are installed into the "
             "'.robovast_plugins/' venv (with dependencies) and put on sys.path before "

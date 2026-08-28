@@ -18,16 +18,13 @@
 """CLI for results processing and management."""
 
 import sys
-import time
 from pathlib import Path
 
 import click
 import yaml
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import ProjectConfig, get_project_config
 from robovast.common import fmt_size as _fmt_size
-from robovast.common import make_transfer_progress_callback
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.merge_results import merge_results
@@ -38,91 +35,24 @@ from robovast.results_processing.publication import load_publication_plugins, ru
 
 @click.group()
 def results():
-    """Manage run results.
+    """Work on a results directory on THIS machine.
 
-    Tools for postprocessing scenario execution results,
-    including data conversion, merging, and metadata generation.
+    Every verb here names a path and none of them needs a login: this is the local half
+    of the tool, for someone holding a results tree -- publishing it, generating its
+    metadata and provenance, merging campaigns. It ships with the full ``robovast``
+    distribution, so a client-only install does not have this group at all, which is the
+    honest signal that none of it is a service operation.
+
+    What acts on a *campaign* is ``vast campaign`` -- including postprocessing, which
+    lives there because the service owns the lane the runs executed on. This group used
+    to carry a second, in-process ``postprocess`` beside it; it could only ever see a
+    local campaign, and one postprocessing path is the point.
     """
-
-
-@results.command(name='postprocess')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
-@click.option('--force', '-f', is_flag=True,
-              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for postprocessing instead of the one '
-                   'found in <campaign-name>-<timestamp>/_config/')
-@click.option('--debug', is_flag=True,
-              help='Show full plugin output (stdout) for each postprocessing step.')
-@click.option('--skip-rosout', is_flag=True,
-              help='Skip rosout bag processing.')
-@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
-              help='Skip a postprocessing plugin defined in the .vast file '
-                   '(e.g. --skip rosbags_to_webm). Can be specified multiple times.')
-@click.option('--skip-db', is_flag=True,
-              help='Skip data.db creation.')
-@click.option('--skip-metadata', is_flag=True,
-              help='Skip metadata.yaml generation.')
-@click.option('--campaign', '-i', default=None, metavar='CAMPAIGN',
-              help='Only (re)process a single campaign directory '
-                   '(e.g. navigation-2026-03-20-153630) instead of the most recent.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins,
-                    skip_db, skip_metadata, campaign):
-    """Run postprocessing commands on run results.
-
-    Executes postprocessing commands defined in the .vast file found in the
-    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
-    Postprocessing is skipped if the result-directory is unchanged,
-    unless --force is specified.
-
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
-
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
-    """
-    # Resolve results_dir from project config when not explicitly provided.
-    # postprocess never uses config_path from the project file (it always reads
-    # the .vast from <campaign-name>-<timestamp>/_config/ or --override), so only results_dir
-    # is needed and config_path validation is intentionally skipped.
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
-
-    click.echo("Starting postprocessing...")
-    click.echo(f"Results directory: {results_dir}")
-    if override:
-        click.echo(f"Override .vast file: {override}")
-    if force:
-        click.echo("Force mode enabled: bypassing cache")
-    click.echo("-" * 60)
-
-    # Run postprocessing
-    success, message = run_postprocessing(
-        results_dir=results_dir,
-        output_callback=click.echo,
-        force=force,
-        vast_file=override,
-        debug=debug,
-        skip_rosout=skip_rosout,
-        skip=list(skip_plugins),
-        skip_db=skip_db,
-        skip_metadata=skip_metadata,
-        campaign=campaign,
-    )
-
-    click.echo("\n" + "=" * 60)
-    if not success:
-        click.echo(f"\u2717 {message}", err=True)
-        sys.exit(1)
 
 
 @results.command(name='publish')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(),
+              help='Directory containing run results.')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
@@ -136,7 +66,11 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
 @click.option('--allow-opaque', is_flag=True,
               help='Publish even when an input cannot be identified. The exemption is recorded '
                    'in the dataset, so it is visible to whoever reads it rather than untraceable.')
-def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque):
+@click.option('--override', '-o', default=None, metavar='VAST_FILE',
+              help='Override the .vast file read for publication metadata instead of the one '
+                   'found in <campaign-name>-<timestamp>/_config/')
+def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque,
+                override):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -144,30 +78,17 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
-    Use ``vast -V <file> results publish`` to read metadata from the source
-    .vast file instead of the campaign copy (e.g. after updating description
-    or license).
+    Use ``--override <file>`` to read metadata from a source .vast file instead
+    of the campaign copy (e.g. after updating description or license).
     Use --force to overwrite existing output files without prompting.
     Use --skip-postprocessing to only run publication without postprocessing.
     Use --skip-upload to only run packaging plugins and skip upload plugins.
     Use --campaign / -i to restrict publication to a single campaign directory.
 
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Pick up the .vast file from the global -V / --vast-file option if given
-    vast_file = None
-    _ctx = click.get_current_context(silent=True)
-    if _ctx and _ctx.obj:
-        vast_file = _ctx.obj.get('vast_file')
-
-    # Resolve results_dir from project config when not explicitly provided.
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
+    # `--override` is the one way to name a .vast here; there is no ambient project and
+    # no second channel that could disagree with it.
+    vast_file = override
 
     # Validate --campaign when provided
     if campaign is not None:
@@ -224,56 +145,8 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     click.echo(f"\u2713 {message}")
 
 
-@results.command(name='import')
-@click.argument('archive', type=click.Path(exists=True, dir_okay=False))
-@click.option('--force', is_flag=True, help='Replace a campaign of the same id already there.')
-@click.option('--rebuild-store', is_flag=True,
-              help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
-def import_cmd(archive, force, rebuild_store):
-    """Take a campaign archive into the service, and postprocess it if it needs it.
-
-    ARCHIVE is a ``.tar.gz`` on *this* machine -- one ``vast results download`` or ``vast
-    share download`` produced, or a colleague sent. It is uploaded to the service and
-    imported there, so the campaign lands where the web UI and every other client can see
-    it; the file itself is never deleted, it is yours.
-
-    Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
-    not from the results tree, so a campaign that is only unpacked is invisible. And when
-    the archive is a **raw** one -- no ``_execution/data.db``, which is what the share holds
-    -- postprocessing is chained automatically, because a campaign without its metric tables
-    is not one you can ask anything.
-
-    Long-running, so it returns once the import is under way: the campaign appears
-    immediately at phase ``importing``. Watch it with ``vast wait <campaign-id>``, or in the
-    campaign view.
-
-    There is no local-only mode. Import means "into a service" -- that is where the tracked
-    phase, the log and the chained postprocessing are. A results directory with no service
-    is postprocessed in place with ``vast results postprocess -r <dir>``.
-    """
-    from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
-        echo_target, service_client)
-    from robovast.service.interface import \
-        ImportCampaignRequest  # pylint: disable=import-outside-toplevel
-    from robovast.service.project_push import \
-        push_campaign_archive  # pylint: disable=import-outside-toplevel
-
-    path = Path(archive)
-    with service_client(require_service=True) as (client, label):
-        echo_target(label)
-        click.echo(f"uploading {path.name} ({_fmt_size(path.stat().st_size)}) ...")
-        staged = push_campaign_archive(client, path)
-        ref = client.import_campaign(ImportCampaignRequest(
-            archive_path=staged, force=force, rebuild_store=rebuild_store))
-
-    click.echo(f"\u2713 importing {ref.campaign_id}")
-    if ref.note:
-        click.echo(f"  {ref.note}")
-    click.echo(f"  watch it with: vast wait {ref.campaign_id}")
-
-
 @results.command(name='backfill-provenance')
-@click.argument('results_dir', required=False, type=click.Path(exists=True))
+@click.argument('results_dir', type=click.Path(exists=True))
 @click.option('--write', is_flag=True,
               help='Actually write. Without this, report what would change and touch nothing.')
 @click.option('--force', is_flag=True,
@@ -296,13 +169,6 @@ def backfill_provenance_cmd(results_dir, write, force):
     """
     from robovast.common.backfill import (  # pylint: disable=import-outside-toplevel
         apply_backfill, plan_backfill)
-
-    if results_dir is None:
-        try:
-            results_dir = get_project_config().results_dir
-        except Exception as e:  # noqa: BLE001
-            handle_cli_exception(e)
-            return
 
     root = Path(results_dir)
     campaigns = sorted(d for d in root.iterdir() if d.is_dir() and is_campaign_dir(d.name))
@@ -358,13 +224,8 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
     Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
     Original campaign directories are not modified.
 
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    if results_dir is not None:
-        source_dir = results_dir
-    else:
-        project_config = get_project_config()
-        source_dir = project_config.results_dir
+    source_dir = results_dir
 
     click.echo(f"Merging from {source_dir} into {merged_campaign_dir}...")
     try:
@@ -379,8 +240,8 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
 
 
 @results.command(name='generate-metadata')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(),
+              help='Directory containing run results.')
 @click.option('--dot-pdf', is_flag=True, default=False,
               help='Also generate Graphviz DOT and PDF visualizations of the FAIR metadata graph.')
 def generate_metadata_cmd(results_dir, dot_pdf):
@@ -392,17 +253,7 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     ``metadata.dot`` and renders ``metadata.pdf`` via Graphviz
     (requires ``dot`` on PATH).
 
-    Requires project initialization with ``vast init`` first (unless
-    ``--results-dir`` is specified).
     """
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
-
     results_path = Path(results_dir)
     if not results_path.is_dir():
         raise click.ClickException(f"Results directory does not exist: {results_dir}")
@@ -563,148 +414,3 @@ def list_publication_plugins():
     click.echo("        - '*.pyc'")
     click.echo("\nPlugins without parameters can be simple strings.")
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
-
-
-@results.command(name='download')
-@click.argument('campaigns', nargs=-1, required=True)
-@click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
-              help='Directory to write the archives into [default: the current directory]')
-@click.option('--force', '-f', is_flag=True,
-              help='Overwrite an archive of the same name that is already here')
-def download_cmd(campaigns, output, force):
-    """Download campaign archives from the service, one ``.tar.gz`` each.
-
-    That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing
-    is extracted, no results directory is written into, and no state is kept about what
-    you already have -- the archive is yours, to keep, copy, unpack, or hand back with
-    ``vast results import``.
-
-    The archive is the campaign as the service holds it, postprocessing and all. The
-    share's raw, pre-postprocess snapshot is a different system with different
-    credentials: ``vast share download``.
-
-    Writes into the current directory unless ``-o`` says otherwise -- an archive is a
-    file, not a results tree, so the project's results directory is the wrong home
-    for it.
-    """
-    from robovast.client.service_target import \
-        service_client  # pylint: disable=import-outside-toplevel
-    from robovast.service.project_push import \
-        download_campaign_archive  # pylint: disable=import-outside-toplevel
-
-    out_dir = Path(output) if output else Path.cwd()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    with service_client(require_service=True) as (client, label):
-        click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
-        written = skipped = 0
-        for campaign_id in campaigns:
-            dest = out_dir / f"{campaign_id}.tar.gz"
-            if dest.exists() and not force:
-                click.echo(f"  {dest.name}  already here, skipping "
-                           "(use --force to re-download)")
-                skipped += 1
-                continue
-            start = time.monotonic()
-            try:
-                download_campaign_archive(
-                    client, campaign_id, str(dest),
-                    progress_callback=make_transfer_progress_callback(campaign_id, start))
-            # Ahead of the broad handler below, which would otherwise swallow click's own
-            # control flow and report a usage error as an unexpected failure.
-            except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
-                raise
-            except Exception as exc:  # noqa: BLE001
-                sys.stdout.write("\n")
-                handle_cli_exception(exc)
-                continue
-            finally:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            click.echo(f"  {campaign_id}  \u2713  {_fmt_size(dest.stat().st_size)} "
-                       f"in {time.monotonic() - start:.0f}s  ->  {dest}")
-            written += 1
-
-    click.echo()
-    parts = [f"\u2713 Downloaded {written} archive(s)"]
-    if skipped:
-        parts.append(f"{skipped} skipped")
-    click.echo("  ".join(parts))
-
-
-def _require_service_client():
-    """Resolve the reachable robovast-service client, or raise a clean UsageError.
-
-    The service-routed campaign operations (reprocess, delete) all go through it —
-    it owns the backend (local Docker / cluster + object store), so the CLI needs
-    no kubeconfig or object-store credentials of its own.
-    """
-    from robovast.client.service_target import \
-        detected_service_url  # pylint: disable=import-outside-toplevel
-    url = detected_service_url()
-    if not url:
-        raise click.UsageError(
-            "No robovast-service is reachable. Start one with 'vast serve' (local) "
-            "or tunnel to a cluster service first.")
-    from robovast.service.client import RobovastClient  # pylint: disable=import-outside-toplevel
-    return RobovastClient(url)
-
-
-@results.command(name='reprocess')
-@click.argument('campaign', metavar='CAMPAIGN')
-@click.option('--force', '-f', is_flag=True,
-              help='Bypass per-rosbag caches and reprocess all bags.')
-@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
-              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
-def reprocess_cmd(campaign, force, skip_plugins):
-    """(Re)run analysis postprocessing for one CAMPAIGN via the robovast-service.
-
-    The backend-neutral counterpart of ``vast results postprocess`` (which runs
-    in-process against a local results dir): this is campaign-scoped and routes
-    through the service, so it also drives a **cluster** campaign — the rosbag→CSV
-    step runs in-cluster and ``data.db`` is rebuilt. Mirrors the web "Retrigger
-    postprocessing" action and the MCP ``run_postprocessing`` tool.
-    """
-    from robovast.service.interface import \
-        RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
-    client = _require_service_client()
-    try:
-        res = client.run_postprocessing(RunPostprocessingRequest(
-            campaign_id=campaign, force=force, skip=list(skip_plugins)))
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-    if not res.ok:
-        raise click.ClickException(res.message or "postprocessing failed")
-    click.echo(f"✓ {res.message or 'postprocessing complete'}")
-
-
-@results.command(name='delete')
-@click.argument('campaign', metavar='CAMPAIGN')
-@click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
-def delete_campaign_cmd(campaign, yes):
-    """Permanently delete one CAMPAIGN wholesale via the robovast-service.
-
-    Removes the campaign's durable home — its directory under the results root on a
-    local service, or its object-store data (plus any leftover Kubernetes Jobs and
-    the service's cache) on a cluster service. This is the full "forget this
-    campaign" action; ``vast execution cluster download-cleanup`` only frees
-    object-store buckets, and ``vast share remove`` only touches the
-    external share (which this command leaves untouched).
-
-    The service refuses a campaign that is still running — stop it first. This is
-    irreversible.
-    """
-    if not yes and not click.confirm(
-            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
-        click.echo("Aborted.")
-        return
-    client = _require_service_client()
-    try:
-        res = client.delete_campaign(campaign)
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-    if not res.ok:
-        raise click.ClickException(res.message or "delete failed")
-    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")

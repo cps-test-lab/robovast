@@ -30,9 +30,6 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 @pytest.fixture
 def _store(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "robovast.client.project_config.ProjectConfig.load",
-        staticmethod(lambda *a, **k: None))
     return WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
 
 

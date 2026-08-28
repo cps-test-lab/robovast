@@ -1492,7 +1492,7 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
 
     res = cs.stop("camp-1")
     assert res.ok and flagged.get("stopped") is True
-    # Scoped to this campaign, in this namespace/context (reuses run-cleanup).
+    # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup).
     assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
 
 

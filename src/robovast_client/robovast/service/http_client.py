@@ -180,9 +180,9 @@ class HTTPTransport(RobovastInterface):
         if not compatible:
             logger.warning(
                 "robovast version mismatch: client %s vs service %s. Upgrade the "
-                "in-cluster service with 'vast exec cluster cleanup' then "
-                "'vast exec cluster setup <cluster-config>' (or "
-                "'vast exec cluster setup --force <cluster-config>').",
+                "in-cluster service with 'vast cluster cleanup' then "
+                "'vast cluster setup <cluster-config>' (or "
+                "'vast cluster setup --force <cluster-config>').",
                 client_v, info.robovast_version)
         return {"compatible": compatible, "client_version": client_v,
                 "service_version": info.robovast_version, "backend": info.backend}
@@ -478,7 +478,7 @@ class HTTPTransport(RobovastInterface):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
-        may hold it. ``vast results download`` writes these chunks to a file;
+        may hold it. ``vast campaign download`` writes these chunks to a file;
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """

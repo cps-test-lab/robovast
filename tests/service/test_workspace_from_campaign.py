@@ -56,9 +56,6 @@ def _source_campaign(root, campaign_id=CAMPAIGN, *, vast=None, run_files=(), ext
 
 @pytest.fixture
 def svc(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "robovast.client.project_config.ProjectConfig.load",
-        staticmethod(lambda *a, **k: None))
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
     transport = LocalTransport(store=store)
     results = tmp_path / "results"

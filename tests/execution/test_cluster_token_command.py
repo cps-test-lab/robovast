@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast exec cluster token``: read the token back without kubectl syntax.
+"""``vast service token``: read the token back without kubectl syntax.
 
 Setup prints the token once, on purpose. Reading it again meant
 
@@ -77,6 +77,6 @@ def test_setup_points_at_this_command_rather_than_kubectl():
 
     # `setup` is a click Command; the body lives on its callback.
     source = inspect.getsource(cli_module.setup.callback)
-    assert "vast exec cluster token" in source
+    assert "vast service token" in source
     assert "base64 -d" not in source, (
         "setup should not hand out a kubectl incantation now that a command exists")

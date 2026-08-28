@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Registry config wiring in `vast exec cluster setup` (service_deploy).
+"""Registry config wiring in `vast cluster setup` (service_deploy).
 
 Two registries meet in this config and used to be one, which is what these tests pin
 apart:

@@ -537,7 +537,7 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
         raise RuntimeError(
             f"the {BUILDKITD_NAME} Deployment in {namespace} has no identifiable "
             f"'{_STORE_VOLUME}' store (neither a hostPath nor a claim), so converging it would "
-            "have to guess where its cache lives. Delete the Deployment and re-run 'vast exec "
+            "have to guess where its cache lives. Delete the Deployment and re-run 'vast cluster "
             "cluster setup' with the --buildkit-storage-* flags this deployment wants.")
 
     # The class and the size live on the claim; the pod spec only names it. Both are recovered:
@@ -553,13 +553,13 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
         # in the wrong order, and it leaves the pod unschedulable anyway.
         raise RuntimeError(
             f"the {BUILDKITD_NAME} Deployment in {namespace} mounts claim '{claim.claim_name}', "
-            "which does not exist, so its storage class cannot be recovered. Re-run 'vast exec "
+            "which does not exist, so its storage class cannot be recovered. Re-run 'vast cluster "
             "cluster setup' with --buildkit-storage-class to state it.") from e
 
     if not pvc.spec.storage_class_name:
         raise RuntimeError(
             f"claim '{claim.claim_name}' in {namespace} names no storage class, so the "
-            f"{BUILDKITD_NAME} store cannot be re-rendered as the claim it is. Re-run 'vast exec "
+            f"{BUILDKITD_NAME} store cannot be re-rendered as the claim it is. Re-run 'vast cluster "
             "cluster setup' with --buildkit-storage-class to state it.")
     settings["storage_class"] = pvc.spec.storage_class_name
     requested = (pvc.spec.resources.requests if pvc.spec.resources else None) or {}

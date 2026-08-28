@@ -342,7 +342,7 @@ def resolve_floating_vcs_specs(specs, *, git_token: str = "") -> dict:
                 f"cannot resolve {wanted!r} in {url} (from {spec!r}).\n"
                 f"  Either the ref does not exist, or the repository needs credentials this "
                 f"deployment does not have -- a private repo needs a token from "
-                f"'vast exec cluster setup'.\n"
+                f"'vast cluster setup'.\n"
                 f"  Not falling back to the bare ref on purpose: that would build from whatever "
                 f"the branch points at today and record nothing, which is the behaviour this "
                 f"resolution exists to remove. Pin the spec to a commit to proceed without "

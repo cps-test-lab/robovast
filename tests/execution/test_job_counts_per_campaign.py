@@ -106,7 +106,7 @@ def test_the_total_job_num_annotation_is_picked_up_once():
 # ---------------------------------------------------------------------------
 
 def _monitor(per_run):
-    """Run ``vast exec cluster monitor --once`` over one context and one count set."""
+    """Run ``vast cluster monitor --once`` over one context and one count set."""
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution import cli as cluster_cli

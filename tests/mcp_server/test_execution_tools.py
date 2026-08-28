@@ -402,12 +402,19 @@ def _fake_download_client(backend, base_url="http://127.0.0.1:8800"):
 
 
 def test_get_campaign_download_cluster_returns_url(monkeypatch):
+    """The next_step names the *client's* download verb.
+
+    `vast campaign download` is byte-for-byte the same operation, but it ships with the
+    full distribution while this command runs on the caller's machine -- which, for an
+    agent driving a remote service over MCP, is exactly the machine most likely to have
+    robovast-client and nothing else.
+    """
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("kubernetes"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
     assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
-    assert res["next_step"] == "vast results download camp-2026-01-01-000000"
+    assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
 
@@ -450,7 +457,7 @@ def test_get_campaign_download_without_a_transport_omits_the_url(monkeypatch):
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert "url" not in res          # omitted, not empty
     assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
-    assert res["next_step"] == "vast results download camp-2026-01-01-000000"
+    assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
 

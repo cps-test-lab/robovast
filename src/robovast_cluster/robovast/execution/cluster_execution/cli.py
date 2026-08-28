@@ -1,10 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""``vast exec cluster`` — the verbs that need a cluster of one's own.
+"""``vast cluster`` / ``vast service`` — the verbs that need a cluster of one's own.
 
 What is left here is the **operator** half: ``setup``, ``cleanup``, ``upgrade``, ``token``
-and ``run-cleanup`` each want a kubeconfig, an API server or a cluster Secret, and
+and ``jobs-cleanup`` each want a kubeconfig, an API server or a cluster Secret, and
 ``monitor`` wants one for its fallback view. The verbs that merely *drive* a deployed
 service — ``run``, ``stop``, ``stop-job``, ``log``, ``download-cleanup`` — moved to
 ``robovast.client.cluster_cli``, because launching a campaign is four HTTP verbs and
@@ -12,11 +12,11 @@ requiring this distribution for it meant installing the full core to send a POST
 
 ``monitor`` stayed even though its service-driven view is pure client code, because its
 kubeconfig view is not and the two are one command chosen at runtime: moving it would split
-one function's body across two distributions. A client-only user gets ``vast wait`` and the
+one function's body across two distributions. A client-only user gets ``vast campaign wait`` and the
 web UI, which cover everything the service view showed.
 
 These attach to the client's ``cluster`` group through the ``robovast.cluster_plugins``
-entry-point group, so each loads only when typed — ``vast exec cluster --help`` lists them
+entry-point group, so each loads only when typed — ``vast cluster --help`` lists them
 without importing any of the Kubernetes client.
 """
 
@@ -28,7 +28,6 @@ import time
 import click
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import get_vast_file_override
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
@@ -270,7 +269,11 @@ def _monitor_via_service(namespace, kube_context, interval, once):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--namespace', '-n', default='default', show_default=True,
               help='Kubernetes namespace the scenario Jobs run in.')
-def monitor(interval, once, kube_context, namespace):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='Watch every context this .vast names, instead of only the active '
+                   'one. Ignored when --context is given, which names one directly.')
+def monitor(interval, once, kube_context, namespace, vast):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
@@ -282,11 +285,11 @@ def monitor(interval, once, kube_context, namespace):
     Only contexts with active or past jobs are shown.
 
     This is intended for monitoring jobs created by
-    ``vast execution cluster run``.
+    a campaign launch.
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_context import (  # pylint: disable=import-outside-toplevel
         get_active_kube_context, get_config_context_names)
     try:
@@ -297,14 +300,11 @@ def monitor(interval, once, kube_context, namespace):
 
         # Build list of (label, kube_context_name) to monitor
         if not kube_context:
-            # Use contexts referenced in the .vast config file
-            # --vast-file, else the project's .vast if run inside one; monitoring a
-            # cluster works without either (it then watches the active context).
-            from robovast.client.project_config import \
-                resolve_vast_file  # pylint: disable=import-outside-toplevel
-            config_path = resolve_vast_file()
-
-            config_names = get_config_context_names(config_path) if config_path else set()
+            # Only a .vast the caller named: monitoring a cluster works without one, and
+            # then watches the active context. There is deliberately no ambient project
+            # to fall back on -- a file in some parent directory of the CWD deciding
+            # which clusters to watch is a surprise, not a convenience.
+            config_names = get_config_context_names(vast) if vast else set()
             if config_names:
                 contexts_to_monitor = sorted((n, n) for n in config_names)
             else:
@@ -625,7 +625,13 @@ def _echo_placement(placement):
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='Read node-label selectors for job and control pods from this .vast '
+                   '(execution.kubernetes.{jobs,control}.node_labels), and refuse if it '
+                   'declares per-cluster resource lists for several contexts while '
+                   '--context is unset. Omitted, no node labels are applied.')
+def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
@@ -640,26 +646,21 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     on the cluster for the first time.
 
     If the cluster is already set up, this command will exit with an error.
-    Run 'vast execution cluster cleanup' first to clean up the existing setup,
+    Run 'vast cluster cleanup' first to clean up the existing setup,
     or use ``--force`` to force re-setup.
 
     Use ``--list`` to see available cluster configuration plugins.
 
     Cluster-specific options can be passed using ``--option key=value``.
 
-    Ignores projects entirely: this deploys into a cluster and runs from any
-    directory, so a ``.robovast_project`` is neither required nor read here — it is
-    found by walking up to the filesystem root, and a project above an unrelated CWD
-    has no business deciding where a cluster's pods may run.
-
-    Node label selectors for job and control pods are therefore read only from a
-    ``.vast`` you name explicitly, under
-    ``execution.kubernetes.jobs.node_labels`` and
+    Reads no project: this deploys into a cluster and runs from any directory. Node
+    label selectors for job and control pods therefore come only from a ``.vast`` you
+    name explicitly, under ``execution.kubernetes.jobs.node_labels`` and
     ``execution.kubernetes.control.node_labels``::
 
-        vast -V my_campaign.vast exec cluster setup rke2
+        vast cluster setup rke2 --vast my_campaign.vast
 
-    Without ``-V`` no node labels are applied (logged at INFO) and pods schedule
+    Without ``--vast`` no node labels are applied (logged at INFO) and pods schedule
     wherever Kubernetes puts them. A named ``.vast`` that cannot be read is an error
     rather than a silent "no labels".
 
@@ -671,7 +672,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
     from .cluster_setup import setup_server  # pylint: disable=import-outside-toplevel
@@ -688,7 +689,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 
     try:
         # Only an explicitly named config, never an ambient project — see setup_server.
-        require_context_for_multi_cluster(kube_context, get_vast_file_override())
+        require_context_for_multi_cluster(kube_context, vast)
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -731,6 +732,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
+                                 vast_path=vast,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -741,14 +743,14 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
             click.echo(f"  RoboVAST is at {scheme}://{ingress_host}")
-            click.echo("  Run 'vast exec cluster token' for the URL and access token "
+            click.echo("  Run 'vast service token' for the URL and access token "
                        "to hand your users.")
 
     except Exception as e:
         handle_cli_exception(e)
 
 
-@click.command('run-cleanup')
+@click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--data', is_flag=True,
@@ -756,7 +758,13 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.option('--force', is_flag=True,
               help='With --data: delete a named campaign even if the service still considers it live.')
 @target_options
-def run_cleanup(campaign, data, force, namespace, context):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='A .vast to pre-flight against this cluster. Its only use here is to '
+                   'refuse when it declares per-cluster resource lists for several '
+                   'contexts and --context was not given -- which would otherwise pick '
+                   'a cluster by accident. Optional, and read only for that check.')
+def run_cleanup(campaign, data, force, namespace, context, vast):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
@@ -768,13 +776,14 @@ def run_cleanup(campaign, data, force, namespace, context):
     object-store credentials), resolved on the conventional local port or from the
     ``vast login`` record — no local credentials needed.
 
-    Usage: vast execution cluster run-cleanup
-    Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
-    Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456 --data
+    \b
+    Usage: vast cluster jobs-cleanup
+    Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456
+    Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456 --data
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
@@ -782,7 +791,7 @@ def run_cleanup(campaign, data, force, namespace, context):
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
     from .kubernetes import get_kubernetes_client
     try:
-        require_context_for_multi_cluster(context, get_vast_file_override())
+        require_context_for_multi_cluster(context, vast)
         k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
@@ -822,8 +831,7 @@ def run_cleanup(campaign, data, force, namespace, context):
             # Bucket cleanup runs server-side: the service owns the object-store
             # credentials and the authoritative live-campaign guard.
             from robovast.service.interface import CleanupDataRequest
-            with service_client(namespace, context,
-                                require_service=True) as (client, target):
+            with service_client(namespace, context) as (client, target):
                 _echo_target(target)
                 res = client.cleanup_campaign_data(
                     CleanupDataRequest(campaign_id=campaign, force=force))
@@ -911,14 +919,14 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     ``~/.config/robovast/env`` -- so ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG``
     are where the images come from, and this is the command that moves them. Both are
     baked into the service pod as the *site default*; a campaign can still override them
-    per launch (``vast exec cluster run --image-project``), which needs no upgrade at all.
+    per launch (``vast workspace run --image-project``), which needs no upgrade at all.
 
     There is deliberately no ``--image``. A flag would have been one-shot, because nothing
     reads the deployed image back, so a later bare ``upgrade`` would silently revert it --
     arriving through the command that looks safe. For a one-off, a real environment
     variable already beats both files::
 
-        ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade
+        ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast service upgrade
 
     ``make image-digests PROJECT=...`` checks that a project holds a complete family
     before you point a cluster at it.
@@ -948,7 +956,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         if not config_name:
             raise click.ClickException(
                 f"no robovast-service found in namespace {namespace!r}. "
-                "Run 'vast exec cluster setup <flavor>' first.")
+                "Run 'vast cluster setup <flavor>' first.")
         # Recovered from the live Ingress, not remembered: an upgrade is run by whoever
         # is upgrading, not necessarily by whoever set the cluster up. It doubles as the
         # registry prefix, so passing it is what stops an upgrade from rebuilding the
@@ -983,7 +991,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             click.echo("✓ reconciled RBAC and the ingress route")
             click.echo("  the pod was NOT restarted: the running version is unchanged and "
                        "its env Secrets were not re-read")
-            click.echo("  run 'vast exec cluster upgrade' without --no-restart to move the "
+            click.echo("  run 'vast service upgrade' without --no-restart to move the "
                        "image or pick up changed Secrets")
             return
         # The last moment to ask. Everything above is picked up by the RUNNING pod, which
@@ -1071,7 +1079,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         # arriving as a hang instead of an error.)
         if ingress_host:
             click.echo(f"  Published at {ingress_host}; "
-                       f"'vast exec cluster token' prints the URL and access token.")
+                       f"'vast service token' prints the URL and access token.")
         if not rolled_onto_new_bytes and after:
             # Not a warning: an upgrade run to make the pod re-read a changed Secret is
             # *supposed* to land here, since that is the only thing that re-reads them
@@ -1107,9 +1115,9 @@ def cluster_token(namespace, kube_context, quiet):
     since the mistake looks identical to a mistyped password.
 
     \b
-      vast exec cluster token            what to send a user
-      vast exec cluster token -q         the token alone
-      vast exec cluster token -x prod    a specific cluster
+      vast service token            what to send a user
+      vast service token -q         the token alone
+      vast service token -x prod    a specific cluster
     """
     from .service_deploy import existing_auth_token, published_url
 
@@ -1119,7 +1127,7 @@ def cluster_token(namespace, kube_context, quiet):
             raise click.ClickException(
                 f"no access token in namespace {namespace!r} — either nothing is "
                 "deployed there, or it predates authentication. "
-                "Run 'vast exec cluster setup <flavor>' to create one.")
+                "Run 'vast cluster setup <flavor>' to create one.")
         if quiet:
             click.echo(token)
             return
@@ -1168,14 +1176,20 @@ def cluster_token(namespace, kube_context, quiet):
                    'data. Without this the labels stay, so a later setup lands on the same '
                    'node with no flags -- which is the point of them. The on-disk data is '
                    'not removed either way.')
-def cleanup(config_name, namespace, options, kube_context, forget_placement):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='A .vast to pre-flight against this cluster. Its only use here is to '
+                   'refuse when it declares per-cluster resource lists for several '
+                   'contexts and --context was not given -- which would otherwise pick '
+                   'a cluster by accident. Optional, and read only for that check.')
+def cleanup(config_name, namespace, options, kube_context, forget_placement, vast):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
     by deleting the NFS manifest configuration.
 
     This command can be run after completing all scenario executions
-    to clean up cluster infrastructure resources (different from run-cleanup
+    to clean up cluster infrastructure resources (different from jobs-cleanup
     which only cleans up job pods).
 
     If ``--cluster-config`` is not specified, it will automatically detect which
@@ -1186,12 +1200,12 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement):
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
-        require_context_for_multi_cluster(kube_context, get_vast_file_override())
+        require_context_for_multi_cluster(kube_context, vast)
         cluster_kwargs = {}
         if namespace is not None:
             cluster_kwargs["namespace"] = namespace

@@ -85,7 +85,7 @@ def run_postprocessing(campaign_id: str, force: bool = False,
 
     **Dispatched in the background** — returns as soon as the run is started (it can take
     minutes to hours). The campaign enters the ``postprocessing`` phase; background
-    ``vast wait <campaign_id>`` until it is over, then read the outcome
+    ``vast campaign wait <campaign_id>`` until it is over, then read the outcome
     (``postprocessed`` / ``postprocessing_error``). Reprocesses just this campaign (not its siblings), reading
     its own ``_config/<name>.vast``. Returns ``{ok, message}`` where *message* confirms
     the dispatch, or ``ok=false`` if an operation is already running for the campaign.
@@ -108,7 +108,7 @@ def run_share(campaign_id: str) -> dict:
     """(Re)trigger the upload-to-share of one finished campaign's raw archive.
 
     **Dispatched in the background** — returns as soon as the upload is started; the
-    campaign enters the ``sharing`` phase, so background ``vast wait <campaign_id>``
+    campaign enters the ``sharing`` phase, so background ``vast campaign wait <campaign_id>``
     until it is over, then read the outcome (``share_error`` on failure). Works from disk with no
     live campaign (usable
     after a `vast serve` restart). The target provider comes from the service environment
@@ -179,7 +179,7 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
     listed at phase ``importing``.
 
     Give exactly one source. Neither carries bytes through this tool — an archive is
-    routinely gigabytes. For one on *your own* machine use ``vast results import`` or the
+    routinely gigabytes. For one on *your own* machine use ``vast campaign import`` or the
     web UI, which upload over a side channel and then call this.
 
     Args:
@@ -192,7 +192,7 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
             the ``campaign_store`` stage reports a corrupt one.
 
     Returns:
-        ``{campaign_id, note}``; watch it with ``vast wait <campaign_id>``. Or ``{error}``.
+        ``{campaign_id, note}``; watch it with ``vast campaign wait <campaign_id>``. Or ``{error}``.
         Per-stage verdicts land in the campaign's ``_execution/import.json`` — a *degraded*
         import is usable-but-incomplete, **not** a failure, so read it before discarding a
         campaign you just recovered.
@@ -234,11 +234,16 @@ def get_campaign_download(campaign_id: str) -> dict:
     # id already filled in. Nothing is said about the share copy -- whether one exists is
     # not a fact this service records (only `share_error`, a failure, travels with a
     # campaign), and `vast share download` is documented where commands are looked up.
+    #
+    # `campaign download`, not the identical `results download`: this runs on the
+    # *caller's* machine, and `vast results` ships only with the full distribution, so an
+    # agent driving a remote service over this MCP -- the case the tool exists for -- may
+    # not have it. The campaign group is the client's, so this one always resolves.
     return {
         "campaign_id": campaign_id,
         **({"url": url} if url else {}),
         "path": path,
-        "next_step": f"vast results download {campaign_id}",
+        "next_step": f"vast campaign download {campaign_id}",
     }
 
 

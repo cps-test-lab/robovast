@@ -3,7 +3,7 @@
 
 `start_campaign` returns as soon as the campaign is named and the campaign runs on for
 minutes, hours or days. `start_campaign` now hands back the command that waits for it
-(`vast wait <id>`, backgrounded) — but nothing *forces* it to be run, and the
+(`vast campaign wait <id>`, backgrounded) — but nothing *forces* it to be run, and the
 reported bug was exactly an agent reading one status and stopping. This hook is the floor
 under that: the first attempt to end a turn with a campaign nobody is waiting for is
 blocked with the command to run.
@@ -121,7 +121,7 @@ def clear(payload, path):
 
 
 def delegated(payload, path):
-    """A backgrounded `vast wait` is waiting for it, so this hook need not nag.
+    """A backgrounded `vast campaign wait` is waiting for it, so this hook need not nag.
 
     Blocking in an MCP call is not the only correct way to see a campaign out, and it is
     the worse one for a long sweep: it occupies the conversation for as long as it runs.
@@ -134,12 +134,12 @@ def delegated(payload, path):
     exit: that is the moment responsibility moves to the waiter.
     """
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    # Matches `vast` + `wait`, not the full spelling. That is what let this survive the
-    # move of waiting out of the execution group (`vast exec wait` -> `vast wait`)
-    # without a change: requiring `exec` would have stopped it recognising a correct
-    # waiter at the rename, and nagging an agent that chose the right mechanism teaches
-    # the wrong one. Both spellings still match, which is right -- an older install has
-    # the old one.
+    # Matches `vast` + `wait`, not the full spelling. That is what let this survive both
+    # moves of the waiting verb (`vast exec wait` -> `vast wait` -> `vast campaign wait`)
+    # without a change: pinning the group would have stopped it recognising a correct
+    # waiter at each rename, and nagging an agent that chose the right mechanism teaches
+    # the wrong one. All three spellings still match, which is right -- an older install
+    # has an older one.
     if "vast" not in command or "wait" not in command:
         return
     data = _live(_read(path))
@@ -165,7 +165,7 @@ def check(_payload, path):
     # silent data loss: start three campaigns, get told about one, and the other two are
     # recorded as handled without anyone ever hearing of them.
     listed = ", ".join(pending)
-    waits = "\n".join(f"    vast wait {cid}" for cid in pending)
+    waits = "\n".join(f"    vast campaign wait {cid}" for cid in pending)
     plural = "campaigns were" if len(pending) > 1 else "campaign was"
     print(json.dumps({
         "decision": "block",
@@ -207,8 +207,8 @@ def rearm(payload, path):
     """A campaign reported as wedged is unattended again, so let the guard stop once more.
 
     `delegated` marks a campaign handed off at *launch*, which is right for a waiter that
-    will see it out -- but `vast wait` now exits 4 on a stall and 5 on an error-level health
-    finding, leaving the campaign alive and still marked handed-off. Without this the turn
+    will see it out -- but `vast campaign wait` now exits 4 on a stall and 5 on an error-level
+    health finding, leaving the campaign alive and still marked handed-off. Without this the turn
     guard is spent and the agent can stop silently on a wedged campaign, which is the exact
     failure it exists to prevent.
 
