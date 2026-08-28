@@ -1006,7 +1006,9 @@ limit only decides when the kernel starts throttling. Which means:
   conservative way to reach that while nothing measures what it actually got. It is worth
   over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
   for this ceiling, ``contended`` for other work taking cores it had not reserved.
-- The **simulator and scenario** are not under test and should split. Measured on the shipped
+- The **simulator and scenario** are not under test and **may** split, once it has been
+  validated at the concurrency the campaign will actually run at — see the two costs below,
+  both of which scale with concurrency rather than showing up in a single run. Measured on the shipped
   ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
   the world's geometry compiles — a ratio of ~18, so there is no honest single number.
   Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
@@ -1026,6 +1028,28 @@ limit only decides when the kernel starts throttling. Which means:
 The size of the win depends on the world: the same simulator peaks at 5.98 cores in
 ``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
 different figures and gain differently from the split.
+
+**What a split costs, and why it is a mode rather than a default.** Two things follow from
+splitting *any* container, and neither is visible in one run:
+
+- **The pod stops being** ``Guaranteed``. Kubernetes assigns that class only when request
+  equals limit for **every** container of the pod, so splitting the simulator downgrades the
+  whole pod to ``Burstable`` even though the system under test kept its equality. On a node
+  running the **static** CPU manager that is what makes the SUT ineligible for exclusive
+  cores, and it weakens the Memory Manager's guarantees too. It costs nothing where
+  ``cpuManagerPolicy`` is ``none`` — no container is eligible for exclusive cores there
+  whatever its class — which is why the effect is latent rather than absent. ``vast doctor``
+  reports the policy per node.
+- **Bursts correlate.** Forty simulators reserving 0.5 and permitted 6 are placed against 20
+  cores while able to demand 240, and they burst *together* — world compile happens at
+  startup, and a batch starts at once. Whether a given run gets its burst then depends on its
+  neighbours, which is the hidden variable comparability is trying to remove. Admission packs
+  by the request, exactly as Kubernetes does, so it does not prevent this.
+
+So: equality is the reproducible default, and a split is **controlled overcommit** — right for
+an exploratory sweep, and something to validate before trusting a comparison drawn across a
+campaign that used it. The counters say per run whether it bit (``quota_bound``, ``contended``,
+``clock_map_*``); they cannot make two runs' conditions equal after the fact.
 
 **The system under test's ceiling is set from a pilot**, which is the assumption to keep in
 view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of

@@ -254,6 +254,57 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
             and node_count > 0 and total_jobs > node_count)
 
 
+#: The two file names the resource monitor writes per container, as a naming contract rather
+#: than an import: ``monitor_resources`` runs inside the experiment container and this package
+#: must not import it (nor it this one). Restated here, and pinned by a test, because the
+#: alternative is reaching across a boundary that exists on purpose.
+_RESOURCE_PREFIX = "resource_usage_"
+_SYSTEM_PREFIX = "system_usage_"
+
+
+def container_cpu_profile_from_billing(rows) -> dict:
+    """``{"sustained": cores, "peak": cores}`` from one ``system_usage_<container>.csv``.
+
+    **Preferred over :func:`container_cpu_profile` wherever the file exists**, because it is
+    the kernel's own billing for the cgroup rather than a sum over what psutil could see.
+    ``cpu_usage_usec`` is a monotonic counter of CPU time charged to the container, so cores
+    over a tick is simply the delta divided by the elapsed wall time -- and it is immune to
+    the artifact that forces the other reader to discard samples: psutil reports a
+    newly-seen process's average since *it* started rather than since the last sample, and a
+    ROS stack spawning dozens of processes at once therefore reports impossible totals during
+    bring-up. There is nothing to clamp here, so no ceiling has to be known to read it.
+
+    Ticks where the counter did not advance, or went backwards, are dropped rather than read
+    as idle: a counter that resets means the cgroup was replaced, and a zero delta across a
+    restart is not a measurement of nothing.
+
+    Returns ``{}`` when the file carries no usable counter -- which the caller must treat as
+    "not measured", exactly as it treats a missing file, and never as zero.
+    """
+    samples = []
+    for row in rows or []:
+        try:
+            ts = float(row["timestamp"])
+            usec = float(row["cpu_usage_usec"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        samples.append((ts, usec))
+    if len(samples) < 2:
+        return {}
+    samples.sort()
+    totals = []
+    for (t0, u0), (t1, u1) in zip(samples, samples[1:]):
+        dt, du = t1 - t0, u1 - u0
+        if dt <= 0 or du < 0:
+            continue          # a counter reset, or two rows at one instant
+        totals.append((du / 1e6) / dt)
+    if not totals:
+        return {}
+    totals.sort()
+    idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
+    return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+
+
 def container_cpu_profile(rows, limit_cores=None) -> dict:
     """``{"sustained": cores, "peak": cores}`` from one ``resource_usage_<container>.csv``.
 
@@ -343,9 +394,41 @@ def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
             logger.debug("probe file %s unparseable: %s", filename, exc)
             continue
         profile = container_cpu_profile(rows, limit_cores=limit)
+        # The kernel's own billing where the node could answer, and the per-process sum only
+        # where it could not: `system_usage_` needs no ceiling to be read and no impossible
+        # sample discarded, so where both exist the counter wins. Falling back rather than
+        # requiring it keeps a cgroup v1 host, or a runtime that exposes no cpu.stat,
+        # calibratable instead of silently uncalibrated.
+        billing = _billing_profile(read, prefix, filename)
+        if billing:
+            profile = billing
         if profile:
             out[name] = profile
     return out
+
+
+def _billing_profile(read, prefix: str, filename: str) -> dict:
+    """The ``system_usage_`` sibling of *filename*, read as a profile, or ``{}``.
+
+    Best-effort by construction: every failure here means "fall back to the per-process
+    file", never "this probe failed". The sibling is absent on a host whose cgroup exposes
+    no CPU accounting, and on any run predating it.
+    """
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    if not filename.startswith(_RESOURCE_PREFIX):
+        return {}
+    sibling = _SYSTEM_PREFIX + filename[len(_RESOURCE_PREFIX):]
+    try:
+        raw = read(f"{prefix}{sibling}")
+        if not raw:
+            return {}
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8", "replace"))))
+    except Exception as exc:  # noqa: BLE001 - the per-process file still answers
+        logger.debug("probe billing file %s unreadable: %s", sibling, exc)
+        return {}
+    return container_cpu_profile_from_billing(rows)
 
 
 #: Where a probe's output goes, under the campaign root. Reserved (see

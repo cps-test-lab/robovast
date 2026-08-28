@@ -4,6 +4,7 @@
 
 import pytest
 
+from robovast.execution.cluster_execution import node_calibration as nc
 from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_HEADROOM, MIN_CPU,
                                                                    NodeCalibration,
                                                                    calibration_applies)
@@ -695,3 +696,66 @@ def test_the_clamp_reads_the_split_limit_when_there_is_one():
     out = calibrated_resources({"cpu": 0.5, "cpu_limit": 6}, "simulation",
                                {"simulation": {"sustained": 9.0}})
     assert out["cpu"] == 6, "clamped at the ceiling, not at the 0.5 reservation"
+
+
+# -- sizing from the kernel's billing rather than a sum over processes ----------------
+
+
+def test_cores_come_from_the_billing_counter_delta():
+    """``cpu_usage_usec`` is monotonic CPU time, so cores is delta over elapsed wall time."""
+    rows = [{"timestamp": "1000.0", "cpu_usage_usec": "0"},
+            {"timestamp": "1001.0", "cpu_usage_usec": "2000000"},    # 2.0 cores over 1s
+            {"timestamp": "1002.0", "cpu_usage_usec": "2500000"}]    # 0.5 cores over 1s
+    got = nc.container_cpu_profile_from_billing(rows)
+    assert got["peak"] == pytest.approx(2.0)
+    assert got["samples"] == 2, "N rows give N-1 intervals"
+
+
+def test_the_billing_reader_needs_no_ceiling_to_be_trusted():
+    """The reason to prefer it: there is no impossible sample to discard.
+
+    The per-process reader must be told the container's limit so it can throw away psutil's
+    bring-up artifact -- a newly-seen process reports its average since it started, and a ROS
+    stack spawning dozens at once reports totals no quota could have produced. A cgroup
+    counter cannot exceed the CPU actually billed, so a value above the ceiling is a real
+    measurement and is kept.
+    """
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "9000000"}]       # 9 cores, no clamp
+    assert nc.container_cpu_profile_from_billing(rows)["peak"] == pytest.approx(9.0)
+
+
+def test_a_counter_reset_is_dropped_rather_than_read_as_idle():
+    """A cgroup replaced mid-probe restarts the counter. A negative delta is not zero load."""
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "5000000"},
+            {"timestamp": "1.0", "cpu_usage_usec": "0"},             # reset
+            {"timestamp": "2.0", "cpu_usage_usec": "1000000"}]
+    got = nc.container_cpu_profile_from_billing(rows)
+    assert got["samples"] == 1 and got["peak"] == pytest.approx(1.0)
+
+
+def test_too_few_rows_is_not_measured_rather_than_zero():
+    for rows in ([], [{"timestamp": "0.0", "cpu_usage_usec": "0"}]):
+        assert nc.container_cpu_profile_from_billing(rows) == {}
+
+
+def test_the_billing_file_wins_over_the_per_process_one():
+    """Both present: the counter decides, and the per-process clamp never runs."""
+    files = {
+        "probe/resource_usage_sut.csv":
+            b"timestamp,pid,name,cpu_percent\n1.0,1,a,900.0\n1.0,2,b,900.0\n",
+        "probe/system_usage_sut.csv":
+            b"timestamp,cpu_usage_usec\n1.0,0\n2.0,1500000\n",
+    }
+    got = nc.read_probe_measurement(lambda k: files.get(k), "probe/",
+                                    {"sut": "resource_usage_sut.csv"}, limits={"sut": 3.0})
+    assert got["sut"]["peak"] == pytest.approx(1.5), "the counter, not the summed processes"
+
+
+def test_it_falls_back_where_the_node_could_not_answer():
+    """No cpu.stat on the host means no sibling file -- and a calibratable node anyway."""
+    files = {"probe/resource_usage_sut.csv":
+             b"timestamp,pid,name,cpu_percent\n1.0,1,a,100.0\n2.0,1,a,200.0\n"}
+    got = nc.read_probe_measurement(lambda k: files.get(k), "probe/",
+                                    {"sut": "resource_usage_sut.csv"}, limits={"sut": 3.0})
+    assert got["sut"]["peak"] == pytest.approx(2.0), "the per-process file still answers"
