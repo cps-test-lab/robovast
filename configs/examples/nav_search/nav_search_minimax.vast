@@ -65,7 +65,11 @@ search:
   budget:
   - runs: 270
   stopping:
-  - metric: {name: outer_best, op: '>=', value: 0.2}
+  # IN THE OBJECTIVE'S UNITS -- `outer_best` is a robustness, so rescaling the objective
+  # rescales this threshold with it. Check that the value is still reachable after any change
+  # to how the objective is computed: a criterion that cannot fire is worse than none, since
+  # it reads as a live stopping rule while the budget silently does all the work.
+  - metric: {name: outer_best, op: '>=', value: 0.05}
   seed: 1
 
 visualization:
