@@ -13,6 +13,8 @@ sim:
   # unlike Depot, where map = world + (8, 0) and every analysis has to remember the offset.
   world: empty_room
   pacing: realtime
+  # 5 physics steps per nav2 control period (20 Hz).
+  timestep: 0.01
   # Sensor degradation is PRESENT but not searched. It is part of the problem -- and part of why
   # outcomes are stochastic -- without spending a search dimension on a variable whose effect is
   # monotonic and unsurprising. `robot.lidar.range_stddev` is addressable if a campaign wants it.
