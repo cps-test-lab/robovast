@@ -20,11 +20,9 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
 from .node_placement import apply_node_id_labels
-from robovast.common.errors import CampaignConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -361,8 +359,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Confined to the campaign node pool when there is one, so a cluster that runs campaigns
     # on a subset does not have its other machines reconfigured as a side effect of a
     # RoboVAST setup. See node_governor for the default and the failure policy.
-    from kubernetes import client as _k8s_client  # noqa: PLC0415
-
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_governor import ensure_cpu_governor  # noqa: PLC0415
 
     # None means "nobody said": on by default, and a cluster that refuses it is warned
@@ -370,7 +367,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
     # error, because someone who asked for a fixed clock and silently did not get one would
     # go on to trust measurements taken on a scaling one.
-    ensure_cpu_governor(_k8s_client.AppsV1Api(), namespace,
+    ensure_cpu_governor(client.AppsV1Api(), namespace,
                         True if cpu_governor is None else cpu_governor,
                         explicit=cpu_governor is not None,
                         node_selector=jobs_node_labels)
@@ -396,7 +393,6 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # `setup` returns to the same machine instead of letting the scheduler choose again. That
     # re-choice is the bug: the service came up elsewhere with an empty registry, the old
     # blobs stranded and unreachable, while setup reported success.
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         BUILD_NODE_LABEL, DATA_NODE_LABEL, labeled_nodes, resolve_placement)
     from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # pylint: disable=import-outside-toplevel

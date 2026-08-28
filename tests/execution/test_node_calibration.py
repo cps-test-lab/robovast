@@ -362,9 +362,10 @@ def test_the_probe_directory_is_the_reserved_one():
 # -- the probe's manifest -----------------------------------------------------------------
 
 def _base_manifest():
-    env = lambda: [{"name": "OUTPUT_DIR", "value": "/out/_jobs/batch-0/job-0"},
-                   {"name": "SCENARIO_PARAMETER_FILE", "value": "/config/job-0.params.yaml"},
-                   {"name": "SCENARIO_FILE", "value": "scenario.osc"}]
+    def env():
+        return [{"name": "OUTPUT_DIR", "value": "/out/_jobs/batch-0/job-0"},
+                {"name": "SCENARIO_PARAMETER_FILE", "value": "/config/job-0.params.yaml"},
+                {"name": "SCENARIO_FILE", "value": "scenario.osc"}]
     return {"metadata": {"name": "camp-batch0-job-0"},
             "spec": {"template": {"spec": {
                 "containers": [{"name": "robovast", "env": env()}],
@@ -488,7 +489,6 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
     Both paths now go through one lookup, and this pins the CREATION half.
     """
     from robovast.execution.cluster_execution import kubernetes_backend as kb
-    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
 
     cal = NodeCalibration()
     cal.claim_probe("fast", "p")

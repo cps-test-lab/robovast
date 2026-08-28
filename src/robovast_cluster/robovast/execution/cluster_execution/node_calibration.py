@@ -251,7 +251,7 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
     this existed.
     """
     return (calibration_enabled() and not growable
-            and node_count > 0 and total_jobs > node_count)
+            and 0 < node_count < total_jobs)
 
 
 #: The two file names the resource monitor writes per container, as a naming contract rather

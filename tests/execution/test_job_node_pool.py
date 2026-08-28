@@ -9,7 +9,6 @@ means what ``docs/configuration.rst`` always claimed: a ``nodeSelector`` on each
 backed by an admission controller that counts capacity only inside the same pool.
 """
 
-import types
 
 import pytest
 

@@ -275,8 +275,8 @@ def test_a_node_without_an_identity_label_takes_work_unpinned():
     capacity" on an idle cluster. Observed exactly that way on a real deployment. A missing
     label costs the pin, never the run.
     """
-    p = FakeProvider(per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)])
-    c = _controller(p)
+    c = _controller(FakeProvider(
+        per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)]))
     seen = []
     c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
              started_at=0.0)
@@ -691,7 +691,6 @@ def test_the_refusal_names_the_filter_that_actually_blocked_it():
     to look for room that was never the problem. `biggest` was also computed over every node
     including the excluded ones, which is where the contradictory 89 came from.
     """
-    from robovast.execution.cluster_execution.node_admission import JobSizing
 
     c = _controller(FakeProvider(cpu=64.0))
     # Every node held: the calibration gate, or a node pool this campaign is outside.
@@ -707,7 +706,6 @@ def test_the_refusal_names_the_filter_that_actually_blocked_it():
 def test_a_genuine_capacity_refusal_still_says_so():
     """The other branch, and it must count only nodes this campaign could actually use --
     reporting the free cores of a node it is excluded from is the same lie in reverse."""
-    from robovast.execution.cluster_execution.node_admission import JobSizing
 
     c = _controller(FakeProvider(cpu=2.0))
     c.submit("camp", [("j-0", JobSizing(99.0, MIB), lambda _n=None: None)], started_at=0.0)

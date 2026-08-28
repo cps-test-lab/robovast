@@ -248,7 +248,6 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     simulator's and the system under test's own CSVs -- the two that matter most here -- back
     into the run tree.
     """
-    import copy  # noqa: PLC0415
 
     manifest = copy.deepcopy(base)
     manifest.setdefault("metadata", {})["name"] = job_name
@@ -1086,7 +1085,7 @@ class BatchJobRunner:
         """
         from functools import partial  # noqa: PLC0415
 
-        from .node_admission import JobSizing, campaign_start_key  # noqa: PLC0415
+        from .node_admission import campaign_start_key  # noqa: PLC0415
         from .node_calibration import NodeCalibration, probe_output_dir  # noqa: PLC0415
 
         admission = self.admission
@@ -1197,8 +1196,8 @@ class BatchJobRunner:
         sizing, which is what a cluster with calibration off does anyway. Losing an
         optimisation must never cost the campaign.
         """
-        from .node_calibration import (NodeCalibration, probe_completed,  # noqa: PLC0415
-                                       probe_output_dir, read_probe_measurement)
+        from .node_calibration import (probe_completed, probe_output_dir,  # noqa: PLC0415
+                                       read_probe_measurement)
 
         admission = self.admission
         if admission is None or not self._probes:
