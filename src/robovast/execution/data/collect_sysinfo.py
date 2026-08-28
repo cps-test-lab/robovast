@@ -33,7 +33,31 @@ def get_cpu_info() -> Dict[str, Any]:
     except OSError:
         cpu_name = None
 
-    return {"cpu_name": cpu_name}
+    return {"cpu_name": cpu_name, "cpu_governor": get_cpu_governor()}
+
+
+def get_cpu_governor() -> Optional[str]:
+    """The host's CPU frequency governor, or ``None`` when it cannot be read.
+
+    **Recorded because a node whose clock depends on how busy it is confounds every per-node
+    measurement this repository takes.** A node on a scaling governor downclocks when idle,
+    so the same run is not measured against the same clock as a run that shared the machine. A calibration probe is the
+    extreme case: it runs alone, by design, before any campaign work.
+
+    Read from cpu0: the governor is per-policy and could in principle differ across cores, but
+    a mixed setting is not a configuration anyone chooses, and reporting one value that is
+    usually right beats reporting nothing. Absent in most containers unless ``/sys`` is
+    mounted through, hence ``None`` rather than a guess -- and ``None`` means NOT READ, never
+    "fine", which is why the campaign-level check states which it saw.
+    """
+    text = _read_first_existing(
+        ["/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"])
+    return text.strip() if text else None
+
+
+#: The governor a measurement cluster should be on. Anything else makes a node's speed a
+#: function of its load, which is a variable no experiment here declares or records.
+WANTED_CPU_GOVERNOR = "performance"
 
 
 #: Prefix on a hashed node identity, so a reader can tell one from a hostname at a glance.

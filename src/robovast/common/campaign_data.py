@@ -1346,7 +1346,21 @@ def get_vast_configuration_info(
 
 
 # Campaign-level directories that are not configuration directories.
-RESERVED_CAMPAIGN_DIRS = {"_config", "_execution", "_transient", "_jobs", "_control"}
+#: Directories under a campaign that are NOT configurations, and so hold no runs.
+#:
+#: ``_calibration`` is where a per-node calibration probe writes. That is the whole mechanism
+#: by which a probe is not a campaign run: it is never *added* rather than added and then
+#: removed. Deleting real run data to correct an allocation would be a far more dangerous
+#: design -- a bug in it costs results that cannot be recovered -- and this needs no deletion
+#: at all, because nothing walks a reserved name looking for runs.
+#: Where a node-calibration probe writes. Named here rather than beside the calibration
+#: code because both lanes' postprocessing must keep it out of the bag scan, and neither may
+#: import the cluster package. A probe is deliberately not a run, so its bag is not campaign
+#: data -- and an interrupted probe's unfinalized bag fails the whole conversion step.
+PROBE_DIR = "_calibration"
+
+RESERVED_CAMPAIGN_DIRS = {"_config", "_execution", "_transient", "_jobs", "_control",
+                          PROBE_DIR}
 
 
 def list_config_dirs(campaign_dir: Path) -> list[Path]:

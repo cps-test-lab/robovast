@@ -188,8 +188,8 @@ def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):
 # --- A restarted container invalidates its trial, not the campaign -------------------
 #
 # The guard this replaces raised CampaignConfigError out of the wait loop, which ended the
-# whole campaign. One sidecar crash in one job of one batch ended a 50-batch search and
-# orphaned the two batches that had already finished (rr-roqsim-full-2026-08-23-03124069).
+# whole campaign. One sidecar crash in one job of one batch ends a long search and
+# orphaned the two batches that had already finished.
 
 class _FakeBatchClient:
     """Records the jobs deleted; creation is a no-op."""
@@ -239,7 +239,7 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
     runner.k8s_client = object()
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
-    runner.create_job_manifest = lambda job, total: {
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
@@ -384,8 +384,8 @@ def test_a_single_job_batch_is_exempt_from_that(monkeypatch, tmp_path):
 # --- A pod that never started invalidates its trial, not the campaign ----------------
 #
 # The other way a job fails to deliver, and until this it was fatal: two jobs of
-# thirty-five rate-limited on their image pull ended a 50-batch search on its 34th batch
-# (qd-bt-coverage-full-2026-08-24-01031052). Every job of a batch runs the same images
+# thirty-five rate-limited on their image pull ends a long search mid-flight
+#. Every job of a batch runs the same images
 # with the same reservation, so a cause in the CONFIGURATION blocks all of them and still
 # fails fast; a cause that blocks only some is the cluster, and those jobs are dropped.
 
@@ -415,7 +415,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
     runner.k8s_client = object()
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
-    runner.create_job_manifest = lambda job, total: {
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     runner._BLOCKED_GRACE_SECONDS = blocked_grace
     runner._CONTENDED_GRACE_SECONDS = contended_grace

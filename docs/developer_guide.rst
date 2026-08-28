@@ -1775,7 +1775,9 @@ older campaign look younger with every batch and the two take turns instead of
 the older one finishing.
 
 **Capacity, and the double-counting hazard.** Free capacity is
-``allocatable − committed requests − headroom``, cluster-wide. A Job created
+``allocatable − committed requests − headroom``, **per node** — a pod runs on one
+machine, so a cluster-wide figure cannot see fragmentation and admitting against it
+is how jobs end up ``Unschedulable`` while the cluster reports room. A Job created
 moments ago has no pod bound yet, so the next measurement cannot see its requests;
 handing the same cores out twice is exactly the over-admission this has to avoid.
 The controller keeps an in-flight ledger and stops subtracting a reservation the
@@ -1788,7 +1790,6 @@ inferred from a pod. ``list_campaign_jobs`` reports it ``waiting``; the no-progr
 deadline is suppressed while a batch is entirely queued, because that deadline is a
 per-*run* budget and no run of the campaign is running. Getting this wrong is what
 made a healthy third campaign report as wedged behind two others.
-
 
 .. _web-ui-internals:
 
@@ -1986,16 +1987,17 @@ returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory
 capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
 in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
 ``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
-``cluster_capacity.parse_resource``) and the requests of the non-terminal pods *bound to
+``kube_client.parse_resource``) and the requests of the non-terminal pods *bound to
 those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
 never branch on backend. Summing both sides over one node set is what keeps ``used <=
 capacity``: a pod still queued for a node requests cores nothing has granted, and counting
 it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage.
 
 That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
-both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A job waiting for
-capacity has no pod at all — the state every cluster batch *starts* in — so a pod-based count
-reports a freshly launched sweep as ``0/0`` with its whole queue waiting.
+both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Job waiting its
+turn has no pod at all — the state every cluster batch *starts* in, because the admission
+queue has not created it yet — so a pod-based count reports a freshly launched sweep as
+``0/0`` with its whole queue waiting for capacity.
 ``ClusterService._scenario_job_tally`` therefore delegates to
 ``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
 consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-

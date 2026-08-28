@@ -20,6 +20,8 @@ extends: roqsim_scenes:depot
 
 sim:
   pacing: realtime
+  # 5 physics steps per nav2 control period (20 Hz).
+  timestep: 0.01
   view:
     lookat: [-2.697, 3.724, -0.639]
     distance: 9.947

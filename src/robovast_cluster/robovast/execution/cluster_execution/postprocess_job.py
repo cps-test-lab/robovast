@@ -43,9 +43,11 @@ import logging
 import re
 import time
 
+from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import resolve_sidecar_image
 
 from .kube_client import api_transport_errors
+from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,32 @@ logger = logging.getLogger(__name__)
 POSTPROC_PREFIX = "_postproc"
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
+
+#: What the conversion container reserves.
+#:
+#: **A request, not a tuning knob: without one this pod was invisible to admission.** The
+#: budget provider counts the *requests* of every bound pod, so a container that declares none
+#: contributes zero -- and this one runs on the same nodes as the trials, deserializing every
+#: rosbag of a campaign, while admission believed those cores were free. That is the same
+#: class of error the CPU governor work exists to remove: a run's figures becoming a function
+#: of what else happened to be on the machine, with nothing downstream able to detect it.
+#:
+#: The limit is well above the request because the work is bursty and nothing is under test
+#: here -- the split is what buys the density, exactly as it does for the simulator.
+POSTPROCESS_RESOURCES = {
+    "requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "20Gi"},
+    "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
+}
+
+#: The mirror step's own reservation. It is I/O rather than CPU, but it is what writes the
+#: bags into the pod's ``emptyDir`` -- so the ephemeral-storage request is the load-bearing
+#: half. Without one, a campaign's worth of bags lands on whichever node the scheduler picked
+#: with nothing having reserved the disk for it, and the node hits disk pressure and evicts
+#: the campaign pods running beside it.
+POSTPROCESS_INIT_RESOURCES = {
+    "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "20Gi"},
+    "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "200Gi"},
+}
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -286,7 +314,29 @@ _POSTPROC_LOG = "/out/_execution/postprocessing.log"
 _ROSBAG_PROVENANCE = "/out/_execution/rosbags_provenance.json"
 
 
-def _conversion_script(rosbag_cmds: list, force: bool) -> str:
+def _mirror_excludes() -> str:
+    """Keep the calibration probes out of the Job's copy of the campaign tree.
+
+    The alternative -- mirror everything and tell the scanner to skip -- was the first fix
+    and it is the weaker one. What the Job never receives it cannot convert, cannot fail
+    on, and does not pay to download; and the rule lives in the one place that decides what
+    this Job is given, rather than in a flag a second lane can forget to pass. That
+    forgetting is not hypothetical: ``--tolerate-under`` had exactly this shape and held
+    off-cluster only, and the skip list repeated the omission here.
+
+    A probe is deliberately not a run, so its bag is not campaign data. Converting it cost
+    a bag's work per node, and an interrupted probe's unfinalized bag failed the whole step
+    on something nothing was ever going to read.
+
+    **Only ``_calibration``, not every reserved directory.** The others hold data this Job
+    needs: ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log bag, so excluding
+    the set wholesale would silently drop every ``/rosout`` record in the campaign. The two
+    look interchangeable from their names alone and are not.
+    """
+    return f"--exclude {_shquote(PROBE_DIR + '/*')} "
+
+
+def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str:
     """The main container's shell: convert each batch, then mirror /out up.
 
     All conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes the
@@ -498,6 +548,12 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                 },
                 "spec": {
                     "restartPolicy": "Never",
+                    # Campaign nodes are where the bags already are and where this is
+                    # allowed to run; without the toleration a deployment that dedicates
+                    # its nodes to campaigns has nowhere to put this at all, and the Job
+                    # sits Pending until its three-hour timeout. Easy to miss here, because
+                    # this Job is created outside the admission path entirely.
+                    "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
                     **({"imagePullSecrets": [{"name": pull_secret_name}]}
                        if pull_secret_name else {}),
                     "volumes": [
@@ -523,12 +579,14 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                                         'chmod +x /tools/mc; '
                                         'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" '
                                         '"$S3_SECRET_KEY" && '
-                                        'mc mirror "mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
+                                        'mc mirror ' + _mirror_excludes() +
+                                        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
                             "env": s3_env,
                             "volumeMounts": [
                                 {"name": "tools", "mountPath": "/tools"},
                                 {"name": "bags", "mountPath": "/bags"},
                             ],
+                            "resources": POSTPROCESS_INIT_RESOURCES,
                         },
                     ],
                     "containers": [{
@@ -545,6 +603,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                             {"name": "out", "mountPath": "/out"},
                             {"name": "tmp", "mountPath": "/tmp"},
                         ],
+                        "resources": POSTPROCESS_RESOURCES,
                     }],
                 },
             },

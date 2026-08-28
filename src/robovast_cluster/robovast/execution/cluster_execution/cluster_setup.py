@@ -20,10 +20,9 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
-from robovast.common.errors import CampaignConfigError
+from .node_placement import apply_node_id_labels
 
 logger = logging.getLogger(__name__)
 
@@ -156,64 +155,6 @@ def delete_controller_rbac(namespace="default", kube_context=None):
             logger.warning("Failed to delete controller %s: %s", kind, exc)
 
 
-def get_kubernetes_node_labels_from_config(config_path=None):
-    """Read job and control pod node labels from the vast config.
-
-    Reads from::
-
-        execution:
-          kubernetes:
-            jobs:
-              node_labels:
-                <key>: <value>   # REFUSED by setup -- see setup_server
-            control:
-              node_labels:
-                <key>: <value>   # applied as nodeSelector to the robovast control pod
-
-    Args:
-        config_path: Path to the ``.vast`` config file, or ``None`` when nothing named
-            one — then no labels apply. This function never *discovers* a config: which
-            one to read is the caller's decision, because for a cluster-wide deploy the
-            answer is "only one that was named explicitly" (see :func:`setup_server`).
-
-    Returns:
-        tuple: ``(jobs_node_labels, control_node_labels)`` — each is a ``dict``
-            or ``None`` when not configured.
-
-    Raises:
-        ValueError: If the named config cannot be read. Falling back to "no labels"
-            would schedule pods on arbitrary nodes while the command reported success.
-    """
-    if config_path is None:
-        logger.info(
-            "No .vast config named ('--vast <file>') — no node labels applied. Pass "
-            "'vast cluster setup --vast <file>' to pin the control pod to a node pool "
-            "via execution.kubernetes.control.node_labels.")
-        return None, None
-    try:
-        execution = load_config(config_path, subsection="execution", allow_missing=True)
-    except Exception as exc:
-        # Deploying with "no labels" because the config was unreadable would put job
-        # and control pods on arbitrary nodes for the cluster's whole lifetime, while
-        # setup reported success — the failure has to surface here.
-        raise ValueError(
-            f"could not read node labels from '{config_path}': {exc}\n"
-            "Fix that .vast, or name another one with '--vast <file>'. Cluster setup "
-            "needs no config at all — drop '--vast' to deploy with no node selectors."
-        ) from exc
-    k8s = (execution or {}).get("kubernetes") or {}
-    jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None
-    control_labels = (k8s.get("control") or {}).get("node_labels") or None
-    # Normalise: must be a plain dict or None
-    if jobs_labels and not isinstance(jobs_labels, dict):
-        logger.warning("execution.kubernetes.jobs.node_labels is not a mapping — ignoring")
-        jobs_labels = None
-    if control_labels and not isinstance(control_labels, dict):
-        logger.warning("execution.kubernetes.control.node_labels is not a mapping — ignoring")
-        control_labels = None
-    return jobs_labels, control_labels
-
-
 def load_cluster_config_plugins():
     """Load all available cluster config plugins from entry points.
 
@@ -298,7 +239,8 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
-                 vast_path=None,
+                 jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
+                 node_calibration=True,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -400,25 +342,35 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     cluster_config = get_cluster_config(config_name)
 
-    # Node labels are the only thing this deploy reads from a .vast, and it reads them
-    # ONLY from a config the operator named with '--vast <file>'. There is no ambient
-    # project to fall back on and there must not be one: which nodes a cluster's pods
-    # may run on is not a thing a file in some parent directory of the CWD gets to decide.
-    jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
-        vast_path)
+    # Both come from the SETUP COMMAND, never from a .vast. A .vast describes a campaign;
+    # which machines a cluster's pods may run on is a property of the cluster, and mixing
+    # the two put a deploy's lasting, cluster-wide decisions in a file that travels with an
+    # experiment. It also forced an awkward rule -- read only from a config named with
+    # `vast -V`, never an ambient project -- to stop a `.robovast_project` ten directories
+    # above an unrelated CWD from deciding a cluster's node pools. With no file read at all,
+    # that whole class of accident is gone rather than guarded against.
     if jobs_node_labels:
-        # Refused rather than ignored: nothing applies it, and accepting it silently would
-        # place campaign jobs on every node of the cluster while setup reported success --
-        # precisely the cluster-wide, lasting misconfiguration this function refuses
-        # elsewhere.
-        raise CampaignConfigError(
-            "execution.kubernetes.jobs.node_labels is not applied and this "
-            f"configuration sets it ({jobs_node_labels}). To keep campaign jobs off "
-            "particular machines, taint the nodes that should NOT run them -- job pods "
-            "carry the campaign toleration, so an untainted pool still takes them. Remove "
-            "the setting to continue.")
+        # The campaign job pool: counted by the admission controller and stamped on every
+        # job pod, which is what `docs/configuration.rst` describes.
+        logger.info("Campaign job node pool (nodeSelector): %s", jobs_node_labels)
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
+
+    # Confined to the campaign node pool when there is one, so a cluster that runs campaigns
+    # on a subset does not have its other machines reconfigured as a side effect of a
+    # RoboVAST setup. See node_governor for the default and the failure policy.
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from .node_governor import ensure_cpu_governor  # noqa: PLC0415
+
+    # None means "nobody said": on by default, and a cluster that refuses it is warned
+    # about rather than failed, so setup stays possible on managed Kubernetes. Naming the
+    # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
+    # error, because someone who asked for a fixed clock and silently did not get one would
+    # go on to trust measurements taken on a scaling one.
+    ensure_cpu_governor(client.AppsV1Api(), namespace,
+                        True if cpu_governor is None else cpu_governor,
+                        explicit=cpu_governor is not None,
+                        node_selector=jobs_node_labels)
 
     # No longer ordered against a queue install, but still first: a node advertises no GPU
     # until this DaemonSet runs, and admission sizes GPU capacity from what the nodes
@@ -429,12 +381,18 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # RBAC for the in-cluster search controller pod (create/monitor jobs).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
 
+    # Every node's identity, as a schedulable selector, so admission can pin a job to a node
+    # without putting a hostname in the pod spec. Idempotent by value: an unchanged cluster
+    # patches nothing, which is what makes it safe on every setup rather than only the first.
+    labelled = apply_node_id_labels(kube_context=kube_context)
+    if labelled:
+        logger.info("Labelled %d node(s) with their identity", len(labelled))
+
     # Where this deployment's node-local state lives, decided ONCE, here, for every workload
     # that keeps something on a node -- and recorded as a node label so a later `cleanup` +
     # `setup` returns to the same machine instead of letting the scheduler choose again. That
     # re-choice is the bug: the service came up elsewhere with an empty registry, the old
     # blobs stranded and unreachable, while setup reported success.
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         BUILD_NODE_LABEL, DATA_NODE_LABEL, labeled_nodes, resolve_placement)
     from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # pylint: disable=import-outside-toplevel
@@ -516,9 +474,16 @@ def setup_server(config_name=None, list_configs=False, force=False,
                 host = ""
         if host:
             service_kwargs["registry_host"] = host
+    # The job node pool travels in the service's env because the admission controller is
+    # what enforces it and the controller runs there. Passed as its own argument, NOT as
+    # `env`: that parameter is the WHOLE environment rather than an addition to it, so a
+    # one-element list replaced the cluster env and deployed a service with no
+    # ROBOVAST_CLUSTER_CONFIG_NAME -- setup reported success and every campaign afterwards
+    # failed with "the service must be deployed by 'vast exec cluster setup'".
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   **service_kwargs)
+                   job_node_labels=jobs_node_labels,
+                   node_calibration=node_calibration, **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull

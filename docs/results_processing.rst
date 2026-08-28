@@ -672,6 +672,15 @@ A probe's granularity follows the job: with ``runs_per_job`` > 1 the whole packe
 because which of its runs was in flight cannot be recovered afterwards. That over-excludes rather
 than admitting a perturbed run, which is the safe direction.
 
+.. warning::
+
+   **Two unrelated things are called a probe.** ``runs.probed`` above is a *campaign* run
+   somebody looked inside while it was going, which is why it is recorded and excluded. A
+   **calibration probe** (:ref:`cluster-node-calibration`) is a different object entirely: an
+   extra run that measures one node before the campaign places work there, which writes to the
+   reserved ``_calibration/`` directory and so never becomes a run at all. Nothing in ``runs``
+   or in ``interventions.json`` ever refers to one.
+
 .. note::
 
    ``metadata.yaml`` is **not** how a caller reads a campaign's results. It is written

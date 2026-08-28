@@ -299,3 +299,37 @@ def test_a_contended_job_keeps_the_schedulers_own_reason():
     """
     listed = _listed(_Batch([_job("run-7", active=1)]), _Core([_pod("run-7")]))
     assert listed["run-7"] == ("pending", f"Unschedulable: {BUSY}")
+
+
+# -- a pod pinned by our own admission ----------------------------------------------------
+
+_PINNED_BUSY = ("0/4 nodes are available: 1 Insufficient cpu, 3 node(s) didn't match Pod's "
+                "node affinity/selector. no new claims to deallocate, preemption: 0/4 nodes "
+                "are available: 1 No preemption victims found for incoming pod, 3 Preemption "
+                "is not helpful for scheduling.")
+
+
+def test_a_pod_waiting_for_the_node_we_pinned_it_to_is_contention():
+    """RoboVAST writes that selector itself, so the mismatch clause is the pin working -- not
+    a misconfiguration. The only question is what the ONE matching node said, and here it said
+    Insufficient cpu, which clears when a neighbour finishes.
+
+    Read as permanent, a job waiting for its own node is invalidated for being unable to
+    start, while it is waiting exactly as designed.
+    """
+    assert unschedulable_is_contention(_PINNED_BUSY) is True
+
+
+def test_a_selector_that_matches_no_node_is_still_blocked():
+    """With no matching node there is no Insufficient cause to find, so there is nothing to
+    wait for -- an operator's node pool that matches nothing must still fail fast."""
+    assert unschedulable_is_contention(
+        "0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector.") is False
+
+
+def test_a_taint_alongside_the_pin_is_still_blocked():
+    """Only the selector clause is discounted. Anything else describes a cluster that will
+    look identical in an hour."""
+    assert unschedulable_is_contention(
+        "0/4 nodes are available: 1 node(s) had untolerated taint, 3 node(s) didn't match "
+        "Pod's node affinity/selector.") is False

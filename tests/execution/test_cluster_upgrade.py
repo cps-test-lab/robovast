@@ -162,8 +162,16 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
                         lambda *a, **k: "robovast.example.org")
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for and removed when not, so omitting the flag clears a previous one. An
+    # unstubbed call reaches a real API server even with no governor requested.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -192,8 +200,16 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", _unreachable)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for and removed when not, so omitting the flag clears a previous one. An
+    # unstubbed call reaches a real API server even with no governor requested.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -222,8 +238,16 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", _must_not_be_called)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for and removed when not, so omitting the flag clears a previous one. An
+    # unstubbed call reaches a real API server even with no governor requested.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -240,6 +264,8 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     the RUNNING pod picks up with no roll, which is what makes `--no-restart` possible --
     so skipping it would leave a service missing a permission it never regains without a
     full redeploy. Reached through the command that looks safe, which makes it worth a test.
+
+    Nothing cluster-scoped is reconciled here.
     """
     from unittest import mock
 
@@ -255,6 +281,12 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
     monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for and removed when not, so omitting the flag clears a previous one. An
+    # unstubbed call reaches a real API server even with no governor requested.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     # Returns None on success; it raises on every non-convergence.
@@ -296,6 +328,12 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
                         lambda *a, **k: "http://robovast.example.org")
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for and removed when not, so omitting the flag clears a previous one. An
+    # unstubbed call reaches a real API server even with no governor requested.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)

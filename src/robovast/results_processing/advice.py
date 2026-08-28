@@ -55,7 +55,7 @@ CPU_GRANULARITY = 0.25
 #: Headroom over the memory peak.
 MEM_HEADROOM = 1.25
 
-#: Memory reservations are rounded up to 128 MiB. Kubernetes takes a byte count, but nobody
+#: Memory reservations are rounded up to 128 MIB. Kubernetes takes a byte count, but nobody
 #: writes one: the value goes into a ``.vast`` as ``2Gi``.
 MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 
@@ -183,8 +183,8 @@ SHM_SQL = """
 #: One ``resource_usage`` row is a process, and RSS counts a shared page once per process, so
 #: summing a tick over a stack of forty ROS nodes -- sharing libraries, and a Fast DDS
 #: shared-memory segment mapped into each of them -- multiplies what the container actually
-#: holds. Measured on one basic_nav campaign: summed RSS peaked at 5147 MiB in a container
-#: running comfortably inside a 2944 MiB limit, whose largest single process held 1014 MiB.
+#: holds. Measured on one basic_nav campaign: summed RSS peaked at 5147 MIB in a container
+#: running comfortably inside a 2944 MIB limit, whose largest single process held 1014 MIB.
 #: Sizing from that would have told its author to reserve 2.3x what the run needed, on every
 #: job of every sweep.
 #:
@@ -671,10 +671,9 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
 
     **Only the SUT is reported.** A campaign asks whether the stack under test behaves as
     expected, and nothing else in the results separates "nav2 failed" from "nav2 was cut off
-    mid-plan" -- the run simply fails, plausibly, and is counted against the software. Measured
-    on 2026-08-26: a nav2 container capped at 1.75 cores sat at its ceiling for 44% of ticks
-    and lost 11 runs of 50 to late transforms, while every other signal, realtime factor
-    included, looked healthy.
+    mid-plan" -- the run simply fails, plausibly, and is counted against the software. A container
+    sitting at its ceiling loses runs to late transforms while every other signal, realtime
+    factor included, looks healthy.
 
     The simulator and scenario are deliberately NOT reported here even when throttled harder.
     They are not under test, they are expected to burst and be clipped, and the question of
@@ -841,6 +840,55 @@ def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) ->
             },
         }]
     return []
+#: The governor a node used for measurement should be on. Anything else makes a machine's
+#: speed a function of how busy it is -- a variable no campaign declares or records.
+WANTED_CPU_GOVERNOR = "performance"
+
+GOVERNOR_SQL = """
+    SELECT DISTINCT json_extract(sysinfo_json, '$.node_label')   AS node,
+                    json_extract(sysinfo_json, '$.cpu_name')     AS cpu,
+                    json_extract(sysinfo_json, '$.cpu_governor') AS governor
+    FROM job
+    WHERE sysinfo_json IS NOT NULL
+"""
+
+
+def governor_advice(rows: list[dict]) -> list[dict]:
+    """Warn when a node measured this campaign on a load-dependent clock.
+
+    **This is a validity warning, not a tuning tip.** A node on a scaling governor changes
+    clock speed with load, so a per-node figure -- CPU usage, realtime factor, run duration
+    -- is taken against a clock that was not the same for every run, and the campaign's own
+    numbers cannot show it.
+
+    It matters most for a measurement taken while a node was quiet -- a calibration probe
+    above all, since it runs alone by design -- which describes a machine state ordinary
+    runs do not meet.
+
+    Silent when the governor could not be read. That is the case in any container without
+    ``/sys`` mounted through, and inventing a verdict from a missing measurement is exactly
+    what this file refuses to do elsewhere.
+    """
+    bad = [r for r in rows or []
+           if r.get("governor") and r["governor"] != WANTED_CPU_GOVERNOR]
+    if not bad:
+        return []
+    names = ", ".join(
+        f"{r.get('node') or 'unknown node'} ({r['governor']})" for r in sorted(
+            bad, key=lambda r: (r.get("node") or "")))
+    return [{
+        "kind": "cpu_governor_scaling",
+        "severity": "warning",
+        "title": (f"{len(bad)} node(s) measured this campaign on a scaling CPU governor, so "
+                  f"their speed depended on how busy they were: {names}"),
+        "detail": (
+            "A scaling governor changes clock speed with load, so these runs were not all "
+            f"measured against the same clock. Set it to '{WANTED_CPU_GOVERNOR}' on nodes "
+            "used for measurement -- a host setting, not a RoboVAST one."),
+        "evidence": {"nodes": [
+            {"node": r.get("node"), "cpu": r.get("cpu"), "governor": r.get("governor")}
+            for r in bad]},
+    }]
 
 
 def campaign_advice(query_rows) -> dict[str, Any]:
@@ -859,16 +907,10 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
         throttle = []
     try:
-        contention = query_rows(CONTENTION_SQL)
-    except Exception:  # noqa: BLE001 - no such table/column on a campaign predating the probe
-        try:
-            # The node column alone may be missing where procfs is masked; the container's own
-            # stall is still worth reporting, and dropping the whole finding for the less
-            # important half of it would be the silent-fallback failure this codebase refuses.
-            contention = query_rows(contention_sql(with_node=False))
-        except Exception:  # noqa: BLE001 - genuinely nothing recorded
-            contention = []
-    return {"advice": (throttle_advice(throttle, declared)
-                       + contention_advice(contention, declared)
+        governor = query_rows(GOVERNOR_SQL)
+    except Exception:  # noqa: BLE001 - no job table, or a campaign predating the field
+        governor = []
+    return {"advice": (governor_advice(governor)
+                       + throttle_advice(throttle, declared)
                        + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}

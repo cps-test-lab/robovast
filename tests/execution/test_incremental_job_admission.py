@@ -16,6 +16,7 @@ from robovast.execution.backends import CampaignConfigError
 from robovast.execution.cluster_execution import kubernetes_backend as kb
 from robovast.execution.cluster_execution.node_admission import (AdmissionController, Budget,
                                                                  Capacity, JobSizing,
+                                                                 NodeBudget,
                                                                  campaign_start_key)
 
 MIB = 1024 ** 2
@@ -26,7 +27,9 @@ class _Provider:
         self.cpu = cpu
 
     def budget(self):
-        return Budget(free_cpu=self.cpu, free_memory=1024 * MIB)
+        # One node holding everything: these tests are about the seam and the loop, not
+        # about placement, so the cluster is deliberately the simplest shape that admits.
+        return Budget(nodes=(NodeBudget("n1", self.cpu, 1024 * MIB),))
 
     def capacities(self):
         return [Capacity(64.0, 64 * 1024 * MIB)]
@@ -41,7 +44,7 @@ def _runner(jobs, admission, *, remaining_script):
     r.admission = admission
     r.created = []
     r._build_jobs = lambda: jobs
-    r.create_job_manifest = lambda job, total: {"metadata": {"name": f"j-{job.index}"}}
+    r.create_job_manifest = lambda job, total, node_figures=None: {"metadata": {"name": f"j-{job.index}"}}
     r.k8s_batch_client = types.SimpleNamespace(
         create_namespaced_job=lambda namespace, body: r.created.append(
             body["metadata"]["name"]))
@@ -63,7 +66,7 @@ def test_a_planned_job_is_not_mistaken_for_a_finished_one():
     asked = []
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
     sizing = JobSizing(2.0, MIB)
-    c.submit("camp", [(f"j-{i}", sizing, lambda: None) for i in range(3)],
+    c.submit("camp", [(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)],
              started_at=campaign_start_key("camp-2026-07-17-120000"))
     c.drain()
     states = c.states("camp")
@@ -78,7 +81,7 @@ def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
     """Even with nothing running, a batch with planned work is not done."""
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
     sizing = JobSizing(2.0, MIB)
-    c.submit("camp", [(f"j-{i}", sizing, lambda: None) for i in range(3)], started_at=0.0)
+    c.submit("camp", [(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)], started_at=0.0)
     c.drain()
     states = c.states("camp")
     planned = sum(1 for s in states.values() if s == kb._ADMIT_PLANNED)
@@ -89,7 +92,7 @@ def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
 def test_creation_is_paced_by_capacity_not_by_the_plan_size():
     c = AdmissionController(_Provider(cpu=4.0), clock=lambda: 0.0)
     made = []
-    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda i=i: made.append(i))
+    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda _n=None, i=i: made.append(i))
                       for i in range(10)], started_at=0.0)
     assert c.drain() == 2, "ten planned, room for two"
     assert len(made) == 2
@@ -99,7 +102,7 @@ def test_finishing_a_job_frees_room_for_the_next():
     p = _Provider(cpu=4.0)
     c = AdmissionController(p, clock=lambda: 0.0)
     made = []
-    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda i=i: made.append(i))
+    c.submit("camp", [(f"j-{i}", JobSizing(2.0, MIB), lambda _n=None, i=i: made.append(i))
                       for i in range(10)], started_at=0.0)
     c.drain()
     c.finished("j-0")
@@ -129,7 +132,7 @@ def test_a_pod_that_declares_no_cpu_is_refused_at_launch():
     """
     r = kb.BatchJobRunner()
     r.campaign = "camp-1"
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"name": "scenario"}],
         "initContainers": [{"name": "sut", "restartPolicy": "Always"},
                            {"name": "simulation", "restartPolicy": "Always"}]}}}}
@@ -151,7 +154,7 @@ def test_one_container_declaring_nothing_warns_but_proceeds(caplog):
 
     r = kb.BatchJobRunner()
     r.campaign = "camp-1"
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"name": "scenario",
                         "resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
         "initContainers": [{"name": "sut", "restartPolicy": "Always"}]}}}}
@@ -162,7 +165,7 @@ def test_one_container_declaring_nothing_warns_but_proceeds(caplog):
 
 
 def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
-    """The regression this test exists for, and it cost a live run.
+    """The regression this test exists for.
 
     ``self.manifest`` is the BASE manifest: main container only. The sidecars -- the
     simulator and the system under test, i.e. nearly the whole request -- are appended per
@@ -177,7 +180,7 @@ def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
     r.manifest = {"spec": {"template": {"spec": {
         "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}]}}}}
     # The rendered per-job manifest: what Kubernetes is really asked to reserve.
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
         "initContainers": [
             {"restartPolicy": "Always",
@@ -211,7 +214,7 @@ def test_a_queued_batch_publishes_waiting_for_capacity():
 
     A campaign whose jobs are all still PLANNED has no pods, so the pod-based probe could see
     nothing and concluded "not waiting" -- and the per-run deadline then declared a perfectly
-    healthy queued campaign stalled. Measured on 2026-08-26: the third of three concurrent
+    healthy queued campaign stalled: the third of three concurrent
     campaigns reported as wedged while waiting its turn.
 
     ``waiting_for_capacity`` suppresses the stall verdict (``client/status.py``), so the fix is
@@ -261,3 +264,36 @@ def test_a_running_batch_is_not_reported_as_queued():
     r._publish_capacity_wait(waiting)
     assert r._state.capacity_waits == [False], (
         "suppressing the verdict while jobs run would hide a genuine stall")
+
+
+def test_the_chosen_node_reaches_the_manifest_as_a_node_selector():
+    """The pin has to arrive on the pod, or the reservation is a promise about a node the
+    scheduler is free to ignore -- admission reserves on one node and the pod lands on
+    another, which is the fragmentation per-node admission exists to prevent.
+    """
+    from robovast.execution.cluster_execution.node_placement import NODE_ID_LABEL
+
+    c = AdmissionController(_Provider(cpu=8.0), clock=lambda: 0.0)
+    r = _runner([_job(0)], c, remaining_script=lambda names: [])
+    r.create_job_manifest = lambda job, total, node_figures=None: {
+        "metadata": {"name": "j-0"},
+        "spec": {"template": {"spec": {"nodeSelector": {"pool": "batch"}}}}}
+    bodies = []
+    r.k8s_batch_client = types.SimpleNamespace(
+        create_namespaced_job=lambda namespace, body: bodies.append(body))
+
+    def _create(job, name, node_id=None):
+        manifest = r.create_job_manifest(job, 1)
+        if node_id:
+            spec = manifest["spec"]["template"]["spec"]
+            spec["nodeSelector"] = {**(spec.get("nodeSelector") or {}), NODE_ID_LABEL: node_id}
+        r.k8s_batch_client.create_namespaced_job(namespace="ns", body=manifest)
+
+    c.submit("camp", [("j-0", JobSizing(2.0, MIB), lambda n=None: _create(_job(0), "j-0", n))],
+             started_at=0.0)
+    assert c.drain() == 1
+    selector = bodies[0]["spec"]["template"]["spec"]["nodeSelector"]
+    assert selector[NODE_ID_LABEL] == "n1"
+    # ANDed with what the spec already carried: a pin that widened the acceptable set would
+    # defeat the operator's node pool it was placed inside.
+    assert selector["pool"] == "batch"

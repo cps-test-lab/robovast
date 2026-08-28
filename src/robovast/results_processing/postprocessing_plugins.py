@@ -55,6 +55,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common import log_summary, scenario_markers
+from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
                                        is_campaign_dir)
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr,
@@ -384,6 +385,14 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:
             cmd.extend(["--bag-dir", bag_dir])
+        # A calibration probe is deliberately not a run, so its bag is not campaign data.
+        # Converting it cost a bag's work per node, and an interrupted probe's unfinalized
+        # bag failed the whole step outright on something nothing was going to read.
+        #
+        # Only this directory, NOT every reserved one: `_jobs/<batch>/<job>/logs/rosout_bag`
+        # is each job's real log bag, so skipping the set wholesale would silently drop
+        # every /rosout record in the campaign. The names look interchangeable and are not.
+        cmd.extend(["--skip-dir", PROBE_DIR])
         # A job stopped by an operator, or invalidated by the runner after a container
         # crashed under it, was SIGKILLed mid-write — so its rosbag is unfinalized and
         # cannot be opened, ever. Without this the campaign's whole postprocessing step

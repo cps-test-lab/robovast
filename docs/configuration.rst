@@ -1006,7 +1006,9 @@ limit only decides when the kernel starts throttling. Which means:
   conservative way to reach that while nothing measures what it actually got. It is worth
   over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
   for this ceiling, ``contended`` for other work taking cores it had not reserved.
-- The **simulator and scenario** are not under test and should split. Measured on the shipped
+- The **simulator and scenario** are not under test and **may** split, once it has been
+  validated at the concurrency the campaign will actually run at — see the two costs below,
+  both of which scale with concurrency rather than showing up in a single run. Measured on the shipped
   ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
   the world's geometry compiles — a ratio of ~18, so there is no honest single number.
   Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
@@ -1026,6 +1028,28 @@ limit only decides when the kernel starts throttling. Which means:
 The size of the win depends on the world: the same simulator peaks at 5.98 cores in
 ``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
 different figures and gain differently from the split.
+
+**What a split costs, and why it is a mode rather than a default.** Two things follow from
+splitting *any* container, and neither is visible in one run:
+
+- **The pod stops being** ``Guaranteed``. Kubernetes assigns that class only when request
+  equals limit for **every** container of the pod, so splitting the simulator downgrades the
+  whole pod to ``Burstable`` even though the system under test kept its equality. On a node
+  running the **static** CPU manager that is what makes the SUT ineligible for exclusive
+  cores, and it weakens the Memory Manager's guarantees too. It costs nothing where
+  ``cpuManagerPolicy`` is ``none`` — no container is eligible for exclusive cores there
+  whatever its class — which is why the effect is latent rather than absent. ``vast doctor``
+  reports the policy per node.
+- **Bursts correlate.** Forty simulators reserving 0.5 and permitted 6 are placed against 20
+  cores while able to demand 240, and they burst *together* — world compile happens at
+  startup, and a batch starts at once. Whether a given run gets its burst then depends on its
+  neighbours, which is the hidden variable comparability is trying to remove. Admission packs
+  by the request, exactly as Kubernetes does, so it does not prevent this.
+
+So: equality is the reproducible default, and a split is **controlled overcommit** — right for
+an exploratory sweep, and something to validate before trusting a comparison drawn across a
+campaign that used it. The counters say per run whether it bit (``quota_bound``, ``contended``,
+``clock_map_*``); they cannot make two runs' conditions equal after the fact.
 
 **The system under test's ceiling is set from a pilot**, which is the assumption to keep in
 view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of
@@ -1157,63 +1181,44 @@ kubernetes.jobs
 
 Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
 
-To keep campaign jobs off particular machines, **taint the nodes that should not run
-them**. Job pods carry the campaign toleration (``dedicated=batch:NoSchedule``), so an
-untainted pool still takes them:
+kubernetes.jobs.node_labels
+''''''''''''''''''''''''''''
 
-.. code-block:: bash
+**Removed from the** ``.vast``. The node pool campaign jobs may run on is now a setup
+option::
 
-   kubectl taint nodes <node> dedicated=other:NoSchedule
+   vast execution cluster setup <config> --jobs-node-label KEY=VALUE
 
-kubernetes.control
-""""""""""""""""""
+Repeatable, and written on every setup — omitting it *clears* a previously configured pool
+rather than preserving it.
 
-**Type:** Dictionary
+It moved because it is a property of the **cluster**, not of a campaign. Carrying it here
+put a deploy's lasting, cluster-wide decisions in a file that travels with an experiment,
+and it let one campaign's file describe which machines every other campaign could use.
 
-**Required:** No
-
-Settings applied to RoboVAST's own infrastructure pods, as opposed to the
-campaign's job pods.
+What it does is unchanged, and both halves are enforced: the admission controller counts
+free capacity only on nodes inside the pool, so it never promises room on a machine the
+jobs may not use; and each pod carries the labels as a ``nodeSelector``, so kube-scheduler
+is bound by the same rule the accounting assumed. The per-run node pin is ANDed onto the
+pool, narrowing it rather than replacing it. See :ref:`cluster-node-labels`.
 
 kubernetes.control.node_labels
 '''''''''''''''''''''''''''''''
 
-**Type:** Dictionary (label key-value pairs)
+**Removed from the** ``.vast``, for the same reason and at the same time::
 
-**Required:** No
+   vast execution cluster setup <config> --control-node-label KEY=VALUE
 
-Node selector labels added to RoboVAST's own pods, so the orchestration
-workload runs on a separate, lighter node pool and does not compete with
-simulation jobs for resources.
+Places RoboVAST's own infrastructure pods, as opposed to the campaign's job pods. Narrows
+rather than decides: these are ANDed with the node-local data placement setup chooses (see
+:ref:`cluster-node-local-storage`). On their own they would still let the pod float within
+the pool, which is the same problem at a smaller scale.
 
-**Narrows, rather than decides.** Which single node holds this deployment's
-node-local data is decided at setup and recorded as a node label (see
-:ref:`cluster-node-local-storage`); these labels are ANDed with it, bounding
-the pool that choice may be made from. On their own they would still let the
-pod float within the pool, which is the same problem at a smaller scale.
+**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)::
 
-Read only from a ``.vast`` named explicitly with ``--vast <file>``.
-
-.. code-block:: yaml
-
-   execution:
-     kubernetes:
-       control:
-         node_labels:
-           node-pool: extra
-
-**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)
-
-.. code-block:: yaml
-
-   execution:
-     kubernetes:
-       jobs:
-         node_labels:
-           node-pool: primary
-       control:
-         node_labels:
-           node-pool: extra
+   vast execution cluster setup rke2 \
+       --jobs-node-label node-pool=primary \
+       --control-node-label node-pool=extra
 
 
 Results Processing Section

@@ -218,13 +218,13 @@ def _service_rbac_manifests(namespace):
         },
         # Cluster-scoped grants: nodes for the /usage endpoint (cluster resources, not
         # grantable via a namespaced Role) with cluster-wide pod requests for the true
-        # "used" figure across tenants, and the ClusterQueue behind the LocalQueue for
-        # the admission preflight. The ClusterRole name is namespaced so parallel
+        # "used" figure across tenants. The ClusterRole name is namespaced so parallel
         # robovast deployments don't collide.
         #
-        # Read-only apart from workloadpriorityclasses: each campaign owns one, carrying
-        # the priority that gets it admitted in start-time order, and a WorkloadPriority-
-        # Class is cluster-scoped so the namespaced Role above cannot grant it.
+        # Entirely read-only. Admission is the in-process
+        # controller's (node_admission.py), so the service writes nothing
+        # cluster-scoped. A deployment older than that removal still tries the create and
+        # gets a 403 here -- upgrade it rather than restoring the grant.
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -1281,7 +1281,7 @@ def registry_ingress_defects(ingress) -> list:
 
     The route and the annotations are equally load-bearing and fail differently, so both
     are named: without the ``/v2`` path the node has no address to pull from, and without
-    ``proxy-body-size`` every layer push dies on nginx's 1 MiB default with a 413 — an
+    ``proxy-body-size`` every layer push dies on nginx's 1 MIB default with a 413 — an
     Ingress that has the route and not the annotation is still a broken registry, and a
     ``200`` from ``GET /v2/`` cannot see that.
 
@@ -1386,7 +1386,8 @@ def published_host(namespace="default", kube_context=None):
     return url.split("://", 1)[-1] if url else ""
 
 
-def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
+def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
+                 job_node_labels=None, node_calibration=True):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
     The service (the cluster mode) reconstructs the same cluster config the controller
@@ -1404,6 +1405,23 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
                     "value": json.dumps(config_kwargs or {})})
     if kube_context:
         env.append({"name": "ROBOVAST_KUBE_CONTEXT", "value": kube_context})
+    # Written on every deploy, empty included, so dropping the option CLEARS a previously
+    # configured pool instead of leaving it silently in force.
+    #
+    # Threaded in here rather than handed to `deploy_service(env=...)`, which is the whole
+    # environment and not an addition to it -- passing a one-element list there replaced
+    # this function's output wholesale and left a deployed service with no
+    # ROBOVAST_CLUSTER_CONFIG_NAME, so setup reported success and every campaign then failed
+    # with "the service must be deployed by 'vast exec cluster setup'".
+    from .node_placement import JOB_NODE_POOL_ENV  # noqa: PLC0415
+    env.append({"name": JOB_NODE_POOL_ENV,
+                "value": json.dumps(job_node_labels) if job_node_labels else ""})
+    # Per-node sizing, written explicitly so the deployment states its own configuration
+    # rather than depending on the absence of a variable -- an operator reading the
+    # Deployment can see what the cluster is set up to do. See node_calibration.
+    from .node_calibration import CALIBRATION_ENV  # noqa: PLC0415
+    env.append({"name": CALIBRATION_ENV,
+                "value": "1" if node_calibration else "0"})
     return env
 
 
@@ -1461,6 +1479,7 @@ def _host_timezone():
 
 
 def service_manifests(namespace="default", image=None, env=None,
+                      job_node_labels=None, node_calibration=True,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
@@ -1494,13 +1513,15 @@ def service_manifests(namespace="default", image=None, env=None,
     from robovast.common.execution import resolve_controller_image
     image = image or resolve_controller_image()
     if env is None:
-        env = _cluster_env(namespace, config_name, config_kwargs, kube_context)
-    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. Nothing in the pod reads
-    # it: the postprocessing Job's conversion scripts come from a per-campaign ConfigMap
-    # built in the driver's own process (postprocess_job.scripts_configmap_manifest,
-    # precisely so there is no controller-image version skew), and the conversion container
-    # runs the *campaign's* recorded execution image. Setting the variable there says
-    # something untrue about what this deployment uses.
+        env = _cluster_env(namespace, config_name, config_kwargs, kube_context,
+                           job_node_labels=job_node_labels,
+                           node_calibration=node_calibration)
+    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately: nothing in the pod reads
+    # it, so setting it would say something untrue about what this deployment uses. The
+    # conversion scripts come from a per-campaign ConfigMap built in the driver's own
+    # process (postprocess_job.scripts_configmap_manifest, precisely so there is no
+    # controller-image version skew), and the conversion container runs the *campaign's*
+    # recorded execution image.
     #
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build
@@ -1751,6 +1772,7 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
 
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
+                   job_node_labels=None, node_calibration=True,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
@@ -1817,7 +1839,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     auth_token = auth_token or generate_token()
 
     manifests = service_manifests(
-        namespace=namespace, image=image, env=env,
+        namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
+        node_calibration=node_calibration,
         config_name=config_name, config_kwargs=config_kwargs,
         kube_context=kube_context, pull_secret=pull_secret,
         auth_token=auth_token, ingress_host=ingress_host,

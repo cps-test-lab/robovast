@@ -88,6 +88,21 @@ the entry instead. Two things are *not* history and stay: a **migration step** t
 must still perform (their cluster has something ours no longer installs), and an error
 message telling them what to do about a setting they still have. Git carries the rest.
 
+It applies to **comments and test docstrings** too, and to anything a user reads: a CLI help
+string, an advice message, a shipped example. A guard whose reason is a past incident keeps
+the reason and loses the incident -- "a dead node must not read as the emptiest one", not
+"the reading that used to discard runs in a loop".
+
+**Numbers from one cluster are not documentation.** Node models, run counts, realtime
+factors, campaign ids and wall-clock timings describe the machine they were taken on, and a
+reader's differs. State the property that holds anywhere and say which command produces their
+figures. This applies hardest to a claim that argues a default: an unproven cause repeated in
+four places is four things to correct later.
+
+**Rewriting a branch that predates a cleanup restores what the cleanup removed.** Replaying
+older commits brings their prose with them, and nothing fails. After any rebase or extraction,
+grep the result for what was deleted rather than trusting the merge.
+
 ## 3. Keep the code clean — no deprecated paths, no fallbacks
 
 Change code in place and delete what it replaces. Fix problems at the root — one

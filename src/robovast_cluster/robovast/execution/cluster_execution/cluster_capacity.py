@@ -30,7 +30,7 @@ import os
 from typing import List, Optional, Tuple
 
 from .kube_client import parse_resource, pod_workload_containers
-from .node_admission import Budget, Capacity
+from .node_admission import Budget, Capacity, NodeBudget
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,25 @@ class ClusterBudgetProvider:
     # -- the two questions -------------------------------------------------------------
 
     def capacities(self) -> "List[Capacity]":
-        return [Capacity(cpu=parse_resource(a.get("cpu")),
-                         memory=int(parse_resource(a.get("memory"))),
+        """What each node could hold if it were empty -- **headroom already taken off**.
+
+        Subtracted here for the same reason it is subtracted from ``budget()``: the reserve is
+        never spendable by a campaign, so a node's usable size is ``allocatable - headroom``
+        in **both** answers, and they must agree. If this reported the raw figure, a sizing
+        above ``allocatable - headroom`` but at or below ``allocatable`` would pass
+        :meth:`~.node_admission.AdmissionController.preflight` -- which exists precisely to
+        tell "wait" from "impossible" -- and then no drain could ever place it. The campaign
+        would sit in the admit loop having created ZERO jobs, invisible to every diagnosis
+        path downstream, all of which read pods. The calibration probe cannot rescue it
+        either: it runs at the declared sizing and is pinned, so it is unadmittable for the
+        same reason.
+
+        Never below zero: a node smaller than the reserve reports as holding nothing, which is
+        the truth, rather than a negative that would read as room.
+        """
+        head_cpu, head_mem = _headroom()
+        return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
+                         memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
                          gpu=int(parse_resource(a.get("nvidia.com/gpu"))))
                 for a in self._allocatables().values()]
 
@@ -114,44 +131,112 @@ class ClusterBudgetProvider:
         return parse_resource(cpu), int(parse_resource(memory))
 
     def budget(self) -> Budget:
-        """Free capacity across the cluster, and the Jobs this reading already accounts for.
+        """Free capacity **per node**, and the Jobs this reading already accounts for.
 
-        Cluster-wide rather than per node, because with one uniform request the scheduler does
-        the placing and admission only has to answer "is there room somewhere". Per-node
-        budgets are what per-node *sizing* would need, and this returns early precisely so
-        that change is additive.
+        Per node because a pod runs on one machine. A cluster-wide figure cannot see
+        fragmentation, and admitting against it is how jobs end up ``Unschedulable`` while the
+        cluster reports room -- the free cores are spread across nodes and no single node
+        holding the 4.75 a pod needed.
+
+        Headroom is subtracted from **every** node, not once from the total. It protects the
+        shared tenants no campaign owns, and those run on each machine; taking it off the sum
+        would leave every node but one unprotected.
         """
-        alloc = self._allocatables()
-        used_cpu, used_mem, used_gpu, seen = self._committed(set(alloc))
+        alloc = self._allocatables(schedulable_only=True)
+        ids = self._node_ids()
+        per_node, seen = self._committed(set(alloc))
         head_cpu, head_mem = _headroom()
-        total_cpu = sum(parse_resource(a.get("cpu")) for a in alloc.values())
-        total_mem = sum(int(parse_resource(a.get("memory"))) for a in alloc.values())
+        nodes = []
+        for name, a in alloc.items():
+            used = per_node.get(name, (0.0, 0, 0))
+            nodes.append(NodeBudget(
+                node_id=ids.get(name),
+                free_cpu=max(0.0, parse_resource(a.get("cpu")) - used[0] - head_cpu),
+                free_memory=max(0, int(parse_resource(a.get("memory"))) - used[1] - head_mem),
+                free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2])))
+        return Budget(nodes=tuple(nodes), counted_jobs=seen, growable=self._growable())
+
+    def _growable(self) -> bool:
+        """Whether the cluster can add nodes -- the autoscaler's exception.
+
+        **Compared against the WHOLE cluster, never against the job pool.** The declared
+        maximum an autoscaler reports covers every node it may create; ``_allocatables`` is
+        filtered to the pool and to what is schedulable right now. Comparing the two measured
+        different sets: configure a job node pool and the declared max exceeds the pool's
+        current total by construction, so ``growable`` was permanently true -- every job then
+        created unpinned, per-node accounting bypassed, and ``calibration_applies`` switching
+        per-node sizing off without saying so. Cordoning one node had a milder version of the
+        same effect.
+
+        A node that is down still counts towards the current total here, for the same reason
+        it counts in ``capacities()``: it is coming back, and treating its absence as room the
+        autoscaler must supply would ask for a machine to replace one that already exists.
+        """
         declared = self._declared_total()
-        if declared is not None:
-            # Never smaller than what is actually there: an override that under-reports must
-            # not shrink a cluster below the nodes it already has.
-            total_cpu = max(total_cpu, declared[0])
-            total_mem = max(total_mem, declared[1])
-        total_gpu = sum(int(parse_resource(a.get("nvidia.com/gpu"))) for a in alloc.values())
-        return Budget(
-            free_cpu=max(0.0, total_cpu - used_cpu - head_cpu),
-            free_memory=max(0, total_mem - used_mem - head_mem),
-            free_gpu=max(0, total_gpu - used_gpu),
-            counted_jobs=seen)
+        if declared is None:
+            return False
+        core = self._core_api_factory()
+        total_cpu = sum(parse_resource((n.status.allocatable or {}).get("cpu"))
+                        for n in core.list_node().items)
+        return declared[0] > total_cpu
+
+    def _node_ids(self) -> dict:
+        """``node name -> robovast.io/node-id``, for the nodes that carry one.
+
+        Absent for a node that joined since the last ``setup``. Such a node is still counted
+        -- its pods and its capacity are real -- but nothing can be pinned to it, which is
+        why this is a lookup rather than a required field.
+        """
+        from .node_placement import NODE_ID_LABEL  # noqa: PLC0415
+
+        core = self._core_api_factory()
+        out = {}
+        for node in core.list_node().items:
+            value = (node.metadata.labels or {}).get(NODE_ID_LABEL)
+            if value:
+                out[node.metadata.name] = value
+        return out
 
     # -- readings ----------------------------------------------------------------------
 
-    def _allocatables(self) -> dict:
+    def _allocatables(self, schedulable_only: bool = False) -> dict:
+        """``{node name: allocatable}`` for the nodes in the job pool.
+
+        *schedulable_only* is the difference between the module's two questions, and it has to
+        be a parameter rather than a filter applied to both.
+
+        **"Free now" must exclude an unusable node.** One that is cordoned, not ``Ready``, or
+        carrying a taint a job pod does not tolerate cannot receive work, so counting its cores
+        promises room that cannot be spent. Worse, a node that dies mid-campaign loses its pods
+        once the eviction timeout passes and then reads as fully *free* -- so admission pinned
+        job after job to it, each was refused by the scheduler for an untolerated ``not-ready``
+        taint, and each was dropped as a fault rather than as contention. Runs were discarded
+        in a loop for as long as the node stayed down, and a cordon for maintenance did the
+        same.
+
+        **"Could ever" must include it.** A cordoned or rebooting node is coming back, and
+        :meth:`~.node_admission.AdmissionController.preflight` raises a *permanent* error --
+        so filtering here would turn a maintenance window into a campaign that refuses to
+        start rather than one that waits.
+
+        The tolerations are the job pods' own (:data:`~.node_placement.CAMPAIGN_NODE_TOLERATIONS`),
+        not an empty set: a deployment that taints its campaign nodes must still count them.
+        """
+        from .node_placement import (  # noqa: PLC0415 - avoids an import cycle
+            CAMPAIGN_NODE_TOLERATIONS, node_is_schedulable)
+
         core = self._core_api_factory()
         kwargs = {}
         if self._node_selector:
             kwargs["label_selector"] = ",".join(f"{k}={v}"
                                                 for k, v in self._node_selector.items())
         nodes = core.list_node(**kwargs)
-        return {n.metadata.name: (n.status.allocatable or {}) for n in nodes.items}
+        return {n.metadata.name: (n.status.allocatable or {}) for n in nodes.items
+                if not schedulable_only
+                or node_is_schedulable(n, CAMPAIGN_NODE_TOLERATIONS)}
 
     def _committed(self, node_names: set):
-        """Requests of every pod bound to *node_names*, and the Job names among them.
+        """``{node: (cpu, memory, gpu)}`` requested on each, and the Job names among them.
 
         Filtered server-side to non-terminal pods: a Succeeded pod still exists as an object
         but holds nothing, and counting it would shrink the cluster by everything that ever
@@ -168,19 +253,20 @@ class ClusterBudgetProvider:
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         from .cluster_execution import _pod_job_name  # noqa: PLC0415 - avoids a cycle
 
-        cpu = 0.0
-        mem = 0
-        gpu = 0
+        per_node = {}
         seen = set()
         for pod in pods.items:
-            if getattr(pod.spec, "node_name", None) not in node_names:
+            node = getattr(pod.spec, "node_name", None)
+            if node not in node_names:
                 continue
             job_name = _pod_job_name(pod)
             if job_name:
                 seen.add(job_name)
+            cpu, mem, gpu = per_node.get(node, (0.0, 0, 0))
             for container in pod_workload_containers(pod):
                 requests = (container.resources.requests if container.resources else None) or {}
                 cpu += parse_resource(requests.get("cpu"))
                 mem += int(parse_resource(requests.get("memory")))
                 gpu += int(parse_resource(requests.get("nvidia.com/gpu")))
-        return cpu, mem, gpu, frozenset(seen)
+            per_node[node] = (cpu, mem, gpu)
+        return per_node, frozenset(seen)

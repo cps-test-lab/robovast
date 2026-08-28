@@ -154,26 +154,71 @@ The setup command:
 Pinning pods to a node pool
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The control pod's node selector comes from
-``execution.kubernetes.control.node_labels`` (see :doc:`configuration`) and is baked into
-the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
-read:
-
-To keep campaign jobs off particular machines, taint those machines — job pods carry the
-campaign toleration, so an untainted pool still takes them.
+Both node pools are set on the **setup command**, never in a ``.vast``. A ``.vast``
+describes a campaign; which machines a cluster's pods may run on is a property of the
+cluster, and carrying it in a campaign file put a deploy's lasting, cluster-wide decisions
+somewhere that travels with an experiment.
 
 .. code-block:: bash
 
-   vast cluster setup rke2 --vast my_campaign.vast
+   vast execution cluster setup rke2 \
+       --jobs-node-label node-pool=primary \
+       --control-node-label node-pool=extra
 
-Without ``--vast`` no node selectors are deployed (logged at INFO) and pods schedule
-wherever Kubernetes puts them. Nothing is consulted implicitly, and there is nothing that
-could be: which nodes a cluster's pods may run on is not a decision for a file in some
-parent directory of the CWD.
+``--jobs-node-label`` confines campaign jobs. It is recorded in the service's environment,
+because the admission controller is what enforces it: the controller counts free capacity
+only on nodes inside the pool, and every job pod carries the labels as a ``nodeSelector``
+so kube-scheduler is bound by the same rule the accounting assumed. Neither half suffices
+alone — filtering capacity would leave the scheduler free to place outside the pool, and
+stamping alone would have admission reserving room on nodes the pods cannot reach.
 
-A named ``.vast`` that cannot be read is an error rather than a silent "no labels" — a
-config that fails to load cannot be asked whether labels were intended, and guessing
-"none" would scatter job and control pods across arbitrary nodes.
+``--control-node-label`` places RoboVAST's own infrastructure pods. It narrows rather than
+decides: these are ANDed with the node-local data placement setup chooses (see below).
+
+Both are repeatable, and both are written on **every** setup. Omitting one therefore
+*clears* what a previous setup configured rather than preserving it, which is what keeps
+the command the whole truth about the cluster. With neither given, pods schedule wherever
+Kubernetes puts them.
+
+.. _cluster-cpu-governor:
+
+Pinning the clock
+^^^^^^^^^^^^^^^^^
+
+``setup`` sets the nodes' CPU governor to ``performance``. **On by default**, and alone among
+what setup does it reconfigures the host rather than reporting something about it — so it is
+the one step to know about before pointing setup at a machine you share.
+
+It is on by default because a cluster used for measurement whose clock moves with load
+produces numbers that are wrong in a way nothing downstream can detect or correct.
+
+A node on a scaling governor changes clock speed with load, so a per-node figure a campaign
+records — CPU usage, realtime factor, run duration — is taken against a clock that was not
+the same for every run. Fixing the governor removes that variable; it does not claim to be
+the only one.
+
+``--no-performance-governor`` skips it and leaves the hosts alone. Naming
+``--performance-governor`` explicitly changes the *failure* policy rather than the outcome: a
+cluster that refuses the DaemonSet is then an error instead of a warning, because someone who
+asked for a fixed clock and silently did not get one would go on to trust measurements taken
+on a scaling one.
+
+It installs a privileged DaemonSet with the host's ``/sys`` mounted writable, confined to
+the job node pool when one is configured. Leaving it off is supported: RoboVAST reports a
+``cpu_governor_scaling`` warning per campaign, so the effect shows up in the results rather
+than silently.
+
+.. warning::
+
+   **On a cloud VM this usually cannot work, and the failure is not the one setup detects.**
+   Setup recognises a cluster that *refuses* the privileged pod — GKE Autopilot does — and
+   warns. GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at
+   runtime: a GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because
+   the hypervisor owns the clock. The pod exits non-zero and ``CrashLoopBackOff``\ s on every
+   node while setup reports the DaemonSet as applied. Node auto-repair would undo the setting
+   anyway. On managed Kubernetes, pass ``--no-performance-governor`` and set the governor
+   through the node image instead — and read the ``cpu_governor_scaling`` advice, which is
+   what tells you whether it took effect.
 
 .. _cluster-node-local-storage:
 
@@ -255,7 +300,7 @@ Nothing is pinned where nothing is on a node: pass ``--registry-storage-class`` 
 schedule freely, because a ``nodeSelector`` on a provisioned volume is noise at best and
 unschedulable at worst.
 
-``execution.kubernetes.control.node_labels`` still applies and is **ANDed** with the
+``--control-node-label`` still applies and is **ANDed** with the
 placement label rather than replaced by it: it narrows which nodes may be chosen, while the
 label decides which one of them holds the data. A pool selector alone still lets the pod
 float within the pool, which is this same problem at a smaller scale.
@@ -901,6 +946,8 @@ appended when the client produced none.
    avoids this.
 
 
+.. _cluster-admission:
+
 Job Queueing
 ------------
 
@@ -1052,11 +1099,29 @@ deployment: ``ROBOVAST_NODE_HEADROOM_CPU`` (default ``1``) and
 ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``). Deliberately not a ``.vast`` setting —
 a per-campaign override would let one campaign shrink the margin every other one depends on.
 
-**One thing this cannot see is fragmentation.** The figure is cluster-wide, while a pod runs
-on one node, so a cluster with enough total capacity and no single node big enough will
-still produce an occasional ``Unschedulable`` pod. It is transient and recovers on its own:
-such a pod fits an empty node, so it is treated as contention rather than a fault, and it is
-placed as soon as a neighbour finishes.
+**Capacity is counted per node, and each job is pinned to the node it was counted against.**
+A pod runs on one machine, so a cluster-wide figure cannot see fragmentation: it says there
+is room while no single node has enough, and the job is created and then cannot be placed.
+It happens whenever the free cores are spread across nodes and no single node holds the
+4.75 a pod needed.
+
+The pin is the label ``robovast.io/node-id``, whose value is the same hash a run records as
+``runs.node_label`` — so the selector that placed a run and the record of the machine it ran
+on are provably the same node, and no hostname appears in any pod spec. ``setup`` applies
+it, and an **unlabelled node still takes work**: it simply cannot be named, so its jobs are
+created without a selector and the scheduler places them. A cluster upgraded without
+re-running ``setup``, or a node that joined since, therefore behaves exactly as it did
+before per-node placement existed rather than refusing to run anything.
+
+A pinned pod whose node is momentarily full is **contention, not a fault**. It waits for
+that node — the fifteen-minute window, not the sixty-second one — because it is waiting for
+capacity that is coming back, and the alternative is destroying a run for being patient.
+
+**RoboVAST's own infrastructure is not evenly spread.** The service pod, the registry and
+(on the bare-metal providers) the results store are pinned to one node
+(:ref:`cluster-node-local-storage`), so that machine has materially less left for campaign
+work than an even split implies. Per-node budgets see this correctly, because they measure
+what is committed on each node rather than dividing a cluster total.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
 ``capacity`` minus what the kubelet was told to hold back for the OS, the kubelet and
@@ -1079,6 +1144,116 @@ jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independen
 subtraction above and complements it: the kubelet reservation protects the machine, the
 subtraction protects the schedule.
 
+
+.. _cluster-node-calibration:
+
+Per-node container sizing
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**On by default.** Before a campaign places work on a node, one *calibration probe* runs
+there at the declared sizing; what it measured becomes that node's figures, and every run of
+that campaign on that node is sized from them.
+
+Why per node at all: the same trial costs about **1.6x more CPU on the slowest machine of a
+mixed cluster than on the fastest**, and wall time does not show it — a realtime-paced
+simulator holds one simulated second per wall second, so every machine finishes at roughly the
+same time and the difference lands entirely in CPU consumed. One declared number is therefore
+wrong on every node but the one it was measured on.
+
+It is a **validity** matter as much as a throughput one. At a uniform 3.0 cores for the system
+under test, one node was quota-bound in 100 % of its runs at 2.5 and below while three others
+were never quota-bound at any allocation down to 2.0. Equal *cores* are not equal *compute*,
+so an equal declaration produces unequal conditions — the thing a uniform number was meant to
+prevent.
+
+How the figure is found:
+
+* **One probe per node, and it is never a campaign run.** It writes to ``_calibration/<node-id>/``
+  — a reserved directory nothing walks looking for runs — so it cannot enter the results in
+  the first place. A campaign of 50 runs still delivers 50.
+* **A node with an outstanding probe takes no campaign work.** Otherwise the runs placed
+  while it is measuring are the odd ones out on a node whose later runs are calibrated,
+  reintroducing the inconsistency the probe exists to remove.
+* **The statistic depends on the container's role.** The system under test is sized on its
+  *peak*, as request and limit, so it never throttles — its budget must be identical in every
+  run or the allocation becomes a hidden independent variable. Everything else is sized on
+  what it *sustains* (p95) and keeps its declared ceiling, because the simulator's
+  peak-to-mean ratio is about 18 and reserving its peak would cost more than not calibrating
+  at all. Memory is never re-sized: it does not vary with how fast a machine is, and
+  exceeding a memory limit is an OOM kill rather than a slowdown.
+* **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
+  node's jobs down to what they need; it does not raise a ceiling the author set.
+* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
+  5 and run 40 on the same node ran in different environments. The figures are deliberately
+  not reused by the next campaign — they were measured under this one's contention, for this
+  one's containers.
+* **Pilots calibrate nothing.** With no more jobs than the cluster has nodes, no node runs a
+  second one, so the probe would cost as much as the work it was meant to improve. The
+  mechanism is skipped and the campaign behaves as it did before any of this existed.
+
+**Whether it is worth turning on is a question about your cluster, not about RoboVAST.**
+The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
+is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
+under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
+``ROBOVAST_NODE_CALIBRATION`` set, one without, everything else equal — measures it directly,
+and ``run_health`` says whether the tighter ceilings cost the stack anything.
+
+**A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
+machine.** That is why this is switchable, and why the probe is one run rather than a
+guarantee. A workload with heavier planning spikes than the one a cluster was measured on has
+not been tested against its own calibration.
+
+**The evidence behind the design**, kept here because it is what rules out the cheaper
+alternatives. Two campaigns of one configuration times twenty runs, so the machine was the only
+variable; forty trials, all passed. Per-container CPU comes from ``resource_usage``, summed per
+tick before averaging (a row is one process name, not a container), then divided by the run's
+realtime factor -- ``cpu_percent`` is per *wall* second, so a node that meets fewer step
+deadlines otherwise reads as cheaper than it is:
+
+Measured on one four-node cluster, the same pod cost **1.6x more CPU per simulated second on
+the slowest node than on the fastest** — and the ordering did not follow clock speed. Your own
+figures come from ``get_campaign_summary``; the point is that the spread exists and is not
+guessable from the hardware.
+
+The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
+together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+
+**A cached per-node factor is refuted, and that is why this is measured per campaign.** Every
+design that stores a number and reuses it -- a scalar per node, a ``robovast.io/cpu-factor``
+label written at setup, a reference campaign run once -- assumes a figure that transfers between
+campaigns. Measured against two unlike campaigns on the same cluster, it does not. Container
+rankings **invert between nodes**: one machine was the cheapest for the system under test and
+among the dearest for the simulator, while another was the reverse, so no single per-node scalar
+can be both greater and less than one at once -- the shape is wrong, not the calibration. Even
+per ``(node, container)`` it does not transfer: between two campaigns one node's simulation cost
+moved +42 % while another's moved +1 %, flipping their order.
+
+**Why a hard limit is sized on the peak and not on p95.** Sizing a limit at ``p95 x 1.25`` looks
+safe and is not: a container clipped at its limit does not lose the clipped work, it queues it,
+so it stays pegged working the backlog off and the next spike arrives into a full budget. A
+configuration whose static clip rate was **0.5 %** produced **44 % saturation and lost 22 % of
+the runs**. That is why the system under test takes the peak as request *and* limit, while
+everything else splits the two.
+
+**What remains true, and is why this stays switchable.** A peak measured on an idle probe is
+still an unvalidated basis for a hard limit on a loaded machine. The evidence says it costs
+nothing for a nav2-shaped workload; a scenario with heavier planning spikes has not been
+tested against it. ``vast exec cluster setup --no-node-calibration`` honours the declared
+sizing exactly, which is what a campaign wants when the allocation is itself the variable
+under study.
+
+.. note::
+
+   **Not applied on a cluster that can grow.** There a job that fits no current node is
+   created unpinned and the scheduler places it — possibly on a node that is already
+   calibrated, at the declared size, which is the mixed sizing this exists to prevent and is
+   invisible after the fact. Declared sizing everywhere is the honest behaviour there.
+
+   The same caveat applies on any cluster whose nodes are replaced while campaigns run
+   (managed node pools autoscaling, auto-upgrading or reclaiming spot capacity): a node that
+   joined since the last ``setup`` carries no ``robovast.io/node-id``, so it cannot be probed
+   or pinned and its jobs run at the declared sizing beside calibrated ones. See
+   :ref:`cluster-cloud-limits`.
 
 Which image bytes a run uses
 ----------------------------
@@ -1257,7 +1432,45 @@ Cloud Provider Configurations
 ------------------------------
 
 Three cluster configurations are shipped out of the box.  Select the one
-matching your environment.
+matching your environment. Read :ref:`cluster-cloud-limits` first: several parts of the
+scheduler assume a static, hand-managed cluster, and on a managed one they degrade quietly
+rather than loudly.
+
+.. _cluster-cloud-limits:
+
+What does not hold on managed Kubernetes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The admission arithmetic itself is provider-agnostic: allocatable minus bound requests minus
+headroom, per node, measured every cycle. What is built around it was designed against a
+static bare-metal cluster, and these follow from that. None of them is a crash; each is
+a silent degradation, which is why they are written down.
+
+**A cluster whose configuration cannot report an autoscaler maximum is held at its current
+size.** Admission never creates a job that no current node can hold, which is correct on a
+static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
+exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
+configuration reports that maximum; admission then creates work unpinned and lets the
+autoscaler respond. A configuration that does not implement it, including the generic base
+one an unlisted provider falls back to, gets the static behaviour.
+
+**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
+does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
+``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
+static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
+is not where admission runs.
+
+**Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
+is what pins a job to the node its capacity was reserved on, and what a calibration probe
+measures against. A managed node pool replaces nodes constantly — autoscaling, auto-upgrade,
+auto-repair, spot reclaim — and every replacement arrives unlabelled. Such a node still takes
+work (refusing it would turn adding capacity into an outage), but it cannot be pinned to and
+cannot be probed, so its jobs run at the declared sizing beside calibrated ones. Re-run
+``vast exec cluster setup`` after the pool changes to bring new nodes back under
+:ref:`cluster-node-calibration`.
+
+**The CPU governor DaemonSet usually cannot work on a cloud VM** — and the way it fails is not
+the way setup detects. See the warning under :ref:`cluster-cpu-governor`.
 
 .. _cluster-config-gcp:
 

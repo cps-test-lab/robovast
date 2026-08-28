@@ -71,7 +71,7 @@ from robovast.common import (COMPAT_VERSION, MIN_IMAGE_COMPAT, get_execution_env
 from robovast.common.campaign_data import (KIND_INVALID, record_container_failures,
                                            record_intervention)
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import job_deadline_seconds
+from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents, create_job_links,
                                        dump_multi_document_yaml, job_artifact_rel, node_label,
                                        read_job_links, resolve_sidecar_image,
@@ -87,12 +87,13 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .manifests import JOB_TEMPLATE
+from .manifests import JOB_TEMPLATE, MAIN_CONTAINER_NAME
 # Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
 # import inside the loop would be noise. node_admission imports nothing from this package,
 # so there is no cycle to route around by importing late.
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_admission import PLANNED as _ADMIT_PLANNED
+from .node_placement import NODE_ID_LABEL, job_node_pool
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +144,7 @@ def pull_policy_for(image_ref: str) -> str:
     A batch of thirty-five pods is then ~140 registry round trips delivered in one
     instant, against a kubelet whose image-pull limiter is five per second
     (``registryPullQPS``, burst ten). The pods past the burst come back
-    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch, and
-    it ended a 50-batch search on its 34th (qd-bt-coverage-full-2026-08-24-01031052).
+    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch.
 
     The policy follows the ref rather than being chosen: a digest names the bytes, so
     "if not present" cannot serve anything stale, while a tag can be re-pushed under us
@@ -215,6 +215,125 @@ def _run_output_dir_env(job) -> tuple:
         return ()
     item = items[0]
     return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
+
+
+def probe_tag(node_id: str) -> str:
+    """The file/tag stem for a node's calibration probe.
+
+    Derived from the node's identity hash, so it names no machine -- the same reason the
+    identity label exists -- and is stable, so a re-run finds the same file.
+    """
+    return f"probe-{node_id}"
+
+
+def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: str) -> dict:
+    """A calibration probe's manifest, from the manifest a real job of this batch would use.
+
+    Derived rather than built, because the measurement is only worth anything if the probe
+    runs what the campaign runs -- same image, same containers, same scenario, same declared
+    resources. Three things differ and nothing else:
+
+    * the Job's **name**, since it is not one of the batch's jobs;
+    * ``SCENARIO_PARAMETER_FILE``, pointing at the probe's own document, whose ``_output_dir``
+      keeps the scenario's results out of the run tree;
+    * ``OUTPUT_DIR``, which keeps the job artifacts -- the monitor CSVs this exists to read --
+      out of it too.
+
+    Both output overrides are needed: they govern different halves of what a job writes, and
+    changing only one leaves the probe writing into a real campaign run directory.
+
+    Rewritten across **every** container, not only the main one: the sidecars are handed the
+    same extra env, and a sidecar still writing to the old ``OUTPUT_DIR`` would put the
+    simulator's and the system under test's own CSVs -- the two that matter most here -- back
+    into the run tree.
+    """
+
+    manifest = copy.deepcopy(base)
+    manifest.setdefault("metadata", {})["name"] = job_name
+    spec = manifest["spec"]["template"]["spec"]
+    overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir}
+    for container in list(spec.get("containers") or []) + list(spec.get("initContainers") or []):
+        for entry in container.get("env") or []:
+            if entry.get("name") in overrides and "value" in entry:
+                entry["value"] = overrides[entry["name"]]
+    return manifest
+
+
+def calibrated_resources(declared: dict, container_name: str, node_figures, roles=()) -> dict:
+    """*declared* re-sized for one node, or unchanged when that node is not calibrated yet.
+
+    **The statistic depends on the container's ROLE, and this is where the roles live.**
+
+    * The **system under test** takes the measured *peak*, as request AND limit. Its budget
+      has to be one it never throttles against, because a run clipped mid-plan is a failure
+      that looks like the stack's rather than the allocation's.
+    * Everything else takes the *sustained* figure as its request and keeps its declared
+      ceiling. The simulator's peak-to-mean ratio is ~18, so reserving its peak per node
+      would cost more than the un-calibrated campaign did -- the opposite of the point.
+
+    Memory is never re-sized. It does not vary with how fast a machine is, and exceeding a
+    memory limit is an OOM kill rather than a slowdown, so there is nothing to win and a run
+    to lose.
+    """
+    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415
+
+    figures = (node_figures or {}).get(container_name)
+    if not figures:
+        return declared
+    out = dict(declared)
+    # The declared ROLE decides, not the container's name. For the three known roles the two
+    # are the same string today, because the role name is the key in ``execution.containers``
+    # -- but that is a coincidence of the schema rather than a fact this rule should rest on,
+    # and it is already not true in one real case: a stack that bundles its own simulator
+    # serves the simulation role from its sut container, which must still be sized on peak
+    # because it is the thing under test.
+    is_sut = SUT_CONTAINER in (roles or ()) or container_name == SUT_CONTAINER
+    if is_sut:
+        cpu = figures.get("peak")
+        if cpu:
+            # **Never above what the author declared.** The measured peak is already capped at
+            # the container's own quota, but ``record`` then multiplies it by
+            # CALIBRATION_HEADROOM -- so a container that genuinely ran at its ceiling comes
+            # back asking for 1.25x it. Nothing downstream would catch that: ``preflight``
+            # runs once, on the DECLARED sizing, and is never re-asked per node, so a
+            # calibrated figure no node can hold is not an error but an ordinary "no room
+            # now" -- forever, with the campaign reporting that it is queued for capacity.
+            #
+            # Calibration exists to size a node's jobs to what they need, which is a
+            # reduction. It has no business raising a ceiling the author set.
+            ceiling = _declared_cores(declared)
+            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
+            out["cpu_limit"] = out["cpu"]
+    else:
+        cpu = figures.get("sustained")
+        if cpu:
+            # Same clamp, same reason. The sustained figure is a p95 and so is normally well
+            # under the ceiling, but nothing in the arithmetic guarantees it.
+            ceiling = _declared_cores(declared)
+            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
+            # The ceiling stays where the author put it: a soft limit is what lets a burst
+            # through, and calibration is about the reservation.
+            out.setdefault("cpu_limit", declared.get("cpu_limit") or declared.get("cpu"))
+    return out
+
+
+def _declared_cores(declared: dict):
+    """The container's declared CPU ceiling in cores, or ``None`` when it has none.
+
+    ``cpu_limit`` when the author split request from limit, otherwise ``cpu`` -- which is what
+    the limit equals when they did not. Unreadable returns ``None``, so an exotic per-cluster
+    form leaves calibration exactly as it was rather than clamping against a number that is
+    not one.
+    """
+    from robovast.common.quantity import to_cores  # noqa: PLC0415
+
+    raw = declared.get("cpu_limit") or declared.get("cpu")
+    if not raw:
+        return None
+    try:
+        return to_cores(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def stamp_resources(spec: dict, resources: dict) -> None:
@@ -310,7 +429,6 @@ def resolve_image_digest(container_statuses, image: str) -> str | None:
             if digest:
                 return digest
     return None
-
 
 
 def all_jobs_waiting_for_capacity(remaining, contended) -> bool:
@@ -420,6 +538,13 @@ class BatchJobRunner:
         # exact image the runs recorded their bags with.
         self.image = image
         self._resolved_image_digest = None
+        #: Outstanding calibration probes, ``{job key: node id}``. Kept apart from the
+        #: batch's own jobs so a probe never reaches ``get_remaining_jobs`` alongside them.
+        self._probes: "dict[str, str]" = {}
+        #: This campaign's calibration, fetched once per batch. Held here rather than asked
+        #: of the queue on each lookup, because the queue serves it under the lock it holds
+        #: while draining -- see :meth:`_node_figures`.
+        self._calibration = None
         self._resolved_image_digests = {}
         # Set for real by _pin_image_refs; the plain ref until then, so an offline caller
         # (manifest emit, tests) that never reaches a cluster still renders a valid pod.
@@ -538,7 +663,7 @@ class BatchJobRunner:
         return job_artifact_rel(index, self._batch_tag)
 
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
-                            sim_overlay=None,
+                            sim_overlay=None, node_figures=None,
                             total_jobs, s3_prefix, init_cmd, extra_main_env=()):
         """Assemble a job manifest shared by single-config and packed jobs.
 
@@ -559,6 +684,28 @@ class BatchJobRunner:
         s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
 
         spec = job_manifest['spec']['template']['spec']
+        if node_figures:
+            # The MAIN container too, not only the sidecars. Its resources were stamped once
+            # onto the base manifest at batch setup, so without this the container running
+            # the scenario would be the one container a calibrated node did not re-size --
+            # and on the ROS shape that is the scenario, a third of the pod.
+            main_role = getattr(getattr(self, "plan", None), "main", None)
+            main_name = getattr(main_role, "name", None) or SCENARIO_CONTAINER
+            declared = {}
+            requests = (spec['containers'][0].get('resources') or {}).get('requests') or {}
+            if requests.get('cpu'):
+                declared['cpu'] = requests['cpu']
+            if requests.get('memory'):
+                declared['memory'] = requests['memory']
+            limits = (spec['containers'][0].get('resources') or {}).get('limits') or {}
+            if limits.get('cpu'):
+                declared['cpu_limit'] = limits['cpu']
+            if limits.get('memory'):
+                declared['memory_limit'] = limits['memory']
+            if declared:
+                stamp_resources(spec['containers'][0],
+                                calibrated_resources(declared, main_name, node_figures,
+                                                     roles=getattr(main_role, "roles", ())))
 
         # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
         # injects it, and a deployment that taints its campaign nodes without it does not
@@ -698,7 +845,9 @@ class BatchJobRunner:
         # sim/SUT server resolves file-valued reset parameters identically).
         for sc in self.plan.sidecars:
             sc_name = sc.name
-            sc_resources = resolve_resources(sc.resources, self.kube_context)
+            sc_resources = calibrated_resources(
+                resolve_resources(sc.resources, self.kube_context), sc_name, node_figures,
+                roles=getattr(sc, "roles", ()))
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
@@ -780,7 +929,7 @@ class BatchJobRunner:
 
         return job_manifest
 
-    def create_job_manifest(self, job, total_jobs: int) -> dict:
+    def create_job_manifest(self, job, total_jobs: int, node_figures=None) -> dict:
         """Create a manifest for one job (1..K configs).
 
         One K8s Job runs all the job's configs via a multi-document param file
@@ -838,6 +987,7 @@ class BatchJobRunner:
             init_cmd=init_cmd,
             extra_main_env=extra_env,
             sim_overlay=sim_overlay,
+            node_figures=node_figures,
         )
 
     def _sim_overlay(self, job) -> dict:
@@ -904,6 +1054,283 @@ class BatchJobRunner:
         write_job_links_manifest(
             transient_dir, jobs, self._batch_tag,
             base=read_job_links(campaign_root) if campaign_root else None)
+        # A calibration probe's parameter document, one per node. Written HERE so it uploads
+        # with everything else: a probe is created later, while the batch is already running,
+        # and its /config is mirrored from this same prefix.
+        #
+        # Deliberately NOT added to the job-link manifest above. That manifest is what makes a
+        # job's artifacts resolvable from <config>/<run>/job, and a probe has no run to
+        # resolve from -- it is not one of the campaign's runs.
+        self._write_probe_param_files(transient_dir, jobs, scenario_name)
+
+    #: Probes are queued under their own owner, never the campaign's. ``states(campaign)``
+    #: feeds ``created_names``, which feeds ``get_remaining_jobs`` and ``jobs_by_name`` -- and
+    #: a probe is in none of those, so letting its name in there would have the batch loop
+    #: asking about a job it has no plan for.
+    _PROBE_OWNER_SUFFIX = "#probes"
+
+    def _probe_owner(self) -> str:
+        return f"{self.campaign}{self._PROBE_OWNER_SUFFIX}"
+
+    def _start_probes(self, jobs, total_jobs, campaign_prefix):
+        """Queue one calibration probe per uncalibrated node. Returns the calibration, or None.
+
+        Each probe is **pinned** to the node it measures and runs at the DECLARED sizing --
+        it is the thing that decides what that node's sizing should be, so it cannot use it.
+
+        Queued at a higher priority than the campaign's own work, though the gate already
+        keeps that work off an unmeasured node: a probe that loses the race for capacity to
+        another campaign would leave this one waiting on a node nothing is measuring.
+        """
+        from functools import partial  # noqa: PLC0415
+
+        from .node_admission import campaign_start_key  # noqa: PLC0415
+        from .node_calibration import NodeCalibration, probe_output_dir  # noqa: PLC0415
+
+        admission = self.admission
+        if admission is None:
+            return None
+        calibration = admission.calibration(self.campaign, NodeCalibration)
+        self._calibration = calibration
+        node_ids = self._probe_node_ids(total_jobs)
+        if not node_ids or not jobs:
+            return calibration
+        sizing = self._job_sizing(jobs[0], total_jobs)
+        base = self.create_job_manifest(jobs[0], total_jobs)
+        started = campaign_start_key(self.campaign)
+        for index, node_id in enumerate(node_ids):
+            key = _short_job_name(self.campaign, probe_tag(node_id), index)
+            if not calibration.claim_probe(node_id, key):
+                continue
+            self._probes[key] = node_id
+            admission.submit(
+                self._probe_owner(),
+                [(key, sizing,
+                  partial(self._create_probe, base, key, probe_output_dir(node_id)))],
+                started_at=started, priority=1, pin=node_id)
+            logger.info("Batch %s: measuring node %s before placing work on it",
+                        self._batch_tag, node_id)
+        return calibration
+
+    def _pin(self, manifest, node_id):
+        """Confine the pod to the operator's node pool, then to the node admission chose.
+
+        Both, in that order, and both ANDed onto whatever the spec already carried. The pool
+        is ``execution.kubernetes.jobs.node_labels``, which is a pod ``nodeSelector``.
+
+        The pool must reach the pod, not just the accounting: the budget provider counts only
+        nodes inside it, so a pod free to land outside would be running on capacity nothing
+        reserved. The pin then narrows the pool rather than widening it -- a selector that
+        replaced the pool would defeat the very confinement it was placed inside.
+        """
+        pool = job_node_pool()
+        if not pool and not node_id:
+            # Nothing to confine. Returned untouched rather than reaching into the manifest:
+            # this is called unconditionally, and a caller with a minimal manifest (an offline
+            # emit, a test) would otherwise die on a key it never needed.
+            return manifest
+        spec = manifest.setdefault('spec', {}).setdefault(
+            'template', {}).setdefault('spec', {})
+        selector = {**(spec.get('nodeSelector') or {}), **pool}
+        if node_id:
+            selector[NODE_ID_LABEL] = node_id
+        spec['nodeSelector'] = selector
+        return manifest
+
+    def _create_probe(self, base, key, output_dir, node_id=None):
+        """Create one probe Job. Signature matches the queue's create callback."""
+        manifest = probe_manifest(
+            base, job_name=key,
+            params_file=f"/config/{probe_tag(node_id or self._probes.get(key))}.params.yaml",
+            output_dir=f"/out/{output_dir}")
+        self._pin(manifest, node_id)
+        try:
+            self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
+                                                        body=manifest)
+        except client.exceptions.ApiException as exc:
+            if exc.status != 409:
+                raise
+
+    def _node_figures(self, node_id):
+        """This campaign's calibrated figures for *node_id*, or ``None``.
+
+        One lookup used by BOTH the manifest and the queue's arithmetic, so the two cannot
+        disagree about what a job on that node costs.
+
+        **Reads the calibration this runner already holds, and must never ask the queue for
+        it.** The queue hands this out under its own lock, and one caller of this is the
+        ``sizing_for_node`` callback -- which the queue invokes from inside ``drain``, with
+        that lock held. Going back through the queue therefore deadlocks a non-reentrant
+        lock, and the symptom is the worst kind: the batch loop never completes its first
+        iteration, so nothing is created, nothing is logged, and the campaign simply sits
+        there until its no-progress deadline calls it stalled. Observed exactly that way.
+        """
+        if not node_id or self._calibration is None:
+            return None
+        return self._calibration.calibrated(node_id)
+
+    def _sizing_for_node(self, job, total_jobs, calibration):
+        """``(node_id) -> JobSizing | None`` matching what the manifest will ask for.
+
+        The queue's arithmetic and the manifest have to agree, or admission over- or
+        under-fills a node by exactly the amount calibration changed. Both go through
+        :func:`calibrated_resources`, so there is one rule rather than two that can drift.
+        """
+        if calibration is None:
+            return None
+
+        def _sizing(node_id):
+            figures = self._node_figures(node_id)
+            if not figures:
+                return None
+            return self._job_sizing(job, total_jobs, node_figures=figures)
+
+        return _sizing
+
+    def _collect_probes(self, storage, bucket_name, campaign_prefix) -> None:
+        """Read whichever probes have finished, and let their nodes take work.
+
+        Best-effort throughout: a probe that cannot be read leaves its node on the declared
+        sizing, which is what a cluster with calibration off does anyway. Losing an
+        optimisation must never cost the campaign.
+        """
+        from .node_calibration import (probe_completed, probe_output_dir,  # noqa: PLC0415
+                                       read_probe_measurement)
+
+        admission = self.admission
+        if admission is None or not self._probes:
+            return
+        calibration = self._calibration
+        if calibration is None:
+            return
+        try:
+            done = set(self._probes) - set(self.get_remaining_jobs(list(self._probes)))
+        except Exception as exc:  # noqa: BLE001 - retried next cycle
+            logger.debug("Batch %s: could not poll probes: %s", self._batch_tag, exc)
+            return
+        for key in done:
+            node_id = self._probes.pop(key, None)
+            admission.finished(key)
+            if node_id is None:
+                continue
+            prefix = f"{campaign_prefix}{probe_output_dir(node_id)}/"
+            try:
+                measured = read_probe_measurement(
+                    lambda k: storage.read_object(bucket_name, k), prefix,
+                    self._probe_container_files(), limits=self._probe_container_limits())
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                logger.warning("Batch %s: could not read probe for node %s: %s",
+                               self._batch_tag, node_id, exc)
+                measured = {}
+            # The scenario's own verdict, not "did we read a file". The gate was handed
+            # bool(measured) -- true of any probe that produced a CSV at all, which the
+            # monitor writes whether or not the run got anywhere -- so it caught nothing.
+            completed = probe_completed(lambda k: storage.read_object(bucket_name, k), prefix)
+            if not calibration.record(node_id, key, measured, completed=completed):
+                calibration.abandon(node_id, key)
+
+    def abandon_outstanding_probes(self) -> int:
+        """Free every node this batch was still measuring. Returns how many.
+
+        A probe that will never report -- because the batch is over, stopped, or failed -- has
+        to release its node, or ``accepts_work`` answers False for that node for the rest of
+        the campaign and the node is excluded from work it could have taken. Losing the
+        measurement costs the declared sizing on that node, which is what a cluster with
+        calibration switched off does anyway: a worse allocation, never a wrong result.
+
+        Idempotent, and safe to call when there is no calibration at all.
+        """
+        calibration = self._calibration
+        if calibration is None:
+            self._probes.clear()
+            return 0
+        outstanding = list(self._probes.items())
+        for key, node_id in outstanding:
+            calibration.abandon(node_id, key)
+        self._probes.clear()
+        if outstanding:
+            logger.info("Batch %s: abandoned %d calibration probe(s); their nodes stay on "
+                        "the declared sizing", self._batch_tag, len(outstanding))
+        return len(outstanding)
+
+    def _probe_container_limits(self) -> dict:
+        """``{container: declared cpu ceiling}`` -- what each container could at most use.
+
+        Handed to the measurement so a reading above a container's own quota is discarded as
+        impossible rather than believed as a peak. Without it the probe's bring-up samples
+        size a node from numbers no cgroup could produce.
+        """
+        from robovast.common.quantity import to_cores  # noqa: PLC0415
+
+        limits = {}
+        plan = getattr(self, "plan", None)
+        for container in (getattr(plan, "containers", None) or ()):
+            declared = resolve_resources(container.resources or {}, self.kube_context)
+            ceiling = declared.get("cpu_limit") or declared.get("cpu")
+            cores = to_cores(ceiling) if ceiling else None
+            if cores:
+                limits[container.name] = cores
+                if container is getattr(plan, "main", None):
+                    limits[MAIN_CONTAINER_NAME] = cores
+        return limits
+
+    def _probe_container_files(self) -> dict:
+        """``{container: resource_usage file}`` for every container a job runs.
+
+        The main container's file is named ``main`` rather than by its role, which is the
+        same mismatch ``advice.py`` has to translate; the sidecars use their role names.
+        """
+        files = {MAIN_CONTAINER_NAME: "resource_usage_main.csv"}
+        for sidecar in getattr(getattr(self, "plan", None), "sidecars", None) or []:
+            name = getattr(sidecar, "name", None)
+            if name:
+                files[name] = f"resource_usage_{name}.csv"
+        return files
+
+    def _write_probe_param_files(self, transient_dir, jobs, scenario_name) -> list:
+        """One ``<probe tag>.params.yaml`` per node. Returns the node ids written.
+
+        Derived from the batch's FIRST job, so a probe runs a configuration the campaign
+        actually contains rather than something invented for measuring. Its ``_output_dir`` is
+        rewritten to the reserved probe directory, which is what keeps the scenario's results
+        out of the run tree -- see ``probe_parameter_documents``.
+
+        Silent no-op without an admission queue, or where calibration does not apply. The
+        files are small, but writing them for a campaign that will never create a probe would
+        leave a reader wondering which node ran what.
+        """
+        from .node_calibration import probe_parameter_documents  # noqa: PLC0415
+
+        node_ids = self._probe_node_ids(len(jobs))
+        if not node_ids or not jobs:
+            return []
+        base_docs = build_job_parameter_documents(jobs[0], scenario_name)
+        for node_id in node_ids:
+            docs = probe_parameter_documents(base_docs, node_id)
+            with open(os.path.join(transient_dir, f"{probe_tag(node_id)}.params.yaml"),
+                      "w", encoding="utf-8") as handle:
+                handle.write(dump_multi_document_yaml(docs))
+        return node_ids
+
+    def _probe_node_ids(self, total_jobs: int) -> list:
+        """Nodes this batch should measure before it places work on them.
+
+        Empty when there is no queue to ask, when calibration does not apply to a campaign
+        this size, or when every node is already calibrated -- the last being the ordinary
+        case for every batch of a search after the first.
+        """
+        from .node_calibration import calibration_applies  # noqa: PLC0415
+        from .node_calibration import NodeCalibration  # noqa: PLC0415
+
+        admission = self.admission
+        if admission is None:
+            return []
+        node_ids = admission.node_ids()
+        calibration = admission.calibration(self.campaign, NodeCalibration)
+        if not calibration_applies(total_jobs, len(node_ids), admission.growable()):
+            calibration.enabled = False
+            return []
+        return [n for n in node_ids if calibration.calibrated(n) is None]
 
     def _publish_capacity_wait(self, waiting: bool) -> None:
         """Tell the status whether this batch is queued, if anyone is listening.
@@ -920,7 +1347,7 @@ class BatchJobRunner:
             logger.debug("Could not publish capacity wait for batch %s",
                          self._batch_tag, exc_info=True)
 
-    def _job_sizing(self, job, total_jobs):
+    def _job_sizing(self, job, total_jobs, node_figures=None):
         """What one of this batch's pods asks the scheduler for, summed over its containers.
 
         Takes a *rendered* job manifest, not ``self.manifest``. That distinction cost a live
@@ -937,7 +1364,8 @@ class BatchJobRunner:
         from .kube_client import parse_resource  # noqa: PLC0415
         from .node_admission import JobSizing  # noqa: PLC0415
 
-        spec = self.create_job_manifest(job, total_jobs)["spec"]["template"]["spec"]
+        spec = self.create_job_manifest(
+            job, total_jobs, node_figures=node_figures)["spec"]["template"]["spec"]
         cpu = 0.0
         memory = 0
         gpu = 0
@@ -1610,8 +2038,18 @@ class BatchJobRunner:
         job_names = [_short_job_name(self.campaign, self._job_tag(job.index), job.index)
                      for job in jobs]
 
-        def _create_job(job, name):
-            manifest = self.create_job_manifest(job, total_jobs)
+        def _create_job(job, name, node_id=None):
+            # The node's figures, or None while it is uncalibrated. **This is the same lookup
+            # the queue made when it decided the job fits**, and it has to be: the queue
+            # admits against JobSizing while Kubernetes reserves what the manifest says, so a
+            # manifest built without them asks for the declared size on a node the queue
+            # already counted as holding the smaller one -- over-admission, silently, on
+            # exactly the nodes calibration was supposed to help.
+            manifest = self.create_job_manifest(
+                job, total_jobs, node_figures=self._node_figures(node_id))
+            # Pinned to the node admission reserved room on, inside the operator's node
+            # pool, so the placement and the reservation are one decision. See _pin.
+            self._pin(manifest, node_id)
             try:
                 self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
                                                             body=manifest)
@@ -1626,6 +2064,8 @@ class BatchJobRunner:
             # No queue: create everything at once, exactly as before. This is the path every
             # offline caller and every existing test takes.
             for job, name in zip(jobs, job_names):
+                # Unpinned: without a queue nothing has reserved a node, so choosing one here
+                # would be a guess the scheduler is better placed to make.
                 _create_job(job, name)
             created_names = list(job_names)
             planned_count = 0
@@ -1644,11 +2084,14 @@ class BatchJobRunner:
                 # leaves the campaign waiting forever having created nothing -- and every
                 # diagnosis path downstream reads pods, so none of them can see it.
                 raise CampaignConfigError(str(exc)) from exc
+            calibration = self._start_probes(jobs, total_jobs, campaign_prefix)
             admission.submit(
                 self.campaign,
                 [(name, sizing, partial(_create_job, job, name))
                  for job, name in zip(jobs, job_names)],
-                started_at=campaign_start_key(self.campaign))
+                started_at=campaign_start_key(self.campaign),
+                sizing_for_node=self._sizing_for_node(jobs[0], total_jobs, calibration),
+                accepts_node=(calibration.accepts_work if calibration else None))
             created_names = []
             planned_count = len(jobs)
             logger.info("Batch %s: queued %d job(s) for admission; creating as room appears...",
@@ -1665,6 +2108,7 @@ class BatchJobRunner:
         # timer answered for all of them and so had to pick the shortest.
         blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
+        last_refusal_log = 0.0
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
@@ -1674,6 +2118,7 @@ class BatchJobRunner:
                 # that is what makes the ordering cluster-wide while keeping the queue
                 # thread-free.
                 admission.drain()
+                self._collect_probes(storage, bucket_name, campaign_prefix)
                 states = admission.states(self.campaign)
                 created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
                 planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)
@@ -1781,7 +2226,7 @@ class BatchJobRunner:
                     #
                     # A cause that blocks only SOME of them is, by that fact alone, not in
                     # the configuration — it is the cluster this batch happened to land in.
-                    # Failing the campaign for it ended a 50-batch search on its 34th batch
+                    # Failing the campaign for it ends a long search mid-flight
                     # over two jobs of thirty-five, with eight hours of finished work
                     # behind it. So those jobs are dropped, exactly as a restarted one is,
                     # and the batch runs on with what is left.
@@ -1819,6 +2264,17 @@ class BatchJobRunner:
             # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
+            if admission is not None and planned_count:
+                # WHY nothing was created, not just that nothing was. The queue computes this
+                # on every drain; without logging it an operator can see that a campaign is
+                # waiting at "queued for capacity" and never what for. Rate-limited to
+                # the blocked-log interval, because at 2s per iteration it would otherwise
+                # repeat 450 times in a fifteen-minute wait.
+                reason = admission.refusal(self.campaign)
+                if reason and time.monotonic() - last_refusal_log >= \
+                        self._BLOCKED_LOG_INTERVAL_SECONDS:
+                    last_refusal_log = time.monotonic()
+                    logger.info("Batch %s: %s", self._batch_tag, reason)
             time.sleep(2)
         # A stop that landed while the last jobs were being torn down leaves the loop
         # via the empty-remaining path; catch it here too before the result download.
@@ -2058,6 +2514,26 @@ class KubernetesBackend(ExecutionBackend):
             # because the backend owns the queue, and a search builds a fresh runner per batch.
             if self._admission is not None:
                 dropped = self._admission.cancel(campaign_id)
+                # **The probes are a second owner and were cancelled by nothing.** They queue
+                # under `<campaign>#probes` so they stay out of the campaign's own progress
+                # counts, and `cancel` matches an owner exactly -- so a probe still PLANNED
+                # when this batch ended stayed in the GLOBAL queue for the life of the
+                # process, at priority 1, to be created later by some other campaign's drain
+                # through a partial bound to this dead runner. One that had reached CREATED
+                # held its node's capacity just as permanently. And because the runner's
+                # calibration still listed it as outstanding, `accepts_work` answered False
+                # for that node for every later batch of this campaign -- so the node was
+                # excluded from the campaign entirely, which is the opposite of what
+                # measuring it was for.
+                #
+                # The batch loop can reach here with a probe outstanding without anything
+                # going wrong: the loop exits on the CAMPAIGN's jobs being done, and a probe
+                # pinned to a node another campaign has filled may never have been created at
+                # all. A created probe at least dies on its activeDeadlineSeconds; one that
+                # was never created has no timer of any kind.
+                dropped += self._admission.cancel(
+                    f"{campaign_id}{BatchJobRunner._PROBE_OWNER_SUFFIX}")
+                runner.abandon_outstanding_probes()
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
@@ -2089,6 +2565,13 @@ class KubernetesBackend(ExecutionBackend):
         raw files is idempotent.
         """
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        # The campaign is over, so its per-node figures are too. Deliberately not reused by
+        # the next campaign -- they were measured under this one's contention, for this one's
+        # containers -- and this is the only campaign-level hook the backend has; the batch's
+        # `finally` releases reservations but must NOT touch calibration, or a search re-probes
+        # every node every batch.
+        if self._admission is not None:
+            self._admission.forget_calibration(campaign_id)
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)

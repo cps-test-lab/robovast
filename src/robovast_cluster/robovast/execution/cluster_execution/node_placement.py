@@ -67,6 +67,63 @@ CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "N
 #: the results store. One label for both because they are one decision: the disk meter
 #: reports the service's node, so splitting them would make the meter answer about a node
 #: that holds none of the data it is being read to reason about.
+#: This node's identity, as a **schedulable** selector.
+#:
+#: The value is :func:`~robovast.execution.data.collect_sysinfo.node_label` of the node's
+#: name -- the same sha256 prefix ``runs.node_label`` already records -- so the selector that
+#: placed a run and the sysinfo that describes the machine it ran on are provably the same
+#: node, with no mapping table to keep in step and no hostname in any manifest.
+#:
+#: ``kubernetes.io/hostname`` would already be a schedulable selector and is deliberately not
+#: used: keeping node names out of every sink is the point of the hash, and a nodeSelector is
+#: a sink -- it is recorded in the pod spec, which travels with the campaign.
+#:
+#: Unlike :data:`DATA_NODE_LABEL` this is **not exclusive**: every node carries its own
+#: distinct value, because it answers "which node is this" rather than "which node was
+#: chosen".
+NODE_ID_LABEL = "robovast.io/node-id"
+
+#: The node pool campaign jobs may run on, as ``{label: value}`` -- what
+#: ``execution.kubernetes.jobs.node_labels`` means now.
+#:
+#: It reaches the running service through this env var rather than through a ``.vast``,
+#: because it is a property of the CLUSTER and not of a campaign: a per-campaign override
+#: would let one campaign widen the pool every other one is confined to. ``setup_server``
+#: reads the operator's file and stamps it here, which is the same path the headroom figures
+#: take.
+#:
+#: Two consumers, and both are needed for it to mean anything. The budget provider counts
+#: only matching nodes, so nothing outside the pool is ever offered as capacity; and every
+#: job pod carries the same labels as a real ``nodeSelector``, so the scheduler is bound by
+#: the same rule the accounting assumed. Filtering capacity alone would leave kube-scheduler
+#: free to place outside the pool; stamping alone would have admission promising room on
+#: nodes the pods may not use.
+JOB_NODE_POOL_ENV = "ROBOVAST_JOB_NODE_LABELS"
+
+
+def job_node_pool() -> dict:
+    """The configured pool, or ``{}`` for "every node" -- see :data:`JOB_NODE_POOL_ENV`.
+
+    Raises rather than falling back on a value it cannot parse: a typo that silently became
+    "every node" would scatter a campaign across machines the operator had excluded, and the
+    symptom appears nowhere near the cause.
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    raw = (os.environ.get(JOB_NODE_POOL_ENV) or "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{JOB_NODE_POOL_ENV}={raw!r} is not JSON: {exc}") from exc
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError(f"{JOB_NODE_POOL_ENV}={raw!r} must be a JSON object of "
+                         "label -> value strings")
+    return value
+
 DATA_NODE_LABEL = "robovast.io/data-node"
 
 #: The node holding the shared build daemon's cache. Its own label because the cache is the
@@ -154,6 +211,29 @@ def _tolerates(taint, tolerations) -> bool:
     return False
 
 
+def node_is_schedulable(node, tolerations=_NO_TOLERATIONS) -> bool:
+    """Whether a pod carrying *tolerations* could actually be placed on this node object.
+
+    **One predicate, because two answers to "is this node usable" is one answer too many.**
+    Placement asked it here while the budget provider did not ask it at all, and the
+    disagreement had a cost: a node that dies mid-campaign loses its pods after the eviction
+    timeout and then reads as *fully free*, so admission keeps reserving room on a machine
+    Kubernetes will not schedule to. The pods report an untolerated ``not-ready`` taint, which
+    is correctly classified as a fault rather than contention, so they are dropped on the
+    short grace window -- and the next drain does it again, discarding runs for as long as the
+    node is down. A cordon for maintenance produces the same loop.
+
+    The three tests are the ones the scheduler itself applies before anything else: cordoned,
+    not ``Ready``, or carrying a taint this workload does not tolerate.
+    """
+    if getattr(node.spec, "unschedulable", False):
+        return False
+    conditions = {c.type: c.status for c in (node.status.conditions or [])}
+    if conditions.get("Ready") != "True":
+        return False
+    return not any(not _tolerates(t, tolerations) for t in (node.spec.taints or []))
+
+
 def eligible_nodes(core, tolerations=_NO_TOLERATIONS, extra_labels=None) -> list:
     """Nodes a workload could actually be scheduled onto, by name, sorted.
 
@@ -168,17 +248,9 @@ def eligible_nodes(core, tolerations=_NO_TOLERATIONS, extra_labels=None) -> list
     allowed rather than beside it.
     """
     selector = ",".join(f"{k}={v}" for k, v in (extra_labels or {}).items()) or None
-    out = []
-    for node in core.list_node(label_selector=selector).items:
-        if getattr(node.spec, "unschedulable", False):
-            continue
-        conditions = {c.type: c.status for c in (node.status.conditions or [])}
-        if conditions.get("Ready") != "True":
-            continue
-        if any(not _tolerates(t, tolerations) for t in (node.spec.taints or [])):
-            continue
-        out.append(node.metadata.name)
-    return sorted(out)
+    return sorted(node.metadata.name
+                  for node in core.list_node(label_selector=selector).items
+                  if node_is_schedulable(node, tolerations))
 
 
 def rank_by_free_space(core, names, read_summary=None, timeout_s: float = 2.0) -> list:
@@ -264,6 +336,49 @@ def ensure_labeled(core, node: str, label: str, dry_run: bool = False) -> list:
         core.patch_node(node, {"metadata": {"labels": {label: LABEL_VALUE}}})
     logger.info("node %s labelled %s=%s", node, label, LABEL_VALUE)
     return removed
+
+
+def ensure_node_id_labels(core, dry_run: bool = False) -> dict:
+    """Give every node its identity label; return ``{node_name: value}`` for those changed.
+
+    Idempotent by value, so a re-run of ``setup`` on an unchanged cluster patches nothing --
+    which is what makes it safe to call on every setup rather than only the first.
+
+    A node that joins later is simply unlabelled until the next setup. Callers must treat a
+    missing label as "cannot pin here" rather than as an error: refusing to admit anything to
+    a new node would turn adding capacity into an outage, and the pin is an optimisation
+    where the node identity is an accounting fact.
+    """
+    from robovast.execution.data.collect_sysinfo import node_label  # noqa: PLC0415
+
+    changed = {}
+    for node in core.list_node().items:
+        name = node.metadata.name
+        want = node_label(name)
+        if not want or (node.metadata.labels or {}).get(NODE_ID_LABEL) == want:
+            continue
+        logger.info("labelling node %s with its identity", name)
+        if not dry_run:
+            core.patch_node(name, {"metadata": {"labels": {NODE_ID_LABEL: want}}})
+        changed[name] = want
+    return changed
+
+
+def apply_node_id_labels(kube_context=None, dry_run: bool = False) -> dict:
+    """Load the kube config, then :func:`ensure_node_id_labels`. Returns what changed.
+
+    The client-building wrapper exists so ``setup`` calls ONE name, the same shape as
+    ``ensure_nvidia_device_plugin`` -- which is also what makes it stubbable. A version that
+    built ``CoreV1Api()`` inside ``setup_server`` dialled a real API server from every test
+    that stubs the rest of setup, turning a 40-second suite into eleven minutes of connection
+    timeouts.
+    """
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    return ensure_node_id_labels(client.CoreV1Api(), dry_run=dry_run)
 
 
 def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:
