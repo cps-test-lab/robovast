@@ -110,6 +110,24 @@ def _code_revision() -> str:
         return ""
 
 
+def _package_version() -> str:
+    """The packaged semver of the running code, or ``""`` when there is no metadata.
+
+    Deliberately *not* ``get_app_version``, which prefers a revision and so answers a
+    different question. This is the release an operator can look up in a changelog, and
+    it was reported nowhere before this: a deployed image always has a baked revision, so
+    :func:`_robovast_version` always short-circuits to it and the semver never surfaced.
+
+    ``""`` is the honest answer for a source tree with no metadata, in the same way ``""``
+    is for an undeterminable revision — never a substituted revision, which would look
+    like a release that does not exist.
+    """
+    try:
+        return _pkg_version("robovast")
+    except PackageNotFoundError:  # editable/source without metadata
+        return ""
+
+
 def _robovast_version() -> str:
     """The version of the code *this process is running*.
 
@@ -118,6 +136,10 @@ def _robovast_version() -> str:
     long-lived and loads its code once, so a client needs to tell "the fix I just made
     is loaded" from "this process predates it". The packaged version alone cannot —
     it stays ``2.0.0`` across every edit.
+
+    The consequence is that this is a revision on any real deployment, which is why the
+    semver has a field of its own (:func:`_package_version`) rather than being read off
+    this one.
     """
     from robovast.common.execution import get_app_version
     try:
@@ -1413,7 +1435,8 @@ class LocalTransport(RobovastInterface):
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),
-                           code_revision=_code_revision(), backend="docker",
+                           code_revision=_code_revision(),
+                           package_version=_package_version(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root),
