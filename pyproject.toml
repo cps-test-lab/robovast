@@ -168,6 +168,14 @@ gcs = "robovast.execution.share_providers.gcs:GcsShareProvider"
 sftp = "robovast.execution.share_providers.sftp:SftpShareProvider"
 webdav = "robovast.execution.share_providers.webdav:WebDavShareProvider"
 
+# Formats of the configuration files a system under test reads, for the `sut:` channel.
+# The built-ins register here rather than through an internal shortcut, so the route a
+# third-party format takes is the one this repository exercises on every run.
+[tool.poetry.plugins."robovast.sut_formats"]
+"yaml" = "robovast.common.sut_formats.mapping_formats:YamlFormat"
+"json" = "robovast.common.sut_formats.mapping_formats:JsonFormat"
+"xml" = "robovast.common.sut_formats.xml_format:XmlFormat"
+
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
 "ParameterVariationDistributionUniform" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionUniform"

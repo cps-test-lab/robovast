@@ -36,7 +36,22 @@ def test_plugin_parameter_schema_variation():
     fields = plugin_parameter_schema("robovast.variation_types", "ParameterVariationList")
     # `name` is refused before validation rather than declared, so it must NOT appear
     # here: a schema advertising a key that is always an error is worse than no schema.
-    assert {f["name"] for f in fields} == {"scenario", "sim", "values"}
+    assert {f["name"] for f in fields} == {"scenario", "sim", "sut", "values"}
+
+
+def test_plugin_parameter_schema_describes_every_channel():
+    """Each of the three channels carries a description, because this is where an agent
+    picks one.
+
+    ``describe_pydantic_model`` emits ``description`` only when set, so without them
+    ``get_plugin_details`` shows three destination keys and no way to choose between them.
+    Asserted rather than assumed: the descriptions are invisible in normal use and a
+    refactor would drop them without anything else failing.
+    """
+    fields = plugin_parameter_schema("robovast.variation_types", "ParameterVariationList")
+    described = {f["name"]: f.get("description", "") for f in fields}
+    for channel in ("scenario", "sim", "sut"):
+        assert described[channel].strip(), f"'{channel}' has no description"
 
 
 def test_plugin_parameter_schema_none_without_model():
