@@ -721,19 +721,32 @@ class LogChunk(BaseModel):
 class VersionInfo(BaseModel):
     """Server/client version for the compatibility handshake (see plan 0.7)."""
 
+    #: What the compatibility handshake compares, and *not* a semver in the general case:
+    #: it is whatever ``get_app_version()`` resolved, which prefers a revision over package
+    #: metadata whenever a revision can be had. A deployed image bakes one in, so in every
+    #: real deployment this equals :attr:`code_revision`. Read :attr:`package_version` when
+    #: what is wanted is the release, and this one only to compare two processes.
     robovast_version: str
     #: The revision the running code was built from, or ``""`` when this deployment cannot
-    #: tell. Separate from :attr:`robovast_version` because the two answer different
-    #: questions: that one is the semver the compatibility handshake compares, this one
-    #: answers "is the change I just made loaded?" — which a service that loads its code
-    #: once at startup makes a real question, and which a semver cannot answer because it
-    #: stays the same across every edit.
+    #: tell. It answers "is the change I just made loaded?" — which a service that loads
+    #: its code once at startup makes a real question.
     #:
     #: ``""`` is information, not a gap: it means the answer is unavailable here, so a
     #: caller must not read it as "a revision that does not match". Reporting the version
     #: in its place was the previous behaviour and is precisely what made the field unable
     #: to detect the staleness it exists for.
     code_revision: str = ""
+    #: The packaged semver of the running code (``2.1.0``), or ``""`` when there is no
+    #: package metadata to read. The stable one of the three: it moves on a release, so it
+    #: is what an operator means by "which RoboVAST is this?" and the only one here that
+    #: can be held against a changelog.
+    #:
+    #: It exists because :attr:`robovast_version` cannot answer that question, despite the
+    #: name. That field prefers a revision whenever one is determinable, and one always is
+    #: in a deployed image — which bakes it in and has a test to keep it baked — so the two
+    #: older fields carried the same SHA and the semver was reported nowhere at all. A
+    #: surface showing both was showing one string twice.
+    package_version: str = ""
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
 

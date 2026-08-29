@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import CircularProgress from '@mui/material/CircularProgress'
+import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
 import { LogPanel } from '@/components/LogPanel'
@@ -17,6 +20,10 @@ import { UsageHistoryChart } from './UsageHistoryChart'
 // default `vast service upgrade --timeout`, so both surfaces give up at the same
 // point and an operator comparing them is not told two different stories.
 const ROLL_TIMEOUT_MS = 180_000
+
+// Grace between "the new pod is serving" and the reload. Long enough to read the line and
+// stop it, short enough that nobody sits watching a page that said it would reload.
+const RELOAD_COUNTDOWN_S = 5
 
 /** One `label: value` line. Values are monospace: most of them are digests and refs. */
 function Field({ label, value }: { label: string; value: string }) {
@@ -32,13 +39,14 @@ function Field({ label, value }: { label: string; value: string }) {
   )
 }
 
-// What the digests add up to, in words. Three outcomes and not two: `upgrade_available` is
-// null when the registry did not answer, and rendering that as "up to date" is the one
-// wrong answer here — it would tell someone a fix they just published is not there.
+// What the digests add up to, in words — and in words that do not assume the reader knows
+// what a tag or a registry is. Three outcomes and not two: `upgrade_available` is null when
+// the registry did not answer, and rendering that as "up to date" is the one wrong answer
+// here — it would tell someone a fix they just published is not there.
 function upgradeVerdict(info: UpgradeInfo): string {
-  if (info.upgrade_available === true) return 'a newer image is published at this tag'
-  if (info.upgrade_available === false) return 'running the newest image at this tag'
-  return 'could not ask the registry what this tag points at'
+  if (info.upgrade_available === true) return 'a newer version is available'
+  if (info.upgrade_available === false) return 'this is the newest version'
+  return 'could not check whether a newer version exists'
 }
 
 export function AdminPage() {
@@ -46,6 +54,14 @@ export function AdminPage() {
   const { confirm } = useDialogs()
   const [rolling, setRolling] = useState(false)
   const [rollNote, setRollNote] = useState<string | null>(null)
+  // Its own flag rather than `isFetching`, which is also true for the background poll below
+  // and would spin the icon every minute on its own. This one means *the user asked*.
+  const [refreshing, setRefreshing] = useState(false)
+  // The roll reached the new pod. Kept after the countdown is declined, because the tab is
+  // still on the old build either way and that is worth saying.
+  const [handover, setHandover] = useState(false)
+  // Seconds left before the reload, or null once it is declined or done.
+  const [reloadIn, setReloadIn] = useState<number | null>(null)
   // Open by default: unlike a campaign log, which is one of many on a crowded
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
@@ -60,28 +76,53 @@ export function AdminPage() {
     retry: false,
   })
 
+  // Reload the document once the count reaches zero. It is not a nicety: this tab holds a
+  // build whose hashed chunks the service no longer serves, so every view it has not opened
+  // yet is already broken (see ErrorBoundary, which exists to catch exactly that). Doing it
+  // here, in the second the user was expecting a restart, turns a future error screen into
+  // an expected blink -- and navigation lives in the URL hash, so it lands back on Admin.
+  useEffect(() => {
+    if (reloadIn === null) return
+    if (reloadIn <= 0) {
+      window.location.reload()
+      return
+    }
+    const t = setTimeout(() => setReloadIn((n) => (n === null ? null : n - 1)), 1_000)
+    return () => clearTimeout(t)
+  }, [reloadIn])
+
+  // Both queries, because the panel shows both and half a refresh is the confusing kind:
+  // the version line and the digests would then disagree about when they were read.
+  function refreshService() {
+    setRefreshing(true)
+    void Promise.allSettled([version.refetch(), upgrade.refetch()])
+      .finally(() => setRefreshing(false))
+  }
+
   async function roll(info: UpgradeInfo) {
     const live = info.active_campaigns
     const ok = await confirm({
-      title: 'Roll onto the newest image?',
+      title: 'Upgrade RoboVAST now?',
       danger: live.length > 0,
-      confirmLabel: live.length > 0 ? 'Roll anyway' : 'Roll the pod',
+      confirmLabel: live.length > 0 ? 'Upgrade anyway' : 'Upgrade now',
+      // Written for someone who has never heard of Kubernetes, and kept to three lines:
+      // what happens, what it costs, what it does not cover. The image ref is not repeated
+      // here -- the `image` field sits directly above this button.
       message: (
         <>
           <p>
-            The pod restarts onto whatever <code>{info.image_ref}</code> resolves to now.
-            The new pod starts before this one stops, so the API stays up.
+            RoboVAST restarts on the newest published version. It stays reachable, and this
+            page reloads itself once the new version is up.
           </p>
           {live.length > 0 && (
             <p>
-              <b>{live.length} campaign(s) are live</b> — their controller runs in the pod
-              this replaces: {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}
+              <b>{live.length} campaign(s) are still running</b> and will be stopped for
+              good: {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}
             </p>
           )}
           <p>
-            This does <b>not</b> reconcile RBAC, the registry route, the credential Secrets
-            or the build daemon. For any of those, run{' '}
-            <code>vast service upgrade</code>.
+            This updates RoboVAST only. For the rest of the installation — permissions,
+            registry, credentials, image builder — run <code>vast service upgrade</code>.
           </p>
         </>
       ),
@@ -89,6 +130,8 @@ export function AdminPage() {
     if (!ok) return
     const before = info.running_digest
     setRollNote(null)
+    setHandover(false)
+    setReloadIn(null)
     setRolling(true)
     try {
       // `force` is exactly the dialog's answer: the only thing the server refuses is a
@@ -112,7 +155,12 @@ export function AdminPage() {
         })
         if (now.running_digest && now.running_digest !== before) {
           setRolling(false)
-          setRollNote('the new pod is serving')
+          // The panel's own numbers first, so it stops describing the pod that just went
+          // away even in the seconds before the reload -- and for good if it is declined.
+          // `upgradeInfo` is already current: the poll above is what fetched this.
+          void version.refetch()
+          setHandover(true)
+          setReloadIn(RELOAD_COUNTDOWN_S)
           return
         }
       } catch {
@@ -121,12 +169,12 @@ export function AdminPage() {
       }
     }
     setRolling(false)
-    // Deliberately not phrased as a failure. The roll may simply be slow, and the command
-    // that can actually say why is the one named here.
+    // Deliberately not phrased as a failure: the upgrade may simply be slow. The three
+    // causes are kept because each has a different fix, but named in a clause rather than
+    // a paragraph.
     setRollNote(
-      'the new pod has not taken over yet. `vast service upgrade` reports the reason'
-      + ' Kubernetes gave — an image it cannot pull, a node it cannot schedule on, a'
-      + ' crash-loop.',
+      'The new version has not taken over yet. Run `vast service upgrade` to see why —'
+      + ' usually a download that failed, no room to start, or a crash on startup.',
     )
   }
 
@@ -144,7 +192,13 @@ export function AdminPage() {
           <Typography variant="subtitle2">This service</Typography>
           {version.isSuccess ? (
             <>
-              <Field label="version" value={version.data.robovast_version} />
+              {/* The release, not `robovast_version`. That field prefers a revision
+                  wherever one can be had, and a deployed image always bakes one in, so it
+                  printed the same SHA as the revision line below it — one string, twice,
+                  under two labels, and the semver nowhere. */}
+              {version.data.package_version ? (
+                <Field label="version" value={version.data.package_version} />
+              ) : null}
               {/* Absent means "this deployment cannot tell", which is not a mismatch — so
                   print nothing rather than a blank or a placeholder that reads as one. */}
               {version.data.code_revision ? (
@@ -172,23 +226,70 @@ export function AdminPage() {
               roll — so there is no button, and the reason is a caption rather than a
               disabled control that invites clicking. */}
           {info?.supported ? (
-            <Stack direction="row" spacing={2} alignItems="center" sx={{ pt: 1 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ pt: 1 }}>
+              {/* Live only where there is something to roll onto — greyed rather than gone,
+                  so the page keeps the same shape in both states and the control stays where
+                  the operator last saw it. Note the test is `=== false` and not `!== true`: a
+                  null `upgrade_available` means the registry did not answer, which is not the
+                  same as up to date, and greying the button there would refuse an operator who
+                  knows a newer image is published. The caption beside it says which it is. */}
               <Button
                 variant="contained"
                 size="small"
-                disabled={rolling}
+                disabled={rolling || info.upgrade_available === false}
                 onClick={() => roll(info)}
               >
-                {rolling ? 'Rolling…' : 'Upgrade'}
+                {rolling ? 'Upgrading…' : 'Upgrade'}
               </Button>
-              <Typography variant="caption" color="text.secondary">
-                {rolling ? 'waiting for the new pod to take over…' : upgradeVerdict(info)}
+              {/* Beside the button it re-arms: what it fetches is the answer that decides
+                  whether that button is live, so a stale "no upgrade available" is one click
+                  from being re-asked rather than a minute of waiting for the poll. */}
+              <Tooltip title="Check again for a newer version">
+                {/* Kept enabled while it runs so the tooltip stays reachable; a second click
+                    is a no-op refetch. */}
+                <IconButton size="small" aria-label="Reload service info" onClick={refreshService}>
+                  {refreshing
+                    ? <CircularProgress size={18} />
+                    : <RefreshRoundedIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+              <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>
+                {rolling
+                  ? 'waiting for the new version to take over…'
+                  : upgradeVerdict(info)}
               </Typography>
             </Stack>
           ) : info ? (
             <Typography variant="caption" color="text.disabled" sx={{ pt: 1 }}>
               {info.unsupported_reason}
             </Typography>
+          ) : null}
+          {/* The two halves of a finished roll. Counting down, the reload is the default and
+              declining is the button; declined, the tab keeps a standing warning rather than
+              a success line, because a build the service no longer has is a fault waiting to
+              surface in the next view opened, not a completed job. */}
+          {handover ? (
+            <Alert
+              severity={reloadIn === null ? 'warning' : 'success'}
+              sx={{ mt: 1 }}
+              onClose={reloadIn === null ? () => setHandover(false) : undefined}
+              action={
+                <>
+                  <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+                    {reloadIn === null ? 'Reload' : 'Reload now'}
+                  </Button>
+                  {reloadIn === null ? null : (
+                    <Button color="inherit" size="small" onClick={() => setReloadIn(null)}>
+                      Not now
+                    </Button>
+                  )}
+                </>
+              }
+            >
+              {reloadIn === null
+                ? 'Upgraded — this page is still on the old version. Reload to finish.'
+                : `Upgraded. Reloading in ${reloadIn}s…`}
+            </Alert>
           ) : null}
           {rollNote ? (
             <Alert severity="info" sx={{ mt: 1 }} onClose={() => setRollNote(null)}>
