@@ -1417,6 +1417,10 @@ class PreviewConfiguration(BaseModel):
     #: overrides on it. A different level from ``parameters`` rather than a subset —
     #: one says what the trial does, the other what it runs in.
     sim: dict = Field(default_factory=dict)
+    #: The resolved ``sut`` block: how the system under test is configured for this
+    #: configuration, as ``{"<source>.<path>": value}``. The third level beside the other
+    #: two — what the trial does, what it runs in, and what is under test.
+    sut: dict = Field(default_factory=dict)
     #: The ``_``-prefixed keys a variation wrote for other readers (``_map_file``,
     #: ``_path``, …). Shown behind a toggle, the way the desktop editor's ``--debug`` did.
     internals: dict = Field(default_factory=dict)

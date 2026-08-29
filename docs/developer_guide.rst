@@ -584,6 +584,55 @@ Example plugin registration:
     variation = "variation_utils.cli:variation"
 
 
+.. _extending-sut-formats:
+
+Add a config format for the system under test
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``sut:`` channel addresses values inside the stack's own configuration files.
+``yaml``, ``json`` and ``xml`` ship built in; a stack configured by something else — a
+bespoke ``.ini``, a proprietary descriptor — needs a format, not a change to RoboVAST.
+
+Subclass :class:`robovast.common.sut_formats.SutConfigFormat` and register it under
+``[tool.poetry.plugins."robovast.sut_formats"]``. The built-ins register through that same
+entry point, so the route your package takes is the one this repository exercises on every
+run.
+
+.. code-block:: python
+
+    class IniFormat(SutConfigFormat):
+        EXTENSIONS = (".ini", ".cfg")
+
+        def load(self, path): ...
+        def can_address(self, doc, path) -> bool: ...
+        def set(self, doc, path, value): ...
+        def remove(self, doc, path): ...
+        def dump(self, doc, path): ...
+
+Four things decide whether a format behaves like the built-ins:
+
+* **You own the path syntax.** RoboVAST splits a destination once, on the first ``.``, to
+  find the source; the rest arrives at your format verbatim. Use dotted keys, XPath, JSON
+  Pointer — whatever addresses your documents honestly.
+* **``can_address`` is the pre-check, and it is yours to answer.** It asks whether a path is
+  *writable*, not whether a value is already there: a factor may set a key the file leaves
+  at its default, and refusing that would reject a correct campaign. What must exist is the
+  parent. Raise :class:`~robovast.common.sut_formats.CannotAnswer` when you genuinely cannot
+  decide — that leaves the destination unchecked and reported, which is different from "no",
+  and keeping them distinct is what stops an unimplemented check from looking like a
+  rejection.
+* **``set`` creates or replaces**, and *value* may be a scalar, a mapping, a list or a
+  fragment. A factor swapping a whole subtree must be the same call as one changing a
+  number.
+* **``remove`` is separate from ``set``**, because a configuration block that is present and
+  empty is not one that is absent, and stacks tell them apart. It is what
+  ``{$absent: true}`` reaches.
+
+``addresses`` is optional and may return ``None``: it feeds error messages and editor
+completion, never the check. A format whose address space is not enumerable — any XPath
+expression is a potential address — loses only the listing.
+
+
 .. _extending-metadata-processing:
 
 Add Metadata Processing Plugin

@@ -330,6 +330,19 @@ def _last_json_line(lines):
     return None
 
 
+def _validated_variation_config(variation_class, parameters):
+    """The plugin's own config object for *parameters*, or *parameters* unchanged.
+
+    A plugin declares its destinations on its ``CONFIG_CLASS``; the composition loop
+    carries the raw mapping, because that is what other hooks want. Anything that asks a
+    plugin *what it will write* needs the validated form.
+    """
+    model = getattr(variation_class, "CONFIG_CLASS", None)
+    if model is None or not isinstance(parameters, dict):
+        return parameters
+    return model(**parameters)
+
+
 def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                             parameters, vast_dir):
     """Check what each variation says it will write, before any of them runs.
@@ -353,9 +366,17 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     execution = parameters.get('execution', {}) or {}
 
     backend = backend_key_checker = None
+    sut_destinations: list = []
     for variation_class, variation_parameters in classes_and_parameters:
         try:
-            declared = variation_class.declared_outputs(variation_parameters) or {}
+            # Validated first. `declared_outputs` reads `.outputs()` off the plugin's own
+            # config object, and what reaches here is the raw mapping from the `.vast` --
+            # on which that attribute does not exist, so every plugin answered "undeclared"
+            # and this whole check silently did nothing, for every channel. A config that
+            # will not validate is skipped rather than reported here; it is refused a
+            # moment later with a message about the config itself.
+            declared = variation_class.declared_outputs(
+                _validated_variation_config(variation_class, variation_parameters)) or {}
         except Exception as exc:  # noqa: BLE001 - a plugin that cannot answer is not checked
             logger.debug("%s did not declare its outputs: %s",
                          variation_class.__name__, exc)
@@ -367,6 +388,8 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                 f"Scenario '{config['name']}': {variation_class.__name__} writes "
                 f"{unknown}, which the scenario file does not declare. "
                 f"Valid parameters are: {valid_names}")
+
+        sut_destinations.extend(declared.get('sut', []))
 
         sim_outputs = declared.get('sim', [])
         if not sim_outputs:
@@ -385,6 +408,14 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
         name, resolve = backend_key_checker
         for path in sim_outputs:
             resolve(backend, path, name)
+
+    # The sut arm. Checked against the file the campaign declared -- the component that
+    # owns the schema is the one that says what is addressable, which is what all three
+    # channels have in common.
+    if sut_destinations:
+        from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+            check_destinations)
+        check_destinations(execution, vast_dir, sut_destinations)
 
 
 #: OSC types whose values carry an ``entity_name``. The scenario file declares them
@@ -657,6 +688,51 @@ def _validated_block(backend, block, name):
     """The backend's validated view of a resolved ``sim`` block."""
     from robovast.common.simulators import _validated_cfg  # pylint: disable=import-outside-toplevel
     return _validated_cfg(backend, dict(block or {}), name)
+
+
+def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
+    """Resolve every configuration's ``sut`` block and write the files it implies.
+
+    Runs after the variation loop, for the same reason the ``sim`` twin does: a
+    configuration's settings do not exist before it. The authored ``sut:`` block is the
+    fixed part and a variation's value wins over it, which is the precedence the other two
+    channels already have.
+
+    Each cell gets its own rewritten copy of every source it touched, staged through
+    ``_config_files`` -- machinery that is already per configuration, which is why this
+    half needs nothing from either execution lane.
+    """
+    from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+        ENV_SOURCE, SutChannelError, declared_sources, materialize, merge_sut_block,
+        refuse_run_files_overlap, split_destination)
+
+    execution = parameters.get("execution", {}) or {}
+    authored = {c.get("name"): (c.get("sut") or {})
+                for c in (parameters.get("configuration") or [])}
+    if not any(authored.values()) and not any(c.get("sut") for c in configs):
+        return
+
+    refuse_run_files_overlap(execution, declared_sources(execution, vast_dir))
+
+    for config in configs:
+        block = merge_sut_block(authored.get(config.get("_config_name")) or {},
+                                config.get("sut") or {})
+        if not block:
+            continue
+        # The environment is the channel's second carrier and no execution backend
+        # delivers it per configuration yet. Refused rather than dropped: a destination
+        # that quietly does nothing is a campaign whose factor did not vary, reported
+        # nowhere.
+        env_bound = [d for d in block if split_destination(d)[0] == ENV_SOURCE]
+        if env_bound:
+            raise SutChannelError(
+                f"{', '.join(sorted(env_bound))}: the sut: channel's environment carrier "
+                "is not delivered per configuration yet, so these would silently do "
+                "nothing. Address a declared config file instead.")
+        contribution = materialize(execution, vast_dir, block, output_dir,
+                                   config.get("name", ""))
+        config["sut"] = block
+        config.setdefault("_config_files", []).extend(contribution.files)
 
 
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
@@ -1735,6 +1811,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             c["_config_block"] = config
 
         configs.extend(current_configs)
+
+    # Resolve how the system under test is configured in each cell, and write the files
+    # that implies. Before the normalisation below, so those files are treated exactly like
+    # any other artifact a variation produced.
+    _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir)
 
     # Normalize _config_files and _config_transient_files: convert artifact absolute
     # paths (those inside output_dir) to paths relative to output_dir.  This makes

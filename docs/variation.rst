@@ -3,7 +3,73 @@
 Variation Points
 ================
 
-RoboVAST supports plugin-provided variation types. The following are available by default.
+**A campaign varies three things.** An experiment has three parts, and each is a
+configuration surface with an owner and a schema -- which is what lets a factor's
+destination be checked before any compute is spent, and what decides which channel a value
+belongs to.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 28 28 34
+
+   * - Channel
+     - What it varies
+     - Owned by
+     - Checked against
+   * - ``scenario:``
+     - the **trial** -- what happens during the run
+     - scenario-execution
+     - the parameters the ``.osc`` declares
+   * - ``sim:``
+     - the **world** -- what the trial runs in
+     - the simulator backend
+     - the backend's schema and the world itself
+   * - ``sut:``
+     - the **system under test** -- how the stack is configured
+     - the stack
+     - the config file the campaign declares
+
+One ``configuration:`` block can use all three:
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       sut:
+         config_files:
+           nav2: files/nav2_params.yaml        # format inferred from the extension
+           bt:   files/nav2_bt.xml
+
+   configuration:
+   - name: three-aspects
+     variations:
+     - ParameterVariationList:
+         sim: components.floorplan.floor.friction     # the world
+         values: [0.6, 1.4]
+     - ParameterVariationList:
+         sut: nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+         values: [0.30, 0.55]                          # the system under test
+     - ParameterVariationList:
+         scenario: goal_pose                           # the trial
+         values: [...]
+
+**Choosing between them is one question:** *who owns the schema this value is checked
+against?* A key in a file the stack reads is ``sut:``; a value the ``.osc`` declares and
+acts on -- including what it passes to ``ros_launch`` -- is ``scenario:``; a value the
+simulator's configuration declares is ``sim:``.
+
+That last point is worth stating because the boundary is not enforceable. A stack parameter
+*can* be declared in the ``.osc`` and written into the stack's file at run time, and
+RoboVAST cannot tell that such a parameter is stack configuration rather than trial
+protocol. It is a rule you follow, not one you are stopped from breaking -- and the cost of
+breaking it is that the value is checked by nobody, because the surface it belongs to was
+never consulted.
+
+See :ref:`the destination reference <config-variation-destination>` for the full rules, and
+:ref:`the sut channel <sut-channel>` for what a config source is and how a format addresses
+one.
+
+The variation types below are available by default.
 
 General
 -------

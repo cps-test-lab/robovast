@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 #: carrier*, not another kind of document.
 ENV_SOURCE = "env"
 
+#: Where a configuration's resolved ``sut`` block is recorded, beside ``sim.config``. A
+#: record, not an input: the copies the cell actually runs are staged and mounted, and this
+#: sits next to the configuration so what the stack was given is readable without diffing
+#: two documents.
+SUT_CONFIG_FILE = "sut.config"
+
 #: The value meaning *this node is not there*, as opposed to present and empty -- a
 #: distinction a stack makes and no assignment expresses.
 #:
@@ -143,6 +149,23 @@ def declared_sources(execution: dict, vast_dir: str) -> dict:
                 name=name, rel_path=rel, abs_path=os.path.join(vast_dir, rel),
                 fmt=resolve_format(rel, fmt_name), container=container)
     return sources
+
+
+def source_paths(execution: dict, vast_dir: str) -> list:
+    """The ``.vast``-relative path of every declared source, for content hashing.
+
+    These files are inputs to configuration generation exactly as a world is, so editing
+    one has to change a configuration's identity -- otherwise a re-run reuses an expansion
+    built from the previous content, silently. They cannot travel in ``run_files`` to get
+    that for free, because ``run_files`` also *stages* what it hashes.
+
+    Best effort: a campaign whose declaration is malformed is refused elsewhere, with a
+    message about the declaration rather than about hashing.
+    """
+    try:
+        return [source.rel_path for source in declared_sources(execution, vast_dir).values()]
+    except Exception:  # noqa: BLE001 - a bad declaration is refused by the real check
+        return []
 
 
 def refuse_run_files_overlap(execution: dict, sources: dict) -> None:
