@@ -1172,6 +1172,24 @@ A role left out keeps its default rather than disappearing, so raising one canno
 drop another. With neither set the defaults below apply, and the service log says which of
 the two it is using.
 
+**A campaign may override it per container**, by declaring ``resources`` on that container:
+under ``execution.sizing: calibrated`` those figures are what the probe and every
+not-yet-measured node run at, and the ceiling a measured figure may not exceed. The
+deployment default still applies to every container that declares none, and per *field* — a
+``.vast`` stating only ``cpu`` keeps this ``memory``. See
+:ref:`the sizing mode <config-sizing>`.
+
+**How the measurement is turned into an allocation** is settable the same way, in a
+``calibration`` block on the container, defaulted per role from one more ``.env`` entry:
+
+.. code-block:: bash
+
+   ROBOVAST_CALIBRATION={"sut": {"size_on": 100, "limit": "request"},
+                         "simulation": {"headroom": {"cpu": 1.25}}}
+
+The same block a container may carry, keyed by role — so an option added to it later is
+settable here with no new variable.
+
 .. warning::
 
    **Do not set a figure below what the container actually wants.** The bootstrap is also
@@ -1213,13 +1231,27 @@ How the figure is found:
 * **A node with an outstanding probe takes no campaign work.** Otherwise the runs placed
   while it is measuring are the odd ones out on a node whose later runs are calibrated,
   reintroducing the inconsistency the probe exists to remove.
-* **The statistic depends on the container's role.** The system under test is sized on its
-  *peak*, as request and limit, so it never throttles — its budget must be identical in every
-  run or the allocation becomes a hidden independent variable. Everything else is sized on
-  what it *sustains* (p95) and keeps its declared ceiling, because the simulator's
-  peak-to-mean ratio is about 18 and reserving its peak would cost more than not calibrating
-  at all. Memory is never re-sized: it does not vary with how fast a machine is, and
-  exceeding a memory limit is an OOM kill rather than a slowdown.
+* **How a measurement becomes an allocation depends on the container's role**, and what
+  decides that is whether anything would report that squeezing it cost something. The system
+  under test is read at its maximum, as request *and* limit, so it never throttles: a run
+  clipped mid-plan fails in a way that looks like the stack's fault rather than the
+  allocation's. The simulator is read at the 95th percentile and keeps its ceiling — its
+  peak-to-mean ratio is about 18, so reserving the maximum would cost more than not
+  calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
+  runner is read the same way, but nothing grades how well *it* ran, so its ceiling is what
+  must not be tight; on a probe its own tick rate fills that gap (see below).
+
+  Every one of those is a default, and a container may state its own under
+  :ref:`the sizing mode <config-sizing>`. Memory is different in kind and takes one
+  rule for every role: the
+  measured **maximum**, with headroom. Exceeding a CPU reservation slows a container;
+  exceeding a memory one kills it, so no role is sized on a figure most of its samples sat
+  below.
+* **The scenario runner reports on itself, on probes only.** A probe runs with
+  ``--tick-log``, so ``tick_timing.csv`` records how closely the behaviour tree held its
+  configured period. A probe whose scenario could not keep up measured a starved container,
+  and is refused rather than believed. Campaign runs do not carry the flag: it is per-tick
+  instrumentation on the trial's hot path, and only the probe's file is ever read.
 * **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
   node's jobs down to what they need; it does not raise a ceiling the author set.
 * **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
@@ -1234,8 +1266,13 @@ How the figure is found:
 The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
 is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
 under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
-``ROBOVAST_NODE_CALIBRATION`` set, one without, everything else equal — measures it directly,
-and ``run_health`` says whether the tighter ceilings cost the stack anything.
+``execution.sizing: calibrated``, one with ``fixed``, everything else equal — measures it
+directly, and ``run_health`` says whether the tighter ceilings cost the stack anything.
+
+**Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
+is what says whether a tighter allocation cost the simulator its pacing, and a campaign whose
+factor drops is no longer comparable with one sized any other way — worse results rather than
+merely slower ones.
 
 **A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
 machine.** That is why this is switchable, and why the probe is one run rather than a

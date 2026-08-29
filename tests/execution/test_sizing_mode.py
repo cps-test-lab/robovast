@@ -91,8 +91,10 @@ def test_fixed_mode_is_untouched():
 
 
 def test_a_measured_node_beats_the_bootstrap():
-    figures = {"sut": {"peak": 1.5, "sustained": 0.5}}
-    got = kb.calibrated_resources({}, "sut", figures, roles=("sut",), bootstrap=True)
+    figures = {"sut": {"cores": 1.5}}
+    got = kb.calibrated_resources({}, "sut", figures, roles=("sut",), bootstrap=True,
+                                  settings={"size_on": 100, "limit": "request",
+                                            "headroom": {"cpu": 1.0}})
     assert got["cpu"] == pytest.approx(1.5), "measured, not bootstrapped"
 
 
@@ -107,19 +109,27 @@ def _cfg(sizing, resources=None):
     return ExecutionConfig(containers=c, runs=1, sizing=sizing)
 
 
-def test_declaring_resources_under_calibrated_is_refused():
-    """Not overridden. The two answer the same question, and a file stating a number nobody
-    honours is worse than one stating nothing -- the same rule this block already applies to
-    an unknown key."""
-    with pytest.raises(ValueError, match="calibrated"):
-        _cfg("calibrated", {"cpu": 2})
+def test_declared_resources_seed_a_calibrated_campaign():
+    """Declaring resources under `calibrated` is no longer an error: they are what the probe
+    and every not-yet-measured node run at, and the ceiling a measured figure may not exceed.
+
+    Refusing them meant a stack whose bring-up needs more than the cluster default could not
+    be calibrated at all -- the `.env` bootstrap was the only way to state a starting figure,
+    and it is a property of the deployment rather than of one campaign."""
+    cfg = _cfg("calibrated", resources={"cpu": 4})
+    assert cfg.sizing == "calibrated", "no longer an error"
+    assert cfg.containers["scenario"].resources.cpu == 4, "and the figure is kept"
 
 
-def test_the_refusal_names_the_container():
-    """A campaign declaring resources on one container of three is the likely shape, and
-    "somewhere in execution.containers" would not be actionable."""
-    with pytest.raises(ValueError, match="scenario"):
-        _cfg("calibrated", {"cpu": 2})
+def test_a_declared_ceiling_still_caps_a_measured_figure():
+    """The seed is also the bound. Calibration sizes a node's jobs DOWN to what they need and
+    has no business raising a ceiling its author set."""
+    figures = {"sut": {"cores": 8.0, "samples": 90}}
+    sized = kb.calibrated_resources({"cpu": 4}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"size_on": 100, "limit": "request",
+                                              "headroom": {"cpu": 1.25}})
+    assert float(sized["cpu"]) == 4, "clamped to the declaration, not 8 * 1.25"
 
 
 def test_a_gpu_declaration_survives_calibration():
@@ -239,7 +249,7 @@ def test_the_calibrated_figures_reach_the_campaign_log(caplog):
     with caplog.at_level(logging.INFO, logger="robovast"):
         c.record("n1", "probe-1", {"sut": {"sustained": 0.5, "peak": 1.5, "samples": 60}})
     said = [r.getMessage() for r in caplog.records if "calibrated" in r.getMessage()]
-    assert said and "n1" in said[0] and "peak" in said[0]
+    assert said and "n1" in said[0] and "cores" in said[0]
 
 
 # -- the first job on a node, before anything is measured -------------------------------
@@ -314,14 +324,14 @@ def test_the_main_container_takes_its_measured_figure_once_the_node_is_calibrate
     from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
 
     runner = _calibrated_runner(monkeypatch)
-    figures = {MAIN_CONTAINER_NAME: {"sustained": 1.386, "peak": 1.754, "samples": 90}}
+    figures = {MAIN_CONTAINER_NAME: {"cores": 1.386, "samples": 90}}
     manifest = runner.create_job_manifest(runner._build_jobs()[0], total_jobs=1,
                                           node_figures=figures)
 
     cpu = float((_resources_of(manifest, MAIN_CONTAINER_NAME).get("requests") or {})["cpu"])
     bootstrap_cpu = bootstrap_sizing("scenario")[0]
     assert cpu != bootstrap_cpu, "still on the bootstrap: the measured figure never arrived"
-    assert cpu >= 1.386, "the scenario role takes its sustained figure, plus headroom"
+    assert cpu >= 1.386, "its measured figure, plus headroom"
 
 
 def test_the_scenario_bootstrap_clears_what_a_probe_will_measure():
@@ -359,9 +369,11 @@ def test_a_calibrated_container_still_gets_its_memory():
     reason attached rather than a clean OOM. The path taken before a node is measured was
     always right, so this is only reachable once calibration succeeds.
     """
-    figures = {"scenario": {"sustained": 1.33, "peak": 1.66, "samples": 90}}
+    figures = {"scenario": {"cores": 1.33, "memory_peak": 300 * 1024 ** 2, "samples": 90}}
     sized = kb.calibrated_resources({}, "scenario", figures, roles=("scenario",),
-                                    bootstrap=True)
+                                    bootstrap=True,
+                                    settings={"size_on": 95, "limit": "declared",
+                                              "headroom": {"cpu": 1.0, "memory": 1.0}})
     assert sized.get("memory"), "a calibrated container must still carry a memory request"
     assert sized.get("memory_limit"), "and a limit, or AVAILABLE_MEM reports the node's"
     assert float(sized["cpu"]) == 1.33, "the CPU figure is the one calibration changes"
@@ -371,8 +383,201 @@ def test_calibration_does_not_reintroduce_an_empty_cpu_limit():
     """The infra roles keep a generous ceiling and request the sustained figure -- but with
     nothing declared, `cpu_limit` fell back to the declaration's absent value. An empty
     limit is the same downward-API trap as the memory one, on the other resource."""
-    figures = {"simulation": {"sustained": 0.9, "peak": 2.4, "samples": 90}}
+    figures = {"simulation": {"cores": 0.9, "samples": 90}}
     sized = kb.calibrated_resources({}, "simulation", figures, roles=("simulation",),
-                                    bootstrap=True)
+                                    bootstrap=True,
+                                    settings={"size_on": 95, "limit": "declared",
+                                              "headroom": {"cpu": 1.0}})
     assert sized.get("cpu_limit"), "never empty: an absent limit means the node's capacity"
     assert float(sized["cpu_limit"]) >= float(sized["cpu"]), "a ceiling is not below its floor"
+
+
+# -- the calibration block: one model, resolved per container ---------------------------
+
+
+def _runner_with_plan(containers):
+    """A runner whose plan is *containers*, each a (name, roles, calibration) triple."""
+    import types
+
+    r = kb.BatchJobRunner()
+    made = [types.SimpleNamespace(name=n, roles=roles, calibration=cal)
+            for n, roles, cal in containers]
+    r.plan = types.SimpleNamespace(containers=made, main=made[0], sidecars=made[1:])
+    return r
+
+
+def test_a_container_takes_the_role_rule_when_it_states_nothing():
+    """The normal case, and the one almost every campaign should stay in: the system under
+    test is read at its maximum and pinned there, everything else at a percentile with room
+    to burst."""
+    r = _runner_with_plan([("scenario", ("scenario",), None), ("sut", ("sut",), None)])
+    settings = r._calibration_by_container()
+    assert settings["sut"]["size_on"] == 100 and settings["sut"]["limit"] == "request"
+    assert settings["scenario"]["size_on"] == 95
+    assert settings["scenario"]["limit"] == "declared"
+
+
+def test_the_env_default_applies_where_the_vast_is_silent(monkeypatch):
+    """A cluster-wide default belongs to the deployment, so it is set once in `.env` rather
+    than repeated in every `.vast` that lands on it."""
+    monkeypatch.setenv("ROBOVAST_CALIBRATION", '{"sut": {"size_on": 99}}')
+    r = _runner_with_plan([("sut", ("sut",), None)])
+    assert r._calibration_by_container()["sut"]["size_on"] == 99
+
+
+def test_the_vast_wins_over_the_env(monkeypatch):
+    """Most specific first. The `.env` states what the cluster does by default; a campaign
+    that says otherwise is saying something about itself."""
+    from robovast.common.config import CalibrationConfig
+
+    monkeypatch.setenv("ROBOVAST_CALIBRATION", '{"sut": {"size_on": 99}}')
+    r = _runner_with_plan([("sut", ("sut",), CalibrationConfig(size_on=90))])
+    assert r._calibration_by_container()["sut"]["size_on"] == 90
+
+
+def test_headroom_merges_per_resource_rather_than_replacing(monkeypatch):
+    """Stating only `cpu` must keep the memory default rather than dropping it -- the same
+    per-field resolution the seed already uses, and for the same reason: half a setting is
+    not a decision to discard the other half."""
+    from robovast.common.config import CalibrationConfig, CalibrationHeadroom
+
+    r = _runner_with_plan([("sut", ("sut",),
+                            CalibrationConfig(headroom=CalibrationHeadroom(cpu=1.6)))])
+    headroom = r._calibration_by_container()["sut"]["headroom"]
+    assert headroom["cpu"] == 1.6
+    assert headroom["memory"], "the memory default survives a cpu-only override"
+
+
+def test_the_main_container_is_reachable_under_the_name_the_monitor_writes():
+    """Its files are `resource_usage_main` whatever the `.vast` calls it, so the settings
+    have to be findable under both -- the same aliasing the probe's limits already apply."""
+    r = _runner_with_plan([("scenario", ("scenario",), None)])
+    settings = r._calibration_by_container()
+    assert settings[kb.MAIN_CONTAINER_NAME] == settings["scenario"]
+
+
+def test_the_tolerance_a_probe_is_judged_against_follows_the_percentile_it_was_read_at():
+    """The invariant that must not drift: a container read at 99 tolerates a tenth of the
+    clipping one read at 95 does, because clipping cannot move a figure while it stays inside
+    the tail the percentile already discards."""
+    from robovast.common.config import CalibrationConfig
+    from robovast.execution.cluster_execution.node_calibration import probe_refuse_ratio
+
+    r = _runner_with_plan([("sut", ("sut",), CalibrationConfig(size_on=99))])
+    pct = r._container_percentiles()["sut"]
+    assert pct == 99
+    assert probe_refuse_ratio(pct) == pytest.approx(0.01)
+
+
+# -- a refused probe stops the campaign -------------------------------------------------
+
+
+def _runner_that_refused(reason, applies=True):
+    import types
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = applies
+    r.plan = types.SimpleNamespace(containers=[types.SimpleNamespace(name="sut", roles=("sut",),
+                                                                    resources=None)],
+                                   main=None, sidecars=[])
+    calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": [], "refused": {"n1": reason} if reason else {}})
+    return r, calibration
+
+
+def test_a_refused_probe_fails_the_campaign():
+    """A node that could not be measured would run at the starting allocation while every
+    measured node ran at its own figure -- so the campaign silently mixes two sizings, which
+    is the inconsistency calibration exists to remove, arriving through the act of failing to
+    measure. Raised at the refusal rather than at the end of the batch: every remaining run
+    would carry the same fault."""
+    from robovast.execution.backends import CampaignConfigError
+
+    r, calibration = _runner_that_refused("its probe reached no verdict")
+    with pytest.raises(CampaignConfigError) as raised:
+        r._refuse_a_probe_that_could_not_measure("n1", calibration)
+    message = str(raised.value)
+    assert "n1" in message and "reached no verdict" in message
+    assert "ROBOVAST_BOOTSTRAP_CPU" in message, "name the remedy for the path it is on"
+
+
+def test_the_remedy_named_is_the_one_this_campaign_can_act_on():
+    """A campaign that declares its own figures is told to raise those; one that declares
+    none is told about the deployment default. Naming the wrong one sends a reader to edit a
+    file that has no effect on their campaign."""
+    import types
+
+    from robovast.execution.backends import CampaignConfigError
+
+    r, calibration = _runner_that_refused("its probe was OOM-killed (sut)")
+    r.plan.containers[0].resources = types.SimpleNamespace(cpu=4)
+    with pytest.raises(CampaignConfigError) as raised:
+        r._refuse_a_probe_that_could_not_measure("n1", calibration)
+    assert "execution.containers" in str(raised.value)
+
+
+def test_a_campaign_calibration_does_not_apply_to_is_untouched():
+    """A pilot, or a cluster that can grow: nothing was measured there by design, so there
+    are no two sizings to mix and nothing to fail."""
+    r, calibration = _runner_that_refused("its probe reached no verdict", applies=False)
+    r._refuse_a_probe_that_could_not_measure("n1", calibration)
+
+
+def test_a_node_with_no_recorded_reason_is_not_a_refusal():
+    """`record` also returns False for a stale probe key -- a report about a probe this node
+    is no longer running. That is bookkeeping, not a measurement failure, and must not end a
+    campaign."""
+    r, calibration = _runner_that_refused(None)
+    r._refuse_a_probe_that_could_not_measure("n1", calibration)
+
+
+# -- what a `.vast` may say, and what it may not -----------------------------------------
+
+
+def _execution(**kw):
+    from robovast.common.config import ExecutionConfig
+    return ExecutionConfig(runs=1, **kw)
+
+
+def test_a_calibration_block_under_fixed_is_refused():
+    """Nothing is measured in that mode, so every field in the block decides nothing. Silence
+    would let a file read as configured while behaving as default -- the failure this whole
+    area keeps producing, arriving through the mechanism added to prevent it."""
+    with pytest.raises(ValueError, match="calibration"):
+        _execution(sizing="fixed",
+                   containers={"sut": {"image": "i", "resources": {"cpu": 1},
+                                       "calibration": {"size_on": 99}}})
+
+
+def test_a_limit_rule_that_ignores_a_declared_ceiling_is_refused():
+    """`limit: request` makes the ceiling the measured request, so a declared `cpu_limit` is
+    never read. Accepting both leaves a file stating a number nobody honours."""
+    with pytest.raises(ValueError, match="cpu_limit"):
+        _execution(sizing="calibrated",
+                   containers={"sut": {"image": "i", "calibration": {"limit": "request"},
+                                       "resources": {"cpu_limit": 4}}})
+
+
+def test_the_same_pair_is_fine_when_the_ceiling_is_what_is_read():
+    """`limit: declared` is exactly the case where a declared ceiling means something."""
+    cfg = _execution(sizing="calibrated",
+                     containers={"sim": {"image": "i", "calibration": {"limit": "declared"},
+                                         "resources": {"cpu": 1, "cpu_limit": 4}}})
+    assert cfg.containers["sim"].resources.cpu_limit == 4
+
+
+def test_a_percentile_outside_its_range_is_refused():
+    """Zero would ask for a figure below every sample; above 100 is not a percentile."""
+    for bad in (0, 101):
+        with pytest.raises(ValueError, match="percentile"):
+            _execution(sizing="calibrated",
+                       containers={"sut": {"image": "i", "calibration": {"size_on": bad}}})
+
+
+def test_headroom_below_one_is_refused():
+    """It multiplies the measurement, so under 1.0 it would size a container below what it
+    was measured using -- which is not headroom in either direction."""
+    with pytest.raises(ValueError, match="at least 1.0"):
+        _execution(sizing="calibrated",
+                   containers={"sut": {"image": "i",
+                                       "calibration": {"headroom": {"cpu": 0.9}}}})
