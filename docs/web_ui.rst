@@ -14,10 +14,27 @@ It provides four views:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel. The campaign list itself is **streamed** over Server-Sent Events
+  **live log** panel. A campaign that is **over** is listed **folded**: one row carrying
+  its phase, id, description, start time and a **compact run meter**, with the jobs list,
+  the Details panel and the log not rendered at all — so a page of finished campaigns is a
+  page of rows rather than metres of scroll. Clicking the row (or its chevron) unfolds the
+  full card, unchanged. A **running** campaign starts unfolded, and can be folded by hand
+  like any other; a campaign that finishes while you are watching it stays open. The
+  compact meter is the same bar the open card draws full width — same segments, same
+  ``done/total`` — with the counts inside the track and the rest (passed, failed, no
+  result, start and finish times) on hover. A **search** campaign's folded row adds a
+  small **rounds ring** with its round count in the hole, because a search's run counters
+  describe its *current batch* rather than the campaign; hovering the ring gives the round
+  bound, the best objective and the **objective-over-rounds chart**. A search whose rounds
+  nothing bounds draws the bare ring: there is no denominator, and none is invented. The campaign list itself is **streamed** over Server-Sent Events
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list
-  immediately — with its true live phase and its **start time** (shown in your
-  browser's locale and timezone) — and every phase change is pushed within a second.
+  immediately — with its true live phase and **how long ago it started** — and every phase
+  change is pushed within a second. That age is deliberately relative rather than a wall
+  clock: a campaign id already ends in a ``-YYYY-MM-DD-HHMMSS`` stamp, so an absolute start
+  time beside it says the same thing twice. Hovering it gives the exact start and finish in
+  your browser's locale and timezone, and how long the campaign took — and the exact time is
+  worth having, because the id's stamp comes from the *service host's* clock while this one
+  is the viewer's, which on a cluster are not the same reading.
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
   it was launched from; see `Where a campaign came from`_.
@@ -60,13 +77,15 @@ It provides four views:
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
   running work halts promptly (not only after the current batch). That is the whole
   campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
-  A finished campaign also shows a **download icon** that streams its ``tar.gz``
-  straight from the service — from the object store on a cluster, from disk on a local
-  one; the lane is not something a viewer should have to know. When that campaign also has
-  a copy on the share the icon becomes a small menu, adding **Copy share link** beside the download (omitted for a
-  share provider that has no link a browser could open — SFTP has none). No share copy,
-  no menu — one click. A finished campaign's
-  actions menu offers **Retrigger campaign**, which starts a **new** campaign from
+  A card's controls are two buttons: the **actions menu** (☰) and the fold. The menu is
+  ordered by what a reader came for — open something, take something away, re-run something,
+  destroy something — and every entry is conditional, so a campaign with nothing to act on
+  yet is offered no menu at all. Its middle group is **Download**, which streams the
+  campaign's ``tar.gz`` straight from the service — from the object store on a cluster, from
+  disk on a local one; the lane is not something a viewer should have to know — and, when
+  that campaign also has a copy on the share, **Copy share link** (omitted for a share
+  provider that has no link a browser could open — SFTP has none). Below those,
+  **Retrigger campaign** starts a **new** campaign from
   what this one recorded — its frozen ``_config/`` and the image its runs actually
   used — rather than from the workspace it was launched from, which may be gone or
   may have moved on. The source campaign is untouched, so this works whatever state
@@ -910,11 +929,13 @@ A URL naming a config or run the campaign does not have falls back to the campai
 finished campaign's structure is fixed, so that is a wrong link rather than a stale one, and
 nothing keeps re-checking it.
 
-Each campaign card in **Campaigns** also carries shortcut buttons — left of its gear — that jump
-straight into the Explorer or the Run view *for that campaign*. A card only offers what it can
-deliver: the Explorer button once the campaign is finished **and** postprocessed (the same gate
-the Results tab itself applies), and the Run view button only if the campaign also recorded runs
-to replay. Changing the selection inside a view updates the URL without adding a browser-history
+Each campaign card in **Campaigns** also offers shortcuts — in its **actions menu** (the ☰
+button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
+offers what it can deliver: **Open in results Explorer** once the campaign is finished **and**
+postprocessed (the same gate the Results tab itself applies), and **Replay runs in the Run
+view** only if the campaign also recorded runs to replay. They are named lines in a menu rather
+than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
+same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
 step, so **Back** always returns to where you came from in one press; a jump *between* views is a
 real step, so Back returns to the view you left.
 
@@ -923,8 +944,8 @@ real step, so Back returns to the view you left.
 Reading the configuration a campaign ran
 ----------------------------------------
 
-The leftmost shortcut on a campaign card opens **Config** on that campaign's frozen
-``_config/`` — the configuration it was actually staged with — at
+**Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
+frozen ``_config/`` — the configuration it was actually staged with — at
 ``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
 (after variation expansion) and stays for the rest of its life, so the configuration of a
 campaign that is still running can be read while it runs.
