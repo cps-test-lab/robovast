@@ -4,6 +4,7 @@ import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
+import { useTheme } from '@mui/material/styles'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
@@ -25,11 +26,13 @@ import {
   noResultRuns,
 } from '@/lib/eta'
 import { formatBytes, formatDuration } from '@/lib/format'
+import { runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
-import { formatLocalClock } from '@/lib/time'
+import { formatLocalClock, formatLocalTime } from '@/lib/time'
 import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
+import { HoverFacts } from './HoverFacts'
 import { LogPanel } from './LogPanel'
 import { MeterBar } from './MeterBar'
 
@@ -83,6 +86,190 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
   const { sourceDone, sourceTotal, sent, rate } = upload
   const ratio = sourceDone > 0 ? sent / sourceDone : 1
   return Math.max(0, ((sourceTotal - sourceDone) * ratio) / (rate ?? 1))
+}
+
+/** The run meter, short enough to sit in a campaign card's header row.
+ *
+ *  The same bar the open card draws full width -- same segments, same `done/total` -- shrunk to a
+ *  fixed column and carrying its label inside the track instead of above it. It exists so a
+ *  COLLAPSED campaign still says what its runs did without the row growing a second line: a page of
+ *  finished campaigns is a page of these, one per line.
+ *
+ *  Kept in this file rather than beside the card that uses it, deliberately: it is the same meter
+ *  as the one above and a change to either must be made looking at the other.
+ *
+ *  Everything that does not survive the shrink goes on the hover -- the failure counts, the wall
+ *  clock, the pass rate. A bar 140px wide has room for one pair of numbers, and `done/total` is the
+ *  pair that answers "did this finish".
+ */
+export function MiniRunMeter({
+  status,
+  campaignId,
+  counts,
+  started,
+  finished,
+  width = 140,
+}: {
+  status: Status
+  /** Needed only to offer a search campaign's rounds ring; omitted → no ring. */
+  campaignId?: string
+  counts?: JobCounts
+  /** ISO timestamps from the campaign listing, for the hover. Omitted → those rows are dropped. */
+  started?: string | null
+  finished?: string | null
+  width?: number
+}) {
+  const { runs } = status
+  const done = finishedRuns(status, counts)
+  const succeeded = Math.max(0, runs.completed - runs.failed)
+  const noResult = noResultRuns(status, counts)
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+      {campaignId && status.mode === 'search' ? (
+        <SearchRing campaignId={campaignId} status={status} />
+      ) : null}
+    <HoverFacts
+      title="runs"
+      facts={[
+        { label: 'done', value: `${done} of ${runs.total}` },
+        // Zero is dropped by HoverFacts, which is the point: a campaign with no failures says
+        // nothing about failures rather than printing a reassuring `0`.
+        { label: 'passed', value: succeeded || null },
+        { label: 'failed', value: runs.failed || null },
+        { label: 'no result', value: noResult || null },
+        { label: 'running', value: counts?.running || null },
+        { label: 'started', value: started ? formatLocalTime(started) : null },
+        { label: 'finished', value: finished ? formatLocalTime(finished) : null },
+      ].map((f) => ({ ...f, value: f.value == null ? null : String(f.value) }))}
+    >
+      <Box sx={{ width, flexShrink: 0, cursor: 'help' }}>
+        <MeterBar
+          height={16}
+          segments={runMeterSegments(status, counts)}
+          // `text.primary`, not MeterBar's default secondary: that default was chosen for a bar
+          // with nothing behind the label, and here the label sits over filled segments.
+          text={
+            <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
+              {runMeterText(status, counts)}
+            </Box>
+          }
+        />
+      </Box>
+    </HoverFacts>
+    </Stack>
+  )
+}
+
+/** What a SEARCH campaign has done, as a ring, for a collapsed campaign card.
+ *
+ *  The run meter beside it answers a smaller question here than it does for a batch campaign: a
+ *  search's `runs` counters are scoped to the CURRENT BATCH (see lib/eta.ts), so on a finished
+ *  search they describe its last round, not the campaign. Rounds are the thing that is whole, so
+ *  the rounds get the part-to-whole shape and the count sits in the hole — the same idiom as the
+ *  Details panel's pod ring, at the one size a header row has room for.
+ *
+ *  With nothing bounding the rounds there is no denominator, and none is invented: a search
+ *  bounded by runs or time draws the bare track with its count inside. A filled ring there would
+ *  claim a limit the campaign never declared.
+ */
+function SearchRing({
+  campaignId,
+  status,
+  size = 26,
+}: {
+  campaignId: string
+  status: Status
+  size?: number
+}) {
+  const theme = useTheme()
+  const done = status.batches_done ?? 0
+  const bound = batchesBudget(status)
+  const limit = bound && bound.limit > 0 ? bound.limit : null
+  const share = limit ? Math.min(1, done / limit) * 100 : 0
+  const radius = 15.9155 // circumference 100, so a dash length IS a percentage
+  return (
+    <Tooltip
+      placement="top"
+      // The chart inside needs more than a tooltip's default 300px, and it is the reason to hover.
+      slotProps={{ tooltip: { sx: { maxWidth: 'none' } } }}
+      title={<SearchHover campaignId={campaignId} status={status} />}
+    >
+      <Box sx={{ position: 'relative', width: size, height: size, flexShrink: 0, cursor: 'help' }}>
+        <Box component="svg" viewBox="0 0 40 40" sx={{ width: size, height: size, display: 'block' }}>
+          {/* Concrete theme values, not palette paths: `sx` does not resolve those for SVG
+              presentation properties — see the same note on the Details panel's ring. */}
+          <Box
+            component="circle" cx="20" cy="20" r={radius}
+            sx={{ fill: 'none', stroke: theme.palette.action.hover, strokeWidth: 6 }}
+          />
+          {limit ? (
+            <Box
+              component="circle" cx="20" cy="20" r={radius}
+              // -90deg so the first round starts at twelve o'clock, where a reader expects it.
+              transform="rotate(-90 20 20)"
+              sx={{
+                fill: 'none',
+                stroke: theme.palette.secondary.main,
+                strokeWidth: 6,
+                strokeDasharray: `${share} ${100 - share}`,
+              }}
+            />
+          ) : null}
+        </Box>
+        <Typography
+          variant="caption"
+          sx={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 10, fontWeight: 600,
+          }}
+        >
+          {done}
+        </Typography>
+      </Box>
+    </Tooltip>
+  )
+}
+
+/** The hover behind the ring: the rounds in words, the best objective, and the trajectory.
+ *
+ *  A separate component because that is what makes the chart cheap. MUI mounts a tooltip's title
+ *  only while it is open, so the `/search/history` request below is issued on the first hover and
+ *  never on a page of collapsed cards nobody pointed at. Same query key and staleTime as the open
+ *  card's objective section, so hovering a card you later expand costs one request between them.
+ */
+function SearchHover({ campaignId, status }: { campaignId: string; status: Status }) {
+  const done = status.batches_done ?? 0
+  const bound = batchesBudget(status)
+  const history = useQuery({
+    queryKey: ['search-history', campaignId, done],
+    queryFn: () => robovast.getSearchHistory(campaignId),
+    retry: false,
+    staleTime: Infinity,
+  })
+  return (
+    <Box sx={{ width: 260 }}>
+      <Typography sx={{ fontSize: 11, fontWeight: 600, mb: 0.5 }}>
+        {bound ? `round ${bound.current ?? '—'} of ${bound.limit}` : `${done} rounds`}
+      </Typography>
+      {!bound ? (
+        <Typography sx={{ fontSize: 11, opacity: 0.7, mb: 0.5 }}>
+          nothing bounds the rounds — this search is bounded by runs or time
+        </Typography>
+      ) : null}
+      {status.best_objective != null ? (
+        <Typography sx={{ fontSize: 11, mb: 0.5 }}>best objective: {status.best_objective}</Typography>
+      ) : null}
+      {history.isLoading ? (
+        <Typography sx={{ fontSize: 11, opacity: 0.7 }}>reading the search's rounds…</Typography>
+      ) : history.isError ? (
+        <Typography sx={{ fontSize: 11, opacity: 0.7 }}>
+          no objective history ({(history.error as Error)?.message})
+        </Typography>
+      ) : history.data ? (
+        <BatchObjectiveChart history={history.data} height={96} />
+      ) : null}
+    </Box>
+  )
 }
 
 // Job states that mean the job is over, so the live view stops showing a row for it. A
@@ -145,17 +332,6 @@ export function StatusView({
   const cid = campaignId ?? status.campaign_id
   const terminal = isTerminalPhase(status.phase)
   const counts = jobs?.counts
-  const running = counts?.running ?? 0
-  // Runs that delivered nothing, for the bar's dim red segment. See noResultRuns: the
-  // live job count is the only source while the batch runs.
-  const noResult = noResultRuns(status, counts)
-  // Green is *successes*, not "produced a result". `runs.completed` counts every run
-  // that delivered a result artifact, including the ones whose own verdict is a
-  // failure — so painting `completed` green reported a campaign whose every trial
-  // failed as fully passed. The two failure axes the status keeps apart stay apart in
-  // the bar too (see RunProgress): a trial that ran and failed is solid red, a run
-  // that delivered nothing is the dimmer red.
-  const succeeded = Math.max(0, runs.completed - runs.failed)
   // The jobs list's expansion state, kept here rather than in JobsSection / JobRow
   // because both of those unmount underneath the reader: the section whenever the live
   // set momentarily empties (local runs are sequential, so between every pair of runs),
@@ -246,21 +422,10 @@ export function StatusView({
               : ''}
           </Typography>
         </Stack>
-        {/* `running` stays last: MeterBar clamps the running offset but does not rescale,
-            so a transient over-100% sum clips the final segment — and what is still
-            running is the least final thing to lose. */}
-        <MeterBar
-          segments={
-            runs.total > 0
-              ? [
-                  { fraction: succeeded / runs.total, color: 'success.main' },
-                  { fraction: runs.failed / runs.total, color: 'error.main' },
-                  { fraction: noResult / runs.total, color: 'error.main', opacity: 0.45 },
-                  { fraction: running / runs.total, color: 'info.main', striped: true },
-                ]
-              : []
-          }
-        />
+        {/* Segments from `lib/runMeter`, not spelled out here: the collapsed campaign card draws
+            this same meter short, inside its header row, and a reader who folds a card open to
+            look at a red segment is looking at THE SAME BAR. */}
+        <MeterBar segments={runMeterSegments(status, counts)} />
       </Box>
 
       {/* The rounds a search has run, and the objective they moved. Rendered for every

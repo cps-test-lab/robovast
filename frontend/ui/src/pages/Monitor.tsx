@@ -3,9 +3,9 @@ import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
-import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
+import Divider from '@mui/material/Divider'
 import IconButton from '@mui/material/IconButton'
 import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
@@ -17,7 +17,7 @@ import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
-import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // Postprocessing recomputes metrics from the preserved rosbags, so it gets the
 // derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
@@ -46,11 +46,13 @@ import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { ShareImportDialog } from './ShareImportDialog'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
-import { formatLocalTime } from '@/lib/time'
+import { formatAge, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
+import { runsFromSummary } from '@/lib/runMeter'
 import { useLiveStream } from '@/lib/liveStream'
-import { ErrorText, StatusView } from '@/components/StatusView'
+import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
+import { HoverFacts } from '@/components/HoverFacts'
 import { LaunchedBy } from '@/components/LaunchedBy'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
@@ -68,6 +70,42 @@ const PostprocessingDialog = lazyView('Postprocessing settings',
 const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
   'initializing', 'building', 'starting', 'plugin install', 'variation',
 ])
+
+// The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
+// zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
+// controller appends `-YYYY-MM-DD-HHMMSS` plus two hundredths (see `_campaign_id_lock`), which is
+// 20 characters of stamp before the project name, so a name as ordinary as `nav-search-halton`
+// reaches 37. Sized short at first and it cut the stamp off exactly those ids -- and the stamp is
+// the END of the string, the only part that tells two runs of the same project apart, which is
+// the one thing this column must never be the reason a reader cannot see.
+const ID_COLUMN = 360
+
+// The trailing controls' column: the actions menu, the fold, and on a live card the Stop button.
+// Reserved rather than shrink-to-fit because not every card has every control — a campaign still
+// building has no actions menu — and without a fixed width those rows pull their meter and age
+// sideways out of line with every other row.
+//
+// Sized for the WIDEST set (three small icon buttons and the two gaps between them), not the
+// common one. A minimum that the busiest row exceeds is not a reserved column at all: the stack
+// then sizes to its content, and anything that comes and goes inside it moves the whole flexible
+// span to its left. That is what a per-poll fetch spinner did here — it appeared and vanished
+// every 1.5 s on a running card and walked the age back and forth beside it.
+const CONTROLS_COLUMN = 108
+
+// The age column. Fixed and right-aligned so the ages read down the page as one column; wide
+// enough for the longest string formatAge produces.
+const AGE_COLUMN = 78
+
+/** How long a finished campaign took, or null while it is still running / was never recorded.
+ *  Derivable from the listing alone, and shown nowhere else — the card had a start time and no
+ *  duration, which is the half of the pair a reader of a FINISHED campaign wants. */
+function campaignDuration(summary: CampaignSummary): string | null {
+  if (!summary.started_at || !summary.finished_at) return null
+  const from = new Date(summary.started_at).getTime()
+  const to = new Date(summary.finished_at).getTime()
+  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null
+  return formatDuration((to - from) / 1000)
+}
 
 // A post-run step that failed (postprocessing, upload-to-share). The headline names the step and
 // what to do about it, and is always visible — that is what the phase indicator's warning refers
@@ -214,6 +252,36 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   })
 
   const { confirm, prompt } = useDialogs()
+
+  // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
+  // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
+  // starting from run zero. The button also sits in a row of small icons a click can land on by
+  // accident, and it is the only one there that destroys work in progress.
+  //
+  // The count is the point of asking rather than the wording: what a reader needs before pressing
+  // this is how much is actually in flight right now, which nothing else on a folded card says.
+  // Omitted rather than guessed at when the jobs listing has not answered — a confident "0 runs"
+  // over a campaign with six running would be worse than no number at all.
+  const onStop = async () => {
+    const inFlight = jobs.data?.counts?.running
+    const ok = await confirm({
+      title: 'Stop this campaign?',
+      message: (
+        <>
+          <code>{id}</code> ends now — not at the end of the current batch.{' '}
+          {inFlight
+            ? `The ${inFlight} run${inFlight === 1 ? '' : 's'} still executing ${
+                inFlight === 1 ? 'is' : 'are'} terminated and deliver${inFlight === 1 ? 's' : ''} no result.`
+            : 'Any run still executing is terminated and delivers no result.'}{' '}
+          What has already been recorded is kept. A stopped campaign cannot be resumed — Retrigger
+          campaign, in the actions menu, starts a new one from this one's configuration.
+        </>
+      ),
+      confirmLabel: 'Stop campaign',
+      danger: true,
+    })
+    if (ok) stop.mutate()
+  }
 
   // One dialog, not a confirm followed by a prompt: submitting *is* the confirmation, and the
   // reason field is the point of asking at all. Cancel (null) means don't stop — an empty
@@ -374,7 +442,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
       .filter((a) => a.campaign_id === id)
       .reduce<ShareArchive | null>((best, a) => (best ? preferredArchive(best, a) : a), null)
     ?? null
-  const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null)
 
   // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
   // sidebar's connection meter, so every card on the page and the sidebar share one poll
@@ -394,41 +461,214 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const canExplore = hasResults(summary)
   const canReplay = canExplore && hasRecordedRuns(summary)
 
-  return (
-    <Paper sx={{ p: 2 }}>
-      <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
-        <PhaseDot phase={phase} issue={stepIssue} />
-        {phaseAge ? (
-          <Typography variant="caption" color="text.secondary">
-            {phaseAge}
-          </Typography>
-        ) : null}
-        {stalled ? (
-          <Typography
-            variant="caption"
-            color="error.main"
-            title={
-              `No run has completed for ${formatDuration(progressAgeS!)}, past the ` +
-              `${progressDeadline}s expected per run — the run is not merely slow. Read ` +
-              `what it is repeating in the log panel below.`
-            }
+  // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
+  // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
+  // otherwise metres of scroll over sections nobody opened.
+  //
+  // Defaulted from `bornAtRest` — whether the campaign was ALREADY over when the card first
+  // rendered — rather than from the live phase, for the same reason that flag was frozen for the
+  // jobs query: a campaign that finishes while it is being watched must not fold itself shut under
+  // the reader. Every card can be folded by hand, running ones included; only the default differs.
+  const [collapsed, setCollapsed] = useState(bornAtRest)
+  const toggle = () => setCollapsed((c) => !c)
+  // What the compact meter draws before this card's own `getStatus` answers. The listing arrives
+  // for the whole page in one stream while the statuses are one request each, so without it every
+  // meter paints empty and fills in one by one — a page that looks like it is still loading long
+  // after it is readable. Superseded the moment the real status lands; see runsFromSummary.
+  const meterStatus =
+    status.data ??
+    // `mode` comes from the listing too, so a search campaign's ring is offered from the first
+    // paint rather than appearing a beat later; its rounds are not on the listing, so it draws
+    // its empty state until the status lands.
+    ({ phase, mode: summary.mode, runs: runsFromSummary(summary), budget: [] } as unknown as Status)
+
+  // The actions menu's entries, built rather than written inline so the button can ask whether it
+  // has anything to offer. A `Divider` between groups only where the group before it is present —
+  // a menu opening on a rule, or carrying two in a row, reads as a rendering fault.
+  const openItems = [
+    hasConfig ? (
+      <MenuItem key="config" onClick={() => { closeMenu(); openCampaignConfig(id) }}>
+        <ListItemIcon><ConfigIcon fontSize="small" /></ListItemIcon>
+        <ListItemText>Open configuration</ListItemText>
+      </MenuItem>
+    ) : null,
+    canExplore ? (
+      <MenuItem key="explorer" onClick={() => { closeMenu(); openResultsView('explorer', id) }}>
+        <ListItemIcon><ExplorerIcon fontSize="small" /></ListItemIcon>
+        <ListItemText>Open in results Explorer</ListItemText>
+      </MenuItem>
+    ) : null,
+    canReplay ? (
+      <MenuItem key="runview" onClick={() => { closeMenu(); openResultsView('run', id) }}>
+        <ListItemIcon><RunViewIcon fontSize="small" /></ListItemIcon>
+        <ListItemText>Replay runs in the Run view</ListItemText>
+      </MenuItem>
+    ) : null,
+  ].filter(Boolean)
+
+  const takeItems = canDownload
+    ? [
+        <MenuItem
+          key="download"
+          component="a"
+          href={robovast.archiveUrl(id)}
+          download={`${id}.tar.gz`}
+          onClick={closeMenu}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Download</ListItemText>
+        </MenuItem>,
+        // Omitted where the provider has no openable link -- sftp never has one, and a webdav
+        // URL often needs credentials the recipient lacks.
+        shareCopy?.url ? (
+          <MenuItem
+            key="sharelink"
+            onClick={() => {
+              void navigator.clipboard?.writeText(shareCopy.url as string)
+              closeMenu()
+            }}
           >
-            stalled {formatDuration(progressAgeS!)}
-          </Typography>
-        ) : null}
-        <CampaignOrigin origin={summary.origin}>
-          <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
-            {id}
-          </Typography>
-        </CampaignOrigin>
-        <LaunchedBy name={summary.created_by} />
-        {summary.started_at ? (
-          <Typography variant="caption" color="text.secondary">
-            {formatLocalTime(summary.started_at)}
-          </Typography>
-        ) : null}
-        <Box flexGrow={1} />
-        {stage ? (
+            <ListItemIcon><LinkRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Copy share link</ListItemText>
+          </MenuItem>
+        ) : null,
+      ].filter(Boolean)
+    : []
+
+  // Nothing here while the campaign runs: each one either re-runs a step of it or destroys it.
+  const actItems = running
+    ? []
+    : [
+        // The only entry that starts a SEPARATE campaign rather than re-running a step of this one.
+        <MenuItem key="retrigger" onClick={onRetrigger} disabled={retrigger.isPending}>
+          <ListItemIcon><ReplayRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Retrigger campaign</ListItemText>
+        </MenuItem>,
+        <MenuItem key="reprocess" onClick={onReprocess}>
+          <ListItemIcon><QueryStatsRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Retrigger postprocessing</ListItemText>
+        </MenuItem>,
+        // Named, because which variant lands is not a choice here and never was:
+        // `campaign_variant` reads it off the campaign directory, and once postprocessing has
+        // written into that tree the raw campaign no longer exists to export. Saying which one
+        // this will write is the whole of what the reader could not otherwise know.
+        <MenuItem key="share" onClick={onShare} disabled={share.isPending}>
+          <ListItemIcon><CloudUploadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>
+            {`Export to share (${summary.postprocessed ? 'postprocessed' : 'raw'})`}
+          </ListItemText>
+        </MenuItem>,
+        <MenuItem key="delete" onClick={onDelete} sx={{ color: 'error.main' }}>
+          <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText>Delete</ListItemText>
+        </MenuItem>,
+      ]
+
+  const menuItems = [openItems, takeItems, actItems]
+    .filter((group) => group.length)
+    .flatMap((group, i) => (i ? [<Divider key={`sep-${i}`} />, ...group] : group))
+
+  return (
+    <Paper sx={{ px: 2, py: collapsed ? 0.75 : 2 }}>
+      <Stack direction="row" spacing={1} alignItems="center" mb={collapsed ? 0 : 1.5}>
+        {/* The fold's click target: the row's whole non-interactive span, which is what makes a
+            collapsed card openable without aiming at the chevron (the same affordance
+            CollapsibleBox's header offers). It wraps only inert elements, so no child needs to
+            stop the click from propagating — the buttons after it are outside it entirely. */}
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          onClick={toggle}
+          sx={{ minWidth: 0, flexGrow: 1, cursor: 'pointer', userSelect: 'none' }}
+        >
+          <PhaseDot phase={phase} issue={stepIssue} />
+          {phaseAge ? (
+            <Typography variant="caption" color="text.secondary">
+              {phaseAge}
+            </Typography>
+          ) : null}
+          {stalled ? (
+            <Typography
+              variant="caption"
+              color="error.main"
+              noWrap
+              title={
+                `No run has completed for ${formatDuration(progressAgeS!)}, past the ` +
+                `${progressDeadline}s expected per run — the run is not merely slow. Read ` +
+                `what it is repeating in the log panel below.`
+              }
+            >
+              stalled {formatDuration(progressAgeS!)}
+            </Typography>
+          ) : null}
+          {/* A fixed column, not a shrink-to-fit label: campaign ids carry a user-supplied name,
+              so their widths vary by a factor of three, and without a column the timestamp and
+              the meter on every row below would sit at a different x. Applied whether the card is
+              open or shut so folding one does not shift the header sideways. */}
+          <CampaignOrigin origin={summary.origin}>
+            <Typography
+              variant="subtitle2"
+              noWrap
+              title={id}
+              sx={{ fontFamily: 'monospace', width: ID_COLUMN, flexShrink: 0 }}
+            >
+              {id}
+            </Typography>
+          </CampaignOrigin>
+          <LaunchedBy name={summary.created_by} />
+          {/* Folded, the description moves up into the row. On its own line it doubled the height
+              of every collapsed card, which is most of what the fold was for; here it also lines
+              up into a column that can be read down. The full text is on hover, and it returns to
+              its own full-width line the moment the card opens. */}
+          {collapsed && summary.description ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              noWrap
+              title={summary.description}
+              sx={{ minWidth: 0, flexGrow: 1 }}
+            >
+              {summary.description}
+            </Typography>
+          ) : (
+            <Box flexGrow={1} />
+          )}
+          {/* How long ago, not at what o'clock. A campaign id already ends in a
+              `-YYYY-MM-DD-HHMMSS` stamp, so an absolute start time beside it printed the same
+              fact twice and spent 150px of the row doing it — while the two questions a list is
+              actually scanned for, "which of these is recent" and "how long did it take", went
+              unanswered by both. Those are the age here and the duration on the hover; the exact
+              local time is there too, because it is NOT quite what the id says (see formatAge). */}
+          {summary.started_at ? (
+            <HoverFacts
+              facts={[
+                { label: 'started', value: formatLocalTime(summary.started_at) },
+                { label: 'finished', value: formatLocalTime(summary.finished_at) },
+                { label: 'took', value: campaignDuration(summary) },
+              ]}
+            >
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                noWrap
+                sx={{ flexShrink: 0, width: AGE_COLUMN, textAlign: 'right', cursor: 'help' }}
+              >
+                {formatAge(summary.started_at)}
+              </Typography>
+            </HoverFacts>
+          ) : null}
+          {collapsed ? (
+            <MiniRunMeter
+              status={meterStatus}
+              campaignId={id}
+              counts={jobs.data?.counts}
+              started={summary.started_at}
+              finished={summary.finished_at}
+            />
+          ) : null}
+        </Stack>
+        {stage && !collapsed ? (
           // After the spacer on purpose: the marker changes every few seconds, and ahead of it
           // every re-render would shift the campaign id and the start time sideways. Capped and
           // `noWrap` so a long step line truncates here instead of pushing the buttons off —
@@ -443,41 +683,55 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             {stage}
           </Typography>
         ) : null}
-        {status.isFetching ? <CircularProgress size={14} /> : null}
-        {hasConfig ? (
-          <Tooltip title="Open this campaign's configuration (read-only)">
+        {/* The controls, as a right-aligned column of their own. A fixed minimum, because which
+            of them exist varies per campaign — a stopped one has no Explorer or Run-view
+            shortcut — and without a column those two rows pushed their timestamp and meter
+            sideways, which is exactly the jitter the fixed id column exists to prevent. A minimum
+            rather than a fixed width so a running card's wider Stop button can still grow. */}
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
+        >
+        {/* Left of the menu, and an icon like everything else in this column: a labelled button
+            here was the one control wide enough to set the column's width, so a live card's
+            meter and age sat out of line with every folded row beneath it. The word moves to the
+            hover, where it can say what the button actually does — which "Stop" never did: it
+            ends the campaign AND kills its in-flight jobs, and is not the per-job stop in the
+            Jobs list below. It stays a button of its own rather than a menu entry, though: it is
+            the one action on a live campaign that must not be two clicks away. */}
+        {running ? (
+          <Tooltip
+            title={
+              stop.isPending
+                ? ''
+                : 'Stop this campaign — ends it and kills its running jobs. ' +
+                  'To stop one job and let the rest carry on, use the Jobs list.'
+            }
+          >
             <IconButton
               size="small"
-              aria-label="open campaign config"
-              onClick={() => openCampaignConfig(id)}
+              color="error"
+              aria-label="stop campaign"
+              disabled={stop.isPending}
+              onClick={onStop}
             >
-              <ConfigIcon fontSize="small" />
+              {stop.isPending ? <CircularProgress size={16} /> : <StopRoundedIcon fontSize="small" />}
             </IconButton>
           </Tooltip>
         ) : null}
-        {canExplore ? (
-          <Tooltip title="Open this campaign in the results Explorer">
-            <IconButton
-              size="small"
-              aria-label="open results explorer"
-              onClick={() => openResultsView('explorer', id)}
-            >
-              <ExplorerIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        {canReplay ? (
-          <Tooltip title="Replay this campaign's runs in the Run view">
-            <IconButton
-              size="small"
-              aria-label="open run view"
-              onClick={() => openResultsView('run', id)}
-            >
-              <RunViewIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        {!running ? (
+        {/* One menu, not a row of shortcuts. Config, Explorer, Run-view, Download and the actions
+            were five to seven icon buttons wide depending on the campaign — a bar of small
+            same-sized glyphs that has to be learnt before it can be used, on every row of a list
+            whose rows are meant to be scanned. In here each one is a named line instead, and the
+            row keeps two controls: this, and the fold.
+
+            Ordered by what the reader came for: open something, take something away, re-run
+            something, destroy something. Every entry is conditional, so the button is only
+            offered when at least one of them exists (a campaign still building has no
+            configuration frozen yet and nothing else to act on). */}
+        {menuItems.length ? (
           <>
             {/* Empty title while the delete is in flight: the button is disabled then, and a
                 disabled button fires no events for the tooltip to listen to (MUI warns about it). */}
@@ -485,130 +739,47 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               <IconButton
                 size="small"
                 aria-label="campaign actions"
+                aria-haspopup="menu"
                 onClick={(e) => setMenuAnchor(e.currentTarget)}
                 disabled={del.isPending}
               >
                 {del.isPending ? (
                   <CircularProgress size={16} />
                 ) : (
-                  <SettingsRoundedIcon fontSize="small" />
+                  <MenuRoundedIcon fontSize="small" />
                 )}
               </IconButton>
             </Tooltip>
             <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
-              {/* First, and the only entry here that starts a separate campaign rather than
-                  re-running a step of this one. */}
-              <MenuItem onClick={onRetrigger} disabled={retrigger.isPending}>
-                <ListItemIcon>
-                  <ReplayRoundedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Retrigger campaign</ListItemText>
-              </MenuItem>
-              <MenuItem onClick={onReprocess}>
-                <ListItemIcon>
-                  <QueryStatsRoundedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Retrigger postprocessing</ListItemText>
-              </MenuItem>
-              {/* Named, because which variant lands is not a choice here and never was:
-                  `campaign_variant` reads it off the campaign directory, and once
-                  postprocessing has written into that tree the raw campaign no longer exists
-                  to export. Saying which one this will write is the whole of what the reader
-                  could not otherwise know. */}
-              <MenuItem onClick={onShare} disabled={share.isPending}>
-                <ListItemIcon>
-                  <CloudUploadRoundedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>
-                  {`Export to share (${summary.postprocessed ? 'postprocessed' : 'raw'})`}
-                </ListItemText>
-              </MenuItem>
-              <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
-                <ListItemIcon>
-                  <DeleteOutlineRoundedIcon fontSize="small" color="error" />
-                </ListItemIcon>
-                <ListItemText>Delete</ListItemText>
-              </MenuItem>
+              {menuItems}
             </Menu>
           </>
         ) : null}
-        {canDownload ? (
-          shareCopy ? (
-            // A share copy exists, so download is one of two things you might want and the
-            // icon becomes a menu. With no copy there is no menu and no second click --
-            // the common case stays one press.
-            <>
-              <Tooltip title="Download">
-                <IconButton
-                  size="small"
-                  onClick={(e) => setDownloadAnchor(e.currentTarget)}
-                  aria-label="download options"
-                >
-                  <DownloadRoundedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Menu
-                anchorEl={downloadAnchor}
-                open={Boolean(downloadAnchor)}
-                onClose={() => setDownloadAnchor(null)}
-              >
-                <MenuItem
-                  component="a"
-                  href={robovast.archiveUrl(id)}
-                  download={`${id}.tar.gz`}
-                  onClick={() => setDownloadAnchor(null)}
-                >
-                  <ListItemIcon>
-                    <DownloadRoundedIcon fontSize="small" />
-                  </ListItemIcon>
-                  <ListItemText>Download</ListItemText>
-                </MenuItem>
-                {/* Omitted where the provider has no openable link -- sftp never has one,
-                    and a webdav URL often needs credentials the recipient lacks. */}
-                {shareCopy.url ? (
-                  <MenuItem
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(shareCopy.url as string)
-                      setDownloadAnchor(null)
-                    }}
-                  >
-                    <ListItemIcon>
-                      <LinkRoundedIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>Copy share link</ListItemText>
-                  </MenuItem>
-                ) : null}
-              </Menu>
-            </>
-          ) : (
-            <Tooltip title="Download">
-              <IconButton
-                size="small"
-                component="a"
-                href={robovast.archiveUrl(id)}
-                download={`${id}.tar.gz`}
-                aria-label="download"
-              >
-                <DownloadRoundedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          )
-        ) : null}
-        {running ? (
-          <Button
+        {/* Last, and offered on every card: a running campaign can be folded away too — a lane
+            running six of them is six full cards, and the one being watched is usually one of
+            them. Only the DEFAULT differs (see `collapsed`). This is also the keyboard and
+            screen-reader control for the fold; the row-wide click target above is the mouse
+            affordance, not the announced one. */}
+        <Tooltip title={collapsed ? 'Show this campaign' : 'Collapse this campaign'}>
+          <IconButton
             size="small"
-            variant="outlined"
-            color="error"
-            startIcon={<StopRoundedIcon />}
-            disabled={stop.isPending}
-            onClick={() => stop.mutate()}
+            aria-label={collapsed ? 'expand campaign' : 'collapse campaign'}
+            aria-expanded={!collapsed}
+            onClick={toggle}
           >
-            Stop
-          </Button>
-        ) : null}
+            {collapsed ? (
+              <KeyboardArrowDownRoundedIcon fontSize="small" />
+            ) : (
+              <KeyboardArrowUpRoundedIcon fontSize="small" />
+            )}
+          </IconButton>
+        </Tooltip>
+        </Stack>
       </Stack>
 
-      {summary.description ? (
+      {/* Its own full-width line only while the card is open; folded, it rides in the header row
+          above. Never both. */}
+      {!collapsed && summary.description ? (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {summary.description}
         </Typography>
@@ -697,41 +868,46 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         />
       ) : null}
 
-      {status.isError ? (
-        <Stack direction="row" spacing={1} alignItems="flex-start">
-          <PhaseChip phase={phase} issue={stepIssue} />
-          <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
-            no live status ({(status.error as Error).message})
-          </Typography>
-        </Stack>
-      ) : status.data ? (
-        <StatusView
-          status={status.data}
-          campaignId={id}
-          jobs={jobs.data}
-          liveOnly
-          newest={newest}
-          showDetails={canExplore}
-          quotaCpu={usage.data?.cpu_capacity ?? null}
-          postprocessed={!!summary.postprocessed}
-          onStopJob={onStopJob}
-          stoppingJob={stopJob.isPending ? (stopJob.variables?.jobName ?? null) : null}
-        />
-      ) : (
-        <Stack direction="row" spacing={1} alignItems="center">
-          <PhaseChip phase={phase} issue={stepIssue} />
-          <Typography variant="caption" color="text.secondary">
-            {summary.num_passed}/{summary.num_runs} passed
-            {summary.num_failed ? ` · ${summary.num_failed} failed` : ''}
-            {/* Search draws that never became a runnable configuration. Shown apart from
-                the run tallies: they are absent from num_runs, so without this a campaign
-                that could not compose most of what it proposed reads as a smaller one. */}
-            {summary.num_composition_failed
-              ? ` · ${summary.num_composition_failed} skipped`
-              : ''}
-          </Typography>
-        </Stack>
-      )}
+      {/* Everything below the header, folded away as one unit. `unmountOnExit` is the point,
+          not a detail: it is what keeps a collapsed card from mounting DetailsBox and
+          CampaignLog at all, so it issues no Details queries and opens no log stream. */}
+      <Collapse in={!collapsed} unmountOnExit>
+        {status.isError ? (
+          <Stack direction="row" spacing={1} alignItems="flex-start">
+            <PhaseChip phase={phase} issue={stepIssue} />
+            <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+              no live status ({(status.error as Error).message})
+            </Typography>
+          </Stack>
+        ) : status.data ? (
+          <StatusView
+            status={status.data}
+            campaignId={id}
+            jobs={jobs.data}
+            liveOnly
+            newest={newest}
+            showDetails={canExplore}
+            quotaCpu={usage.data?.cpu_capacity ?? null}
+            postprocessed={!!summary.postprocessed}
+            onStopJob={onStopJob}
+            stoppingJob={stopJob.isPending ? (stopJob.variables?.jobName ?? null) : null}
+          />
+        ) : (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <PhaseChip phase={phase} issue={stepIssue} />
+            <Typography variant="caption" color="text.secondary">
+              {summary.num_passed}/{summary.num_runs} passed
+              {summary.num_failed ? ` · ${summary.num_failed} failed` : ''}
+              {/* Search draws that never became a runnable configuration. Shown apart from
+                  the run tallies: they are absent from num_runs, so without this a campaign
+                  that could not compose most of what it proposed reads as a smaller one. */}
+              {summary.num_composition_failed
+                ? ` · ${summary.num_composition_failed} skipped`
+                : ''}
+            </Typography>
+          </Stack>
+        )}
+      </Collapse>
 
       {ppOpen && (
         <PostprocessingDialog campaignId={id} open onClose={() => setPpOpen(false)} />
