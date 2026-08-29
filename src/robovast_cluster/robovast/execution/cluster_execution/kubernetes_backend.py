@@ -652,7 +652,12 @@ class BatchJobRunner:
         #: ``fixed`` or ``calibrated`` -- see ``ExecutionConfig.sizing``. Read once here so
         #: the sizing path does not have to reach back into the campaign document, and so a
         #: runner built for an offline emit (which has no campaign) defaults to ``fixed``.
-        self.sizing_mode = execution_params.get("sizing") or "fixed"
+        # Inferred where the file does not say, by the same rule the model applies: what
+        # reaches a backend is the PARSED YAML rather than the validated model, so reading
+        # the key alone made every campaign that declared nothing run as `fixed` -- the
+        # opposite of what declaring nothing asks for, and silently.
+        from robovast.common.config import infer_sizing  # noqa: PLC0415
+        self.sizing_mode = infer_sizing(execution_params)
         self.pre_command = execution_params.get("pre_command")
         self.post_command = execution_params.get("post_command")
         self.run_as_user = execution_params.get("run_as_user", 1000)

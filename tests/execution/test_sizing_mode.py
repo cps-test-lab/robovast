@@ -581,3 +581,41 @@ def test_headroom_below_one_is_refused():
         _execution(sizing="calibrated",
                    containers={"sut": {"image": "i",
                                        "calibration": {"headroom": {"cpu": 0.9}}}})
+
+
+# -- the inferred mode has to reach the lane that acts on it -----------------------------
+
+
+def test_a_campaign_that_declares_nothing_reaches_the_backend_as_calibrated():
+    """The inference lives on the model, but what reaches a backend is the PARSED YAML --
+    so reading the key alone made every campaign that declared nothing run as `fixed`, which
+    is the opposite of what declaring nothing asks for, and silently. Caught by running the
+    out-of-the-box case on a cluster, where it was refused by the zero-cpu guard telling it
+    to set the mode it had already inferred."""
+    from robovast.common.config import infer_sizing
+
+    r = kb.BatchJobRunner()
+    r.sizing_mode = infer_sizing({"containers": {"sut": {"image": "i"}, "scenario": {}}})
+    assert r._sizing_is_calibrated()
+
+
+def test_a_campaign_that_declares_a_figure_still_reaches_it_as_fixed():
+    """The other half of the same rule: an existing `.vast` keeps meaning what it meant."""
+    from robovast.common.config import infer_sizing
+
+    r = kb.BatchJobRunner()
+    r.sizing_mode = infer_sizing({"containers": {"sut": {"resources": {"cpu": 3}}}})
+    assert not r._sizing_is_calibrated()
+
+
+def test_the_model_and_the_lane_cannot_answer_differently():
+    """Two readings of one rule is how they drift. Pinned against the model's own result so
+    a change to either has to change both."""
+    from robovast.common.config import ExecutionConfig, infer_sizing
+
+    for containers in ({"sut": {"image": "i"}},
+                       {"sut": {"image": "i", "resources": {"cpu": 2}}},
+                       {"sut": {"image": "i", "resources": {"memory": "1Gi"}}},
+                       {"sut": {"image": "i", "resources": {"gpu": 1}}}):
+        model = ExecutionConfig(runs=1, containers=containers)
+        assert model.sizing == infer_sizing({"containers": containers}), containers

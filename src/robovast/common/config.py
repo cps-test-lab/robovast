@@ -281,6 +281,42 @@ class ImageProvenanceConfig(BaseModel):
     build_recipe: Optional[str] = None
 
 
+#: The fields whose presence means a container's sizing was declared rather than measured.
+#: ``gpu`` is not among them: a device count is a count, not a rate, so nothing measures it
+#: and it never decides the mode.
+SIZED_FIELDS = ("cpu", "cpu_limit", "memory", "memory_limit")
+
+
+def infer_sizing(execution) -> str:
+    """The sizing mode *execution* means, whether or not it says so.
+
+    **One rule, reachable from both sides.** The model applies it in `resolve_sizing`; the
+    cluster lane needs the same answer from the RAW section, because what reaches a backend is
+    the parsed YAML rather than the validated model -- so an inferred mode was invisible there
+    and every campaign that declared nothing silently ran as `fixed`, which is the opposite of
+    what declaring nothing asks for. Written once so the two cannot answer differently.
+
+    *execution* may be the raw mapping or the model; both are read the same way.
+    """
+    stated = (execution.get("sizing") if isinstance(execution, dict)
+              else getattr(execution, "sizing", None))
+    if stated:
+        return str(stated)
+    containers = (execution.get("containers") if isinstance(execution, dict)
+                  else getattr(execution, "containers", None)) or {}
+    for container in containers.values():
+        resources = (container.get("resources") if isinstance(container, dict)
+                     else getattr(container, "resources", None))
+        if resources is None:
+            continue
+        for field in SIZED_FIELDS:
+            value = (resources.get(field) if isinstance(resources, dict)
+                     else getattr(resources, field, None))
+            if value is not None:
+                return "fixed"
+    return "calibrated"
+
+
 class CalibrationHeadroom(BaseModel):
     """Margin above what a probe measured, per resource.
 
@@ -563,7 +599,7 @@ class ExecutionConfig(BaseModel):
         sizing with nothing declared (refused at admission, which names the containers).
         """
         if self.sizing is None:
-            self.sizing = "fixed" if self._declares_resources() else "calibrated"
+            self.sizing = infer_sizing(self)
         return self
 
     def _declares_resources(self) -> bool:
