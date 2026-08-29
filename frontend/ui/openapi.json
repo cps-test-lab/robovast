@@ -3567,6 +3567,11 @@
             ],
             "title": "Namespace"
           },
+          "package_version": {
+            "default": "",
+            "title": "Package Version",
+            "type": "string"
+          },
           "results_address": {
             "default": "/results/{campaign_id}/{path}",
             "title": "Results Address",
@@ -3620,6 +3625,7 @@
           "kube_context",
           "kube_context_source",
           "namespace",
+          "package_version",
           "results_address",
           "results_root",
           "robovast_version",

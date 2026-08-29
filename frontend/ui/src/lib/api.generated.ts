@@ -3713,6 +3713,11 @@ export interface components {
             /** Namespace */
             namespace: string | null;
             /**
+             * Package Version
+             * @default
+             */
+            package_version: string;
+            /**
              * Results Address
              * @default /results/{campaign_id}/{path}
              */

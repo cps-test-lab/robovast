@@ -144,7 +144,13 @@ export function AdminPage() {
           <Typography variant="subtitle2">This service</Typography>
           {version.isSuccess ? (
             <>
-              <Field label="version" value={version.data.robovast_version} />
+              {/* The release, not `robovast_version`. That field prefers a revision
+                  wherever one can be had, and a deployed image always bakes one in, so it
+                  printed the same SHA as the revision line below it — one string, twice,
+                  under two labels, and the semver nowhere. */}
+              {version.data.package_version ? (
+                <Field label="version" value={version.data.package_version} />
+              ) : null}
               {/* Absent means "this deployment cannot tell", which is not a mismatch — so
                   print nothing rather than a blank or a placeholder that reads as one. */}
               {version.data.code_revision ? (
