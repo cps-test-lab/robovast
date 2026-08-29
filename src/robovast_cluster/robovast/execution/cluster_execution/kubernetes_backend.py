@@ -1261,6 +1261,24 @@ class BatchJobRunner:
         if not node_ids or not jobs:
             return calibration
         sizing = self._job_sizing(jobs[0], total_jobs)
+        # **A probe no node could ever hold is a configuration fault, not a wait.** Under
+        # calibrated sizing a probe runs at the bootstrap -- a deployment-wide default rather
+        # than anything this campaign chose -- so it can exceed the smallest node without the
+        # `.vast` saying anything wrong. Unchecked, the probe simply never places, and because
+        # a node being measured accepts no work, that node sits idle for the whole batch with
+        # nothing said. Checked here for the same reason the batch's own sizing is checked
+        # before it is enqueued.
+        try:
+            admission.preflight(sizing)
+        except Exception as exc:  # noqa: BLE001 - re-raised with what makes it actionable
+            raise CampaignConfigError(
+                f"A calibration probe needs {sizing.cpu:g} cpu and no node can hold it. Under "
+                "execution.sizing: calibrated a probe runs at the deployment's bootstrap "
+                "(ROBOVAST_BOOTSTRAP_CPU / _MEMORY) summed over this campaign's containers, "
+                "so this is the cluster's default being larger than its smallest node rather "
+                "than anything the campaign declared. Lower the bootstrap for a role, or "
+                "declare execution.containers.<name>.resources so the probe is sized from the "
+                f"campaign instead. ({exc})") from exc
         base = self.create_job_manifest(jobs[0], total_jobs)
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
@@ -1434,8 +1452,19 @@ class BatchJobRunner:
         calibration = self._calibration
         if calibration is None:
             return
+        # **Only probes the queue actually CREATED can be finished.** "Not among the jobs
+        # still running" is true of a job that ended and equally of one that was never
+        # created -- so a probe still waiting for room read as one that ran and produced no
+        # verdict, and with a refusal now fatal that ended the campaign with a diagnosis
+        # naming the wrong cause and a remedy that could not have helped. Seen on a node the
+        # bootstrap pod does not fit, where the probe is unplaceable rather than broken.
+        created = {name for name, state in admission.states(self._probe_owner()).items()
+                   if state == _ADMIT_CREATED}
+        outstanding = [k for k in self._probes if k in created]
+        if not outstanding:
+            return
         try:
-            done = set(self._probes) - set(self.get_remaining_jobs(list(self._probes)))
+            done = set(outstanding) - set(self.get_remaining_jobs(outstanding))
         except Exception as exc:  # noqa: BLE001 - retried next cycle
             logger.debug("Batch %s: could not poll probes: %s", self._batch_tag, exc)
             return

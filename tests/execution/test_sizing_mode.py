@@ -619,3 +619,56 @@ def test_the_model_and_the_lane_cannot_answer_differently():
                        {"sut": {"image": "i", "resources": {"gpu": 1}}}):
         model = ExecutionConfig(runs=1, containers=containers)
         assert model.sizing == infer_sizing({"containers": containers}), containers
+
+
+# -- a probe that was never created is not a probe that failed ---------------------------
+
+
+def test_a_probe_still_waiting_for_room_is_not_judged():
+    """"Not among the jobs still running" is true of a job that ended and equally of one that
+    was never created. Read as finished, an unplaceable probe was refused for reaching no
+    verdict -- and with a refusal fatal that ended the campaign naming the wrong cause, with a
+    remedy that could not have helped. Seen on a node the bootstrap pod does not fit."""
+    import types
+
+    from robovast.execution.cluster_execution.node_admission import CREATED, PLANNED
+
+    polled = []
+
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-1"
+    r._batch_tag = "batch-0"
+    r._probes = {"probe-a": "n1", "probe-b": "n2"}
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": [], "refused": {}},
+        record=lambda *a, **k: True)
+    r.admission = types.SimpleNamespace(
+        states=lambda owner: {"probe-a": CREATED, "probe-b": PLANNED},
+        finished=lambda name: None)
+    r._container_percentiles = lambda: {}
+    r._probe_container_files = lambda: {}
+    r._probe_container_limits = lambda: {}
+    r.get_remaining_jobs = lambda names: polled.append(list(names)) or []
+
+    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
+                      bucket_name="b", campaign_prefix="c/")
+    assert polled == [["probe-a"]], "the planned probe is never asked about"
+
+
+def test_nothing_created_yet_polls_nothing():
+    """The first cycles of every batch, before the queue has found room for anything."""
+    import types
+
+    from robovast.execution.cluster_execution.node_admission import PLANNED
+
+    r = kb.BatchJobRunner()
+    r._batch_tag = "batch-0"
+    r.campaign = "camp-1"
+    r._probes = {"probe-a": "n1"}
+    r._calibration = types.SimpleNamespace(outcome=lambda: {"calibrated": [], "refused": {}})
+    r.admission = types.SimpleNamespace(states=lambda owner: {"probe-a": PLANNED},
+                                        finished=lambda name: None)
+    r.get_remaining_jobs = lambda names: (_ for _ in ()).throw(
+        AssertionError("must not poll a probe that was never created"))
+    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
+                      bucket_name="b", campaign_prefix="c/")
