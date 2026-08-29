@@ -3,7 +3,6 @@ import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
-import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
 import Divider from '@mui/material/Divider'
@@ -73,18 +72,25 @@ const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
 ])
 
 // The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
-// zig-zagging. Sized against the ids campaigns actually get, not a guess: a `.vast` name plus the
-// `-YYYY-MM-DD-HHMMSS` stamp the service appends runs to ~32 monospace characters before the name
-// is anything but short (`sim-suite-nav2-2026-07-10-094518`), and the stamp is at the END — so a
-// column that truncates there hides the only part that tells two runs of the same project apart.
-// A longer one still truncates, with the whole of it on hover.
-const ID_COLUMN = 300
+// zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
+// controller appends `-YYYY-MM-DD-HHMMSS` plus two hundredths (see `_campaign_id_lock`), which is
+// 20 characters of stamp before the project name, so a name as ordinary as `nav-search-halton`
+// reaches 37. Sized short at first and it cut the stamp off exactly those ids -- and the stamp is
+// the END of the string, the only part that tells two runs of the same project apart, which is
+// the one thing this column must never be the reason a reader cannot see.
+const ID_COLUMN = 360
 
-// The trailing controls' column: the actions menu and the fold, and on a live card the Stop
-// button too. Reserved rather than shrink-to-fit because not every card has every control — a
-// campaign still building has no actions menu — and without a fixed width those rows pull their
-// meter and age sideways out of line with every other row. A minimum, so Stop can still grow.
-const CONTROLS_COLUMN = 76
+// The trailing controls' column: the actions menu, the fold, and on a live card the Stop button.
+// Reserved rather than shrink-to-fit because not every card has every control — a campaign still
+// building has no actions menu — and without a fixed width those rows pull their meter and age
+// sideways out of line with every other row.
+//
+// Sized for the WIDEST set (three small icon buttons and the two gaps between them), not the
+// common one. A minimum that the busiest row exceeds is not a reserved column at all: the stack
+// then sizes to its content, and anything that comes and goes inside it moves the whole flexible
+// span to its left. That is what a per-poll fetch spinner did here — it appeared and vanished
+// every 1.5 s on a running card and walked the age back and forth beside it.
+const CONTROLS_COLUMN = 108
 
 // The age column. Fixed and right-aligned so the ages read down the page as one column; wide
 // enough for the longest string formatAge produces.
@@ -658,7 +664,33 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           alignItems="center"
           sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
         >
-        {status.isFetching ? <CircularProgress size={14} /> : null}
+        {/* Left of the menu, and an icon like everything else in this column: a labelled button
+            here was the one control wide enough to set the column's width, so a live card's
+            meter and age sat out of line with every folded row beneath it. The word moves to the
+            hover, where it can say what the button actually does — which "Stop" never did: it
+            ends the campaign AND kills its in-flight jobs, and is not the per-job stop in the
+            Jobs list below. It stays a button of its own rather than a menu entry, though: it is
+            the one action on a live campaign that must not be two clicks away. */}
+        {running ? (
+          <Tooltip
+            title={
+              stop.isPending
+                ? ''
+                : 'Stop this campaign — ends it and kills its running jobs. ' +
+                  'To stop one job and let the rest carry on, use the Jobs list.'
+            }
+          >
+            <IconButton
+              size="small"
+              color="error"
+              aria-label="stop campaign"
+              disabled={stop.isPending}
+              onClick={() => stop.mutate()}
+            >
+              {stop.isPending ? <CircularProgress size={16} /> : <StopRoundedIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {/* One menu, not a row of shortcuts. Config, Explorer, Run-view, Download and the actions
             were five to seven icon buttons wide depending on the campaign — a bar of small
             same-sized glyphs that has to be learnt before it can be used, on every row of a list
@@ -692,18 +724,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               {menuItems}
             </Menu>
           </>
-        ) : null}
-        {running ? (
-          <Button
-            size="small"
-            variant="outlined"
-            color="error"
-            startIcon={<StopRoundedIcon />}
-            disabled={stop.isPending}
-            onClick={() => stop.mutate()}
-          >
-            Stop
-          </Button>
         ) : null}
         {/* Last, and offered on every card: a running campaign can be folded away too — a lane
             running six of them is six full cards, and the one being watched is usually one of
