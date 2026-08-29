@@ -95,11 +95,27 @@ class NodeCalibration:
     _by_node: dict = field(default_factory=dict)
     #: node_id -> the probe key currently measuring that node
     _probes: dict = field(default_factory=dict)
+    #: node_id -> why that node's probe was refused, for the campaign-level summary. A refusal
+    #: is per node and is only ever reported once it is known whether ANY node was measured:
+    #: one node refusing while three calibrate is unremarkable, and the same line when every
+    #: node refuses means the campaign ran unmeasured from end to end.
+    _refused: dict = field(default_factory=dict)
     enabled: bool = True
 
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
         return self._by_node.get(node_id)
+
+    def outcome(self) -> dict:
+        """What calibration achieved, for the campaign to report once it is over.
+
+        ``{"calibrated": [node_id, ...], "refused": {node_id: reason}}``. Kept as data rather
+        than logged where each refusal happens, because a single refusal is unremarkable --
+        the node simply keeps what it started on -- while *every* node refusing means the
+        campaign ran unmeasured from end to end, and only the caller at the end knows which
+        of those two happened.
+        """
+        return {"calibrated": sorted(self._by_node), "refused": dict(self._refused)}
 
     def claim_probe(self, node_id, probe_key) -> bool:
         """Start measuring *node_id*, unless it is measured or being measured already.
@@ -177,6 +193,7 @@ class NodeCalibration:
             # than a figure derived from a run that did not happen.
             logger.warning("calibration probe %s did not complete; node %s keeps its current "
                            "sizing (declared, or the bootstrap)", job_key, node_id)
+            self._refused[node_id] = "its probe reached no verdict"
             return False
         thin = [name for name, stats in (measured or {}).items()
                 if (stats or {}).get("samples", 0) < MIN_PROBE_SAMPLES]
@@ -184,6 +201,8 @@ class NodeCalibration:
             logger.warning("calibration probe %s produced too few samples for %s "
                            "(< %d ticks); node %s keeps its current sizing",
                            job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
+            self._refused[node_id] = (
+                f"its probe ran for fewer than {MIN_PROBE_SAMPLES} samples")
             return False
         # A probe that hit its own ceiling measured the ceiling. Refused rather than stored,
         # because the figure would be a limit dressed as a demand and every later run on this
@@ -200,6 +219,8 @@ class NodeCalibration:
                 "sizing. The memory it was given is too small for this campaign -- see "
                 "ROBOVAST_BOOTSTRAP_MEMORY, or declare it with execution.sizing: fixed",
                 job_key, ", ".join(killed), node_id)
+            self._refused[node_id] = (
+                "its probe was OOM-killed (" + ", ".join(killed) + ")")
             return False
         capped = {name: stats["throttled_ratio"]
                   for name, stats in (measured or {}).items()
@@ -213,6 +234,9 @@ class NodeCalibration:
                 job_key,
                 ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
                 node_id)
+            self._refused[node_id] = (
+                "its probe was throttled past what its statistic absorbs ("
+                + ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())) + ")")
             return False
         figures = {}
         for name, stats in (measured or {}).items():
@@ -224,11 +248,16 @@ class NodeCalibration:
         if not figures:
             logger.warning("calibration probe %s produced no usable measurement; node %s "
                            "keeps its current sizing", job_key, node_id)
+            self._refused[node_id] = "its probe produced no usable measurement"
             return False
         self._by_node[node_id] = figures
         # INFO on a `robovast.*` logger, so it reaches the campaign log as well as the
         # service's: what a node's jobs were sized to is part of what the campaign did, and
         # a reader asking why two nodes behaved differently should find it there.
+        # A node that succeeds now is not a refused node, whatever an earlier probe on it
+        # said: the ledger reports the END state, and a stale entry would make a calibrated
+        # campaign look partly unmeasured.
+        self._refused.pop(node_id, None)
         logger.info(
             "node %s calibrated from %s -- its jobs are sized from these (headroom applied; "
             "the system under test takes peak, everything else sustained): %s",

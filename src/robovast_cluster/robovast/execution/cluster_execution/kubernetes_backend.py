@@ -1385,6 +1385,41 @@ class BatchJobRunner:
                                       peak_sized=self._peak_sized_containers()):
                 calibration.abandon(node_id, key)
 
+    def report_calibration_outcome(self) -> None:
+        """Say, once, what calibration actually achieved for this batch.
+
+        Each refusal is already logged where it happens, per node -- but a refusal on its own
+        is unremarkable, because that node simply keeps what it started on while the others
+        are measured. What is NOT unremarkable is **every** node refusing: the campaign then
+        ran end to end on the bootstrap, which is a cluster-wide default nobody chose for this
+        workload, and nothing in its results says so. Reading that off four scattered warnings
+        is exactly the inspection nobody performs on a campaign that reported success.
+
+        A warning, not a failure. Bootstrap-sized runs are generous rather than wrong, so what
+        was lost is throughput and per-node comparability, not validity -- stopping the
+        campaign would discard good runs to protect a property they still have.
+        """
+        if self._calibration is None or not self._sizing_is_calibrated():
+            return
+        outcome = self._calibration.outcome()
+        calibrated, refused = outcome["calibrated"], outcome["refused"]
+        if not refused:
+            return
+        if calibrated:
+            logger.info("Batch %s: %d node(s) calibrated, %d not (%s)", self._batch_tag,
+                        len(calibrated), len(refused),
+                        "; ".join(f"{n}: {why}" for n, why in sorted(refused.items())))
+            return
+        logger.warning(
+            "Batch %s: NO node was calibrated, so every run used the bootstrap sizing -- a "
+            "cluster-wide default, not a figure measured for this workload. Runs are "
+            "generously sized rather than wrongly sized, so results stand; what is lost is "
+            "throughput and the per-node comparability `execution.sizing: calibrated` was "
+            "asked for. Per node: %s. Raise ROBOVAST_BOOTSTRAP_CPU for a container that "
+            "throttled, and see the campaign log's per-node lines for the rest.",
+            self._batch_tag,
+            "; ".join(f"{n}: {why}" for n, why in sorted(refused.items())))
+
     def abandon_outstanding_probes(self) -> int:
         """Free every node this batch was still measuring. Returns how many.
 
@@ -2788,6 +2823,7 @@ class KubernetesBackend(ExecutionBackend):
                 dropped += self._admission.cancel(
                     f"{campaign_id}{BatchJobRunner._PROBE_OWNER_SUFFIX}")
                 runner.abandon_outstanding_probes()
+                runner.report_calibration_outcome()
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)

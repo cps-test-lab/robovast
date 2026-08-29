@@ -1294,6 +1294,15 @@ percentile throws away. A single strict allowance for both refuses probes whose 
 figure is perfectly good and leaves those nodes unmeasured, which costs more than the
 distortion it was guarding against.
 
+**A campaign no node could be calibrated for says so.** One refused node is unremarkable --
+it keeps what it started on while the others are measured -- so it is reported and no more.
+Every node refusing is different in kind: the campaign then ran end to end on the bootstrap,
+a cluster-wide default nobody chose for that workload, and the per-node comparability it asked
+for was never obtained. That is a warning in the campaign log naming each node and its reason,
+rather than something to be pieced together from scattered per-node lines afterwards. It is
+not a failure: bootstrap-sized runs are generously sized rather than wrongly sized, so the
+results stand and what was lost is throughput.
+
 **Where calibration does not apply, the bootstrap stands and is checked.** A campaign with no
 more jobs than the cluster has nodes, or a cluster that can grow, never probes. Those runs use
 the bootstrap, and one that is OOM-killed or throttled hard against it **stops the campaign**

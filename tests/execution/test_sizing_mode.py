@@ -376,3 +376,61 @@ def test_calibration_does_not_reintroduce_an_empty_cpu_limit():
                                     bootstrap=True)
     assert sized.get("cpu_limit"), "never empty: an absent limit means the node's capacity"
     assert float(sized["cpu_limit"]) >= float(sized["cpu"]), "a ceiling is not below its floor"
+
+
+# -- a campaign that could not be calibrated says so ------------------------------------
+
+
+def _runner_with(outcome, mode="calibrated"):
+    r = kb.BatchJobRunner()
+    r.sizing_mode = mode
+    r._batch_tag = "batch-0"
+    r._calibration = type("_C", (), {"outcome": staticmethod(lambda: outcome)})()
+    return r
+
+
+def test_every_node_refusing_is_reported_as_a_campaign_level_warning(caplog):
+    """One node refusing is unremarkable -- it keeps what it started on while the others are
+    measured. Every node refusing means the campaign ran end to end on a cluster-wide default
+    nobody chose for this workload, and nothing in its results says so. Reading that off
+    scattered per-node warnings is the inspection nobody performs on a campaign that reported
+    success."""
+    import logging
+
+    r = _runner_with({"calibrated": [], "refused": {"n1": "its probe reached no verdict"}})
+    with caplog.at_level(logging.INFO, logger="robovast"):
+        r.report_calibration_outcome()
+    said = [rec for rec in caplog.records if "NO node was calibrated" in rec.getMessage()]
+    assert said and said[0].levelno == logging.WARNING
+    assert "n1" in said[0].getMessage(), "name the node and its reason, not just the count"
+
+
+def test_a_partly_calibrated_campaign_is_not_warned_about(caplog):
+    """The remedy differs, so the severity must: some nodes measured is a normal outcome on a
+    mixed cluster, and warning about it trains the reader to ignore the case that matters."""
+    import logging
+
+    r = _runner_with({"calibrated": ["n1"], "refused": {"n2": "thin"}})
+    with caplog.at_level(logging.INFO, logger="robovast"):
+        r.report_calibration_outcome()
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert [rec for rec in caplog.records if "calibrated" in rec.getMessage()]
+
+
+def test_a_fully_calibrated_campaign_says_nothing(caplog):
+    import logging
+
+    r = _runner_with({"calibrated": ["n1", "n2"], "refused": {}})
+    with caplog.at_level(logging.INFO, logger="robovast"):
+        r.report_calibration_outcome()
+    assert not caplog.records
+
+
+def test_a_fixed_campaign_is_never_warned_about_calibration(caplog):
+    """It asked for none, so the absence of it is not a finding."""
+    import logging
+
+    r = _runner_with({"calibrated": [], "refused": {"n1": "thin"}}, mode="fixed")
+    with caplog.at_level(logging.INFO, logger="robovast"):
+        r.report_calibration_outcome()
+    assert not caplog.records
