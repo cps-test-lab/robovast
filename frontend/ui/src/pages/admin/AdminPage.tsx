@@ -105,37 +105,25 @@ export function AdminPage() {
       title: 'Upgrade RoboVAST now?',
       danger: live.length > 0,
       confirmLabel: live.length > 0 ? 'Upgrade anyway' : 'Upgrade now',
-      // Written for someone who has never heard of Kubernetes, because nothing about
-      // running an experiment requires having heard of it. Every term of art the previous
-      // wording leaned on -- pod, roll, RBAC, Secrets, the build daemon -- named a thing
-      // the reader cannot act on anyway; what they can act on is what stops, what keeps
-      // working, and what this does not cover. So say those, and keep the exact `vast`
-      // command, which is the one string they may need to type.
+      // Written for someone who has never heard of Kubernetes, and kept to three lines:
+      // what happens, what it costs, what it does not cover. The image ref is not repeated
+      // here -- the `image` field sits directly above this button.
       message: (
         <>
           <p>
-            RoboVAST restarts itself on the newest version published for this installation.
-            The replacement starts up before this one shuts down, so the service stays
-            reachable, and this page reloads on its own once the new version is answering.
+            RoboVAST restarts on the newest published version. It stays reachable, and this
+            page reloads itself once the new version is up.
           </p>
           {live.length > 0 && (
             <p>
-              <b>{live.length} campaign(s) are still running.</b> RoboVAST drives them from
-              inside the part that is about to be replaced, so upgrading now stops them
-              where they are, and they will not carry on afterwards:{' '}
-              {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}
+              <b>{live.length} campaign(s) are still running</b> and will be stopped for
+              good: {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}
             </p>
           )}
           <p>
-            Only RoboVAST itself is upgraded. Everything around it is left as it is — the
-            permissions it runs under, the route to the image registry it downloads from,
-            the credentials it has stored, and the image builder. To bring those up to date
-            as well, run <code>vast service upgrade</code> in a terminal: that does the
-            whole job, this button does one part of it.
+            This updates RoboVAST only. For the rest of the installation — permissions,
+            registry, credentials, image builder — run <code>vast service upgrade</code>.
           </p>
-          <Typography variant="caption" color="text.secondary">
-            Newest version published at <code>{info.image_ref}</code>.
-          </Typography>
         </>
       ),
     })
@@ -181,14 +169,12 @@ export function AdminPage() {
       }
     }
     setRolling(false)
-    // Deliberately not phrased as a failure. The upgrade may simply be slow, and the
-    // command that can actually say why is the one named here. The three causes are kept
-    // -- translated, not dropped: they are what the reader would otherwise have to guess
-    // at, and each one has a different fix.
+    // Deliberately not phrased as a failure: the upgrade may simply be slow. The three
+    // causes are kept because each has a different fix, but named in a clause rather than
+    // a paragraph.
     setRollNote(
-      'The new version has not taken over yet. Run `vast service upgrade` in a terminal to'
-      + ' see why: usually it could not download the new version, there was no room to'
-      + ' start it, or it starts and immediately stops again.',
+      'The new version has not taken over yet. Run `vast service upgrade` to see why —'
+      + ' usually a download that failed, no room to start, or a crash on startup.',
     )
   }
 
@@ -301,10 +287,8 @@ export function AdminPage() {
               }
             >
               {reloadIn === null
-                ? 'RoboVAST has been upgraded. This page is still running the old version,'
-                  + ' so parts of it may fail to load until you reload.'
-                : `RoboVAST has been upgraded. This page is still running the old version —`
-                  + ` reloading in ${reloadIn}s.`}
+                ? 'Upgraded — this page is still on the old version. Reload to finish.'
+                : `Upgraded. Reloading in ${reloadIn}s…`}
             </Alert>
           ) : null}
           {rollNote ? (
