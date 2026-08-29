@@ -3,10 +3,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import CircularProgress from '@mui/material/CircularProgress'
+import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
 import { LogPanel } from '@/components/LogPanel'
@@ -46,6 +49,9 @@ export function AdminPage() {
   const { confirm } = useDialogs()
   const [rolling, setRolling] = useState(false)
   const [rollNote, setRollNote] = useState<string | null>(null)
+  // Its own flag rather than `isFetching`, which is also true for the background poll below
+  // and would spin the icon every minute on its own. This one means *the user asked*.
+  const [refreshing, setRefreshing] = useState(false)
   // Open by default: unlike a campaign log, which is one of many on a crowded
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
@@ -59,6 +65,14 @@ export function AdminPage() {
     refetchInterval: rolling ? 3_000 : 60_000,
     retry: false,
   })
+
+  // Both queries, because the panel shows both and half a refresh is the confusing kind:
+  // the version line and the digests would then disagree about when they were read.
+  function refreshService() {
+    setRefreshing(true)
+    void Promise.allSettled([version.refetch(), upgrade.refetch()])
+      .finally(() => setRefreshing(false))
+  }
 
   async function roll(info: UpgradeInfo) {
     const live = info.active_campaigns
@@ -141,7 +155,18 @@ export function AdminPage() {
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1}>
-          <Typography variant="subtitle2">This service</Typography>
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Typography variant="subtitle2">This service</Typography>
+            <Tooltip title="Re-read the version and ask the registry what this tag points at now">
+              {/* Kept enabled while it runs so the tooltip stays reachable; a second click
+                  is a no-op refetch. */}
+              <IconButton size="small" aria-label="Reload service info" onClick={refreshService}>
+                {refreshing
+                  ? <CircularProgress size={18} />
+                  : <RefreshRoundedIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          </Stack>
           {version.isSuccess ? (
             <>
               <Field label="version" value={version.data.robovast_version} />
@@ -173,14 +198,23 @@ export function AdminPage() {
               disabled control that invites clicking. */}
           {info?.supported ? (
             <Stack direction="row" spacing={2} alignItems="center" sx={{ pt: 1 }}>
-              <Button
-                variant="contained"
-                size="small"
-                disabled={rolling}
-                onClick={() => roll(info)}
-              >
-                {rolling ? 'Rolling…' : 'Upgrade'}
-              </Button>
+              {/* Only where there is something to roll onto. Note `!== false` and not
+                  `=== true`: a null `upgrade_available` means the registry did not answer,
+                  and hiding the button there would stand an operator who knows a newer
+                  image is published in front of a page that offers them nothing. The
+                  verdict caption beside it says which of the two it is. `rolling` holds the
+                  button in place across the handover, where the poll flips the flag — a
+                  control that disappears while it is working reads as a crash. */}
+              {rolling || info.upgrade_available !== false ? (
+                <Button
+                  variant="contained"
+                  size="small"
+                  disabled={rolling}
+                  onClick={() => roll(info)}
+                >
+                  {rolling ? 'Rolling…' : 'Upgrade'}
+                </Button>
+              ) : null}
               <Typography variant="caption" color="text.secondary">
                 {rolling ? 'waiting for the new pod to take over…' : upgradeVerdict(info)}
               </Typography>
