@@ -331,12 +331,10 @@ def test_the_scenario_bootstrap_clears_what_a_probe_will_measure():
     -- leaving the whole campaign on the bootstrap, which is what calibration exists to
     avoid.
 
-    Measured on a four-node cluster at ``scenario: 1``: every probe refused, at 15.9-20.2%
-    throttling. The container is cheap on average -- 0.45-0.76 cores, median 0.36-0.77 --
-    but peaks at 1.37-1.40 during bring-up, and it is the PEAK a cap has to clear. The
-    figure asserted here is that peak, taken raw from a probe's `system_usage_main.csv`
-    rather than from the campaign log, which prints it with `advice.CPU_HEADROOM` applied
-    and would overstate it by a quarter.
+    The container is cheap on average and spikes during bring-up, so what a cap has to clear
+    is that spike rather than the mean -- a figure chosen from average load looks ample and
+    still deadlocks calibration. Asserted against the observed peak so that trimming the
+    bootstrap toward the average fails here rather than in a campaign.
     """
     observed_peak_cores = 1.40
     assert bootstrap_sizing("scenario")[0] > observed_peak_cores, (

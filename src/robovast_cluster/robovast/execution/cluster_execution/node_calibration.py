@@ -289,20 +289,21 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: node stays uncalibrated, and the campaign carries on at the bootstrap -- a sizing fault
 #: wearing the stack's clothes. `memory.events`' `oom_kill` counter is sampled and could be
 #: read here, which is the memory half of what PROBE_THROTTLE_REFUSE_RATIO does for CPU.
-#: **The scenario figure is what the PROBE runs at, so it cannot be tight.** A probe capped
-#: below what the container actually wants throttles against its own ceiling, the guard
-#: refuses it as having measured that ceiling rather than demand, and no node is ever
-#: calibrated -- the whole campaign then runs at this bootstrap, which is the one outcome
-#: calibration exists to avoid. It is not a hypothetical: at ``scenario: 1`` every probe on
-#: a four-node cluster was refused, at 15.9-20.2% throttling.
+#: **Each figure is also what the PROBE runs at, so none of them may be tight.** A probe
+#: capped below what its container wants throttles against that cap; the guard then refuses
+#: it for having measured the cap rather than demand, no node is calibrated, and the campaign
+#: runs at this bootstrap for its whole life -- the outcome calibration exists to avoid,
+#: reached by tightening the one figure that must not be tight.
 #:
-#: 2 rather than 1, and not more. The container is not expensive -- across three nodes it
-#: averaged 0.45-0.76 cores with a median of 0.36-0.77 -- but it crosses one core during
-#: BRING-UP, peaking at 1.37-1.40 in the first seconds while nav2's lifecycle nodes come up,
-#: which is precisely where a cap does damage: transitions time out and the trial fails
-#: before it starts. So the figure has to clear a short spike, not a sustained load, and 2
-#: does with margin. Read the peaks from a probe's own ``system_usage_main.csv``, remembering
-#: that what the campaign log prints has ``advice.CPU_HEADROOM`` already applied.
+#: So each is sized on its container's PEAK, not its average, and the peak that matters is
+#: bring-up: a ROS stack costs several times its steady-state CPU while its lifecycle nodes
+#: come up, and that is also where a cap does the most damage, since a transition that misses
+#: its deadline fails the trial before it starts. A figure near the average therefore looks
+#: ample on a graph and still deadlocks calibration.
+#:
+#: To re-derive them, read a probe's own ``system_usage_<container>.csv`` and take the max,
+#: not the campaign log -- what that prints has ``advice.CPU_HEADROOM`` already applied and
+#: overstates the measurement by that factor.
 DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
