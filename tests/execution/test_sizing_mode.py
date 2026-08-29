@@ -322,3 +322,30 @@ def test_the_main_container_takes_its_measured_figure_once_the_node_is_calibrate
     bootstrap_cpu = bootstrap_sizing("scenario")[0]
     assert cpu != bootstrap_cpu, "still on the bootstrap: the measured figure never arrived"
     assert cpu >= 1.386, "the scenario role takes its sustained figure, plus headroom"
+
+
+def test_the_scenario_bootstrap_clears_what_a_probe_will_measure():
+    """The bootstrap is also what the PROBE runs at, so a figure below the container's real
+    demand is self-defeating: the probe throttles against its own ceiling, the guard refuses
+    it as having measured the ceiling rather than the demand, and no node is ever calibrated
+    -- leaving the whole campaign on the bootstrap, which is what calibration exists to
+    avoid.
+
+    The container is cheap on average and spikes during bring-up, so what a cap has to clear
+    is that spike rather than the mean -- a figure chosen from average load looks ample and
+    still deadlocks calibration. Asserted against the observed peak so that trimming the
+    bootstrap toward the average fails here rather than in a campaign.
+    """
+    observed_peak_cores = 1.40
+    assert bootstrap_sizing("scenario")[0] > observed_peak_cores, (
+        "a probe capped at or below its own peak measures the cap, and is refused")
+
+
+def test_the_refuse_ratio_is_tighter_than_a_probe_that_holds():
+    """The two numbers have to be read together: the guard refuses above this ratio, so the
+    bootstrap above it is only meaningful while the threshold stays small enough that a
+    genuinely-clipped probe trips it. Pinned so neither drifts into the other."""
+    from robovast.execution.cluster_execution.node_calibration import (
+        PROBE_THROTTLE_REFUSE_RATIO)
+
+    assert 0 < PROBE_THROTTLE_REFUSE_RATIO < 0.05, "bring-up noise, not a clipped run"

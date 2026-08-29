@@ -1165,12 +1165,22 @@ Deployment, so it is a property of the cluster rather than of any campaign:
 
 .. code-block:: bash
 
-   ROBOVAST_BOOTSTRAP_CPU={"sut": 8, "simulation": 3, "scenario": 1}
+   ROBOVAST_BOOTSTRAP_CPU={"sut": 8, "simulation": 3, "scenario": 2}
    ROBOVAST_BOOTSTRAP_MEMORY={"simulation": "4Gi"}
 
 A role left out keeps its default rather than disappearing, so raising one cannot silently
 drop another. With neither set the defaults below apply, and the service log says which of
 the two it is using.
+
+.. warning::
+
+   **Do not set a figure below what the container actually wants.** The bootstrap is also
+   what the probe runs at, so a container capped under its own demand throttles against that
+   cap; the probe is then refused as having measured its ceiling rather than the demand, no
+   node is calibrated, and every run of the campaign stays on the bootstrap — the outcome
+   calibration exists to avoid, reached by tightening the one figure that must not be tight.
+   The refusal says so per node in the campaign log, naming the container and its throttle
+   ratio. Size these from a finished campaign's ``resource_usage`` peaks, with margin.
 
 Per **role**, because the three want very different amounts and CPU and memory rank them
 differently: the system under test wants cores and little memory, the simulator is the

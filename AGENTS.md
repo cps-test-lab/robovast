@@ -99,6 +99,14 @@ reader's differs. State the property that holds anywhere and say which command p
 figures. This applies hardest to a claim that argues a default: an unproven cause repeated in
 four places is four things to correct later.
 
+**A PR or a comment states the rule, not the run that revealed it.** Findings arrive as
+experiment logs -- this node, that ratio, three of ten runs -- and pasting them in makes the
+change read as a report on one campaign rather than as a description of the code. Say what is
+true of the system and why, and let the evidence be the *reason* a claim is made rather than
+the claim itself. Keep a measurement only where it is load-bearing: a default that would be
+arbitrary without it, or a threshold someone will otherwise re-tighten. Then give it as an
+order of magnitude, not a reading, and say what to measure instead of what was measured.
+
 **Rewriting a branch that predates a cleanup restores what the cleanup removed.** Replaying
 older commits brings their prose with them, and nothing fails. After any rebase or extraction,
 grep the result for what was deleted rather than trusting the merge.
