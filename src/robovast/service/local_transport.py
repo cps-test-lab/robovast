@@ -3683,6 +3683,22 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.warning("docker rm -f %s failed: %s", self._CONTAINER_NAME, e)
 
+    def _adopts_on_restart(self) -> bool:
+        """Whether a successor process picks this lane's running campaigns back up.
+
+        ``False`` here: a local campaign's compute is containers this process started, so
+        nothing comes back for them and exiting has to tear them down or they are orphaned.
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it -- a cluster campaign's compute is Kubernetes Jobs that outlive any one
+        service process, and startup adoption re-attaches to them.
+
+        A property of the **lane**, deliberately not of the environment. Asking whether this
+        process happens to run inside a pod answers a different question and gets it wrong
+        for an off-cluster service driving a cluster, which adopts on its next start like
+        any other.
+        """
+        return False
+
     def _terminate_running_campaigns(self, running) -> None:
         """Terminate the compute backing *running* campaigns so their workers unblock.
 
@@ -3702,6 +3718,9 @@ class LocalTransport(RobovastInterface):
         shutdown we request a cooperative stop of every still-running campaign
         (same path as :meth:`stop`) and briefly join the workers so their
         container-teardown traps complete before the process exits.
+
+        None of that happens on a lane that :meth:`_adopts_on_restart`: there the
+        campaigns are meant to outlive this process, and the successor re-attaches.
         """
         # Held containers first, and unconditionally: they are the ones nothing else
         # reaps, and a service with no running campaign would otherwise return below while
@@ -3715,6 +3734,15 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             running = [e for e in self._campaigns.values() if not self._is_done(e)]
         if not running:
+            return
+        if self._adopts_on_restart():
+            # Left running on purpose: this lane's compute outlives the process and the
+            # next one adopts it. Stopping here would do worse than discard the work --
+            # the cooperative stop below persists a terminal ``outcome.json``, and a
+            # campaign that has recorded an ending is one no successor will pick up again.
+            logger.info(
+                "Shutting down — leaving %d running campaign(s) for the successor: %s",
+                len(running), ", ".join(e.campaign_id for e in running))
             return
         logger.info("Shutting down — stopping %d running campaign(s)", len(running))
         for entry in running:

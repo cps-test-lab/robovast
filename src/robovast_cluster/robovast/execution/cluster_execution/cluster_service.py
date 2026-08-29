@@ -2462,20 +2462,28 @@ class ClusterService(LocalTransport):
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context)
 
-    def _terminate_running_campaigns(self, running) -> None:
-        """On ``vast serve`` shutdown (Ctrl+C), tear down every running campaign's Jobs.
+    def _adopts_on_restart(self) -> bool:
+        """True: this lane's campaigns outlive the process, and the next one adopts them.
 
-        Overrides the local single-container kill: a cluster campaign's compute is its
-        scenario Jobs, so a bare service exit would orphan them (they keep consuming
-        cluster resources). Each teardown is best-effort so one failure never blocks
-        the others or the process exit.
+        A cluster campaign's compute is its scenario Jobs. They are not children of this
+        process, they upload their own results to the object store, and
+        :mod:`~robovast.execution.cluster_execution.campaign_resume` re-attaches to them at
+        startup -- so exiting is not a reason to destroy them, and a pod replacement
+        (``vast service upgrade``, an eviction, a drain, an OOM) stops being a data-loss
+        event.
+
+        This is why there is no ``_terminate_running_campaigns`` override here any more.
+        Stopping a campaign is :meth:`stop`, which tears its Jobs down through
+        :meth:`_teardown_campaign_jobs` and records the stop; exiting the service is not,
+        and never was a good way to say it -- the cooperative stop persists a terminal
+        ``outcome.json``, and a campaign that has recorded an ending is one no successor
+        will pick up again.
+
+        Unconditional, and deliberately not a ``KUBERNETES_SERVICE_HOST`` test: an
+        off-cluster service driving a cluster adopts on its next start exactly like an
+        in-pod one, so keying on where the process runs would answer a different question.
         """
-        for entry in running:
-            try:
-                self._teardown_campaign_jobs(entry.campaign_id)
-            except Exception:  # noqa: BLE001 - shutdown must not mask the exit
-                logger.warning("Could not tear down jobs for %s during shutdown",
-                               entry.campaign_id, exc_info=True)
+        return True
 
     # -- container exec -----------------------------------------------------
 
@@ -2551,8 +2559,9 @@ class ClusterService(LocalTransport):
     def reap_orphans(self) -> int:
         """Delete campaign workloads left behind by a previous service instance.
 
-        A service restart abandons its in-flight campaigns (the accepted trade), so
-        their aux pods would linger. Aux pods are owned by the service pod and thus
+        Aux pods only, and that is the whole scope: a restart leaves the campaigns'
+        **scenario Jobs** running on purpose (see :meth:`_adopts_on_restart`), so this
+        must never widen to them. Aux pods are owned by the service pod and thus
         garbage-collected by Kubernetes when it is replaced; this is the backstop for
         the cases GC misses (e.g. the ownerReference could not be resolved), and the
         successor to the old launcher-side ``reap_orphaned_runs``. Best-effort.
