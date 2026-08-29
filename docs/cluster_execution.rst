@@ -163,7 +163,7 @@ somewhere that travels with an experiment.
 
 .. code-block:: bash
 
-   vast execution cluster setup rke2 \
+   vast cluster setup rke2 \
        --jobs-node-label node-pool=primary \
        --control-node-label node-pool=extra
 

@@ -1238,7 +1238,7 @@ kubernetes.jobs.node_labels
 **Removed from the** ``.vast``. The node pool campaign jobs may run on is now a setup
 option::
 
-   vast execution cluster setup <config> --jobs-node-label KEY=VALUE
+   vast cluster setup <config> --jobs-node-label KEY=VALUE
 
 Repeatable, and written on every setup — omitting it *clears* a previously configured pool
 rather than preserving it.
@@ -1258,7 +1258,7 @@ kubernetes.control.node_labels
 
 **Removed from the** ``.vast``, for the same reason and at the same time::
 
-   vast execution cluster setup <config> --control-node-label KEY=VALUE
+   vast cluster setup <config> --control-node-label KEY=VALUE
 
 Places RoboVAST's own infrastructure pods, as opposed to the campaign's job pods. Narrows
 rather than decides: these are ANDed with the node-local data placement setup chooses (see
@@ -1267,7 +1267,7 @@ the pool, which is the same problem at a smaller scale.
 
 **Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)::
 
-   vast execution cluster setup rke2 \
+   vast cluster setup rke2 \
        --jobs-node-label node-pool=primary \
        --control-node-label node-pool=extra
 

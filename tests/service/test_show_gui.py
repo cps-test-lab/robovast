@@ -96,7 +96,7 @@ def test_a_cluster_service_still_accepts_a_plain_request(cluster):
 
 def test_a_local_service_without_a_display_refuses_too(local, monkeypatch, tmp_path):
     # An explicit show_gui is the caller's request, so it is refused rather than quietly
-    # downgraded — unlike `vast execution local run`, where GUI is a *default* and a
+    # downgraded — unlike the generated `run.sh`, where GUI is a *default* and a
     # headless build machine must keep working (see test_cli_show_gui.py).
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setattr("robovast.common.host_display._X11_SOCKET_GLOB",
