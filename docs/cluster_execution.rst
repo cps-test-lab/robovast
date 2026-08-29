@@ -1280,10 +1280,19 @@ planning spikes than the cluster was measured on has not been tested against its
 calibration. ``execution.sizing: fixed`` — the default — honours the declared sizing exactly,
 which is what a campaign wants when the allocation is itself the variable under study.
 
-**A probe that measured its own ceiling is refused**, and the node stays on its declared
-sizing rather than being sized from a limit: throttled against its own quota beyond a small
-bring-up allowance, or OOM-killed at all — a memory ceiling that binds kills rather than
-slows, so one is enough. Both counters come from the same file the sizing is read from.
+**A probe that measured its own ceiling is refused**, and the node stays on its current
+sizing rather than being sized from a limit: throttled past what its own statistic can absorb,
+or OOM-killed at all — a memory ceiling that binds kills rather than slows, so one is enough.
+Both counters come from the same file the sizing is read from.
+
+How much throttling a container may survive depends on **which statistic its figure comes
+from**, because clipping removes the top of the distribution. A container sized on its peak is
+spoiled by the first clipped tick, so it keeps a strict allowance covering bring-up only. One
+sized on its sustained figure — a percentile that already discards a tail — is unaffected
+while the clipped ticks stay inside that tail, and is judged against exactly what the
+percentile throws away. A single strict allowance for both refuses probes whose sustained
+figure is perfectly good and leaves those nodes unmeasured, which costs more than the
+distortion it was guarding against.
 
 **Where calibration does not apply, the bootstrap stands and is checked.** A campaign with no
 more jobs than the cluster has nodes, or a cluster that can grow, never probes. Those runs use
