@@ -186,18 +186,7 @@ export function AdminPage() {
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between">
-            <Typography variant="subtitle2">This service</Typography>
-            <Tooltip title="Re-read the version and ask the registry what this tag points at now">
-              {/* Kept enabled while it runs so the tooltip stays reachable; a second click
-                  is a no-op refetch. */}
-              <IconButton size="small" aria-label="Reload service info" onClick={refreshService}>
-                {refreshing
-                  ? <CircularProgress size={18} />
-                  : <RefreshRoundedIcon fontSize="small" />}
-              </IconButton>
-            </Tooltip>
-          </Stack>
+          <Typography variant="subtitle2">This service</Typography>
           {version.isSuccess ? (
             <>
               <Field label="version" value={version.data.robovast_version} />
@@ -228,25 +217,34 @@ export function AdminPage() {
               roll — so there is no button, and the reason is a caption rather than a
               disabled control that invites clicking. */}
           {info?.supported ? (
-            <Stack direction="row" spacing={2} alignItems="center" sx={{ pt: 1 }}>
-              {/* Only where there is something to roll onto. Note `!== false` and not
-                  `=== true`: a null `upgrade_available` means the registry did not answer,
-                  and hiding the button there would stand an operator who knows a newer
-                  image is published in front of a page that offers them nothing. The
-                  verdict caption beside it says which of the two it is. `rolling` holds the
-                  button in place across the handover, where the poll flips the flag — a
-                  control that disappears while it is working reads as a crash. */}
-              {rolling || info.upgrade_available !== false ? (
-                <Button
-                  variant="contained"
-                  size="small"
-                  disabled={rolling}
-                  onClick={() => roll(info)}
-                >
-                  {rolling ? 'Rolling…' : 'Upgrade'}
-                </Button>
-              ) : null}
-              <Typography variant="caption" color="text.secondary">
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ pt: 1 }}>
+              {/* Live only where there is something to roll onto — greyed rather than gone,
+                  so the page keeps the same shape in both states and the control stays where
+                  the operator last saw it. Note the test is `=== false` and not `!== true`: a
+                  null `upgrade_available` means the registry did not answer, which is not the
+                  same as up to date, and greying the button there would refuse an operator who
+                  knows a newer image is published. The caption beside it says which it is. */}
+              <Button
+                variant="contained"
+                size="small"
+                disabled={rolling || info.upgrade_available === false}
+                onClick={() => roll(info)}
+              >
+                {rolling ? 'Rolling…' : 'Upgrade'}
+              </Button>
+              {/* Beside the button it re-arms: what it fetches is the answer that decides
+                  whether that button is live, so a stale "no upgrade available" is one click
+                  from being re-asked rather than a minute of waiting for the poll. */}
+              <Tooltip title="Re-read the version and ask the registry what this tag points at now">
+                {/* Kept enabled while it runs so the tooltip stays reachable; a second click
+                    is a no-op refetch. */}
+                <IconButton size="small" aria-label="Reload service info" onClick={refreshService}>
+                  {refreshing
+                    ? <CircularProgress size={18} />
+                    : <RefreshRoundedIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+              <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>
                 {rolling ? 'waiting for the new pod to take over…' : upgradeVerdict(info)}
               </Typography>
             </Stack>
