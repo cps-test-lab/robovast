@@ -352,14 +352,12 @@ def test_the_refuse_ratio_is_tighter_than_a_probe_that_holds():
 
 
 def test_a_calibrated_container_still_gets_its_memory():
-    """Only CPU is calibrated, so every other field has to survive the calibrated path. It
-    did not: under `sizing: calibrated` nothing is declared, so building the result from the
-    declaration alone left memory unset, and a container with no memory limit is told by the
-    downward API that it has the whole node -- 46.96 GiB where 1Gi was meant, with `/dev/shm`
-    sized from the same place, so an overrun is a SIGBUS rather than a clean OOM.
+    """Only CPU is calibrated, so every other field has to survive the calibrated path.
 
-    The no-figures path was already right, which is why this hid: it only appears once a node
-    is calibrated, i.e. only after the feature starts working.
+    A container with no memory limit is told by the downward API that it has the whole node,
+    and `/dev/shm` is sized from the same place -- so an overrun arrives as a SIGBUS with no
+    reason attached rather than a clean OOM. The path taken before a node is measured was
+    always right, so this is only reachable once calibration succeeds.
     """
     figures = {"scenario": {"sustained": 1.33, "peak": 1.66, "samples": 90}}
     sized = kb.calibrated_resources({}, "scenario", figures, roles=("scenario",),
