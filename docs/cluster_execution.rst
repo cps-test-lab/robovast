@@ -1247,6 +1247,11 @@ How the figure is found:
   measured **maximum**, with headroom. Exceeding a CPU reservation slows a container;
   exceeding a memory one kills it, so no role is sized on a figure most of its samples sat
   below.
+* **Memory is measured wherever the node can report it.** Both cgroup layouts are read into
+  the same columns, so a mixed cluster stays comparable. Where a node reports neither — an
+  older runtime, a kernel without the counter — the container keeps its declared or bootstrap
+  memory rather than being sized from nothing, and the same absence disables the OOM check
+  for that node rather than passing it.
 * **The scenario runner reports on itself, on probes only.** A probe runs with
   ``--tick-log``, so ``tick_timing.csv`` records how closely the behaviour tree held its
   configured period. A probe whose scenario could not keep up measured a starved container,
