@@ -289,7 +289,21 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: node stays uncalibrated, and the campaign carries on at the bootstrap -- a sizing fault
 #: wearing the stack's clothes. `memory.events`' `oom_kill` counter is sampled and could be
 #: read here, which is the memory half of what PROBE_THROTTLE_REFUSE_RATIO does for CPU.
-DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 1}
+#: **The scenario figure is what the PROBE runs at, so it cannot be tight.** A probe capped
+#: below what the container actually wants throttles against its own ceiling, the guard
+#: refuses it as having measured that ceiling rather than demand, and no node is ever
+#: calibrated -- the whole campaign then runs at this bootstrap, which is the one outcome
+#: calibration exists to avoid. It is not a hypothetical: at ``scenario: 1`` every probe on
+#: a four-node cluster was refused, at 15.9-20.2% throttling.
+#:
+#: 2 rather than 1, and not more. The container is not expensive -- across three nodes it
+#: averaged 0.45-0.76 cores with a median of 0.36-0.77 -- but it crosses one core during
+#: BRING-UP, peaking at 1.37-1.40 in the first seconds while nav2's lifecycle nodes come up,
+#: which is precisely where a cap does damage: transitions time out and the trial fails
+#: before it starts. So the figure has to clear a short spike, not a sustained load, and 2
+#: does with margin. Read the peaks from a probe's own ``system_usage_main.csv``, remembering
+#: that what the campaign log prints has ``advice.CPU_HEADROOM`` already applied.
+DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
 
@@ -317,7 +331,7 @@ def _bootstrap_override(env_name: str, defaults: dict) -> dict:
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"{env_name}={raw!r}: expected JSON like "
-            '\'{"sut": 8, "simulation": 3, "scenario": 1}\'') from exc
+            '\'{"sut": 8, "simulation": 3, "scenario": 2}\'') from exc
     merged = dict(defaults)
     merged.update({str(k): v for k, v in override.items()})
     return merged
