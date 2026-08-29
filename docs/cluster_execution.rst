@@ -1165,7 +1165,7 @@ Deployment, so it is a property of the cluster rather than of any campaign:
 
 .. code-block:: bash
 
-   ROBOVAST_BOOTSTRAP_CPU={"sut": 6, "simulation": 3, "scenario": 2}
+   ROBOVAST_BOOTSTRAP_CPU={"sut": 5, "simulation": 3, "scenario": 2}
    ROBOVAST_BOOTSTRAP_MEMORY={"simulation": "4Gi"}
 
 A role left out keeps its default rather than disappearing, so raising one cannot silently

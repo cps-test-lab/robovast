@@ -371,10 +371,17 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: -- and the failure did not look like a placement problem, which is why the sum is stated
 #: here rather than left to be discovered per role.
 #:
-#: 6 keeps roughly a 4x margin over the largest `sut` figure measured across four unlike
-#: machines, which is what the bootstrap needs: enough that the probe never throttles while
-#: measuring, since a throttled probe measures its own ceiling.
-DEFAULT_BOOTSTRAP_CPU = {"sut": 6, "simulation": 3, "scenario": 2}
+#: **Fitting is not the same as leaving room.** At sut=6 the pod summed to exactly the
+#: spendable cores of the smallest node -- allocatable less the cluster headroom -- which
+#: passes the "could an empty node hold it" check and then places only while that node is
+#: entirely empty. Observed: its probe never ran, so the node accepted no work for the whole
+#: batch and the campaign quietly used three machines out of four. A default should leave
+#: slack rather than land on the boundary.
+#:
+#: 5 keeps roughly a 3x margin over the largest `sut` figure measured across four unlike
+#: machines, which is what this figure needs: enough that the probe never throttles while
+#: measuring, since a throttled probe measures its own ceiling rather than its demand.
+DEFAULT_BOOTSTRAP_CPU = {"sut": 5, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
 
@@ -476,7 +483,7 @@ def _bootstrap_override(env_name: str, defaults: dict) -> dict:
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"{env_name}={raw!r}: expected JSON like "
-            '\'{"sut": 6, "simulation": 3, "scenario": 2}\'') from exc
+            '\'{"sut": 5, "simulation": 3, "scenario": 2}\'') from exc
     merged = dict(defaults)
     merged.update({str(k): v for k, v in override.items()})
     return merged
