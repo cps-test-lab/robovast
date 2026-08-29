@@ -456,7 +456,7 @@ def test_the_main_container_is_reachable_under_the_name_the_monitor_writes():
     assert settings[kb.MAIN_CONTAINER_NAME] == settings["scenario"]
 
 
-def test_the_tolerance_a_probe_is_judged_against_follows_the_percentile_it_was_read_at():
+def test_the_tolerance_follows_the_percentile_the_figure_was_read_at():
     """The invariant that must not drift: a container read at 99 tolerates a tenth of the
     clipping one read at 95 does, because clipping cannot move a figure while it stays inside
     the tail the percentile already discards."""

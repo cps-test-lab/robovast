@@ -5,8 +5,7 @@
 import pytest
 
 from robovast.execution.cluster_execution import node_calibration as nc
-from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_HEADROOM, MIN_CPU,
-                                                                   NodeCalibration,
+from robovast.execution.cluster_execution.node_calibration import (MIN_CPU, NodeCalibration,
                                                                    calibration_applies)
 
 
@@ -917,7 +916,8 @@ def _tick_csv(rows):
 def test_a_probe_that_held_its_tick_rate_is_calibrated():
     """The healthy case: achieved matches intended, so the measurement is of a container that
     had the CPU it needed."""
-    from robovast.execution.cluster_execution.node_calibration import read_probe_tick_ratio
+    from robovast.execution.cluster_execution.node_calibration import \
+        read_probe_tick_ratio
 
     ratio = read_probe_tick_ratio(lambda k: _tick_csv([(0.1, 0.1)] * 20), "")
     c = NodeCalibration()
@@ -930,7 +930,8 @@ def test_a_probe_whose_scenario_could_not_keep_up_is_refused():
     can be starved for a whole run without ever hitting its quota -- invisible to the throttle
     counter that catches this for every other role. Its own tick rate is the only signal, and
     a measurement taken while it was starved would size every later run on that node."""
-    from robovast.execution.cluster_execution.node_calibration import read_probe_tick_ratio
+    from robovast.execution.cluster_execution.node_calibration import \
+        read_probe_tick_ratio
 
     ratio = read_probe_tick_ratio(lambda k: _tick_csv([(0.5, 0.1)] * 20), "")
     c = NodeCalibration()
