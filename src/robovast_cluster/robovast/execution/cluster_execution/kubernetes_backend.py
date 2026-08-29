@@ -336,6 +336,25 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     headroom, both clamped to what the author declared, because calibration sizes a node's
     jobs *down* to what they need and has no business raising a ceiling someone set.
 
+    **What ``limit: request`` buys is an IDENTICAL budget in every run, not a counter that
+    reads zero.** A container sized at its own measurement sits against that measurement, so
+    it throttles -- measured here, the system under test was quota-bound in every run of a
+    150-run campaign, at up to 10.5%, against 2 runs in 45 for a declared figure two to three
+    times larger. That is what a tight, measured ceiling looks like and not evidence of harm:
+    over the same pair, realtime factor was *better* calibrated (0.9994 against 0.9941),
+    errors were zero in both, and the verdict rate did not move.
+    
+    The property being protected is that the allocation is the same on every run of a node,
+    so it cannot become a hidden variable between them. Sizing for a counter of zero instead
+    would mean padding the largest container by 60-100%, which hands back most of the ~1.6x
+    density that measuring exists to find, in exchange for a harm no signal detects.
+
+    **A probe is judged far more strictly, and that is the asymmetry to keep in view.** It is
+    refused outright for throttling past what its own statistic absorbs (see
+    :func:`~.node_calibration.probe_refuse_ratio`), because a probe clipped while measuring
+    reports its ceiling rather than its demand -- and a campaign sized from that would inherit
+    it on every later run.
+
     The two resources are not symmetric and the asymmetry is the reason memory is read at the
     maximum whatever the role: exceeding a CPU reservation slows a container, exceeding a
     memory one kills it.
