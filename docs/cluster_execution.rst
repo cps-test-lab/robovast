@@ -1165,7 +1165,7 @@ Deployment, so it is a property of the cluster rather than of any campaign:
 
 .. code-block:: bash
 
-   ROBOVAST_BOOTSTRAP_CPU={"sut": 8, "simulation": 3, "scenario": 2}
+   ROBOVAST_BOOTSTRAP_CPU={"sut": 6, "simulation": 3, "scenario": 2}
    ROBOVAST_BOOTSTRAP_MEMORY={"simulation": "4Gi"}
 
 A role left out keeps its default rather than disappearing, so raising one cannot silently
@@ -1191,6 +1191,10 @@ The same block a container may carry, keyed by role — so an option added to it
 settable here with no new variable.
 
 .. warning::
+
+   **The three roles sum to a pod that has to fit your smallest node.** The probe is pinned
+   to the node it measures, so a sum larger than that node's allocatable (less the cluster
+   headroom) leaves it unmeasurable -- refused at launch, naming the figure and the node.
 
    **Do not set a figure below what the container actually wants.** The bootstrap is also
    what the probe runs at, so a container capped under its own demand throttles against that

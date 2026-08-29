@@ -365,7 +365,16 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: To re-derive them, read a probe's own ``system_usage_<container>.csv`` and take the max,
 #: not the campaign log -- what that prints has ``advice.CPU_HEADROOM`` already applied and
 #: overstates the measurement by that factor.
-DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 2}
+#: **The pod these sum to has to fit the SMALLEST node**, because the probe is pinned to the
+#: node it measures and a probe no node can hold is a campaign that cannot calibrate. At
+#: sut=8 the three summed to 13 against a 12-core node, so that node's probe was unplaceable
+#: -- and the failure did not look like a placement problem, which is why the sum is stated
+#: here rather than left to be discovered per role.
+#:
+#: 6 keeps roughly a 4x margin over the largest `sut` figure measured across four unlike
+#: machines, which is what the bootstrap needs: enough that the probe never throttles while
+#: measuring, since a throttled probe measures its own ceiling.
+DEFAULT_BOOTSTRAP_CPU = {"sut": 6, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
 
@@ -467,7 +476,7 @@ def _bootstrap_override(env_name: str, defaults: dict) -> dict:
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"{env_name}={raw!r}: expected JSON like "
-            '\'{"sut": 8, "simulation": 3, "scenario": 2}\'') from exc
+            '\'{"sut": 6, "simulation": 3, "scenario": 2}\'') from exc
     merged = dict(defaults)
     merged.update({str(k): v for k, v in override.items()})
     return merged
