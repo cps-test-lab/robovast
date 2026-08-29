@@ -839,8 +839,6 @@ def test_a_sustained_sized_container_survives_clipping_the_percentile_discards()
     figure is taken from. A p95 already throws away the top 5%; ticks clipped inside that band
     cannot move it. Refusing such a probe leaves the node unmeasured to protect a number the
     distortion could not have reached."""
-    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
-
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     stored = c.record("n1", "probe-1",
@@ -854,8 +852,6 @@ def test_a_sustained_sized_container_survives_clipping_the_percentile_discards()
 def test_a_peak_sized_container_does_not_get_that_tolerance():
     """The max is destroyed by the first clipped tick, so the same ratio that a p95 shrugs off
     makes a peak unusable -- which is why one threshold could not serve both."""
-    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
-
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     stored = c.record("n1", "probe-1",
@@ -870,8 +866,6 @@ def test_a_caller_that_names_nothing_is_judged_strictly():
     """`None` is not "nothing is peak-sized": it is "the caller does not know". Accepting a
     distorted peak writes a wrong figure in silently; refusing only leaves the node
     unmeasured, and the next job there probes again."""
-    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
-
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     assert c.record("n1", "probe-1",
