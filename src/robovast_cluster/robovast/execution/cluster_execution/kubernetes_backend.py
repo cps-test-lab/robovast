@@ -1373,7 +1373,8 @@ class BatchJobRunner:
             # bool(measured) -- true of any probe that produced a CSV at all, which the
             # monitor writes whether or not the run got anywhere -- so it caught nothing.
             completed = probe_completed(lambda k: storage.read_object(bucket_name, k), prefix)
-            if not calibration.record(node_id, key, measured, completed=completed):
+            if not calibration.record(node_id, key, measured, completed=completed,
+                                      peak_sized=self._peak_sized_containers()):
                 calibration.abandon(node_id, key)
 
     def abandon_outstanding_probes(self) -> int:
@@ -1420,6 +1421,28 @@ class BatchJobRunner:
                 if container is getattr(plan, "main", None):
                     limits[MAIN_CONTAINER_NAME] = cores
         return limits
+
+    def _peak_sized_containers(self) -> frozenset:
+        """Which containers `calibrated_resources` will size from the PEAK.
+
+        The roles live here, not in the calibration store, so the tolerance a probe is judged
+        against is decided where the answer is known and passed in. It is the same test that
+        function applies, so a container cannot be judged against one statistic and then sized
+        from the other.
+        """
+        from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415
+
+        out = set()
+        plan = getattr(self, "plan", None)
+        for container in (getattr(plan, "containers", None) or ()):
+            name = getattr(container, "name", None)
+            if not name:
+                continue
+            if SUT_CONTAINER in (getattr(container, "roles", ()) or ()) or name == SUT_CONTAINER:
+                out.add(name)
+                if container is getattr(plan, "main", None):
+                    out.add(MAIN_CONTAINER_NAME)
+        return frozenset(out)
 
     def _probe_container_files(self) -> dict:
         """``{container: resource_usage file}`` for every container a job runs.

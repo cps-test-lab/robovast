@@ -129,7 +129,8 @@ class NodeCalibration:
         """
         return node_id not in self._probes
 
-    def record(self, node_id, job_key, measured: dict, *, completed: bool = True) -> bool:
+    def record(self, node_id, job_key, measured: dict, *, completed: bool = True,
+               peak_sized=None) -> bool:
         """Take a finished probe's per-container measurement as that node's figures.
 
         *measured* is ``{container: {"sustained": cores, "peak": cores}}`` -- both, because
@@ -142,10 +143,18 @@ class NodeCalibration:
         node uncalibrated, so the next job there becomes the probe instead. Silence is not a
         measurement of zero.
 
+        *peak_sized* names the containers whose figure the caller will take from the peak.
+        Passed in for the same reason *measured* carries both statistics: this module must not
+        decide what a container is for, and the throttling a probe may survive depends on
+        which statistic is read from it -- see :func:`probe_refuse_ratio`. ``None`` means the
+        caller does not know, and every container is then judged strictly: an unnamed
+        container might be the one read from its peak, and accepting a distorted peak writes a
+        wrong figure in silently, where refusing merely leaves the node unmeasured.
+
         Five things are refused, and each leaves the node on its declared sizing rather than
         on a figure that would be wrong: a probe whose scenario reached no verdict, one drawn
-        from too few samples, one that produced nothing usable, one **throttled against its
-        own limit** (see :data:`PROBE_THROTTLE_REFUSE_RATIO`), and one that was
+        from too few samples, one that produced nothing usable, one **throttled past what its
+        own statistic can absorb** (see :func:`probe_refuse_ratio`), and one that was
         **OOM-killed**.
 
         The last two are not the same shape. A CPU ceiling that binds slows the container
@@ -194,11 +203,13 @@ class NodeCalibration:
             return False
         capped = {name: stats["throttled_ratio"]
                   for name, stats in (measured or {}).items()
-                  if (stats or {}).get("throttled_ratio", 0) > PROBE_THROTTLE_REFUSE_RATIO}
+                  if (stats or {}).get("throttled_ratio", 0)
+                  > probe_refuse_ratio(peak_sized is None or name in peak_sized)}
         if capped:
             logger.warning(
-                "calibration probe %s was throttled against its own limit (%s); node %s "
-                "keeps its current sizing, which is what the probe was measured against",
+                "calibration probe %s was throttled past what its own statistic can absorb "
+                "(%s); node %s keeps its current sizing, which is what the probe was "
+                "measured against",
                 job_key,
                 ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
                 node_id)
@@ -400,6 +411,32 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
 PROBE_THROTTLE_REFUSE_RATIO = 0.005
 
+#: The percentile the *sustained* figure is taken at. Named rather than written twice inline,
+#: because the probe's tolerance for throttling is derived from it below and the two must move
+#: together.
+SUSTAINED_PERCENTILE = 0.95
+
+
+def probe_refuse_ratio(peak_sized: bool) -> float:
+    """How much throttling invalidates a probe's measurement of ONE container.
+
+    **A container's tolerance is the complement of the percentile its figure comes from**,
+    which is why one threshold for all of them was wrong. Clipping removes the top of the
+    distribution: a figure taken from the MAX is destroyed by the first clipped tick, while
+    one taken at the p95 is untouched as long as the clipped ticks stay inside the top 5% it
+    already discards.
+
+    So a container sized on its peak keeps the strict threshold, and one sized on its
+    sustained figure tolerates clipping up to what that percentile throws away regardless. A
+    single strict ratio refuses probes whose sustained figure is perfectly good, and the node
+    then stays uncalibrated -- the outcome calibration exists to avoid, over a distortion
+    that by construction cannot reach the number being read.
+
+    The strict threshold is not zero for the reason :data:`PROBE_THROTTLE_REFUSE_RATIO`
+    gives: bring-up briefly throttles a container on any machine.
+    """
+    return PROBE_THROTTLE_REFUSE_RATIO if peak_sized else (1.0 - SUSTAINED_PERCENTILE)
+
 
 #: The two file names the resource monitor writes per container, as a naming contract rather
 #: than an import: ``monitor_resources`` runs inside the experiment container and this package
@@ -460,7 +497,8 @@ def container_cpu_profile_from_billing(rows) -> dict:
     if not totals:
         return {}
     totals.sort()
-    idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
+    idx = max(0, min(len(totals) - 1,
+                    int(round(SUSTAINED_PERCENTILE * (len(totals) - 1)))))
     out = {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
     span = (periods[-1] - periods[0]) if len(periods) >= 2 else 0
     if span > 0:
@@ -518,7 +556,8 @@ def container_cpu_profile(rows, limit_cores=None) -> dict:
         totals = [t for t in totals if t <= limit_cores]
         if not totals:
             return {}
-    idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
+    idx = max(0, min(len(totals) - 1,
+                    int(round(SUSTAINED_PERCENTILE * (len(totals) - 1)))))
     # ``samples`` travels with the figures so the caller can refuse a measurement drawn from
     # too little of a run -- see MIN_PROBE_SAMPLES. A short probe is not a small container.
     return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}

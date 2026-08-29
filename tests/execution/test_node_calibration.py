@@ -829,3 +829,61 @@ def test_the_billing_reader_reports_oom_kills():
     rows = [{"timestamp": "0.0", "cpu_usage_usec": "0", "memory_events_oom_kill": "0"},
             {"timestamp": "1.0", "cpu_usage_usec": "1000000", "memory_events_oom_kill": "2"}]
     assert nc.container_cpu_profile_from_billing(rows)["oom_kills"] == 2
+
+
+# -- what a probe's throttling costs depends on which statistic is read from it ----------
+
+
+def test_a_sustained_sized_container_survives_clipping_the_percentile_discards():
+    """Clipping removes the top of the distribution, so what it destroys depends on where the
+    figure is taken from. A p95 already throws away the top 5%; ticks clipped inside that band
+    cannot move it. Refusing such a probe leaves the node unmeasured to protect a number the
+    distortion could not have reached."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"simulation": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                                      "throttled_ratio": 0.02}},
+                      peak_sized=frozenset())
+    assert stored is True, "a p95 is unmoved by clipping inside the tail it discards"
+    assert c.calibrated("n1")
+
+
+def test_a_peak_sized_container_does_not_get_that_tolerance():
+    """The max is destroyed by the first clipped tick, so the same ratio that a p95 shrugs off
+    makes a peak unusable -- which is why one threshold could not serve both."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                               "throttled_ratio": 0.02}},
+                      peak_sized=frozenset({"sut"}))
+    assert stored is False
+    assert not c.calibrated("n1")
+
+
+def test_a_caller_that_names_nothing_is_judged_strictly():
+    """`None` is not "nothing is peak-sized": it is "the caller does not know". Accepting a
+    distorted peak writes a wrong figure in silently; refusing only leaves the node
+    unmeasured, and the next job there probes again."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    assert c.record("n1", "probe-1",
+                    {"anything": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                                  "throttled_ratio": 0.02}}) is False
+
+
+def test_the_tolerance_is_tied_to_the_percentile_it_protects():
+    """Not two numbers that happen to agree: the tolerance IS what the percentile discards, so
+    moving the percentile moves it. Pinned so they cannot drift apart."""
+    from robovast.execution.cluster_execution.node_calibration import (
+        SUSTAINED_PERCENTILE, probe_refuse_ratio)
+
+    assert probe_refuse_ratio(peak_sized=False) == 1.0 - SUSTAINED_PERCENTILE
+    assert probe_refuse_ratio(peak_sized=True) < probe_refuse_ratio(peak_sized=False)
