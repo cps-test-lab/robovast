@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -20,6 +20,10 @@ import { UsageHistoryChart } from './UsageHistoryChart'
 // default `vast service upgrade --timeout`, so both surfaces give up at the same
 // point and an operator comparing them is not told two different stories.
 const ROLL_TIMEOUT_MS = 180_000
+
+// Grace between "the new pod is serving" and the reload. Long enough to read the line and
+// stop it, short enough that nobody sits watching a page that said it would reload.
+const RELOAD_COUNTDOWN_S = 5
 
 /** One `label: value` line. Values are monospace: most of them are digests and refs. */
 function Field({ label, value }: { label: string; value: string }) {
@@ -52,6 +56,11 @@ export function AdminPage() {
   // Its own flag rather than `isFetching`, which is also true for the background poll below
   // and would spin the icon every minute on its own. This one means *the user asked*.
   const [refreshing, setRefreshing] = useState(false)
+  // The roll reached the new pod. Kept after the countdown is declined, because the tab is
+  // still on the old build either way and that is worth saying.
+  const [handover, setHandover] = useState(false)
+  // Seconds left before the reload, or null once it is declined or done.
+  const [reloadIn, setReloadIn] = useState<number | null>(null)
   // Open by default: unlike a campaign log, which is one of many on a crowded
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
@@ -65,6 +74,21 @@ export function AdminPage() {
     refetchInterval: rolling ? 3_000 : 60_000,
     retry: false,
   })
+
+  // Reload the document once the count reaches zero. It is not a nicety: this tab holds a
+  // build whose hashed chunks the service no longer serves, so every view it has not opened
+  // yet is already broken (see ErrorBoundary, which exists to catch exactly that). Doing it
+  // here, in the second the user was expecting a restart, turns a future error screen into
+  // an expected blink -- and navigation lives in the URL hash, so it lands back on Admin.
+  useEffect(() => {
+    if (reloadIn === null) return
+    if (reloadIn <= 0) {
+      window.location.reload()
+      return
+    }
+    const t = setTimeout(() => setReloadIn((n) => (n === null ? null : n - 1)), 1_000)
+    return () => clearTimeout(t)
+  }, [reloadIn])
 
   // Both queries, because the panel shows both and half a refresh is the confusing kind:
   // the version line and the digests would then disagree about when they were read.
@@ -103,6 +127,8 @@ export function AdminPage() {
     if (!ok) return
     const before = info.running_digest
     setRollNote(null)
+    setHandover(false)
+    setReloadIn(null)
     setRolling(true)
     try {
       // `force` is exactly the dialog's answer: the only thing the server refuses is a
@@ -126,7 +152,12 @@ export function AdminPage() {
         })
         if (now.running_digest && now.running_digest !== before) {
           setRolling(false)
-          setRollNote('the new pod is serving')
+          // The panel's own numbers first, so it stops describing the pod that just went
+          // away even in the seconds before the reload -- and for good if it is declined.
+          // `upgradeInfo` is already current: the poll above is what fetched this.
+          void version.refetch()
+          setHandover(true)
+          setReloadIn(RELOAD_COUNTDOWN_S)
           return
         }
       } catch {
@@ -223,6 +254,35 @@ export function AdminPage() {
             <Typography variant="caption" color="text.disabled" sx={{ pt: 1 }}>
               {info.unsupported_reason}
             </Typography>
+          ) : null}
+          {/* The two halves of a finished roll. Counting down, the reload is the default and
+              declining is the button; declined, the tab keeps a standing warning rather than
+              a success line, because a build the service no longer has is a fault waiting to
+              surface in the next view opened, not a completed job. */}
+          {handover ? (
+            <Alert
+              severity={reloadIn === null ? 'warning' : 'success'}
+              sx={{ mt: 1 }}
+              onClose={reloadIn === null ? () => setHandover(false) : undefined}
+              action={
+                <>
+                  <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+                    {reloadIn === null ? 'Reload' : 'Reload now'}
+                  </Button>
+                  {reloadIn === null ? null : (
+                    <Button color="inherit" size="small" onClick={() => setReloadIn(null)}>
+                      Not now
+                    </Button>
+                  )}
+                </>
+              }
+            >
+              {reloadIn === null
+                ? 'The new pod is serving. This tab is still running the previous build, so'
+                  + ' views it has not opened yet may fail to load until it is reloaded.'
+                : `The new pod is serving. This tab is still running the previous build —`
+                  + ` reloading in ${reloadIn}s.`}
+            </Alert>
           ) : null}
           {rollNote ? (
             <Alert severity="info" sx={{ mt: 1 }} onClose={() => setRollNote(null)}>
