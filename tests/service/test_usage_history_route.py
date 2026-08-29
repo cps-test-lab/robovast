@@ -61,6 +61,29 @@ def test_capacity_is_per_sample_so_a_resized_cluster_keeps_its_past(client):
     assert [s["cpu_capacity"] for s in got] == [16, 64]
 
 
+def test_both_readings_survive_the_route_and_a_failed_one_stays_a_gap(client):
+    """Reserved and measured are carried through, and a missing measurement stays ``None``.
+
+    Coerced to 0 it would draw an idle cluster over a window whose metrics read simply
+    failed -- the chart's own guard cannot help, because 0 is a value it must plot.
+    """
+    now = time.time()
+    _fill(client.app, [
+        UsageSample(at=now - 60, cpu_used=9, cpu_capacity=24,
+                    memory_used_bytes=4, memory_capacity_bytes=64,
+                    cpu_reserved=9, memory_reserved_bytes=4,
+                    cpu_measured=2, memory_measured_bytes=1),
+        # The window after metrics-server stopped answering: reserved is still known.
+        UsageSample(at=now - 30, cpu_used=9, cpu_capacity=24,
+                    memory_used_bytes=4, memory_capacity_bytes=64,
+                    cpu_reserved=9, memory_reserved_bytes=4),
+    ])
+    got = client.get(Routes.USAGE_HISTORY).json()["samples"]
+    assert [s["cpu_reserved"] for s in got] == [9, 9]
+    assert [s["cpu_measured"] for s in got] == [2, None]
+    assert [s["memory_measured_bytes"] for s in got] == [1, None]
+
+
 def test_a_window_only_returns_what_falls_inside_it(client):
     now = time.time()
     _fill(client.app, [

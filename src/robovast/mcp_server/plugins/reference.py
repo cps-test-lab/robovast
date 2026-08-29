@@ -134,12 +134,10 @@ def get_service_info() -> dict:
     Compare ``code_revision`` with your tree (``git rev-parse --short HEAD``) and restart it
     if they differ.
 
-    **When ``code_revision`` is absent, this check is unavailable** — that deployment could
-    not determine its revision, and there is no substitute: probe for the behaviour you
-    expect instead. ``code_version`` will not do, and reading it as one is a live trap. It is
-    the package semver on a deployed service, so it stays the same across every edit;
-    reported *in place of* a revision it makes this field silently unable to detect the one
-    thing it exists for.
+    **When ``code_revision`` is absent, this check is unavailable** — probe for the
+    behaviour you expect instead. ``code_version`` is no substitute: it is the package
+    semver, unchanged across every edit, so reading it as a revision silently defeats the
+    one thing this check exists for.
 
     Returns:
         ``{code_version, api_version, backend, results_address, sources_address}``, plus

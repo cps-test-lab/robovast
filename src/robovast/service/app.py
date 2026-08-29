@@ -463,7 +463,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                     at=time.time(),
                     cpu_used=reading.cpu_used, cpu_capacity=reading.cpu_capacity,
                     memory_used_bytes=reading.memory_used_bytes,
-                    memory_capacity_bytes=reading.memory_capacity_bytes))
+                    memory_capacity_bytes=reading.memory_capacity_bytes,
+                    # Carried as read, None included: a window whose measurement failed is a
+                    # gap in the series, and recording a 0 there would draw an idle cluster.
+                    cpu_reserved=reading.cpu_reserved,
+                    memory_reserved_bytes=reading.memory_reserved_bytes,
+                    cpu_measured=reading.cpu_measured,
+                    memory_measured_bytes=reading.memory_measured_bytes))
 
     async def _sse_log_stream(request: Request, fetch, start_offset: int):
         """SSE generator tailing a ``fetch(offset) -> LogChunk`` pull.

@@ -880,13 +880,23 @@ class ResourceUsage(BaseModel):
     reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
     the same fields regardless of where it runs and never branches on ``backend``.
 
-    ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
-    question ("how much is currently claimed"): on the **cluster** they are the sum
-    of resource *requests* of the non-terminal pods bound to a node (schedulability,
-    matching how the scheduler reasons about capacity — pods still queued for a node are
-    reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
-    on **local** they are live host utilization. ``cpu_*`` are CPU cores;
-    ``memory_*`` are bytes.
+    **Reserved and measured are two different questions, and the field names say which.**
+    ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
+    being consumed. A cluster campaign that reserves nine cores per pod and uses two
+    reports 9 and 2, and the gap between them is the number that sizes the next sweep.
+    Either can be ``None``, meaning **this lane has no such reading** rather than zero:
+    nothing reserves on the local Docker lane (it sets no container CPU/memory limits and
+    is single-flight), and a cluster without metrics-server cannot measure — see
+    ``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+
+    ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
+    — the request sum on the cluster, host utilization locally — and exist because every
+    consumer already reads them. They are the headline "how much is currently claimed", so
+    they are never null; a consumer that must distinguish the two readings reads the pair
+    above and branches on neither ``backend`` nor these. On the cluster the request sum is
+    over the non-terminal pods **bound to a node** (schedulability, matching how the
+    scheduler reasons about capacity — pods still queued for a node are reported by
+    ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
 
     ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
@@ -930,6 +940,23 @@ class ResourceUsage(BaseModel):
     parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
     jobs_running: int = 0            # scenario-run pods in phase Running, backend-wide
     jobs_pending: int = 0            # scenario-run pods admitted/queued but not yet Running
+    #: What the scheduler has **committed**: the pod-request sum on the cluster (the same
+    #: number ``cpu_used`` carries there). ``None`` on the local lane, which reserves
+    #: nothing -- it sets no container CPU/memory limits and runs one scenario at a time --
+    #: so a consumer draws no reservation there rather than mislabelling a measurement as
+    #: one. Also ``None`` from a service too old to have the field.
+    cpu_reserved: Optional[float] = None
+    memory_reserved_bytes: Optional[int] = None
+    #: What is actually being **consumed**: metrics-server's node totals on the cluster,
+    #: ``psutil`` locally (the same number ``cpu_used`` carries there). ``None`` means no
+    #: reading, never zero -- see ``metrics_unavailable`` for why, when the backend knows.
+    cpu_measured: Optional[float] = None
+    memory_measured_bytes: Optional[int] = None
+    #: Why there is no measured reading, when the backend tried and failed. Same contract
+    #: as ``disk_unavailable`` below, including its rule: names counts and the fixing
+    #: command, **never a node name**, because this string crosses the interface. Non-null
+    #: only when the measured pair is None *and* the reason is known.
+    metrics_unavailable: Optional[str] = None
     #: The filesystem this backend's runs write into: nodefs on the cluster (container
     #: writable layers, emptyDir scratch, pulled image layers -- the disk kubelet's
     #: eviction thresholds watch), the campaign results root locally. **``None`` means "no
@@ -980,6 +1007,12 @@ class UsageSample(BaseModel):
     A deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the
     job counts are point-in-time facts a trend line has no use for; carrying them would make
     a 24 h reply many times the size for nothing anyone plots.
+
+    The reserved/measured pair is carried, because the *gap* between them over time is what
+    the chart drawing this exists to show. ``metrics_unavailable`` is not: a per-sample
+    reason string would multiply the reply for something only the live reading can act on,
+    and a sample whose measurement failed says so by being ``None`` -- which a plot must
+    draw as a **gap**, not as a drop to zero.
     """
 
     #: Epoch seconds, as :attr:`Status.phase_since` and its neighbours use.
@@ -988,6 +1021,13 @@ class UsageSample(BaseModel):
     cpu_capacity: float
     memory_used_bytes: int
     memory_capacity_bytes: int
+    #: As on :class:`ResourceUsage`, and ``None`` for the same reasons: a lane with no such
+    #: reading, a window whose measurement failed, or a sample recorded by a service too old
+    #: to have the fields.
+    cpu_reserved: Optional[float] = None
+    memory_reserved_bytes: Optional[int] = None
+    cpu_measured: Optional[float] = None
+    memory_measured_bytes: Optional[int] = None
 
 
 class UsageHistory(BaseModel):

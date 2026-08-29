@@ -2817,13 +2817,23 @@ export interface components {
          *     reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
          *     the same fields regardless of where it runs and never branches on ``backend``.
          *
-         *     ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
-         *     question ("how much is currently claimed"): on the **cluster** they are the sum
-         *     of resource *requests* of the non-terminal pods bound to a node (schedulability,
-         *     matching how the scheduler reasons about capacity — pods still queued for a node are
-         *     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
-         *     on **local** they are live host utilization. ``cpu_*`` are CPU cores;
-         *     ``memory_*`` are bytes.
+         *     **Reserved and measured are two different questions, and the field names say which.**
+         *     ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
+         *     being consumed. A cluster campaign that reserves nine cores per pod and uses two
+         *     reports 9 and 2, and the gap between them is the number that sizes the next sweep.
+         *     Either can be ``None``, meaning **this lane has no such reading** rather than zero:
+         *     nothing reserves on the local Docker lane (it sets no container CPU/memory limits and
+         *     is single-flight), and a cluster without metrics-server cannot measure — see
+         *     ``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+         *
+         *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
+         *     — the request sum on the cluster, host utilization locally — and exist because every
+         *     consumer already reads them. They are the headline "how much is currently claimed", so
+         *     they are never null; a consumer that must distinguish the two readings reads the pair
+         *     above and branches on neither ``backend`` nor these. On the cluster the request sum is
+         *     over the non-terminal pods **bound to a node** (schedulability, matching how the
+         *     scheduler reasons about capacity — pods still queued for a node are reported by
+         *     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
          *
          *     ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
@@ -2863,6 +2873,10 @@ export interface components {
             backend: string;
             /** Cpu Capacity */
             cpu_capacity: number;
+            /** Cpu Measured */
+            cpu_measured: number | null;
+            /** Cpu Reserved */
+            cpu_reserved: number | null;
             /** Cpu Used */
             cpu_used: number;
             disk: components["schemas"]["DiskSpace"] | null;
@@ -2883,8 +2897,14 @@ export interface components {
             jobs_running: number;
             /** Memory Capacity Bytes */
             memory_capacity_bytes: number;
+            /** Memory Measured Bytes */
+            memory_measured_bytes: number | null;
+            /** Memory Reserved Bytes */
+            memory_reserved_bytes: number | null;
             /** Memory Used Bytes */
             memory_used_bytes: number;
+            /** Metrics Unavailable */
+            metrics_unavailable: string | null;
             /** Parallel Runs */
             parallel_runs: boolean;
             /** Query Containers */
@@ -3487,16 +3507,30 @@ export interface components {
          *     A deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the
          *     job counts are point-in-time facts a trend line has no use for; carrying them would make
          *     a 24 h reply many times the size for nothing anyone plots.
+         *
+         *     The reserved/measured pair is carried, because the *gap* between them over time is what
+         *     the chart drawing this exists to show. ``metrics_unavailable`` is not: a per-sample
+         *     reason string would multiply the reply for something only the live reading can act on,
+         *     and a sample whose measurement failed says so by being ``None`` -- which a plot must
+         *     draw as a **gap**, not as a drop to zero.
          */
         UsageSample: {
             /** At */
             at: number;
             /** Cpu Capacity */
             cpu_capacity: number;
+            /** Cpu Measured */
+            cpu_measured: number | null;
+            /** Cpu Reserved */
+            cpu_reserved: number | null;
             /** Cpu Used */
             cpu_used: number;
             /** Memory Capacity Bytes */
             memory_capacity_bytes: number;
+            /** Memory Measured Bytes */
+            memory_measured_bytes: number | null;
+            /** Memory Reserved Bytes */
+            memory_reserved_bytes: number | null;
             /** Memory Used Bytes */
             memory_used_bytes: number;
         };

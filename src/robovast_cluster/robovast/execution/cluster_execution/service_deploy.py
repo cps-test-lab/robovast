@@ -140,7 +140,7 @@ def _service_rbac_manifests(namespace):
     the ``pods/log`` subresource. It does not itself create scenario Jobs (the
     controllers do), so no ``batch`` verbs here.
 
-    Plus a cluster-scoped read-only ClusterRole (nodes + pods) backing the
+    Plus a cluster-scoped read-only ClusterRole (nodes + pods + node metrics) backing the
     ``/usage`` endpoint — see the ClusterRole manifest below.
     """
     role_name = SERVICE_ACCOUNT
@@ -238,6 +238,13 @@ def _service_rbac_manifests(namespace):
                 # dependency belongs in /usage's own role -- a pruned controller role must
                 # not silently take the disk meter with it.
                 {"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
+                # And metrics-server, for the MEASURED cpu/memory beside the request sum --
+                # one list for the whole node set per usage window. Optional in effect: a
+                # cluster not serving metrics.k8s.io, or a deployment whose RBAC predates
+                # this rule, reports why it cannot measure and still answers everything
+                # else, so /usage never depends on an add-on being installed.
+                {"apiGroups": ["metrics.k8s.io"], "resources": ["nodes"],
+                 "verbs": ["get", "list"]},
             ],
         },
         {

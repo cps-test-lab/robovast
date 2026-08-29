@@ -622,6 +622,17 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    reservations in the ``.vast`` — and the wall time is roughly
    ``⌈num_runs / concurrency⌉ × per_run_time``.
 
+   **Reserved and measured are separate fields, and the sizing above wants the reserved
+   one.** ``cpu_reserved`` / ``memory_reserved_bytes`` are what the scheduler has
+   committed — the number that decides whether the next run fits — while ``cpu_measured``
+   / ``memory_measured_bytes`` are what is actually being consumed, which answers whether
+   the last campaign needed what it asked for. ``cpu_used`` aliases whichever the lane
+   leads with (the request sum on a cluster, host utilization locally), so it stays the
+   right field when the distinction does not matter. Either pair is ``null`` where the lane
+   has no such reading — nothing reserves on the local Docker lane, and a cluster without
+   metrics-server cannot measure, saying which in ``metrics_unavailable`` — and ``null``
+   never means zero.
+
 
 .. _mcp-liveness:
 

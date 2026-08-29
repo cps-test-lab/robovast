@@ -210,6 +210,27 @@ def test_usage_tally_is_zero_with_no_campaigns(transport):
     assert (usage.jobs_running, usage.jobs_pending) == (0, 0)
 
 
+def test_this_lane_measures_and_reserves_nothing(transport):
+    """The local lane fills ``*_measured`` and leaves ``*_reserved`` unset.
+
+    It starts run containers without cpu/memory limits, one at a time, so it has a
+    measurement and no reservation -- and echoing the measurement into ``cpu_reserved``
+    would label consumption as a commitment, drawing a reservation the lane never made.
+
+    ``cpu_used`` must be the SAME reading as ``cpu_measured``, not a second one:
+    ``psutil.cpu_percent(interval=None)`` averages since its previous call, so asking twice
+    within one reading answers the second with roughly zero.
+    """
+    usage = transport.resource_usage()
+
+    assert usage.cpu_measured == usage.cpu_used
+    assert usage.memory_measured_bytes == usage.memory_used_bytes
+    assert usage.cpu_reserved is None
+    assert usage.memory_reserved_bytes is None
+    # Nothing was asked of metrics-server here, so there is no failure to report either.
+    assert usage.metrics_unavailable is None
+
+
 # -- the /usage disk meter --------------------------------------------------
 
 
