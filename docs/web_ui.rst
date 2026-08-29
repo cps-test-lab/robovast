@@ -77,6 +77,10 @@ It provides four views:
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
   running work halts promptly (not only after the current batch). That is the whole
   campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
+  It asks first, and says how many runs are in flight at that moment — the one thing a
+  reader needs before pressing it that nothing else on the card shows. Worth confirming
+  because there is no resume: a stopped campaign is over, and **Retrigger campaign** starts
+  a *new* one from run zero rather than continuing this one.
   A card's controls are two buttons: the **actions menu** (☰) and the fold. The menu is
   ordered by what a reader came for — open something, take something away, re-run something,
   destroy something — and every entry is conditional, so a campaign with nothing to act on

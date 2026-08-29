@@ -253,6 +253,36 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const { confirm, prompt } = useDialogs()
 
+  // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
+  // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
+  // starting from run zero. The button also sits in a row of small icons a click can land on by
+  // accident, and it is the only one there that destroys work in progress.
+  //
+  // The count is the point of asking rather than the wording: what a reader needs before pressing
+  // this is how much is actually in flight right now, which nothing else on a folded card says.
+  // Omitted rather than guessed at when the jobs listing has not answered — a confident "0 runs"
+  // over a campaign with six running would be worse than no number at all.
+  const onStop = async () => {
+    const inFlight = jobs.data?.counts?.running
+    const ok = await confirm({
+      title: 'Stop this campaign?',
+      message: (
+        <>
+          <code>{id}</code> ends now — not at the end of the current batch.{' '}
+          {inFlight
+            ? `The ${inFlight} run${inFlight === 1 ? '' : 's'} still executing ${
+                inFlight === 1 ? 'is' : 'are'} terminated and deliver${inFlight === 1 ? 's' : ''} no result.`
+            : 'Any run still executing is terminated and delivers no result.'}{' '}
+          What has already been recorded is kept. A stopped campaign cannot be resumed — Retrigger
+          campaign, in the actions menu, starts a new one from this one's configuration.
+        </>
+      ),
+      confirmLabel: 'Stop campaign',
+      danger: true,
+    })
+    if (ok) stop.mutate()
+  }
+
   // One dialog, not a confirm followed by a prompt: submitting *is* the confirmation, and the
   // reason field is the point of asking at all. Cancel (null) means don't stop — an empty
   // string is a deliberate "no reason given" and still goes through.
@@ -685,7 +715,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               color="error"
               aria-label="stop campaign"
               disabled={stop.isPending}
-              onClick={() => stop.mutate()}
+              onClick={onStop}
             >
               {stop.isPending ? <CircularProgress size={16} /> : <StopRoundedIcon fontSize="small" />}
             </IconButton>
