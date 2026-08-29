@@ -114,3 +114,31 @@ export function estimateBatchesEtaSeconds(
   const remaining = Math.max(0, b.limit - (b.current ?? 0) - 1)
   return runsEta + remaining * status.runs.total * perRun
 }
+
+/** Seconds until the CAMPAIGN is done, or null when no honest estimate exists.
+ *
+ * Everything above is scoped to the current batch, because that is the scope the status reports.
+ * A collapsed running row asks a different question -- when is this campaign finished -- and the
+ * answer is not always the batch answer:
+ *
+ * - **A batch campaign** has one batch, so its batch estimate IS its campaign estimate.
+ * - **A search bounded by `batches`** has a known number of equal-sized rounds left, which is
+ *   exactly what `estimateBatchesEtaSeconds` projects.
+ * - **A search bounded by anything else** -- runs, time, evaluations -- gets `null`. It still has
+ *   rounds, but nothing says how many, so the only number available is the CURRENT ROUND's, and
+ *   printing that as the campaign's remaining time is not a rough answer, it is a wrong one. Six
+ *   of the eight shipped `nav_search` examples are bounded this way, so this is the common case
+ *   rather than an edge one; the row shows nothing there, which is what "no estimate" looks like.
+ *
+ * Null is also what a campaign with nothing finished yet gets, from `estimateEtaSeconds`: with no
+ * completed run there is no rate, and a rate invented from zero observations is not an estimate. */
+export function campaignEtaSeconds(
+  status: Status,
+  counts: JobCounts | undefined,
+  terminal: boolean,
+): number | null {
+  const runsEta = estimateEtaSeconds(status, counts, terminal)
+  if (status.mode !== 'search') return runsEta
+  const bound = batchesBudget(status)
+  return bound ? estimateBatchesEtaSeconds(status, counts, bound, runsEta) : null
+}

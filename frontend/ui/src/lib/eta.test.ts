@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
+import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -155,5 +155,45 @@ describe('batchesBudget', () => {
     // user's own metric or objective name, so a text match would put the objective chart on a
     // metric row and read that metric's value as a round count.
     expect(batchesBudget(search([{ label: 'batches', kind: 'metric' }]))).toBeNull()
+  })
+})
+
+// The estimate a collapsed running row prints. Everything else in this module is scoped to the
+// current BATCH; this is the only function that answers for the campaign, and its whole job is
+// knowing when it cannot.
+describe('campaignEtaSeconds', () => {
+  const batches = (current: number, limit: number): BudgetItem =>
+    ({ label: 'batches', kind: 'batches', current, limit, done: false }) as BudgetItem
+  const runsBudget: BudgetItem =
+    ({ label: 'runs', kind: 'runs', current: 90, limit: 150, done: false }) as BudgetItem
+
+  it('is the batch estimate for a batch campaign — it has exactly one batch', () => {
+    freeze()
+    const s = status({ completed: 20 }, { mode: 'batch' })
+    expect(campaignEtaSeconds(s, undefined, false)).toBe(estimateEtaSeconds(s, undefined, false))
+  })
+
+  it('projects the remaining rounds for a search bounded by batches', () => {
+    freeze()
+    const s = status({ completed: 20 }, { mode: 'search', budget: [batches(1, 4)] })
+    // Strictly longer than the current round alone: two whole rounds still follow this one.
+    expect(campaignEtaSeconds(s, undefined, false)!)
+      .toBeGreaterThan(estimateEtaSeconds(s, undefined, false)!)
+  })
+
+  it('refuses a search whose rounds nothing bounds, rather than printing one round as the whole', () => {
+    freeze()
+    // The runs budget bounds the campaign but says nothing about how many ROUNDS are left, and a
+    // round is what the batch estimate measures. Six of eight shipped nav_search examples are
+    // bounded this way, so this is the common case.
+    const s = status({ completed: 20 }, { mode: 'search', budget: [runsBudget] })
+    expect(estimateEtaSeconds(s, undefined, false)).not.toBeNull()
+    expect(campaignEtaSeconds(s, undefined, false)).toBeNull()
+  })
+
+  it('says nothing before the first run finishes, and nothing once terminal', () => {
+    freeze()
+    expect(campaignEtaSeconds(status({ completed: 0 }, { mode: 'batch' }), undefined, false)).toBeNull()
+    expect(campaignEtaSeconds(status({ completed: 20 }, { mode: 'batch' }), undefined, true)).toBeNull()
   })
 })
