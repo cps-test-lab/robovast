@@ -1516,11 +1516,7 @@ class BatchJobRunner:
         reason = (calibration.outcome().get("refused") or {}).get(node_id)
         if not reason:
             return
-        declared = any(getattr(c, "resources", None) is not None
-                       for c in (getattr(getattr(self, "plan", None), "containers", None) or ()))
-        remedy = ("Raise execution.containers.<name>.resources for the container named above"
-                  if declared else
-                  "Raise ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for its role")
+        remedy = self._remedy_for(reason)
         raise CampaignConfigError(
             f"Node {node_id} could not be calibrated: {reason}. This campaign asked for "
             f"execution.sizing: calibrated, so its runs are meant to be sized from what each "
@@ -1528,6 +1524,38 @@ class BatchJobRunner:
             f"allocation while the others run at measured figures, which is not a comparable "
             f"campaign. {remedy}, or set execution.sizing: fixed to declare the sizing "
             f"outright.")
+
+    def _remedy_for(self, reason: str) -> str:
+        """What would actually change the outcome, for the reason this probe was refused.
+
+        The five reasons are not one fault with one fix, and a message that offers the same
+        remedy to all of them sends the reader to edit something that has no bearing on what
+        happened -- the "raise the allocation" advice reads especially wrong on a probe whose
+        scenario never reached a verdict, where nothing about the allocation was in question.
+        """
+        declared = any(getattr(c, "resources", None) is not None
+                       for c in (getattr(getattr(self, "plan", None), "containers", None) or ()))
+        raise_it = ("Raise execution.containers.<name>.resources for the container named above"
+                    if declared else
+                    "Raise ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for its role")
+        if "throttled" in reason:
+            # The measurement was of the ceiling, so the ceiling is what has to move.
+            return raise_it
+        if "OOM-killed" in reason:
+            return ("Raise the memory for the container named above -- "
+                    + ("execution.containers.<name>.resources.memory" if declared
+                       else "ROBOVAST_BOOTSTRAP_MEMORY for its role"))
+        if "no verdict" in reason:
+            # Nothing to do with sizing: the probe runs a real trial, and that trial failed.
+            return ("The probe runs one of this campaign's own configurations, so its "
+                    "scenario failing is the campaign's to diagnose rather than the "
+                    "allocation's -- read that node's probe log under _calibration/, and fix "
+                    "what stopped the trial reaching a verdict")
+        if "samples" in reason:
+            return ("The trial finished too quickly to measure, so the figures would rest on "
+                    "a handful of ticks -- lengthen the trial, or size this campaign yourself")
+        return ("The probe produced nothing readable -- check that node's monitor output "
+                "under _calibration/, and whether its runtime exposes the cgroup counters")
 
     def abandon_outstanding_probes(self) -> int:
         """Free every node this batch was still measuring. Returns how many.

@@ -493,12 +493,27 @@ def test_a_refused_probe_fails_the_campaign():
     would carry the same fault."""
     from robovast.execution.backends import CampaignConfigError
 
-    r, calibration = _runner_that_refused("its probe reached no verdict")
+    r, calibration = _runner_that_refused("its probe was throttled past what its statistic "
+                                          "absorbs (sut=71.1%)")
     with pytest.raises(CampaignConfigError) as raised:
         r._refuse_a_probe_that_could_not_measure("n1", calibration)
     message = str(raised.value)
-    assert "n1" in message and "reached no verdict" in message
+    assert "n1" in message and "throttled" in message
     assert "ROBOVAST_BOOTSTRAP_CPU" in message, "name the remedy for the path it is on"
+
+
+def test_the_remedy_fits_the_reason_rather_than_the_mode():
+    """Five reasons are not one fault with one fix. A probe whose scenario never reached a
+    verdict was told to raise an allocation that had nothing to do with it -- and to do so
+    "for the container named above", when that reason names no container."""
+    r, _ = _runner_that_refused(None)
+    verdict = r._remedy_for("its probe reached no verdict")
+    assert "resources" not in verdict and "BOOTSTRAP" not in verdict
+    assert "_calibration/" in verdict, "point at the probe's own log"
+
+    assert "memory" in r._remedy_for("its probe was OOM-killed (sut)").lower()
+    assert "Raise" in r._remedy_for("its probe was throttled past what its statistic absorbs")
+    assert "trial" in r._remedy_for("its probe produced fewer than 10 samples")
 
 
 def test_the_remedy_named_is_the_one_this_campaign_can_act_on():
