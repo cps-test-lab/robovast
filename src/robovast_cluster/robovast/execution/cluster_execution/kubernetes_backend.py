@@ -323,7 +323,15 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     figures = (node_figures or {}).get(container_name)
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
-    out = dict(declared)
+    # The bootstrap is the BASE even here, not just the no-figures fallback. Only CPU is
+    # calibrated, so on a `sizing: calibrated` campaign -- where `declared` is empty by
+    # definition -- starting from it left memory unset entirely: the container reached the
+    # node with no memory limit, was told by the downward API that it had the whole
+    # machine's RAM, and sized `/dev/shm` from that too, which turns an overrun into a
+    # SIGBUS with no reason attached. Measured on a calibrated node: a run that should have
+    # had 1Gi reported 46.96 GiB. The calibrated CPU figure then overwrites the bootstrap's
+    # below, which is the only field that was ever meant to change here.
+    out = dict(_with_bootstrap(declared, container_name, roles) if bootstrap else declared)
     # The declared ROLE decides, not the container's name. For the three known roles the two
     # are the same string today, because the role name is the key in ``execution.containers``
     # -- but that is a coincidence of the schema rather than a fact this rule should rest on,

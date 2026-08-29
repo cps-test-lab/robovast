@@ -349,3 +349,32 @@ def test_the_refuse_ratio_is_tighter_than_a_probe_that_holds():
         PROBE_THROTTLE_REFUSE_RATIO)
 
     assert 0 < PROBE_THROTTLE_REFUSE_RATIO < 0.05, "bring-up noise, not a clipped run"
+
+
+def test_a_calibrated_container_still_gets_its_memory():
+    """Only CPU is calibrated, so every other field has to survive the calibrated path. It
+    did not: under `sizing: calibrated` nothing is declared, so building the result from the
+    declaration alone left memory unset, and a container with no memory limit is told by the
+    downward API that it has the whole node -- 46.96 GiB where 1Gi was meant, with `/dev/shm`
+    sized from the same place, so an overrun is a SIGBUS rather than a clean OOM.
+
+    The no-figures path was already right, which is why this hid: it only appears once a node
+    is calibrated, i.e. only after the feature starts working.
+    """
+    figures = {"scenario": {"sustained": 1.33, "peak": 1.66, "samples": 90}}
+    sized = kb.calibrated_resources({}, "scenario", figures, roles=("scenario",),
+                                    bootstrap=True)
+    assert sized.get("memory"), "a calibrated container must still carry a memory request"
+    assert sized.get("memory_limit"), "and a limit, or AVAILABLE_MEM reports the node's"
+    assert float(sized["cpu"]) == 1.33, "the CPU figure is the one calibration changes"
+
+
+def test_calibration_does_not_reintroduce_an_empty_cpu_limit():
+    """The infra roles keep a generous ceiling and request the sustained figure -- but with
+    nothing declared, `cpu_limit` fell back to the declaration's absent value. An empty
+    limit is the same downward-API trap as the memory one, on the other resource."""
+    figures = {"simulation": {"sustained": 0.9, "peak": 2.4, "samples": 90}}
+    sized = kb.calibrated_resources({}, "simulation", figures, roles=("simulation",),
+                                    bootstrap=True)
+    assert sized.get("cpu_limit"), "never empty: an absent limit means the node's capacity"
+    assert float(sized["cpu_limit"]) >= float(sized["cpu"]), "a ceiling is not below its floor"
