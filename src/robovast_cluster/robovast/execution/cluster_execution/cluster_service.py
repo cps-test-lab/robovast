@@ -3340,6 +3340,25 @@ class ClusterService(LocalTransport):
         logger.info("Published edited config %s for %s to the object store",
                     vast.name, campaign_id)
 
+    def _publish_campaign_records(self, campaign_id: str, campaign_root) -> None:
+        """Publish the launch record now, not at ``finalize_campaign``.
+
+        This lane's driver disk is scratch (see :ref:`campaign-discovery`), so a record
+        written there and uploaded only when the campaign finishes is absent from every
+        campaign that did *not* finish — which is the set someone comes looking at, and the
+        set a restart has to re-launch from. It rides on :meth:`_publish_execution` rather
+        than a put of its own: ``_execution/`` holds only this record at launch time, and
+        one uploader for that directory is one fewer thing to keep in step.
+
+        Best-effort, and quiet about it: the campaign's own uploads follow within seconds
+        and will fail loudly if the store is genuinely unreachable.
+        """
+        try:
+            self._publish_execution(campaign_id, campaign_root)
+        except Exception as e:  # noqa: BLE001 - a record is not worth failing a campaign
+            logger.warning("Could not publish the launch record for %s: %s",
+                           campaign_id, e)
+
     def _publish_execution(self, campaign_id: str, campaign_root) -> None:
         """Upload a campaign's ``_execution/`` (outcome + logs + data.db) to the store."""
         from robovast.execution.cluster_execution import in_pod_storage

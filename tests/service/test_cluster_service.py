@@ -1704,6 +1704,41 @@ def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
     assert calls[0]["namespace"] == "ns1"
 
 
+# -- the launch record reaches the store before anything can fail -----------
+
+def test_recording_the_launch_publishes_it(cs, tmp_path, monkeypatch):
+    """Written and published in one call, at the top of the driver.
+
+    This lane's driver disk is scratch, so a record left on it is missing from every
+    campaign that did not finish — which is the set someone comes looking at, and the set
+    a restart has to re-launch from.
+    """
+    from robovast.service.interface import CreateCampaignRequest
+
+    published = []
+    monkeypatch.setattr(type(cs), "_publish_execution",
+                        lambda self, cid, root: published.append((cid, str(root))))
+
+    cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
+
+    assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
+    assert published == [("camp-a", str(tmp_path / "camp-a"))]
+
+
+def test_an_unpublishable_record_does_not_fail_the_campaign(cs, tmp_path, monkeypatch):
+    """The campaign's own uploads follow within seconds and report a dead store loudly."""
+    from robovast.service.interface import CreateCampaignRequest
+
+    def boom(self, cid, root):
+        raise RuntimeError("store unreachable")
+
+    monkeypatch.setattr(type(cs), "_publish_execution", boom)
+
+    cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
+
+    assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
+
+
 # -- driver S3 endpoint (off-cluster host reachability) ---------------------
 
 def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):

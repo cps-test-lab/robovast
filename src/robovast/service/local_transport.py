@@ -2092,6 +2092,13 @@ class LocalTransport(RobovastInterface):
                             target, campaign_config,
                             image_project=options.image_project,
                             image_project_tag=options.image_project_tag)
+                # Re-record the launch, now that the symbolic image refs have become
+                # concrete ones. Written here rather than merged in later because this is
+                # the last moment before the campaign starts spending compute, and the
+                # record is what a re-launch after a restart pins its images from -- a
+                # re-resolve would silently pick up a base that moved in the meantime.
+                self._record_launch(campaign_id, results_dir, request,
+                                    images=options.images)
                 state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
@@ -2702,7 +2709,7 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.warning("Could not write outcome.json for %s: %s", campaign_id, e)
 
-    def _record_launch(self, campaign_id, results_dir, request):
+    def _record_launch(self, campaign_id, results_dir, request, images=None):
         """Persist how this campaign was asked for, to ``_execution/launch.yaml``.
 
         The counterpart of :meth:`_record_outcome` at the other end of the campaign: what was
@@ -2712,14 +2719,37 @@ class LocalTransport(RobovastInterface):
         any campaign in the results root, by a retrigger or by a human.
 
         Called at the top of the worker so it lands before anything that can fail, for the
-        same reason :meth:`_on_campaign_started` is there. Never fatal: a campaign that runs
-        correctly must not be failed by an unwritable record.
+        same reason :meth:`_on_campaign_started` is there, and **again** once the launch has
+        resolved its images — see ``write_launch_record``'s ``images``. Never fatal: a
+        campaign that runs correctly must not be failed by an unwritable record.
+
+        Publishing follows writing, in the same call: a record that exists only on this disk
+        is missing from precisely the campaigns worth looking at on a lane whose disk is
+        scratch, which is the defect :meth:`_publish_campaign_records` exists to close.
         """
         from robovast.common.campaign_data import write_launch_record
+        campaign_root = Path(results_dir) / campaign_id
         try:
-            write_launch_record(Path(results_dir) / campaign_id, request)
+            write_launch_record(campaign_root, request, images=images)
         except OSError as e:
             logger.warning("Could not write launch.yaml for %s: %s", campaign_id, e)
+            return
+        self._publish_campaign_records(campaign_id, campaign_root)
+
+    def _publish_campaign_records(self, campaign_id: str, campaign_root: Path) -> None:
+        """Put the campaign's records where they survive this process. No-op here.
+
+        A local campaign's durable home *is* this directory, so there is nowhere else to put
+        them. :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it: there the driver's disk is scratch, and a record left on it is lost by
+        the next restart — which is exactly the moment someone comes looking.
+
+        The service's half of a pair. This one publishes what the *service* writes before a
+        controller exists (``launch.yaml``); ``ExecutionBackend.publish_records`` publishes
+        what the *controller* writes (``campaign.db``), because by then the backend is the
+        only route to the store. Neither can do the other's job: at this point there is no
+        backend, and at that point there is no service.
+        """
 
     def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
         """Persist a cooperatively-stopped campaign's terminal ``Status``.

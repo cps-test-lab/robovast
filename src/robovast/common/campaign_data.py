@@ -855,11 +855,14 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: That is not the same as the fact being unrecorded. Where the configuration *came from* is
 #: kept on the campaign row as ``origin_*`` (see ``common/store.py``) -- a record of the past,
 #: which nothing reads back to run anything. This file is the replay; that is the provenance.
+#:
+#: The written record carries one field beyond these: the resolved ``images``. See
+#: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
                   "upload_to_share", "show_gui")
 
 
-def write_launch_record(campaign_root: Path, request) -> None:
+def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:
     """Persist how the campaign was **asked for** to ``_execution/launch.yaml``.
 
     ``request`` is a :class:`robovast.service.interface.CreateCampaignRequest`. ``runs`` is
@@ -868,12 +871,24 @@ def write_launch_record(campaign_root: Path, request) -> None:
     ("3 because the ``.vast`` says 3" vs "3 because someone overrode a ``.vast`` saying 25").
     Neither number answers that alone.
 
+    ``images`` is ``{container name: image ref}`` as the launch **resolved** them, and is the
+    one thing here that is not a request field. It widens this record from "what was asked
+    for" to "…and what that resolved to", which is deliberate: a re-launch that re-resolves
+    would pick up a base image that moved since, and swap the image under half the runs of a
+    campaign already in flight. A symbolic ``build:<tag>`` is not an answer to "which bytes
+    ran"; the concrete ref is. Omitted (``None``) at the first write, because the build has
+    not happened yet — the launch path writes again once it has.
+
     Best-effort by the same reasoning as :func:`write_execution_outcome`'s caller: a campaign
     must not fail because a record could not be written.
     """
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
     record = {field: getattr(request, field) for field in _LAUNCH_FIELDS}
+    # Only when known: a null would be indistinguishable from "this campaign resolved no
+    # images", which is a different (and, for a re-launch, unusable) statement.
+    if images:
+        record["images"] = dict(images)
     with open(exec_dir / _LAUNCH_FILENAME, "w", encoding="utf-8") as f:
         yaml.dump(record, f, default_flow_style=False, sort_keys=False)
 

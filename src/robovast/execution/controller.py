@@ -213,6 +213,11 @@ class CampaignController:
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
             config_dir="_config", description=self.description,
             created_by=self.created_by, origin=self.origin)
+        # Before a single job exists. The row just written is the only place the
+        # campaign's description, who launched it and where its configuration came from
+        # are recorded, and on a lane whose driver disk is scratch a record published at
+        # the end is missing from every campaign that did not reach one.
+        self.backend.publish_records(self.campaign_root)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id,
                               progress_deadline_s=self._progress_deadline())
@@ -524,6 +529,12 @@ class CampaignController:
                                    invalid=invalid_runs_count)
             self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
+        # The same per-batch checkpoint the search loop takes. Redundant with
+        # ``finalize_campaign`` when the campaign goes on to finish -- and not when it does
+        # not, which is the case this exists for: the unit and run rows just written are the
+        # campaign's tally, and losing them to a crash in the finish tail would leave a
+        # campaign whose results are all in the store reading as if nothing had run.
+        self.backend.publish_records(self.campaign_root)
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
         return {"mode": "batch", "configs": len(configs), "campaign_root": self.campaign_root}
@@ -670,6 +681,11 @@ class CampaignController:
                 self.state.update(batches_done=batch_idx, best_objective=best_objective,
                                   budget=[self._budget_item(p) for p in progress])
             self.notifier.batch_finished(batch_idx - 1, len(evaluations))
+            # The search's checkpoint. Everything the loop would need to pick up here --
+            # which batches ran and what each parameter set scored -- is in the rows just
+            # written, so publishing them per batch is what makes a search resumable at a
+            # batch boundary rather than only from the start.
+            self.backend.publish_records(self.campaign_root)
             result = stop.should_stop(snap)
             if not result and self.state is not None and self.state.stop_requested:
                 result = StopResult(kind="external",

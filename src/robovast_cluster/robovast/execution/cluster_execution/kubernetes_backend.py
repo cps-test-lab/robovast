@@ -2805,6 +2805,31 @@ class KubernetesBackend(ExecutionBackend):
                               image_digest=getattr(runner, "_resolved_image_digest", None),
                               image_digests=getattr(runner, "_resolved_image_digests", None))
 
+    def publish_records(self, campaign_root: str) -> None:
+        """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.
+
+        The one file, not the directory: this runs before any compute is spent and again
+        at every batch boundary, and the campaign root beside it holds the batch's results.
+        ``finalize_campaign`` is what publishes those, once.
+
+        Best-effort. The campaign is mid-flight and its own result uploads go through the
+        same client moments later, so a store that is genuinely unreachable is reported by
+        those with a real error rather than by ending the campaign over its bookkeeping.
+        """
+        db = os.path.join(campaign_root, "campaign.db")
+        if not os.path.isfile(db):
+            # Nothing to publish yet is not a failure: the local batch runner reaches the
+            # per-batch call before the store has been created in some test lanes.
+            return
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        try:
+            bucket, prefix = in_pod_storage.campaign_storage_location(
+                self.cluster_config, campaign_id)
+            storage = in_pod_storage.storage_client_for(self.cluster_config)
+            storage.upload_file(db, bucket, f"{prefix}campaign.db")
+        except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
+            logger.warning("Could not publish campaign.db for %s: %s", campaign_id, e)
+
     def finalize_campaign(self, campaign_root: str) -> None:
         """Publish the canonical campaign to storage so the bucket matches local.
 
