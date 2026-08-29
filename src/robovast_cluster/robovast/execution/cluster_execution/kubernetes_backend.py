@@ -259,7 +259,50 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     return manifest
 
 
-def calibrated_resources(declared: dict, container_name: str, node_figures, roles=()) -> dict:
+def _bootstrap_role(container_name: str, roles=()) -> str:
+    """Which bootstrap figure *container_name* takes.
+
+    The declared ROLE decides where there is one, the container's name otherwise -- the same
+    precedence :func:`calibrated_resources` applies, and for the same reason: a stack that
+    bundles its own simulator serves the simulation role from its ``sut`` container.
+    """
+    from robovast.common.config import CONTAINER_ROLES  # noqa: PLC0415
+
+    for role in (roles or ()):
+        if role in CONTAINER_ROLES:
+            return role
+    return container_name
+
+
+def _with_bootstrap(declared: dict, container_name: str = None, roles=()) -> dict:
+    """*declared* as-is, or the bootstrap figures where it says nothing.
+
+    Reached whenever a container has no measurement yet -- the probe itself, every job on a
+    node still being measured, and every job on a node whose probe was refused. Under
+    ``sizing: fixed`` the declaration is always there and this returns it untouched.
+
+    **The limit is written explicitly, never left empty.** ``JOB_TEMPLATE`` reads
+    ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` from ``resourceFieldRef: limits.cpu`` /
+    ``limits.memory``, and the downward API substitutes the NODE's allocatable for an empty
+    limit -- so a container would be told it has the whole machine, and ``/dev/shm``, sized
+    from the same place, would turn an overrun into a SIGBUS with no reason attached. A
+    wrong answer that looks right.
+    """
+    from .node_calibration import bootstrap_sizing  # noqa: PLC0415
+
+    if (declared or {}).get("cpu") and (declared or {}).get("memory"):
+        return declared
+    cpu, memory = bootstrap_sizing(_bootstrap_role(container_name, roles))
+    out = dict(declared or {})
+    out.setdefault("cpu", cpu)
+    out.setdefault("cpu_limit", out.get("cpu_limit") or cpu)
+    out.setdefault("memory", memory)
+    out.setdefault("memory_limit", out.get("memory_limit") or out["memory"])
+    return out
+
+
+def calibrated_resources(declared: dict, container_name: str, node_figures, roles=(),
+                         bootstrap: bool = False) -> dict:
     """*declared* re-sized for one node, or unchanged when that node is not calibrated yet.
 
     **The statistic depends on the container's ROLE, and this is where the roles live.**
@@ -279,7 +322,7 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
 
     figures = (node_figures or {}).get(container_name)
     if not figures:
-        return declared
+        return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
     out = dict(declared)
     # The declared ROLE decides, not the container's name. For the three known roles the two
     # are the same string today, because the role name is the key in ``execution.containers``
@@ -555,6 +598,10 @@ class BatchJobRunner:
         self._batch_tag = batch_tag
 
         execution_params = campaign_data.get("execution", {}) or {}
+        #: ``fixed`` or ``calibrated`` -- see ``ExecutionConfig.sizing``. Read once here so
+        #: the sizing path does not have to reach back into the campaign document, and so a
+        #: runner built for an offline emit (which has no campaign) defaults to ``fixed``.
+        self.sizing_mode = execution_params.get("sizing") or "fixed"
         self.pre_command = execution_params.get("pre_command")
         self.post_command = execution_params.get("post_command")
         self.run_as_user = execution_params.get("run_as_user", 1000)
@@ -698,11 +745,20 @@ class BatchJobRunner:
         s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
 
         spec = job_manifest['spec']['template']['spec']
-        if node_figures:
+        if node_figures or self._sizing_is_calibrated():
             # The MAIN container too, not only the sidecars. Its resources were stamped once
             # onto the base manifest at batch setup, so without this the container running
             # the scenario would be the one container a calibrated node did not re-size --
             # and on the ROS shape that is the scenario, a third of the pod.
+            #
+            # `node_figures` alone is not the condition, and the difference is the whole
+            # first job on every node: before anything is measured there are no figures, so
+            # gating on them left the main container with NO resources at all rather than
+            # the bootstrap. An empty limit is not merely generous -- JOB_TEMPLATE reads
+            # AVAILABLE_CPUS/AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the
+            # downward API substitutes the NODE's allocatable for an absent limit, so the
+            # scenario sizes itself to the whole machine and the probe measures a container
+            # that was never bounded.
             main_role = getattr(getattr(self, "plan", None), "main", None)
             main_name = getattr(main_role, "name", None) or SCENARIO_CONTAINER
             declared = {}
@@ -716,10 +772,26 @@ class BatchJobRunner:
                 declared['cpu_limit'] = limits['cpu']
             if limits.get('memory'):
                 declared['memory_limit'] = limits['memory']
-            if declared:
-                stamp_resources(spec['containers'][0],
-                                calibrated_resources(declared, main_name, node_figures,
-                                                     roles=getattr(main_role, "roles", ())))
+            # `declared` is empty under `sizing: calibrated`, and that is the case the
+            # bootstrap exists for -- so the guard asks whether anything will be produced,
+            # not whether anything was written in the file.
+            # Looked up under MAIN_CONTAINER_NAME, not under the role: the probe measures
+            # what the monitor wrote, and the main container's file is `resource_usage_main`
+            # whatever the `.vast` calls the container -- the same mismatch
+            # `_probe_container_limits` aliases past. Keyed by the role instead, the lookup
+            # misses on every node and the container silently keeps the bootstrap for the
+            # whole campaign, which is not a visible failure: it is a container running at a
+            # figure nobody chose, throttling against it.
+            #
+            # The ROLE still decides the statistic and the bootstrap, so it is passed on
+            # separately -- falling back to the scenario role, since that is what the main
+            # container runs when the `.vast` names no block for it.
+            sized = calibrated_resources(declared, MAIN_CONTAINER_NAME, node_figures,
+                                         roles=(getattr(main_role, "roles", ())
+                                                or (main_name,)),
+                                         bootstrap=self._sizing_is_calibrated())
+            if sized:
+                stamp_resources(spec['containers'][0], sized)
 
         # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
         # injects it, and a deployment that taints its campaign nodes without it does not
@@ -861,7 +933,7 @@ class BatchJobRunner:
             sc_name = sc.name
             sc_resources = calibrated_resources(
                 resolve_resources(sc.resources, self.kube_context), sc_name, node_figures,
-                roles=getattr(sc, "roles", ()))
+                roles=getattr(sc, "roles", ()), bootstrap=self._sizing_is_calibrated())
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
@@ -1104,6 +1176,7 @@ class BatchJobRunner:
         admission = self.admission
         if admission is None:
             return None
+        self._warn_about_containers_with_no_role()
         calibration = admission.calibration(self.campaign, NodeCalibration)
         self._calibration = calibration
         node_ids = self._probe_node_ids(total_jobs)
@@ -1200,6 +1273,66 @@ class BatchJobRunner:
             return self._job_sizing(job, total_jobs, node_figures=figures)
 
         return _sizing
+
+    def _refuse_a_bootstrap_that_did_not_hold(self, storage, bucket_name, prefix, job_name):
+        """Fail the campaign when a bootstrap-sized run hit a limit it never chose.
+
+        **Only for a campaign running on the bootstrap**, which is `sizing: calibrated`
+        where calibration did not apply -- a pilot with no more jobs than nodes, or a
+        cluster that can grow. Everywhere else the allocation was either declared by the
+        author or measured on the node, and a run that hits it is reported and kept: that is
+        `run_validity_view`'s job, and discarding such a run silently would be worse than
+        labelling it.
+
+        A bootstrap is different in kind. **Nobody chose it for this workload** -- it is a
+        cluster-wide default that exists to get the first probe off the ground. A run that
+        OOMs or throttles hard against it is not evidence about the stack; it is evidence
+        that the default does not fit, and every further run of the campaign would carry the
+        same fault. Continuing would spend the budget producing data whose allocation was
+        never right, and the fault would surface later wearing the stack's clothes.
+
+        Raises, so the campaign stops and the operator sees why. Best-effort on the read
+        itself: a counter that cannot be fetched is not a verdict, and must never be the
+        reason a campaign dies.
+        """
+        if not self._sizing_is_calibrated() or getattr(self, "_calibration_applies", True):
+            return
+        from .node_calibration import (PROBE_THROTTLE_REFUSE_RATIO,  # noqa: PLC0415
+                                       read_probe_measurement)
+
+        index = getattr(self, "_job_index_by_name", {}).get(job_name)
+        if index is None:
+            return
+        job_prefix = f"{prefix}_jobs/{self._job_artifact_path(index)}/"
+        try:
+            measured = read_probe_measurement(
+                lambda k: storage.read_object(bucket_name, k), job_prefix,
+                self._probe_container_files(), limits=self._probe_container_limits())
+        except Exception as exc:  # noqa: BLE001 - a counter we cannot read is not a verdict
+            logger.debug("could not read counters for %s: %s", job_name, exc)
+            return
+
+        killed = sorted(n for n, st in (measured or {}).items()
+                        if (st or {}).get("oom_kills", 0) > 0)
+        capped = {n: st["throttled_ratio"] for n, st in (measured or {}).items()
+                  if (st or {}).get("throttled_ratio", 0) > PROBE_THROTTLE_REFUSE_RATIO}
+        if not killed and not capped:
+            return
+        what = []
+        if killed:
+            what.append(f"OOM-killed: {', '.join(killed)}")
+        if capped:
+            what.append("throttled against its own limit: "
+                        + ", ".join(f"{k} {v:.1%}" for k, v in sorted(capped.items())))
+        raise CampaignConfigError(
+            f"{job_name} ran on the BOOTSTRAP allocation and {'; '.join(what)}. This "
+            f"campaign asked for execution.sizing: calibrated, but calibration does not "
+            f"apply to it -- a campaign with no more jobs than the cluster has nodes, or a "
+            f"cluster that can grow -- so every container is running on the deployment's "
+            f"default rather than a measured or declared figure. That default does not fit "
+            f"this workload, and every remaining run would carry the same fault. Raise "
+            f"ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for the role named above, "
+            f"or set execution.sizing: fixed and declare what this campaign needs.")
 
     def _collect_probes(self, storage, bucket_name, campaign_prefix) -> None:
         """Read whichever probes have finished, and let their nodes take work.
@@ -1341,7 +1474,16 @@ class BatchJobRunner:
             return []
         node_ids = admission.node_ids()
         calibration = admission.calibration(self.campaign, NodeCalibration)
-        if not calibration_applies(total_jobs, len(node_ids), admission.growable()):
+        # Whether this campaign ASKED to be measured is `execution.sizing`, in its own
+        # `.vast`. Whether the cluster and the campaign's shape make a probe worth running
+        # is `calibration_applies`. Both have to hold.
+        applies = self._sizing_is_calibrated() and calibration_applies(
+            total_jobs, len(node_ids), admission.growable())
+        # Remembered because the sizing a run actually got is not visible from the run: a
+        # campaign that asked to be calibrated and was not is running on the bootstrap, and
+        # that is the one case where hitting a limit is a fault rather than a finding.
+        self._calibration_applies = applies
+        if not applies:
             calibration.enabled = False
             return []
         return [n for n in node_ids if calibration.calibrated(n) is None]
@@ -1360,6 +1502,49 @@ class BatchJobRunner:
         except Exception:  # noqa: BLE001 - status reporting must not fail a batch
             logger.debug("Could not publish capacity wait for batch %s",
                          self._batch_tag, exc_info=True)
+
+    def _warn_about_containers_with_no_role(self) -> None:
+        """Name the containers calibration will treat as ad-hoc, in the campaign log.
+
+        A role comes from the container's NAME -- `scenario`, `simulation`, `sut` -- and
+        there is no way to declare one. A container named anything else therefore gets the
+        ad-hoc bootstrap rather than its role's, and is sized on the SUSTAINED figure rather
+        than the peak once measured.
+
+        For a system under test called something else, both are wrong and only the first is
+        loud: too small a bootstrap OOMs or throttles and stops the campaign, while sizing
+        the thing under test on its sustained figure just lets it throttle mid-plan, which
+        looks like the stack failing. So it is said up front, at INFO's louder neighbour, in
+        the log the campaign keeps.
+
+        Only under `calibrated`: with a declared figure the name decides nothing.
+        """
+        from robovast.common.config import CONTAINER_ROLES  # noqa: PLC0415
+
+        plan = getattr(self, "plan", None)
+        if plan is None or not self._sizing_is_calibrated():
+            return
+        adhoc = sorted(c.name for c in plan.containers
+                       if not set(getattr(c, "roles", ()) or ()) & set(CONTAINER_ROLES))
+        if not adhoc:
+            return
+        logger.warning(
+            "execution.sizing is calibrated and %s %s not named after a role (%s), so each "
+            "takes the ad-hoc bootstrap and is sized on its sustained use rather than its "
+            "peak. If one of them is the system under test, rename it to '%s' -- the peak "
+            "rule exists so the thing under test never throttles mid-plan, and it keys on "
+            "the name.",
+            ", ".join(adhoc), "is" if len(adhoc) == 1 else "are",
+            "/".join(CONTAINER_ROLES), "sut")
+
+    def _sizing_is_calibrated(self) -> bool:
+        """Whether this campaign's reservations are measured rather than declared.
+
+        Defaults to False for a runner with no campaign behind it -- the offline manifest
+        emit and `vast prepare` -- so those keep refusing a pod that declares nothing, which
+        is still the fault there: nothing is going to measure it.
+        """
+        return getattr(self, "sizing_mode", "fixed") == "calibrated"
 
     def _job_sizing(self, job, total_jobs, node_figures=None):
         """What one of this batch's pods asks the scheduler for, summed over its containers.
@@ -1399,13 +1584,19 @@ class BatchJobRunner:
         # plan in one pass -- the mass submission it exists to prevent, with no error
         # anywhere and preflight passing trivially. Refused at launch rather than paced into
         # a cluster that cannot hold it.
-        if cpu <= 0:
+        #
+        # Under `sizing: calibrated` a zero declaration is the NORMAL case rather than the
+        # fault: the figure is measured per node and the bootstrap allocation is what the
+        # first job asks for. What must still be refused is a pod that reaches admission
+        # with no figure from either source, which is `_bootstrap_sizing` returning nothing.
+        if cpu <= 0 and not self._sizing_is_calibrated():
             raise CampaignConfigError(
                 "No container declares execution.containers.<name>.resources.cpu "
                 f"({', '.join(unsized)}), so this campaign's pod would be admitted as "
                 "needing zero cores and its whole plan created at once. Declare cpu (and "
-                "memory) for the containers that do the work.")
-        if unsized:
+                "memory) for the containers that do the work, or set "
+                "execution.sizing: calibrated to have them measured per node.")
+        if unsized and not self._sizing_is_calibrated():
             # Not fatal -- the queue still paces on what was declared -- but it paces on
             # less than the pod actually takes, so the cluster is oversubscribed by
             # whatever these use.
@@ -2109,6 +2300,11 @@ class BatchJobRunner:
                 # leaves the campaign waiting forever having created nothing -- and every
                 # diagnosis path downstream reads pods, so none of them can see it.
                 raise CampaignConfigError(str(exc)) from exc
+            # Name -> index, kept because a finished job is reported by NAME and its
+            # artifacts live under its INDEX. Recorded here, where the pairing already
+            # exists, rather than re-derived from position later -- creation order varies
+            # under admission and an index recovered by counting would be wrong.
+            self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
             calibration = self._start_probes(jobs, total_jobs, campaign_prefix)
             admission.submit(
                 self.campaign,
@@ -2153,6 +2349,8 @@ class BatchJobRunner:
                 # held is spendable again on the next drain.
                 for name in set(created_names) - set(remaining):
                     admission.finished(name)
+                    self._refuse_a_bootstrap_that_did_not_hold(
+                        storage, bucket_name, campaign_prefix, name)
             if not remaining and not planned_count:
                 # Cleared on the way out, not left to the next batch's first probe: between
                 # those two moments the campaign is still in `running`, and a flag that

@@ -187,6 +187,55 @@ def _resource_advisories(config_path):
         "get_campaign_summary on a comparable finished campaign reports what it used.")]
 
 
+def _calibration_role_advisories(config_path):
+    """Advise when a calibrated campaign has containers not named after a role.
+
+    A role comes from the container's NAME -- ``scenario``, ``simulation``, ``sut`` -- and
+    cannot be declared. Under ``execution.sizing: calibrated`` a container named anything
+    else takes the ad-hoc bootstrap rather than its role's, and is sized on its SUSTAINED
+    use rather than its peak once measured.
+
+    An **advisory**, not an error: an ad-hoc container is a legitimate thing to have, and
+    for one that is genuinely auxiliary both defaults are right. It matters when the
+    container is the system under test under another name, because the peak rule exists so
+    the thing under test never throttles mid-plan -- and that failure is quiet, looking like
+    the stack rather than the allocation.
+
+    Only reported for a campaign that would be calibrated. With a declared figure the name
+    decides nothing, which is why this is silent for every ``.vast`` written so far.
+    """
+    raw, problem = _safe_load(config_path)
+    if problem or not isinstance(raw, dict):
+        return []
+    execution = raw.get("execution") or {}
+    containers = execution.get("containers") or {}
+    if not isinstance(containers, dict) or not containers:
+        return []
+    declares = any(
+        isinstance(b, dict) and isinstance(b.get("resources"), dict)
+        and any(b["resources"].get(k) is not None
+                for k in ("cpu", "cpu_limit", "memory", "memory_limit"))
+        for b in containers.values())
+    sizing = execution.get("sizing") or ("fixed" if declares else "calibrated")
+    if sizing != "calibrated":
+        return []
+    roles = ("scenario", "simulation", "sut")
+    adhoc = sorted(n for n in containers if n not in roles)
+    if not adhoc:
+        return []
+    named = ", ".join(f"execution.containers.{n}" for n in adhoc)
+    return [_problem(
+        "resources",
+        f"{named} {'is' if len(adhoc) == 1 else 'are'} not named after a role "
+        f"({'/'.join(roles)}), and execution.sizing is calibrated -- so each takes the "
+        "ad-hoc bootstrap and is sized on its sustained use rather than its peak. If one of "
+        "them is the system under test, rename it to 'sut': the peak rule exists so the "
+        "thing under test never throttles mid-plan, and it keys on the name. The name is "
+        "also what a scenario's remote(\"ipc:///ipc/<name>\") and exec_in_container use, so "
+        "rename those with it.",
+        field="execution.containers")]
+
+
 def _liveness_advisories(config_path):
     """Advise when the project declares no ``execution.timeout``.
 
@@ -1225,6 +1274,7 @@ def _batch_composition_report(config_path):
     return {"valid": True,
             "problems": (_build_context_advisories(config_path)
                          + _resource_advisories(config_path)
+                         + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
             "configs": len(configs), "runs_per_config": runs_per_config,
             "total_trials": len(configs) * runs_per_config}
@@ -1271,6 +1321,7 @@ def _search_composition_report(config_path):
     return {"valid": True,
             "problems": (problems + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
+                         + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
             "configs": configs, "runs_per_config": runs_per_config,
             "total_trials": configs * runs_per_config}

@@ -326,7 +326,7 @@ is why this is recorded rather than guessed at.
   discarded**. It should come from ``execution.timeout``.
 * ``MIN_PROBE_SAMPLES = 30`` against the monitor's 1 Hz tick means a campaign whose trials run
   under 30 s can never be calibrated: every probe is rejected as thin and every node silently
-  stays on the declared sizing. A fraction of the trial is the right floor, not an absolute
+  keeps whatever it started on. A fraction of the trial is the right floor, not an absolute
   tick count.
 * ``container_cpu_profile`` takes its percentiles over the container's **whole lifetime**, not
   over the trial: it is the one reader of ``resource_usage_<container>.csv`` that meets the

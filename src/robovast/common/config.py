@@ -391,6 +391,21 @@ class ExecutionConfig(BaseModel):
     #: ad-hoc container. Replaces the former ``image`` / ``resources`` /
     #: ``secondary_containers`` / top-level ``build:``, which are gone in version 2.
     containers: dict[str, ContainerConfig]
+    #: How each container's CPU reservation is decided.
+    #:
+    #: ``fixed`` (the default) takes the figure from ``containers.<name>.resources``, which
+    #: is what a ``.vast`` has always meant.
+    #:
+    #: ``calibrated`` measures it instead: one probe run per node before the campaign places
+    #: work there, then that node's jobs sized from what was measured on it. **Declaring
+    #: ``resources`` under ``calibrated`` is refused rather than overridden**, because the two
+    #: answer the same question and a file that states a number which is then ignored is worse
+    #: than one that states nothing.
+    #:
+    #: The reason to prefer it is portability rather than density: a core count is a fact
+    #: about the machine it was measured on, so a shipped ``.vast`` naming one asserts
+    #: something it cannot know about the cluster it lands on.
+    sizing: Optional[Literal["fixed", "calibrated"]] = None
     #: Campaign-wide, and reaches every container. There is deliberately no
     #: per-container ``env``: nothing needs one, and an injection is harmless where it
     #: is not read.
@@ -450,6 +465,66 @@ class ExecutionConfig(BaseModel):
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
+
+    @model_validator(mode="after")
+    def resolve_sizing(self):
+        """Unset means *infer it from the file*, and the file already says.
+
+        A campaign that declares ``resources`` has answered the question, so it is
+        ``fixed``; one that declares none is asking to be measured, so it is ``calibrated``.
+        The default is therefore calibrated for anything written from now on, without
+        refusing every ``.vast`` that already carries a number -- which a flat default would,
+        including archived campaigns being read back.
+
+        Saying ``sizing:`` explicitly still wins, and is how a campaign asks for measured
+        sizing while a declaration is still in the file (refused, below) or for declared
+        sizing with nothing declared (refused at admission, which names the containers).
+        """
+        if self.sizing is None:
+            self.sizing = "fixed" if self._declares_resources() else "calibrated"
+        return self
+
+    def _declares_resources(self) -> bool:
+        """Whether any container states a cpu or memory figure. ``gpu`` does not count: it is
+        a device count rather than a rate, so nothing measures it and it never conflicts."""
+        return any(
+            getattr(c, "resources", None) is not None
+            and any(getattr(c.resources, f, None) is not None
+                    for f in ("cpu", "cpu_limit", "memory", "memory_limit"))
+            for c in (self.containers or {}).values())
+
+    @model_validator(mode="after")
+    def validate_sizing_excludes_resources(self):
+        """Under ``sizing: calibrated``, a declared ``resources`` is an error.
+
+        The two decide the same thing. Accepting both and letting one win means a file that
+        states a number nobody honours -- the failure mode this block already refuses for an
+        unknown key, for the same reason: what a ``.vast`` says about the machine a run may
+        have should be what the run gets.
+
+        Named per container, because a campaign that declares resources on one of three is
+        the likely shape and "somewhere in execution.containers" would not be actionable.
+
+        ``gpu`` is exempt: a device count is a count, not a rate, so nothing measures it and
+        calibration has no answer to override. ``memory`` is NOT exempt -- it is declared and
+        honoured under both modes, but it is declared in the same block, so a campaign moving
+        to ``calibrated`` has to say which of the two it meant.
+        """
+        if self.sizing != "calibrated":
+            return self
+        named = sorted(name for name, c in (self.containers or {}).items()
+                       if getattr(c, "resources", None) is not None
+                       and any(getattr(c.resources, f, None) is not None
+                               for f in ("cpu", "cpu_limit", "memory", "memory_limit")))
+        # Inference cannot reach here with a declaration -- it would have chosen `fixed` --
+        # so this only ever fires on a file that asked for `calibrated` in as many words.
+        if named:
+            raise ValueError(
+                f"execution.sizing is 'calibrated', so the reservation is measured per node "
+                f"-- but {', '.join(named)} also declare execution.containers.<name>."
+                f"resources. Remove the declaration, or set execution.sizing: fixed to keep "
+                f"it. (resources.gpu is unaffected and may stay.)")
+        return self
 
     @field_validator('shm_size')
     @classmethod

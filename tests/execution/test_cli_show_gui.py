@@ -7,7 +7,7 @@ Collapsing these into one rule is wrong either way:
 - Through the service, ``show_gui=True`` is something the caller asked for, so a host with
   no display must refuse — accepting it produces a run that looks fine and draws nothing
   (see ``tests/service/test_show_gui.py``).
-- On ``vast execution local run``, GUI is the default. A build machine runs it with no
+- On the generated ``run.sh``, GUI is the default. A build machine runs it with no
   display and no ``--no-gui``; refusing there would break unattended use over a flag nobody
   set.
 

@@ -643,15 +643,6 @@ def _node_labels(pairs, flag):
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')
-@click.option('--node-calibration/--no-node-calibration', 'node_calibration', default=True,
-              show_default=True,
-              help='Size each container per node, from a probe run there before the campaign '
-                   'places work on it, instead of using the declared allocation everywhere. '
-                   'The gain is the spread between the fastest and slowest node, so it is '
-                   'nothing on a homogeneous cluster. --no-node-calibration honours the '
-                   'declared sizing '
-                   'exactly, which is what a campaign wants when the allocation is itself '
-                   'the variable under study.')
 @click.option('--performance-governor/--no-performance-governor', 'performance_governor',
               default=None,
               help="Set the nodes' CPU governor to 'performance'. ON by default, because a "
@@ -686,7 +677,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, node_calibration, performance_governor,
+          buildkit_cache_reserved, performance_governor,
           jobs_node_label,
           control_node_label,
           cluster_config):
@@ -781,7 +772,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  control_node_labels=_node_labels(control_node_label,
                                                                   '--control-node-label'),
                                  cpu_governor=performance_governor,
-                                 node_calibration=node_calibration,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the

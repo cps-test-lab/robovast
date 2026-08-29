@@ -165,27 +165,3 @@ def test_a_plain_setup_installs_nothing():
 
 
 # -- per-node calibration default ----------------------------------------------------------
-
-def test_calibration_is_on_unless_explicitly_disabled(monkeypatch):
-    """Flipped to on after a matched pair of 200-run campaigns: ~8% faster with ZERO
-    control-loop misses in either arm, so the calibrated ceilings -- as low as 0.53 cores
-    against a declared 3.0 -- did not starve the stack, which is the failure that had kept it
-    off. See node_calibration's module docstring for the table.
-
-    Unset reads as ON so an operator who never touched it gets what setup configured, and a
-    typo reads as ON rather than silently disabling a feature the cluster was set up with --
-    the same direction of safety the rest of this file follows.
-    """
-    from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_ENV,
-                                                                       calibration_enabled)
-
-    monkeypatch.delenv(CALIBRATION_ENV, raising=False)
-    assert calibration_enabled() is True
-
-    for off in ("0", "false", "no", "off", "OFF"):
-        monkeypatch.setenv(CALIBRATION_ENV, off)
-        assert calibration_enabled() is False, off
-
-    for on in ("1", "true", "on", "", "garbage"):
-        monkeypatch.setenv(CALIBRATION_ENV, on)
-        assert calibration_enabled() is True, on

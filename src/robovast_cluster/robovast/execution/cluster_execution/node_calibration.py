@@ -142,40 +142,63 @@ class NodeCalibration:
         node uncalibrated, so the next job there becomes the probe instead. Silence is not a
         measurement of zero.
 
-        Four things are refused, and each leaves the node on its declared sizing rather than
+        Five things are refused, and each leaves the node on its declared sizing rather than
         on a figure that would be wrong: a probe whose scenario reached no verdict, one drawn
-        from too few samples, one that produced nothing usable, and one **throttled against
-        its own limit** -- see :data:`PROBE_THROTTLE_REFUSE_RATIO`. A node where the throttle
-        counter cannot be read is calibrated without that last check, because absent is not
-        zero and refusing on absence would leave such a cluster permanently uncalibrated.
+        from too few samples, one that produced nothing usable, one **throttled against its
+        own limit** (see :data:`PROBE_THROTTLE_REFUSE_RATIO`), and one that was
+        **OOM-killed**.
+
+        The last two are not the same shape. A CPU ceiling that binds slows the container
+        down, so what is refused is a *ratio* above a threshold with an allowance for
+        bring-up. A memory ceiling that binds KILLS it, so one kill is enough: the file
+        records a fragment of a run that died rather than a measurement of one that
+        finished.
+
+        A node where either counter cannot be read is calibrated without that check, because
+        absent is not zero and refusing on absence would leave such a cluster permanently
+        uncalibrated.
         """
         if self._probes.get(node_id) != job_key:
             return False
         self._probes.pop(node_id, None)
         if not completed:
             # A probe whose scenario never reached a verdict measured a fragment of a run.
-            # The node stays on the declared sizing, which is merely un-optimised, rather
-            # than on a figure derived from a run that did not happen.
-            logger.warning("calibration probe %s did not complete; node %s stays on the "
-                           "declared sizing", job_key, node_id)
+            # The node keeps what it is already running on -- the declared figures, or the
+            # bootstrap under `sizing: calibrated` -- which is merely un-optimised, rather
+            # than a figure derived from a run that did not happen.
+            logger.warning("calibration probe %s did not complete; node %s keeps its current "
+                           "sizing (declared, or the bootstrap)", job_key, node_id)
             return False
         thin = [name for name, stats in (measured or {}).items()
                 if (stats or {}).get("samples", 0) < MIN_PROBE_SAMPLES]
         if thin:
             logger.warning("calibration probe %s produced too few samples for %s "
-                           "(< %d ticks); node %s stays on the declared sizing",
+                           "(< %d ticks); node %s keeps its current sizing",
                            job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
             return False
         # A probe that hit its own ceiling measured the ceiling. Refused rather than stored,
         # because the figure would be a limit dressed as a demand and every later run on this
         # node would inherit it -- and nothing downstream can tell the two apart afterwards.
+        # A memory ceiling that binds does not throttle, it KILLS -- so unlike the CPU
+        # case there is no ratio to weigh and no bring-up allowance to make. One kill
+        # means the container did not run to the end, and whatever the file records is a
+        # fragment of a run that died rather than a measurement of one that finished.
+        killed = sorted(name for name, stats in (measured or {}).items()
+                        if (stats or {}).get("oom_kills", 0) > 0)
+        if killed:
+            logger.warning(
+                "calibration probe %s was OOM-killed (%s); node %s keeps its current "
+                "sizing. The memory it was given is too small for this campaign -- see "
+                "ROBOVAST_BOOTSTRAP_MEMORY, or declare it with execution.sizing: fixed",
+                job_key, ", ".join(killed), node_id)
+            return False
         capped = {name: stats["throttled_ratio"]
                   for name, stats in (measured or {}).items()
                   if (stats or {}).get("throttled_ratio", 0) > PROBE_THROTTLE_REFUSE_RATIO}
         if capped:
             logger.warning(
                 "calibration probe %s was throttled against its own limit (%s); node %s "
-                "stays on the declared sizing, which is what it was measured against",
+                "keeps its current sizing, which is what the probe was measured against",
                 job_key,
                 ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
                 node_id)
@@ -184,17 +207,23 @@ class NodeCalibration:
         for name, stats in (measured or {}).items():
             kept = {k: max(MIN_CPU, round(v * CALIBRATION_HEADROOM, 3))
                     for k, v in (stats or {}).items()
-                    if v and k not in ("samples", "throttled_ratio")}
+                    if v and k not in ("samples", "throttled_ratio", "oom_kills")}
             if kept:
                 figures[name] = kept
         if not figures:
             logger.warning("calibration probe %s produced no usable measurement; node %s "
-                           "stays on the declared sizing", job_key, node_id)
+                           "keeps its current sizing", job_key, node_id)
             return False
         self._by_node[node_id] = figures
-        logger.info("node %s calibrated from %s: %s", node_id, job_key,
-                    ", ".join(f"{k}={v.get('peak', 0):g}peak/{v.get('sustained', 0):g}sust"
-                              for k, v in sorted(figures.items())))
+        # INFO on a `robovast.*` logger, so it reaches the campaign log as well as the
+        # service's: what a node's jobs were sized to is part of what the campaign did, and
+        # a reader asking why two nodes behaved differently should find it there.
+        logger.info(
+            "node %s calibrated from %s -- its jobs are sized from these (headroom applied; "
+            "the system under test takes peak, everything else sustained): %s",
+            node_id, job_key,
+            ", ".join(f"{k}={v.get('peak', 0):g}peak/{v.get('sustained', 0):g}sust"
+                      for k, v in sorted(figures.items())))
         return True
 
     def abandon(self, node_id, probe_key) -> None:
@@ -208,39 +237,12 @@ class NodeCalibration:
             self._probes.pop(node_id, None)
 
 
-#: Turns per-node *sizing* off. **On by default**, and set by ``vast exec cluster setup``.
-#:
-#: **The probe measures an idle machine, and sizes runs that will meet a busy one.** That is
-#: inherent to probing before work is placed, and it is the reason to know what the mechanism
-#: is worth on a given cluster rather than to assume it: a probe reads what one run costs
-#: with the node to itself, and the runs it sizes do not have that.
-#:
-#: **Why it is switchable.** A peak measured on an idle probe is an unvalidated basis for a
-#: hard limit on a loaded machine: the probe is one run, and a workload with heavier planning
-#: spikes than the one a cluster was measured on has not been tested against its own
-#: calibration. Whether it costs the stack anything is answerable per campaign --
-#: ``run_health`` grades the runs, and a matched pair with the variable set and unset measures
-#: the gain. Set it to a false value for a campaign that needs the declared sizing honoured
-#: exactly.
-CALIBRATION_ENV = "ROBOVAST_NODE_CALIBRATION"
-
-
-def calibration_enabled() -> bool:
-    """Whether per-node sizing is switched on. See :data:`CALIBRATION_ENV`."""
-    import os  # noqa: PLC0415
-
-    # Unset means ON: the default is what setup writes, and an operator who never touched it
-    # gets the configuration the measurement supports. Only an explicit false value turns it
-    # off, so a typo reads as "on" rather than silently disabling a feature the cluster was
-    # set up with.
-    raw = (os.environ.get(CALIBRATION_ENV) or "").strip().lower()
-    if not raw:
-        return True
-    return raw not in ("0", "false", "no", "off")
-
-
 def calibration_applies(total_jobs: int, node_count: int, growable: bool = False) -> bool:
-    """Whether a campaign is worth calibrating at all.
+    """Whether a campaign that ASKED to be calibrated can be.
+
+    Whether it asked is ``execution.sizing``, decided per campaign in its ``.vast`` and not
+    here -- this answers only whether the cluster and the campaign's shape make a probe
+    worth running.
 
     **Never on a cluster that can grow.** There, a job that fits no current node is created
     *unpinned* and the scheduler places it -- possibly on a node that is already calibrated,
@@ -255,8 +257,117 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
     meant to improve. Skipped there, and the campaign behaves exactly as it did before any of
     this existed.
     """
-    return (calibration_enabled() and not growable
-            and 0 < node_count < total_jobs)
+    return not growable and 0 < node_count < total_jobs
+
+
+#: What a container asks for before anything has been measured for it, under
+#: ``execution.sizing: calibrated``. From the service's environment, not from a ``.vast``.
+#:
+#: **A property of the cluster, not of the campaign** -- the same argument that takes the
+#: figure out of the ``.vast`` in the first place. A core count is a fact about the machine,
+#: so the person who knows it is the one who set the cluster up.
+#:
+#: **Per ROLE, because the three want very different amounts.** A flat figure over-reserves
+#: the scenario and under-reserves the system under test, and the probe is the run that most
+#: needs not to bind: one throttled against its own ceiling measures the bootstrap rather
+#: than the workload, which :data:`PROBE_THROTTLE_REFUSE_RATIO` then refuses.
+#:
+#: An ad-hoc container -- any name outside ``CONTAINER_ROLES`` -- takes
+#: :data:`DEFAULT_BOOTSTRAP_OTHER`. Nothing is known about it, and small is the conservative
+#: direction for an unknown: it is one probe away from a measured figure, while a generous
+#: default for every unnamed container is what makes a probe unplaceable.
+#:
+#: This is also the floor on what calibration COSTS, since every probe is a pod sized from
+#: it -- raising it makes probes harder to place on a small or busy cluster.
+#:
+#: **CPU and memory rank the roles differently, and that is not a mistake.** The system
+#: under test wants cores and little memory; the simulator is the opposite -- it compiles a
+#: world once and then sustains very little CPU, so it is the memory outlier. Sizing both
+#: from one ranking would starve whichever resource the other role dominates.
+#:
+#: A memory bootstrap that is too small does not throttle, it OOM-kills: the probe dies, the
+#: node stays uncalibrated, and the campaign carries on at the bootstrap -- a sizing fault
+#: wearing the stack's clothes. `memory.events`' `oom_kill` counter is sampled and could be
+#: read here, which is the memory half of what PROBE_THROTTLE_REFUSE_RATIO does for CPU.
+DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 1}
+DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
+DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
+
+#: JSON, ``{role: value}``, overriding the defaults per role. A role absent from an override
+#: keeps its default rather than disappearing, so raising one role does not silently drop the
+#: others. Unparseable raises rather than defaulting, for the reason the headroom does: a
+#: typo that silently became something else would mis-size every job of every calibrated
+#: campaign, and the symptom appears nowhere near the cause.
+BOOTSTRAP_CPU_ENV = "ROBOVAST_BOOTSTRAP_CPU"
+BOOTSTRAP_MEMORY_ENV = "ROBOVAST_BOOTSTRAP_MEMORY"
+
+
+def _bootstrap_override(env_name: str, defaults: dict) -> dict:
+    """*defaults* with the JSON in *env_name* applied over it, or raise."""
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    raw = (os.environ.get(env_name) or "").strip()
+    if not raw:
+        return dict(defaults)
+    try:
+        override = json.loads(raw)
+        if not isinstance(override, dict):
+            raise ValueError("not an object")
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"{env_name}={raw!r}: expected JSON like "
+            '\'{"sut": 8, "simulation": 3, "scenario": 1}\'') from exc
+    merged = dict(defaults)
+    merged.update({str(k): v for k, v in override.items()})
+    return merged
+
+
+#: Non-empty once the effective bootstrap has been logged. Per process, not per call: it is
+#: read for every container of every job and the answer cannot differ between them. A set
+#: rather than a flag so the module never rebinds it -- mutating a container needs no
+#: ``global``, and a test can clear it without reaching for one either.
+_BOOTSTRAP_LOGGED = set()
+
+
+def _log_bootstrap_once(cores: dict, mems: dict, overridden: bool) -> None:
+    """State the figures in the service log, and whether they were configured or defaulted.
+
+    An operator reading the log should not have to infer which of the two they are looking
+    at: "these are the defaults" and "these are what I set" are different facts, and only
+    one of them means the `.env` was picked up.
+    """
+    if _BOOTSTRAP_LOGGED:
+        return
+    _BOOTSTRAP_LOGGED.add(True)
+    where = "from the environment" if overridden else "defaults; set them in .env to change"
+    logger.info("bootstrap sizing (%s): %s", where,
+                ", ".join(f"{r}={cores.get(r)}cpu/{mems.get(r)}"
+                          for r in sorted(set(cores) | set(mems))))
+
+
+def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
+    """``(cores, bytes)`` *role* asks for before its node has been measured.
+
+    Per CONTAINER, not per pod: a three-container pod reserves the sum of the three.
+    """
+    from .kube_client import parse_resource  # noqa: PLC0415
+
+    import os  # noqa: PLC0415
+
+    cores = _bootstrap_override(BOOTSTRAP_CPU_ENV, DEFAULT_BOOTSTRAP_CPU)
+    mems = _bootstrap_override(BOOTSTRAP_MEMORY_ENV, DEFAULT_BOOTSTRAP_MEMORY)
+    other_cpu, other_mem = DEFAULT_BOOTSTRAP_OTHER
+    _log_bootstrap_once(cores, mems, bool((os.environ.get(BOOTSTRAP_CPU_ENV) or "").strip()
+                                          or (os.environ.get(BOOTSTRAP_MEMORY_ENV) or "").strip()))
+
+    cpu = parse_resource(cores.get(role, other_cpu))
+    mem = int(parse_resource(mems.get(role, other_mem)))
+    if not cpu or not mem:
+        raise ValueError(
+            f"bootstrap for role {role!r} resolves to cpu={cores.get(role, other_cpu)!r} "
+            f"memory={mems.get(role, other_mem)!r}, which are not resource quantities.")
+    return cpu, mem
 
 
 #: Fraction of CFS enforcement periods in which the probe's own container was throttled,
@@ -303,7 +414,7 @@ def container_cpu_profile_from_billing(rows) -> dict:
     "not measured", exactly as it treats a missing file, and never as zero.
     """
     samples = []
-    periods, throttled = [], []
+    periods, throttled, oom_kills = [], [], []
     for row in rows or []:
         try:
             ts = float(row["timestamp"])
@@ -311,6 +422,10 @@ def container_cpu_profile_from_billing(rows) -> dict:
         except (KeyError, TypeError, ValueError):
             continue
         samples.append((ts, usec))
+        try:
+            oom_kills.append(float(row["memory_events_oom_kill"]))
+        except (KeyError, TypeError, ValueError):
+            pass
         # Same file, same tick: whether the kernel stopped this container while it was
         # being measured. Monotonic counters, so the span is last minus first.
         try:
@@ -336,6 +451,8 @@ def container_cpu_profile_from_billing(rows) -> dict:
     if span > 0:
         # Absent when the node cannot report it, and absent is NOT zero -- see `record`.
         out["throttled_ratio"] = max(0.0, (throttled[-1] - throttled[0]) / span)
+    if len(oom_kills) >= 2:
+        out["oom_kills"] = max(0, int(oom_kills[-1] - oom_kills[0]))
     return out
 
 

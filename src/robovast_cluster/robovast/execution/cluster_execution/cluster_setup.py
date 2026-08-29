@@ -240,7 +240,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
                  jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
-                 node_calibration=True,
+                
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -483,7 +483,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
                    job_node_labels=jobs_node_labels,
-                   node_calibration=node_calibration, **service_kwargs)
+                   **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull

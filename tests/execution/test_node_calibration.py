@@ -10,18 +10,6 @@ from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_H
                                                                    calibration_applies)
 
 
-@pytest.fixture(autouse=True)
-def _calibration_on(monkeypatch):
-    """These tests are about the calibration RULES, so the switch is on for all of them.
-
-    It is on in production -- see CALIBRATION_ENV -- but remains switchable, so setting it
-    explicitly here keeps these tests about the RULES rather than about the default.
-    """
-    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
-
-    monkeypatch.setenv(CALIBRATION_ENV, "1")
-
-
 def test_a_pilot_calibrates_nothing():
     """Calibration costs one run per node and pays only where a node runs a SECOND job. With
     no more jobs than nodes, a pilot would spend its entire result set on measurement."""
@@ -507,25 +495,6 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
     assert r._node_figures("fast") is None, "no calibration yet means declared sizing"
 
 
-def test_per_node_sizing_is_on_unless_switched_off(monkeypatch):
-    """The default, and the evidence that flipped it.
-
-    It was OFF first, because a probe runs before the campaign places work and so measures an
-    idle node -- every probe read low, and on one node the probe could not finish at all,
-    costing that node the whole campaign. Both causes turned out to be wake-from-idle latency
-    on a quiet machine rather than anything about calibration; with those fixed, a matched
-    pair of 200-run campaigns measured ~8% faster with ZERO control-loop misses in EITHER arm.
-    The zero misses are what settles it: the calibrated ceilings -- as low as 0.53 cores
-    against a declared 3.0 -- did not starve the stack, which is the failure this default was
-    protecting against."""
-    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
-
-    monkeypatch.delenv(CALIBRATION_ENV, raising=False)
-    assert calibration_applies(50, 4) is True, "unset means the configured default: on"
-    monkeypatch.setenv(CALIBRATION_ENV, "0")
-    assert calibration_applies(50, 4) is False, "and it must remain switchable off"
-
-
 # -- readings a container could not have produced ------------------------------------------
 
 def test_a_sample_above_the_containers_own_quota_is_discarded():
@@ -777,7 +746,7 @@ def test_a_throttled_probe_is_refused():
                       {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
                                "throttled_ratio": 0.05}})
     assert stored is False, "a probe that hit its own ceiling must not size the node"
-    assert not c.calibrated("n1"), "the node stays on the declared sizing"
+    assert not c.calibrated("n1"), "the node keeps whatever it started on"
 
 
 def test_throttling_under_the_threshold_is_kept():
@@ -823,3 +792,40 @@ def test_a_reader_with_no_throttle_columns_omits_the_ratio():
     rows = [{"timestamp": "0.0", "cpu_usage_usec": "0"},
             {"timestamp": "1.0", "cpu_usage_usec": "1000000"}]
     assert "throttled_ratio" not in nc.container_cpu_profile_from_billing(rows)
+
+
+def test_an_oom_killed_probe_is_refused():
+    """A memory ceiling that binds kills rather than slows, so there is no ratio to weigh
+    and no bring-up allowance: one kill means the container did not run to the end, and the
+    file holds a fragment of a run that died rather than a measurement of one that
+    finished."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"simulation": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                                      "oom_kills": 1}})
+    assert stored is False
+    assert not c.calibrated("n1"), "the node keeps whatever it started on"
+
+
+def test_a_node_that_cannot_report_ooms_is_still_calibrated():
+    """Absent is not zero, and refusing on absence would leave such a cluster permanently
+    uncalibrated -- the same rule the throttle counter follows."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    assert c.record("n1", "probe-1",
+                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60}}) is True
+
+
+def test_the_oom_count_never_reaches_the_stored_figures():
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                                       "oom_kills": 0}})
+    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+
+
+def test_the_billing_reader_reports_oom_kills():
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0", "memory_events_oom_kill": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "1000000", "memory_events_oom_kill": "2"}]
+    assert nc.container_cpu_profile_from_billing(rows)["oom_kills"] == 2
