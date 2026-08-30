@@ -270,6 +270,14 @@ class ClusterService(LocalTransport):
         except Exception as e:  # noqa: BLE001 - a registry that will not answer is a fact
             logger.debug("could not read the published digest for %s: %s", ref, e)
             info.registry_digest = ""
+        # Its own try: the date is an addition to the digest above, so a registry that
+        # answers the HEAD but not the config blob must still report the digest it gave.
+        try:
+            info.registry_built_at = (
+                self._images.published_created(ref) if info.registry_digest else "")
+        except Exception as e:  # noqa: BLE001 - same fact, one question further in
+            logger.debug("could not read the published build date for %s: %s", ref, e)
+            info.registry_built_at = ""
         if info.running_digest and info.registry_digest:
             # The two sides spell a digest differently: the registry answers
             # ``repo@sha256:...`` while the kubelet's imageID is already reduced to the
