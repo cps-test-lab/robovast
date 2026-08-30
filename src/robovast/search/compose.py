@@ -51,7 +51,9 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.config import match_var_marker
-from robovast.common.config_generation import generate_scenario_variations
+from robovast.common.config_generation import (_collect_analysis_input_files,
+                                              _plugin_run_files,
+                                              generate_scenario_variations)
 
 from .types import ParamSet
 
@@ -190,6 +192,25 @@ class Compose:
             # read or copy the file (e.g. prepare_campaign_configs) don't depend
             # on the temp file we are about to delete.
             campaign_data["vast"] = self.vast_file
+            # And restore what the `search:` pop above dropped. Composition only ever saw a
+            # temp `.vast` with no `search:` block -- it has to, since a config carrying both
+            # `search:` and `configuration:` is refused -- so the strategy, the extractor and
+            # the in-loop postprocessing modules were invisible to the collectors, and those
+            # are exactly what the controller loads at the top of every batch. Corrected here
+            # rather than passed into composition for the same reason the line above is: the
+            # temp file misstates the campaign, and the caller is what knows the truth.
+            #
+            # After the call, not before, and that is safe: `hash_run_files` runs later, in
+            # prepare_campaign_configs, off this same list -- so these still reach the config
+            # identity -- and the only thing computed earlier is the composition cache key,
+            # which this path never consults (use_cache=False above).
+            for rel in _plugin_run_files(self.vast_dir, self.base):
+                if rel not in campaign_data["_run_files"]:
+                    campaign_data["_run_files"].append(rel)
+            for rel in _collect_analysis_input_files(self.base, self.vast_dir):
+                if (rel not in campaign_data["_input_files"]
+                        and rel not in campaign_data["_run_files"]):
+                    campaign_data["_input_files"].append(rel)
         finally:
             try:
                 os.remove(temp_vast)

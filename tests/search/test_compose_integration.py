@@ -159,3 +159,50 @@ def test_compose_rejects_expanding_variation(template_vast, tmp_path):
             compose.compose([ParamSet(values={"tg": 2.0})], str(tmp_path / "art"))
     finally:
         os.remove(bad)
+
+
+def test_a_searchs_strategy_and_extractor_are_archived(tmp_path):
+    """A search campaign carries the modules its own ``search:`` block names.
+
+    ``compose`` has to pop ``search:`` before composing -- a config carrying both ``search:``
+    and ``configuration:`` is refused -- so the strategy, the extractor and the in-loop
+    postprocessing were invisible to the collectors that build the campaign's file lists.
+    They are what the controller loads at the top of every batch, which makes their absence
+    from ``_config/`` the difference between a re-runnable campaign and one that dies
+    resolving its own strategy.
+    """
+    from robovast.common.config_generation import _plugin_run_files
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "scenario.osc").write_text(
+        (open(os.path.join(EXAMPLE, "scenario.osc"), encoding="utf-8").read()))
+    (project / "search").mkdir()
+    (project / "search" / "strategy.py").write_text("class Strategy:\n    pass\n")
+    (project / "search" / "extract.py").write_text("class Extract:\n    pass\n")
+
+    vast = project / "searched.vast"
+    vast.write_text(textwrap.dedent("""\
+        version: 3
+        execution:
+          containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
+          runs: 1
+          scenario_file: scenario.osc
+        search:
+          strategy: search/strategy.py:Strategy
+          search_space:
+            thrust_gain: {type: float, low: 0.5, high: 2.0}
+          extract:
+            plugin: search/extract.py:Extract
+          objectives:
+          - {name: robustness, direction: minimize}
+          per_batch: 2
+          budget:
+          - batches: 2
+        """))
+
+    compose = Compose(str(vast))
+    collected = _plugin_run_files(compose.vast_dir, compose.base)
+
+    assert "search/strategy.py" in collected
+    assert "search/extract.py" in collected

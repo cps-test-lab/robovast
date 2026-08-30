@@ -40,7 +40,7 @@ from .errors import missing_input_error
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
-from .plugin_ref import is_file_ref, load_ref
+from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
 from .variation.base_variation import VariationInfeasibleError
 from .variation.loader import _validate_variation_class
 
@@ -215,6 +215,58 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
     return configs, input_files, campaign_transient_files, config_transient_files
+
+
+#: Config sections whose local plugin sources a campaign cannot RUN without. A module named
+#: here is loaded while the campaign composes -- by a variation, a search strategy, an
+#: extractor, an input generator or the simulator backend -- so a campaign that does not carry
+#: it cannot be re-run from its own archive.
+RUN_REQUIRED_SECTIONS = ("configuration", "execution", "search")
+
+#: Value positions that name a plugin. Mapping keys are read everywhere (that is where a
+#: variation states its class); values only here, because `configuration[].parameters` is
+#: arbitrary user data and a parameter that merely looks like a reference must not be archived
+#: -- still less folded into the config identity.
+REF_VALUE_KEYS = ("strategy", "plugin", "backend", "postprocessing", "generate")
+
+
+def _config_plugin_refs(parameters, sections=RUN_REQUIRED_SECTIONS):
+    """Every run-required local plugin reference a raw config names, in declaration order.
+
+    Split out from :func:`_plugin_run_files` so that "which sections name run-required
+    plugins" is stated once, as policy, rather than tangled with resolving the paths.
+    """
+    refs = []
+    for section in sections:
+        for ref in iter_file_refs(parameters.get(section), REF_VALUE_KEYS):
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def _plugin_run_files(vast_dir, parameters):
+    """The local ``<path>.py`` sources this campaign's own plugin references name.
+
+    Run files rather than input files, for the reason `_backend_run_files` gives below: the
+    module has to be archived into ``<campaign>/_config/`` so a retrigger can reconstruct a
+    runnable project, AND content-hashed into the config identity, because a variation's source
+    decides which configurations exist -- an entry-point variation already hashes its whole
+    package, and a file reference that hashed only its name string made an edited plugin
+    indistinguishable from the original.
+
+    Filtered to relative paths that exist. A name that resolves to an installed entry point is
+    not a file; a reference whose file is absent is composition's failure to report, with the
+    plugin resolver's own message naming the path it looked at, rather than this collector's to
+    pre-empt with a worse one.
+    """
+    found = []
+    for ref in _config_plugin_refs(parameters):
+        rel = file_ref_path(ref)
+        if not rel or os.path.isabs(rel) or os.path.normpath(rel).startswith(".."):
+            continue
+        if rel not in found and os.path.isfile(os.path.join(vast_dir, rel)):
+            found.append(rel)
+    return found
 
 
 def _backend_run_files(vast_dir, parameters):
@@ -1116,7 +1168,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
         """Collect a local module path from an entry-point/file ref or file value."""
         if not isinstance(value, str) or os.path.isabs(value):
             return
-        path_part = value.rsplit(".py:", 1)[0] + ".py" if is_file_ref(value) else value
+        path_part = file_ref_path(value) or value
         candidate = os.path.join(base_dir, path_part) if base_dir else path_part
         if os.path.isfile(candidate):
             analysis_files.append(path_part)
@@ -1211,7 +1263,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # 8: execution is carried as a copy rather than a hand-listed subset, so a cached entry
 # from 7 is missing the keys that list forgot -- a .vast unchanged since then composes
 # byte-identically and would otherwise replay the gap.
-_CACHE_FORMAT_VERSION = 8
+# 9: _run_files now also carries the local plugin modules the config references, so a cached
+# entry from 8 describes both a different input set and a different config identity -- the
+# modules are content-hashed, and were previously not carried at all.
+_CACHE_FORMAT_VERSION = 9
 
 
 def _build_generate_cache_key(
@@ -1589,6 +1644,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         if rel not in run_files:
             run_files.append(rel)
 
+    # And the campaign's own plugin modules -- a variation's `<path>.py:<Class>`, a search
+    # strategy, an extractor, a generator. Run files for the same three reasons as a world
+    # file: mounted, archived into <campaign>/_config/ so a retrigger can reconstruct a
+    # runnable project, and hashed into the config identity because the source that decides
+    # which configurations exist is part of what the experiment IS.
+    for rel in _plugin_run_files(vast_dir, parameters):
+        if rel not in run_files:
+            run_files.append(rel)
+
     # Get scenario_file from execution section (resolved early for cache key)
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
 
@@ -1919,7 +1983,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # their hashes, what it wrote. Dumped into <campaign>/_transient/configurations.yaml,
         # so a campaign records the provenance of inputs it did not author.
         "_generated": generated_records,
-        "_input_files": campaign_input_files,
+        # Deduplicated, and minus anything already carried as a run file. One file is
+        # legitimately named twice -- a metrics plugin under `search.postprocessing` and
+        # again under `results_processing.postprocessing`, a BT xml as a param of both --
+        # and staging copies each entry in turn, so a duplicate is a repeated copy and a
+        # repeated line in the campaign's own record of what it carried.
+        "_input_files": list(dict.fromkeys(
+            f for f in campaign_input_files if f not in run_files)),
         "_transient_files": campaign_transient_files,
         # Not underscore-prefixed, so it crosses the isolated-compose boundary and the
         # on-disk cache untouched -- and a cache hit reports it just as truly, since which

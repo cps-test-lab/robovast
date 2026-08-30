@@ -390,6 +390,24 @@ See ``configs/examples/quadrotor_landing/variations/wind.py`` for a runnable
 example (a wind model that derives the simulator's ``wind_strength``), wired into
 the quadrotor search vasts.
 
+The referenced module travels with the campaign: it is archived into
+``<campaign>/_config/`` alongside the ``.vast``, so a **retrigger** — which re-composes
+from that snapshot rather than replaying recorded configurations — can resolve it, and it
+is content-hashed into the campaign's ``config_identifier``, because the source
+that decides which configurations exist is part of what the experiment is. Editing it
+therefore gives the campaign a new identity, exactly as editing a packaged variation's
+module does.
+
+.. important::
+
+   **A file-referenced plugin must be one self-contained module.** It is imported by path,
+   with nothing added to ``sys.path``, so it cannot import a sibling module in its own
+   directory. Nor can anything discover a *data* file it opens itself — that dependency
+   lives in the plugin's code rather than in the config, so nothing archives it and a
+   retrigger finds it missing. If you need more than one file, package the plugin and
+   declare it under ``plugins:``; if you need a data file, name it in
+   ``execution.run_files``.
+
 .. note::
 
    **Packaging a variation plugin as its own distribution.** If your variation
