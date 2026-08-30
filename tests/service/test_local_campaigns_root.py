@@ -402,7 +402,7 @@ def _campaign_finished_at(transport, cid: str, finished_at: float) -> None:
                             Status(phase=Phase.FINISHED, phase_since=finished_at))
 
 
-def test_the_terminal_group_is_ordered_by_when_a_campaign_ENDED(transport):
+def test_the_terminal_group_is_ordered_by_when_a_campaign_ended(transport):
     """A long campaign that just ended is the freshest result, however old its start.
 
     Start time answers "which of these is recent" badly for exactly the campaign most worth

@@ -362,7 +362,6 @@ class _LocalCampaign:
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
                  created_by: str = "", origin=None):
-        from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
