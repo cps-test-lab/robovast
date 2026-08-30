@@ -587,7 +587,7 @@ Example plugin registration:
 .. _extending-sut-formats:
 
 Add a config format for the system under test
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``sut:`` channel addresses values inside the stack's own configuration files.
 ``yaml``, ``json`` and ``xml`` ship built in; a stack configured by something else — a
