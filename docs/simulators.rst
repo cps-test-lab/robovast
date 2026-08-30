@@ -285,11 +285,16 @@ selects the world file because ``config`` is one of roqsim's keys, while
 explicit spelling ``sim: overrides.components....`` stays valid, and is how a world key that
 collided with a backend key would be reached.
 
-**Where a factor lands is decided by when the simulator can still act on it.** MuJoCo does
-not recompile mid-run, and roqsim's ``simulation_interfaces`` serves no ``SpawnEntity``:
-*which* entities exist is settled when the model compiles, and a scenario only moves and
-observes them. So the boundary between the two channels is the compile -- not "the world"
-versus "the trial", since a world is not static during a run either.
+**Between these two channels, a factor lands where the simulator can still act on it.**
+MuJoCo does not recompile mid-run, and roqsim's ``simulation_interfaces`` serves no
+``SpawnEntity``: *which* entities exist is settled when the model compiles, and a scenario
+only moves and observes them. So the boundary here is the compile -- not "the world" versus
+"the trial", since a world is not static during a run either.
+
+That rule decides how one artifact splits across ``sim:`` and ``scenario:``; it is not how
+you choose among all three channels. For that, see :ref:`the destination reference
+<config-variation-destination>`: a value belongs to the channel whose owner holds the schema
+it is checked against.
 
 One consequence worth knowing: a count expressed as the *number of plugin entries* cannot be
 an override, because ``apply_overrides`` resolves a plugin by name and refuses one matching
