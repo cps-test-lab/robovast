@@ -31,13 +31,18 @@ search:
   - ParameterVariationList:
       sim: components.pedestrian.dwell
       values: [$walker_dwell]
+  # THE STACK. Both costmaps inflate by the same figure -- one factor, two destinations,
+  # one value. Writing them as a list is what keeps them from drifting apart: two separate
+  # variations would be two factors, and the sweep would explore combinations nobody means.
   - ParameterVariationList:
-      scenario: inflation_radius
+      sut:
+      - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
+      - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
       values: [$inflation_radius]
-  # The scenario takes a velocity triple; the search varies its linear component and the
-  # rest stays what nav2_params.yaml declares.
+  # nav2 takes a velocity triple; the search varies its linear component and the rest stays
+  # what nav2_params.yaml declares.
   - ParameterVariationList:
-      scenario: max_speed
+      sut: nav2.velocity_smoother.ros__parameters.max_velocity
       values: [[$max_speed, 0.0, 2.0]]
   postprocessing:
   # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
@@ -97,6 +102,11 @@ execution:
     sut:
       image: family:robovast
       resources: {cpu: 3, memory: 640Mi}
+      # What the `sut:` channel addresses. Declaring the file is what lets a destination be
+      # checked against it before the campaign spends anything -- a misspelled key is
+      # refused here rather than discovered by a run that launched with defaults.
+      config_files:
+        nav2: files/nav2_params.yaml
     scenario:
       resources: {cpu: 0.85, cpu_limit: 2, memory: 512Mi}
   mode: ros2

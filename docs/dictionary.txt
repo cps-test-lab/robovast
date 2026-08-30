@@ -280,6 +280,7 @@ subcommand
 subdirectories
 subdirectory
 substring
+subtree
 SUT
 symlink
 symlinks
@@ -334,6 +335,7 @@ webui
 workspaces
 xacro
 Xeon
+XPath
 yaml
 zlib
 µs

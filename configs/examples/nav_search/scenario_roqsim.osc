@@ -2,10 +2,6 @@ import osc.helpers
 import osc.ros
 import osc.nav2
 import osc.remote
-# set_yaml_value lives here, not in helpers -- a scenario that mutates the stack's own
-# parameters needs it, and the parser's complaint is "unknown behavior", which reads like a
-# typo rather than a missing import.
-import osc.dataops
 
 # One crossing of the room, and the same one for every campaign in this directory.
 #
@@ -37,33 +33,18 @@ scenario test_scenario:
     start_pose: pose_3d = pose_3d(position: position_3d(x: -2.5m, y: 0.0m))
     goal_pose:  pose_3d = pose_3d(position: position_3d(x:  2.5m, y: 0.0m))
 
-    # THE STACK UNDER TEST. Defaults match files/nav2_params.yaml, so a campaign that varies
-    # neither writes back exactly what was already there and the adversarial campaigns are
-    # unaffected. They exist because a trade-off is only meaningful over things somebody
-    # CHOOSES: searching the environment finds what breaks a fixed stack, and searching the
-    # stack asks what a tuning costs -- and only the second is a design decision.
-    inflation_radius: float = 0.55
-    max_speed: list of float = [0.5, 0.0, 2.0]
+    # THE STACK UNDER TEST, as one file rather than as parameters mirrored from it.
+    # A campaign varying the stack writes into this file on the `sut:` channel, and each
+    # configuration is launched with its own rewritten copy; the value here is the default
+    # the checked-in file already carries. Relative because it names a staged input:
+    # robovast rewrites it to the copy belonging to the configuration being run, which is
+    # what makes a nav2 parameter a factor of the .vast rather than a mutation scripted
+    # here.
+    params_file: string = 'files/nav2_params.yaml'
 
     robot: differential_drive_robot
 
     do serial:
-        # THIS CONFIGURATION'S nav2 PARAMETERS, written into a copy so the checked-in file
-        # stays the record of the defaults.
-        run_process("cp /config/files/nav2_params.yaml /out/nav2_params.yaml")
-        set_yaml_value("/out/nav2_params.yaml",
-            key_path: "global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius",
-            value: inflation_radius,
-            value_type: "float")
-        set_yaml_value("/out/nav2_params.yaml",
-            key_path: "local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius",
-            value: inflation_radius,
-            value_type: "float")
-        set_yaml_value("/out/nav2_params.yaml",
-            key_path: "velocity_smoother.ros__parameters.max_velocity",
-            value: max_speed,
-            value_type: "list")
-
         # Gate the LAUNCH, not the activation. Two cross-container lifecycle service_calls
         # cannot work (service_call fires call_async once with no wait_for_service, so the
         # request is dropped into a container whose server it has not finished matching),
@@ -86,7 +67,11 @@ scenario test_scenario:
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
             ros_launch('', '/config/files/nav2_sut.launch.py',
-                [key_value('params_file', '/out/nav2_params.yaml'),   # the MUTATED copy
+                # This configuration's own copy. `params_file` arrives relative to the
+                # config mount root -- which is this scenario's directory -- because
+                # robovast namespaces a staged file per configuration so a packed job
+                # cannot serve one cell's parameters to another.
+                [key_value('params_file', get_scenario_file_directory() + '/' + params_file),
                  key_value('map', '/config/files/empty_room.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:

@@ -19,16 +19,31 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from ..common import get_scenario_parameters
 from ..config import VariationConfig, get_validated_config
 
 logger = logging.getLogger(__name__)
 
-#: The two channels a variation may write to, and the key that names each.
-SCENARIO_CHANNEL = "scenario"
-SIM_CHANNEL = "sim"
+#: The three configuration surfaces a campaign can vary, and the key that names each.
+#:
+#: A channel is a surface with an **owner** and a **schema**, which is what lets a
+#: destination be checked before a campaign spends compute -- and it is also the rule for
+#: choosing between them: a value belongs to the channel whose owner holds the schema it is
+#: checked against. A stack parameter routed through the ``.osc`` because the ``.osc`` can
+#: carry it is the case that rule exists to forbid.
+SCENARIO_CHANNEL = "scenario"   #: the trial -- owned by scenario-execution, checked against the ``.osc``
+SIM_CHANNEL = "sim"             #: the world -- owned by the simulator backend, checked against its schema
+SUT_CHANNEL = "sut"             #: the system under test -- checked against the config file the campaign declares
+
+#: Every channel, in report order. Iterated rather than spelled out at each site, so a
+#: fourth surface is one entry here instead of a branch in six places.
+CHANNELS = (SCENARIO_CHANNEL, SIM_CHANNEL, SUT_CHANNEL)
+
+#: The :meth:`Variation.update_config` keyword each channel's values arrive on.
+#: ``scenario`` is positional there and so has no entry.
+_VALUES_KWARG = {SIM_CHANNEL: "sim_values", SUT_CHANNEL: "sut_values"}
 
 
 class VariationInfeasibleError(RuntimeError):
@@ -107,8 +122,22 @@ class DestinationConfig(VariationConfig):
     #: produce it; an unknown slot is still refused.
     OPTIONAL_SLOTS: ClassVar[tuple] = ()
 
-    scenario: str | list[str] | dict[str, str] | None = None
-    sim: str | list[str] | dict[str, str] | None = None
+    scenario: str | list[str] | dict[str, str] | None = Field(
+        default=None,
+        description="THE TRIAL. A parameter the scenario file declares; checked against the "
+                    "'.osc'. Also where a launch argument goes -- the scenario owns the launch "
+                    "invocation, so there is no file to address.")
+    sim: str | list[str] | dict[str, str] | None = Field(
+        default=None,
+        description="THE WORLD. A key of the simulator backend, or a dotted path into the world; "
+                    "checked against the backend's schema.")
+    sut: str | list[str] | dict[str, str] | None = Field(
+        default=None,
+        description="THE SYSTEM UNDER TEST. '<source>.<path>', where <source> is a config file "
+                    "declared under execution.containers.<name>.config_files (or the reserved "
+                    "'env'), and <path> is addressed in that file's own syntax; checked against "
+                    "the file. Use this for a value the stack reads, rather than declaring it in "
+                    "the '.osc' and rewriting the file at run time.")
 
     @model_validator(mode="before")
     @classmethod
@@ -123,18 +152,25 @@ class DestinationConfig(VariationConfig):
         if isinstance(data, dict) and data.get("name") is not None:
             raise ValueError(
                 "'name' no longer names a destination: write 'scenario: <parameter>' for a "
-                "parameter the scenario file declares, or 'sim: <key>' for the simulator's "
-                "own configuration")
+                "parameter the scenario file declares, 'sim: <key>' for the simulator's own "
+                "configuration, or 'sut: <source>.<path>' for a file the system under test "
+                "reads")
         return data
 
     @model_validator(mode="after")
     def _destinations_are_bound(self):
-        given = [k for k in (SCENARIO_CHANNEL, SIM_CHANNEL) if getattr(self, k) is not None]
+        given = [k for k in CHANNELS if getattr(self, k) is not None]
         if not self.SLOTS:
             if len(given) != 1:
+                # Read at the moment someone got it wrong, which is worth more than any
+                # page they did not open -- so it names all three surfaces, not just the keys.
                 raise ValueError(
-                    "exactly one of 'scenario' or 'sim' must name this variation's "
-                    f"destination, got {given or 'neither'}")
+                    "exactly one of 'scenario', 'sim' or 'sut' must name this variation's "
+                    f"destination, got {given or 'neither'}. A campaign varies three things: "
+                    "'scenario:' the trial (a parameter the .osc declares), 'sim:' the world "
+                    "(the simulator's own configuration), 'sut:' the system under test (a file "
+                    "it reads, as '<source>.<path>'). A value belongs to the channel whose "
+                    "owner holds the schema it is checked against.")
             if isinstance(getattr(self, given[0]), dict):
                 raise ValueError(
                     f"'{given[0]}' takes a parameter name, not a mapping: this variation "
@@ -155,8 +191,8 @@ class DestinationConfig(VariationConfig):
                         + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
                 if slot in bound:
                     raise ValueError(
-                        f"output '{slot}' is bound to both 'scenario' and 'sim'; an output "
-                        "goes to one channel")
+                        f"output '{slot}' is bound to both '{bound[slot]}' and '{channel}'; "
+                        "an output goes to one channel")
                 bound[slot] = channel
         missing = [s for s in self.SLOTS if s not in bound]
         if missing:
@@ -168,12 +204,12 @@ class DestinationConfig(VariationConfig):
     @property
     def channel(self) -> str:
         """Which channel a single-output variation writes to."""
-        return SCENARIO_CHANNEL if self.scenario is not None else SIM_CHANNEL
+        return next(c for c in CHANNELS if getattr(self, c) is not None)
 
     @property
     def destination(self) -> str | list[str]:
-        """The parameter name(s) or dotted ``sim`` path(s) a single-output variation writes."""
-        return self.scenario if self.scenario is not None else self.sim
+        """The destination(s) a single-output variation writes, on its own channel."""
+        return getattr(self, self.channel)
 
     def is_bound(self, slot: str) -> bool:
         """Whether the campaign bound *slot* to a channel.
@@ -184,11 +220,11 @@ class DestinationConfig(VariationConfig):
         # Guarded by the isinstance on the same line; pylint does not narrow through getattr.
         # pylint: disable-next=unsupported-membership-test
         return any(isinstance(getattr(self, c), dict) and slot in getattr(self, c)
-                   for c in (SCENARIO_CHANNEL, SIM_CHANNEL))
+                   for c in CHANNELS)
 
     def binding(self, slot: str) -> tuple:
         """``(channel, destination)`` for one output slot."""
-        for channel in (SCENARIO_CHANNEL, SIM_CHANNEL):
+        for channel in CHANNELS:
             mapping = getattr(self, channel)
             # pylint: disable-next=unsupported-membership-test,unsubscriptable-object
             if isinstance(mapping, dict) and slot in mapping:
@@ -204,8 +240,8 @@ class DestinationConfig(VariationConfig):
         class, so validation, ``preview_configurations`` and the rendered plugin docs all
         read one description instead of each inferring one.
         """
-        result: dict = {SCENARIO_CHANNEL: [], SIM_CHANNEL: []}
-        for channel in (SCENARIO_CHANNEL, SIM_CHANNEL):
+        result: dict = {c: [] for c in CHANNELS}
+        for channel in CHANNELS:
             value = getattr(self, channel)
             if value is None:
                 continue
@@ -352,9 +388,11 @@ class Variation():
         the one place that maps ``scenario:`` / ``sim:`` onto ``scenario_values`` /
         ``sim_values``, so four plugins do not each spell the branch out.
         """
-        if getattr(self.parameters, "channel", SCENARIO_CHANNEL) == SIM_CHANNEL:
-            return self.update_config(config, {}, sim_values=values, **kwargs)
-        return self.update_config(config, values, **kwargs)
+        channel = getattr(self.parameters, "channel", SCENARIO_CHANNEL)
+        kwarg = _VALUES_KWARG.get(channel)
+        if kwarg is None:
+            return self.update_config(config, values, **kwargs)
+        return self.update_config(config, {}, **{kwarg: values}, **kwargs)
 
     def update_slots(self, config, values_by_slot: dict, **kwargs):
         """:meth:`update_config`, routing each output slot to the channel it is bound to.
@@ -365,13 +403,13 @@ class Variation():
         whose artifacts straddle the compile boundary has to do, and has to do atomically:
         the world compiling six obstacles and the trial driving six of them are one fact.
         """
-        scenario_values: dict = {}
-        sim_values: dict = {}
+        by_channel: dict = {c: {} for c in CHANNELS}
         for slot, value in values_by_slot.items():
             channel, destination = self.parameters.binding(slot)
-            target = sim_values if channel == SIM_CHANNEL else scenario_values
-            target[destination] = value
-        return self.update_config(config, scenario_values, sim_values=sim_values, **kwargs)
+            by_channel[channel][destination] = value
+        extra = {kwarg: by_channel[channel] for channel, kwarg in _VALUES_KWARG.items()}
+        return self.update_config(
+            config, by_channel[SCENARIO_CHANNEL], **extra, **kwargs)
 
     @classmethod
     def declared_outputs(cls, parameters) -> dict:
@@ -453,7 +491,7 @@ class Variation():
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
 
     def update_config(self, config, scenario_values, config_files: list = None,
-                      other_values=None, sim_values=None):
+                      other_values=None, sim_values=None, sut_values=None):
         """Produce the next configuration from *config*, with this variation's values on it.
 
         A variation writes to **two channels**, and which one a value belongs to is decided
@@ -466,6 +504,11 @@ class Variation():
             what the trial *runs in* -- a ``{dotted destination: value}`` mapping against
             the simulator backend's own schema. Delivered as the resolved ``sim`` block and
             checked against that backend.
+        ``sut_values``
+            how the *system under test* is configured -- a ``{"<source>.<path>": value}``
+            mapping against a config file the campaign declared. Flat, never nested: the
+            part after the source name belongs to that file's format and may be an XPath,
+            which no nested mapping can express.
 
         They are arguments of **one** call rather than two knobs because a variation
         frequently writes both and they must agree: MuJoCo does not recompile mid-run, so a
@@ -491,6 +534,11 @@ class Variation():
         # backend's DOTTED_ROOT happens once, later, where the backend is known.
         if sim_values:
             new_config.setdefault('sim', {}).update(sim_values)
+
+        # The system-under-test channel. Flat, one string key per destination, split once on
+        # the first '.' -- everything after the source name is the file format's own syntax.
+        if sut_values:
+            new_config.setdefault('sut', {}).update(sut_values)
 
         # Add other parameters to config
         if other_values:
