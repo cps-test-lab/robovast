@@ -1511,6 +1511,11 @@
             "title": "Blocked",
             "type": "integer"
           },
+          "calibration": {
+            "default": 0,
+            "title": "Calibration",
+            "type": "integer"
+          },
           "completed": {
             "default": 0,
             "title": "Completed",
@@ -1549,6 +1554,7 @@
         },
         "required": [
           "blocked",
+          "calibration",
           "completed",
           "failed",
           "killed",
@@ -1666,6 +1672,11 @@
             "title": "Job Name",
             "type": "string"
           },
+          "kind": {
+            "default": "run",
+            "title": "Kind",
+            "type": "string"
+          },
           "status": {
             "default": "pending",
             "title": "Status",
@@ -1676,6 +1687,7 @@
           "detail",
           "display_name",
           "job_name",
+          "kind",
           "status"
         ],
         "title": "JobSummary",

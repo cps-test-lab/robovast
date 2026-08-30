@@ -34,7 +34,8 @@ from robovast.service.image_build import build_hash
 from robovast.service.image_store import ImageBuildStore, ImageRef, build_identity
 
 from .cluster_image_build import build_id_for, concrete_image_ref
-from .registry_client import PRESENT, UNKNOWN, manifest_digest, manifest_state
+from .registry_client import (PRESENT, UNKNOWN, manifest_created,
+                              manifest_digest, manifest_state)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,20 @@ class RegistryImageStore(ImageBuildStore):
         """
         registry = self.registry(require=False)
         return manifest_digest(
+            image_ref,
+            dockerconfigjson=self.push_dockerconfig(registry.push_secret_name),
+            insecure=registry.insecure,
+            ca_path=self.ca_path(registry.ca_configmap_name))
+
+    def published_created(self, image_ref: str) -> str:
+        """When the image *image_ref*'s tag points at was built, or ``""`` when unknown.
+
+        The companion to :meth:`published_digest`, here for the same reason it is: this is
+        where the credential triple already lives. Reported beside the digest because a
+        digest alone tells a reader that two builds differ but not which is newer.
+        """
+        registry = self.registry(require=False)
+        return manifest_created(
             image_ref,
             dockerconfigjson=self.push_dockerconfig(registry.push_secret_name),
             insecure=registry.insecure,

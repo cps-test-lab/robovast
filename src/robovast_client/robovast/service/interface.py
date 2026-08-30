@@ -528,6 +528,22 @@ class JobState(BaseModel):
     unavailable: list = Field(default_factory=list)
 
 
+class JobKind(StrEnum):
+    """The vocabulary carried by :attr:`JobSummary.kind`.
+
+    A ``StrEnum`` for the same reason :class:`OriginKind` is one: members *are* their string
+    value, and the field stays typed ``str`` so an unfamiliar kind reads as "some other kind
+    of job" rather than as an error.
+
+    This is the cluster's ``jobgroup`` axis narrowed to what a campaign's own listing shows:
+    everything here is a ``scenario-runs`` Job, and the question is whether it is one of the
+    campaign's trials.
+    """
+
+    RUN = "run"                  # one of the campaign's own trials
+    CALIBRATION = "calibration"  # a node-sizing probe (cluster lane only)
+
+
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
@@ -540,6 +556,14 @@ class JobSummary(BaseModel):
     """
 
     job_name: str
+    #: One of :class:`JobKind`, as a plain string.
+    #:
+    #: Defaults to ``RUN`` rather than to an empty "unknown": every job on the local lane and
+    #: every job of a campaign's own batch *is* a run, so the default is a true statement and
+    #: no construction site has to restate it. It is also what a client sees from a service
+    #: older than this field -- which is why a reader must test for the kind it cares about
+    #: (``== "calibration"``) and never for ``!= "run"``.
+    kind: str = JobKind.RUN
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
@@ -581,6 +605,18 @@ class JobCounts(BaseModel):
     # loaded cluster report work that needed a human, which is the one thing this
     # field is for.
     blocked: int = 0
+    # Node-calibration probes in the same listing. Its OWN tally, and part of none of the
+    # others -- ``total`` included -- for the reason ``killed`` sits outside ``failed``: a
+    # probe measures the machine, so it says nothing about the system under test.
+    #
+    # Excluded because these counts are read as RUN facts, not job facts: ``failed`` is what
+    # the web UI takes as the runs that will never deliver (``lib/eta.ts``), and it feeds the
+    # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
+    # reports a campaign run that never existed as finished.
+    #
+    # Cluster lane only; always 0 locally, where every job is a run.
+    calibration: int = 0
+    #: The campaign's own jobs. See :attr:`calibration` for what is deliberately not in it.
     total: int = 0
 
 
@@ -874,6 +910,12 @@ class UpgradeInfo(BaseModel):
     #: What the tag points at in the registry right now. ``""`` means the registry did not
     #: say, which is **not** "nothing newer".
     registry_digest: str = ""
+    #: When the published image was built (RFC 3339), read from its OCI ``created`` label.
+    #: ``""`` when the registry did not say or the image carries no stamp -- never a
+    #: substituted date, which would be read as the age of what is published and believed.
+    #: There is no counterpart for :attr:`running_digest`: the running image reports its own
+    #: build date in ``VersionInfo.built_at``, from inside, without asking the registry.
+    registry_built_at: str = ""
     #: True/False when both digests are known. **``None`` means unknown** and must not be
     #: rendered as "up to date" -- a consumer still offers the roll, it just cannot promise
     #: the roll will change anything.
@@ -2437,6 +2479,10 @@ class RobovastInterface(ABC):
         A "job" is one execution unit (a run locally, a Kubernetes Job on the
         cluster). Reports live status only; pair with :meth:`get_job_log` to read a
         running job's log.
+
+        Jobs that are not the campaign's own runs are listed and marked with
+        :attr:`JobSummary.kind`, but kept out of the counts -- see
+        :attr:`JobCounts.calibration`.
         """
 
     @abstractmethod

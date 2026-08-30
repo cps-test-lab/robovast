@@ -368,34 +368,54 @@ def _base_manifest():
         return [{"name": "OUTPUT_DIR", "value": "/out/_jobs/batch-0/job-0"},
                 {"name": "SCENARIO_PARAMETER_FILE", "value": "/config/job-0.params.yaml"},
                 {"name": "SCENARIO_FILE", "value": "scenario.osc"}]
-    return {"metadata": {"name": "camp-batch0-job-0"},
-            "spec": {"template": {"spec": {
-                "containers": [{"name": "robovast", "env": env()}],
-                "initContainers": [{"name": "sut", "env": env()},
-                                   {"name": "simulation", "env": env()}]}}}}
+    # Carries the metadata a real job's manifest carries (see manifests.JOB_TEMPLATE): the
+    # campaign labels a probe inherits, and the display annotation it must NOT inherit.
+    return {"metadata": {"name": "camp-batch0-job-0",
+                         "labels": {"jobgroup": "scenario-runs", "campaign-id": "camp"}},
+            "spec": {"template": {
+                "metadata": {"labels": {"jobgroup": "scenario-runs", "campaign-id": "camp"},
+                             "annotations": {"job-name-full": "camp-batch-0-job-0"}},
+                "spec": {
+                    "containers": [{"name": "robovast", "env": env()}],
+                    "initContainers": [{"name": "sut", "env": env()},
+                                       {"name": "simulation", "env": env()}]}}}}
+
+
+def _probe(base=None, **kwargs):
+    """``probe_manifest`` with the arguments every test here would otherwise restate."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    return probe_manifest(base if base is not None else _base_manifest(),
+                          **{"job_name": "probe-n1",
+                             "params_file": "/config/probe-n1.params.yaml",
+                             "output_dir": "/out/_calibration/node-a",
+                             "display_name": "calibration probe · node-a", **kwargs})
 
 
 def test_a_probe_runs_what_the_campaign_runs():
     """Derived from a real job's manifest, because the measurement is worth nothing unless
     the probe runs the same image, containers, scenario and declared resources."""
-    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
-
-    m = probe_manifest(_base_manifest(), job_name="probe-n1",
-                       params_file="/config/probe-n1.params.yaml",
-                       output_dir="/out/_calibration/node-a")
+    m = _probe()
     names = [c["name"] for c in m["spec"]["template"]["spec"]["initContainers"]]
     assert names == ["sut", "simulation"], "the same containers, unchanged"
     assert m["metadata"]["name"] == "probe-n1"
+    # Env aside -- the three overrides below have their own test -- the pod spec is the
+    # batch job's, untouched. The identity markers this manifest also carries are metadata,
+    # and nothing about what the pod runs may follow from them: that is what lets them be
+    # added without weakening the measurement.
+    def without_env(spec):
+        return {key: [{k: v for k, v in c.items() if k != "env"} for c in containers]
+                for key, containers in spec.items()}
+
+    assert without_env(m["spec"]["template"]["spec"]) \
+        == without_env(_base_manifest()["spec"]["template"]["spec"])
 
 
 def test_every_container_is_redirected_not_only_the_main_one():
     """The sidecars are handed the same extra env, and they are where the simulator and the
     system under test write the CSVs that matter most here. A sidecar left on the old
     OUTPUT_DIR puts exactly those back into the run tree."""
-    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
-
-    m = probe_manifest(_base_manifest(), job_name="p", params_file="/config/p.yaml",
-                       output_dir="/out/_calibration/node-a")
+    m = _probe(job_name="p", params_file="/config/p.yaml")
     spec = m["spec"]["template"]["spec"]
     for container in spec["containers"] + spec["initContainers"]:
         env = {e["name"]: e["value"] for e in container["env"]}
@@ -406,13 +426,65 @@ def test_every_container_is_redirected_not_only_the_main_one():
 
 def test_the_real_jobs_manifest_is_not_mutated():
     """It belongs to a job that is about to run with it."""
-    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
-
     base = _base_manifest()
-    probe_manifest(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x")
+    _probe(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x")
     assert base["metadata"]["name"] == "camp-batch0-job-0"
     assert base["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] \
         == "/out/_jobs/batch-0/job-0"
+    # The identity markers land on the copy only. A label leaking back would mark the job
+    # the probe was derived from as a probe, and that job is one of the campaign's runs.
+    assert "job-kind" not in base["metadata"]["labels"]
+    template_meta = base["spec"]["template"]["metadata"]
+    assert "job-kind" not in template_meta["labels"]
+    assert template_meta["annotations"]["job-name-full"] == "camp-batch-0-job-0"
+
+
+def test_a_probe_is_labelled_as_one():
+    """The label is how every reader tells a probe from a trial. On the Job because that is
+    what the job listing reads, and on the pod template because that is what a pod-level
+    query -- node capacity, say -- would have to read instead."""
+    from robovast.execution.cluster_execution.manifests import (CALIBRATION_JOB_KIND,
+                                                                JOB_KIND_LABEL)
+
+    m = _probe()
+    assert m["metadata"]["labels"][JOB_KIND_LABEL] == CALIBRATION_JOB_KIND
+    assert m["spec"]["template"]["metadata"]["labels"][JOB_KIND_LABEL] == CALIBRATION_JOB_KIND
+    # The campaign labels are inherited, not replaced: a probe holds real capacity on a real
+    # node, so every selector that counts or cleans up scenario-runs has to keep seeing it.
+    assert m["metadata"]["labels"]["jobgroup"] == "scenario-runs"
+    assert m["metadata"]["labels"]["campaign-id"] == "camp"
+
+
+def test_a_probe_does_not_borrow_the_display_name_of_the_job_it_came_from():
+    """The deepcopy carries ``job-name-full`` across, so without its own the probe appears in
+    every listing as a second row under batch job 0's name -- with nothing distinguishing the
+    two, since it also carries job 0's labels."""
+    m = _probe()
+    assert m["spec"]["template"]["metadata"]["annotations"]["job-name-full"] \
+        == "calibration probe · node-a"
+
+
+def test_a_manifest_carrying_no_metadata_still_gets_the_markers():
+    """An offline emit or a minimal test fixture has neither key. This is metadata rather
+    than a container edit, so there is nothing to refuse over -- it is created."""
+    from robovast.execution.cluster_execution.manifests import JOB_KIND_LABEL
+
+    m = _probe({"metadata": {"name": "x"}, "spec": {"template": {"spec": {}}}})
+    assert m["metadata"]["labels"][JOB_KIND_LABEL] == "calibration"
+    template_meta = m["spec"]["template"]["metadata"]
+    assert template_meta["labels"][JOB_KIND_LABEL] == "calibration"
+    assert template_meta["annotations"]["job-name-full"] == "calibration probe · node-a"
+
+
+def test_the_wire_kind_is_the_cluster_label():
+    """The label the cluster stamps and the value the service puts on the wire are one
+    vocabulary. Two constants that must be equal is a drift waiting to happen unless
+    something asserts it: the UI reads the wire value, the listing reads the label."""
+    from robovast.service.interface import JobKind
+
+    from robovast.execution.cluster_execution.manifests import CALIBRATION_JOB_KIND
+
+    assert CALIBRATION_JOB_KIND == JobKind.CALIBRATION
 
 
 # -- the manifest and the queue must agree ------------------------------------------------

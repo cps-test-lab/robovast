@@ -59,9 +59,11 @@ from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
-from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobSummary,
-                                        ListJobsResponse, LogChunk, ResourceUsage,
+from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
+                                        JobSummary, ListJobsResponse, LogChunk, ResourceUsage,
                                         DiskSpace, UpgradeInfo, VersionInfo)
+
+from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +272,14 @@ class ClusterService(LocalTransport):
         except Exception as e:  # noqa: BLE001 - a registry that will not answer is a fact
             logger.debug("could not read the published digest for %s: %s", ref, e)
             info.registry_digest = ""
+        # Its own try: the date is an addition to the digest above, so a registry that
+        # answers the HEAD but not the config blob must still report the digest it gave.
+        try:
+            info.registry_built_at = (
+                self._images.published_created(ref) if info.registry_digest else "")
+        except Exception as e:  # noqa: BLE001 - same fact, one question further in
+            logger.debug("could not read the published build date for %s: %s", ref, e)
+            info.registry_built_at = ""
         if info.running_digest and info.registry_digest:
             # The two sides spell a digest differently: the registry answers
             # ``repo@sha256:...`` while the kubelet's imageID is already reduced to the
@@ -1372,6 +1382,13 @@ class ClusterService(LocalTransport):
         monitor's aggregate counter uses, so the two never drift. ``display_name``
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
+
+        **Node-calibration probes are listed but not tallied.** A probe carries the same
+        campaign labels -- it is real work on a real node, and every selector that counts or
+        cleans up has to keep seeing it -- so it appears here, marked
+        ``kind="calibration"`` and named for the node it measures. The counts are the
+        campaign's own jobs alone, because a reader takes them as facts about *runs*: see
+        :attr:`~robovast.service.interface.JobCounts.calibration`.
         """
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
         label = (f"jobgroup=scenario-runs,"
@@ -1379,20 +1396,24 @@ class ClusterService(LocalTransport):
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
         jobs = [
-            JobSummary(job_name=job.metadata.name, status=phase,
+            JobSummary(job_name=job.metadata.name, status=phase, kind=self._job_kind(job),
                        display_name=self._job_display_name(campaign_id, job),
                        detail=detail)
             for job, phase, detail in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
+        # Planned jobs are the campaign's own by construction: probes queue under a separate
+        # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
         jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
+        runs = [j for j in jobs if j.kind != JobKind.CALIBRATION]
         counts = JobCounts(
-            running=sum(1 for j in jobs if j.status == "running"),
-            pending=sum(1 for j in jobs if j.status == "pending"),
-            waiting=sum(1 for j in jobs if j.status == "waiting"),
-            completed=sum(1 for j in jobs if j.status == "completed"),
-            failed=sum(1 for j in jobs if j.status == "failed"),
-            blocked=sum(1 for j in jobs if j.status == "blocked"),
-            total=len(jobs))
+            running=sum(1 for j in runs if j.status == "running"),
+            pending=sum(1 for j in runs if j.status == "pending"),
+            waiting=sum(1 for j in runs if j.status == "waiting"),
+            completed=sum(1 for j in runs if j.status == "completed"),
+            failed=sum(1 for j in runs if j.status == "failed"),
+            blocked=sum(1 for j in runs if j.status == "blocked"),
+            calibration=len(jobs) - len(runs),
+            total=len(runs))
         return ListJobsResponse(jobs=jobs, counts=counts)
 
     def _planned_jobs(self, campaign_id, created) -> list:
@@ -1418,6 +1439,21 @@ class ClusterService(LocalTransport):
                            detail="queued for cluster capacity")
                 for name, state in sorted(admission.states(campaign_id).items())
                 if state == PLANNED and name not in created]
+
+    @staticmethod
+    def _job_kind(job) -> str:
+        """Which kind of ``scenario-runs`` Job this is, from the label the backend stamps.
+
+        Unlabelled means the campaign's own work: the label is stamped by
+        :func:`~.kubernetes_backend.probe_manifest` and by nothing else, and a Job created
+        before it existed is a run.
+        """
+        try:
+            labels = job.metadata.labels or {}
+        except AttributeError:
+            return JobKind.RUN
+        return (JobKind.CALIBRATION
+                if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
     @staticmethod
     def _job_display_name(campaign_id, job) -> "str | None":

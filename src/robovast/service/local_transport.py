@@ -64,7 +64,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DiskSpace, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText, ImageBuildRef,
-                                        ImportCampaignRequest, JobCounts,
+                                        ImportCampaignRequest, JobCounts, JobKind,
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
@@ -3730,6 +3730,14 @@ class LocalTransport(RobovastInterface):
         precondition is checked against the very status the caller was shown. ``KeyError``
         for a job that does not exist, ``RuntimeError`` naming the phase for one that
         exists but is not running: only a job that is *underway* has something to kill.
+
+        A node-calibration probe is refused outright, whatever its status. Stopping a job
+        records a ``killed`` intervention against the runs it was carrying, and a probe
+        carries none -- it is not one of the campaign's runs, and is deliberately absent from
+        the job-links manifest that resolves them -- so the record would name runs that do
+        not exist. Refused here rather than in the cluster lane's ``stop_job`` because this
+        is the precondition both lanes share and the one the web UI mirrors when it decides
+        whether to offer the button.
         """
         jobs = self.list_jobs(campaign_id).jobs
         job = next((j for j in jobs if j.job_name == job_name), None)
@@ -3737,6 +3745,11 @@ class LocalTransport(RobovastInterface):
             known = ", ".join(j.job_name for j in jobs) or "none"
             raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r} "
                            f"(jobs: {known})")
+        if job.kind == JobKind.CALIBRATION:
+            raise RuntimeError(
+                f"job {job_name!r} is a node-calibration probe, not one of the campaign's "
+                f"runs — it cannot be stopped individually: there is no run to record as "
+                f"killed, and the batch abandons its own probes when it ends")
         if job.status != "running":
             running = [j.job_name for j in jobs if j.status == "running"]
             hint = f"; running now: {', '.join(running)}" if running else ""

@@ -590,7 +590,8 @@ def test_a_probe_asks_the_scenario_runner_to_report_on_itself(monkeypatch):
     r = _runner(monkeypatch)
     base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
     probe = probe_manifest(base, job_name="probe-n1", params_file="/config/p.yaml",
-                           output_dir="/out/_calibration/n1")
+                           output_dir="/out/_calibration/n1",
+                           display_name="calibration probe · n1")
     main = probe["spec"]["template"]["spec"]["containers"][0]
     params = next(e for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
     assert TICK_LOG_FLAG in params["value"]
@@ -618,7 +619,8 @@ def test_a_campaigns_own_scenario_flags_survive_the_probe(monkeypatch):
 
     r = _runner(monkeypatch, execution={"log_tree": True})
     base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
-    probe = probe_manifest(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x")
+    probe = probe_manifest(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x",
+                           display_name="calibration probe · n1")
     main = probe["spec"]["template"]["spec"]["containers"][0]
     value = next(e["value"] for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
     assert TICK_LOG_FLAG in value and "-t" in value

@@ -2547,6 +2547,11 @@ export interface components {
              */
             blocked: number;
             /**
+             * Calibration
+             * @default 0
+             */
+            calibration: number;
+            /**
              * Completed
              * @default 0
              */
@@ -2638,6 +2643,11 @@ export interface components {
             display_name: string | null;
             /** Job Name */
             job_name: string;
+            /**
+             * Kind
+             * @default run
+             */
+            kind: string;
             /**
              * Status
              * @default pending
@@ -3519,6 +3529,11 @@ export interface components {
              * @default
              */
             image_ref: string;
+            /**
+             * Registry Built At
+             * @default
+             */
+            registry_built_at: string;
             /**
              * Registry Digest
              * @default

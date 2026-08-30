@@ -88,7 +88,13 @@ It provides four views:
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has
   not started, and a blocked one has a cause (no quota, an unpullable image) that deleting
-  it does not fix. Confirming asks for an optional reason, and the reason is worth giving —
+  it does not fix. Nor on a node-calibration probe: on a cluster campaign that calibrates its
+  sizing (see :ref:`cluster-node-calibration`) the Jobs list also carries one row per node
+  being measured, marked with a ``calibration`` chip beside its status and named for its node.
+  Those rows are the campaign's *infrastructure*, not its trials — they are kept out of the
+  job counts, out of the run meter and out of the ETA — and they cannot be stopped one at a
+  time, because there is no run to record as killed.
+  Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
   :ref:`stopping-one-job`), counted as neither passes nor failures. The campaign **live log** panel below is the
