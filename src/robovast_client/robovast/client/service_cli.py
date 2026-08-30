@@ -180,6 +180,11 @@ def info(namespace, context):
     When ``revision`` is absent the check is unavailable and there is no substitute --
     ``version`` is the package semver, so it stays the same across every edit and reading
     it as a revision is a live trap.
+
+    ``robovast_version``, the field the compatibility handshake compares, is not printed:
+    it resolves to a revision when there is one and to the semver otherwise, so it is
+    always already on one of these two lines. It used to be printed as ``version``, which
+    made both lines show the same SHA on every deployed service.
     """
     try:
         with service_client(namespace, context) as (client, label):
@@ -189,8 +194,12 @@ def info(namespace, context):
         handle_cli_exception(e)
         return
 
-    click.echo(f"  version   {version.robovast_version}")
+    click.echo(f"  version   {version.package_version or '(unavailable — no package metadata)'}")
     click.echo(f"  revision  {version.code_revision or '(unavailable — cannot compare with your tree)'}")
+    # Only when known. A source checkout has no build to date, and an absent line says that
+    # more honestly than a placeholder that would have to be read as one.
+    if version.built_at:
+        click.echo(f"  built     {version.built_at}")
     click.echo(f"  api       {version.api_version}")
     if version.backend:
         click.echo(f"  lane      {version.backend}")

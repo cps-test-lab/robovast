@@ -1034,20 +1034,50 @@ measured on, so a ``.vast`` naming one asserts something it cannot know about th
 lands on. Under ``calibrated`` the file says what to run and the cluster says how much of
 itself that takes.
 
-**Declaring** ``resources`` **under** ``calibrated`` **is refused, not overridden.** The two
-answer the same question, and a file stating a number nobody honours is worse than one
-stating nothing — the same rule this block applies to an unknown key. ``resources.gpu`` is
-exempt: a device count is a count, not a rate, so nothing measures it.
-
-**What it measures, and what it does not.** CPU only. Memory is taken from the cluster's
-bootstrap figure for the container's role and is not yet measured per node — so a campaign
-whose memory needs are unusual should stay on ``fixed`` and declare them.
+**Declaring** ``resources`` **under** ``calibrated`` **states where measuring starts.**
+``resources`` has one meaning in either mode: the container's declared ceiling, the most it
+may have. Under ``fixed`` that is also what it gets, because nothing measures it down; under
+``calibrated`` it is what the probe and every not-yet-measured node run at, and the bound a
+measured figure may not exceed. ``resources.gpu`` is never measured: a device count is a
+count, not a rate.
 
 **Before a node has been measured** — the probe itself, and every job on a node whose probe
-has not reported — a container asks for the deployment's bootstrap for its role
-(``ROBOVAST_BOOTSTRAP_CPU`` / ``_MEMORY``, see :doc:`cluster_execution`). That figure belongs
-to the cluster rather than the campaign, which is the same argument that takes it out of the
-``.vast``.
+has not reported — a container that declares nothing asks for the deployment's bootstrap for
+its role (``ROBOVAST_BOOTSTRAP_CPU`` / ``_MEMORY``, see :doc:`cluster_execution`). Resolved
+per *field*, so a ``.vast`` stating only ``cpu`` keeps the deployment's ``memory``.
+
+**What it measures.** CPU and memory, both from the same probe. CPU is read at a percentile
+that depends on the container's role; memory is read at the **maximum** for every role,
+because exceeding a CPU reservation slows a container while exceeding a memory one kills it.
+
+**How the measurement becomes an allocation** is a per-container ``calibration`` block, every
+field optional and defaulted from the role and the deployment:
+
+.. code-block:: yaml
+
+   execution:
+     sizing: calibrated
+     containers:
+       sut:
+         image: nav2:latest
+         calibration:
+           size_on: 100        # percentile; 100 is the sample's max. Default: 100 for sut,
+                               # 95 for every other role.
+           limit: request      # limit == request, so it never throttles. Default: `request`
+                               # for sut, `declared` elsewhere -- keep the ceiling, allow a burst.
+           headroom:
+             cpu: 1.4          # margin above the measurement; per resource
+             memory: 1.5
+
+``size_on`` is worth knowing about for one reason beyond tuning: *which* statistic the system
+under test is sized on is a decision this substrate asserts rather than a measured fact, and
+setting it is how a campaign tests that decision. Doing so costs comparability — a system
+under test read below its maximum **will** be throttled mid-plan, which
+``run_validity_view.quota_bound`` flags, and its runs cannot be compared with a campaign sized
+any other way. That is the point when it is the experiment, and a mistake when it is not.
+
+The block is read only under ``calibrated``; declaring one under ``fixed`` is refused rather
+than ignored, since nothing there would read it.
 
 **Where calibration cannot run, the bootstrap stands — and is checked.** A campaign with no
 more jobs than the cluster has nodes, or a cluster that can grow, never probes: no node would
@@ -1058,8 +1088,15 @@ measured allocation, where such a run is recorded and kept: nobody chose the boo
 this workload, so a run that dies against it says the default does not fit rather than
 anything about the stack — and every remaining run would carry the same fault.
 
-The local Docker lane never probes and is **unconstrained** under ``calibrated``, which is
-what a quick local run already gets when it declares nothing.
+**A node that cannot be measured stops the campaign.** Its jobs would run at the starting
+allocation while every measured node's ran at a measured figure, so the campaign would
+silently mix two sizings — the inconsistency calibration exists to remove, arriving through
+the act of failing to measure. The error names the node, why its probe was refused, and which
+of the ``.vast`` or the deployment default to change.
+
+The local Docker lane never probes and knows nothing of ``sizing``: it reads ``resources`` as
+Compose limits, and a container declaring none runs **unconstrained**, which is what a quick
+local run already gets.
 
 .. _config-request-limit-split:
 

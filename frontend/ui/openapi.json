@@ -3507,6 +3507,11 @@
             ],
             "title": "Build Unavailable"
           },
+          "built_at": {
+            "default": "",
+            "title": "Built At",
+            "type": "string"
+          },
           "can_build_images": {
             "anyOf": [
               {
@@ -3567,6 +3572,11 @@
             ],
             "title": "Namespace"
           },
+          "package_version": {
+            "default": "",
+            "title": "Package Version",
+            "type": "string"
+          },
           "results_address": {
             "default": "/results/{campaign_id}/{path}",
             "title": "Results Address",
@@ -3614,12 +3624,14 @@
           "api_version",
           "backend",
           "build_unavailable",
+          "built_at",
           "can_build_images",
           "code_revision",
           "in_pod",
           "kube_context",
           "kube_context_source",
           "namespace",
+          "package_version",
           "results_address",
           "results_root",
           "robovast_version",

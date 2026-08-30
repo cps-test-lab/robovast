@@ -42,6 +42,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -53,6 +54,7 @@ from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
 from robovast.common.host_display import require_host_display
+from robovast.common.campaign_data import read_campaign_finished_at
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
@@ -110,6 +112,38 @@ def _code_revision() -> str:
         return ""
 
 
+def _build_date() -> str:
+    """When the image this process runs was built, or ``""`` when unavailable.
+
+    Never raises and never substitutes: a source checkout has no build to date, and a
+    manufactured one — the file's mtime, today — would be read as the age of the deployment
+    and believed. Same contract as :func:`_code_revision`, for the same reason.
+    """
+    try:
+        from robovast.common.execution import build_date
+        return build_date()
+    except Exception:  # noqa: BLE001 - diagnostics must not break the handshake
+        return ""
+
+
+def _package_version() -> str:
+    """The packaged semver of the running code, or ``""`` when there is no metadata.
+
+    Deliberately *not* ``get_app_version``, which prefers a revision and so answers a
+    different question. This is the release an operator can look up in a changelog, and
+    it was reported nowhere before this: a deployed image always has a baked revision, so
+    :func:`_robovast_version` always short-circuits to it and the semver never surfaced.
+
+    ``""`` is the honest answer for a source tree with no metadata, in the same way ``""``
+    is for an undeterminable revision — never a substituted revision, which would look
+    like a release that does not exist.
+    """
+    try:
+        return _pkg_version("robovast")
+    except PackageNotFoundError:  # editable/source without metadata
+        return ""
+
+
 def _robovast_version() -> str:
     """The version of the code *this process is running*.
 
@@ -118,6 +152,10 @@ def _robovast_version() -> str:
     long-lived and loads its code once, so a client needs to tell "the fix I just made
     is loaded" from "this process predates it". The packaged version alone cannot —
     it stays ``2.0.0`` across every edit.
+
+    The consequence is that this is a revision on any real deployment, which is why the
+    semver has a field of its own (:func:`_package_version`) rather than being read off
+    this one.
     """
     from robovast.common.execution import get_app_version
     try:
@@ -338,7 +376,6 @@ class _LocalCampaign:
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
                  created_by: str = "", origin=None):
-        from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
@@ -541,6 +578,11 @@ class LocalTransport(RobovastInterface):
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes, so no invalidation is needed.
         self._started_at_cache: dict[str, str] = {}
+        #: campaign_id -> recorded finish time (see _finished_at_for). Unlike the caches
+        #: beside it this one CAN go stale: a re-triggered postprocessing or a re-run
+        #: export ends the campaign again and moves its finish time, so
+        #: `_dispatch_background` drops the entry when it registers such an operation.
+        self._finished_at_cache: dict[str, str] = {}
         # campaign_id -> recorded description (see _description_for). Same contract as
         # the start-time cache: write-once values only, so no invalidation is needed.
         self._description_cache: dict[str, str] = {}
@@ -1413,7 +1455,9 @@ class LocalTransport(RobovastInterface):
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),
-                           code_revision=_code_revision(), backend="docker",
+                           code_revision=_code_revision(),
+                           package_version=_package_version(),
+                           built_at=_build_date(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root),
@@ -2127,6 +2171,10 @@ class LocalTransport(RobovastInterface):
                 # postprocessing at all. Without this the run leaves the phase at
                 # `finishing` and every waiter blocks until its timeout.
                 end_campaign(campaign_id, state, notifier)
+                # After it, not before: `end_campaign` is what publishes the terminal
+                # phase, so this is the first point at which the campaign has a finish
+                # time to record anywhere.
+                self._on_campaign_finished(campaign_id, state)
 
         thread = threading.Thread(
             target=_worker, name=f"robovast-{campaign_id}", daemon=True)
@@ -3733,6 +3781,20 @@ class LocalTransport(RobovastInterface):
         """
         return set()
 
+    def _on_campaign_finished(self, campaign_id: str, state) -> None:
+        """The campaign is over: record that wherever it must be discoverable.
+
+        No-op here. The local lane needs nothing — the driver has already written
+        ``_execution/outcome.json``, which is where :func:`read_campaign_finished_at` reads
+        the time from. :class:`ClusterService` publishes a marker as well, because ordering
+        a listing there must not mean fetching a record per campaign.
+
+        The counterpart of :meth:`_on_campaign_started`, and deliberately not symmetrical
+        with it in placement: that one runs before anything that can fail, so a doomed
+        campaign is still findable, while this one can only run once there is an ending to
+        report.
+        """
+
     def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
         """The campaign's driver is starting: record it wherever it must be discoverable.
 
@@ -3799,10 +3861,23 @@ class LocalTransport(RobovastInterface):
         # Every term is answered from memory — `_started_at_for` is memoised and the
         # liveness read is an in-memory snapshot — so this pass still costs no I/O, which
         # matters because the campaign-list SSE stream repeats it once a second.
+        # Within the terminal group the key is when a campaign ENDED, falling back to when
+        # it started. That is the question asked of a finished campaign -- which of these
+        # results is fresh -- and start time answers it badly: a campaign that ran for eight
+        # hours and ended a minute ago is the newest thing here and sorts near the bottom by
+        # start. Live campaigns keep sorting by start, because they have no end yet and
+        # because a just-launched one belongs at the top.
+        #
+        # The fallback is not a transitional measure: a campaign whose record carries no
+        # terminal outcome never gets one, so those keep ordering exactly as they did.
         started = {cid: self._started_at_for(cid) for cid in disk | mem}
-        all_ids = sorted(started,
-                         key=lambda c: (is_live(c), started[c] is not None, started[c] or "", c),
-                         reverse=True)
+        finished = {cid: self._finished_at_for(cid) for cid in started}
+        def _key(c: str):
+            live = is_live(c)
+            when = started[c] if live else (finished[c] or started[c])
+            return (live, when is not None, when or "", c)
+
+        all_ids = sorted(started, key=_key, reverse=True)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]
         summaries = [self._summary_for(cid) for cid in window]
@@ -3923,6 +3998,11 @@ class LocalTransport(RobovastInterface):
             # which that helper takes.
             entry.created_at = (read_campaign_created_at(self._campaign_dir(campaign_id))
                                 or entry.created_at)
+            # ...but the FINISH time is restamped, and must be: this operation ends the
+            # campaign again, later than last time. Dropping the cached value is what makes
+            # the next listing re-read it; `_started_at_cache` needs no such thing because
+            # a start time is written once and never edited.
+            self._finished_at_cache.pop(campaign_id, None)
             # Likewise the description: a tracked entry answers for the campaign while
             # it is live, so leaving this empty would blank the description out of every
             # listing for the duration of a re-triggered postprocess/share.
@@ -4944,6 +5024,7 @@ class LocalTransport(RobovastInterface):
             created_by=self._created_by_for(cid) or "",
             origin=self._origin_for(cid),
             started_at=started_at,
+            finished_at=self._finished_at_for(cid),
             # The store is consulted behind the snapshot rather than instead of it: a
             # reconstructed Status can carry no mode at all, because the `outcome.json`
             # early-return path hands back whatever the controller journalled and an older
@@ -5036,6 +5117,29 @@ class LocalTransport(RobovastInterface):
         return self._campaign_fact(
             cid, lambda entry: entry.created_at,
             read_campaign_created_at, self._started_at_cache)
+
+    def _finished_at_for(self, cid: str) -> Optional[str]:
+        """When *cid* ended, as an ISO-8601 UTC string, or None while it is still going.
+
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        What is specific here: a campaign this service is **driving** answers from its live
+        state, so the moment it ends its own listing already reflects that -- and answers
+        ``None`` until then, because a campaign that is not over has no finish time and
+        must not be given one derived from a phase it is still in.
+
+        Cached like its neighbours, but invalidated rather than assumed permanent: see
+        ``_finished_at_cache``. A campaign whose record says nothing (one that predates the
+        durable outcome, or an import that arrived without one) is simply unknown, and the
+        listing orders it by its start time instead.
+        """
+        def from_entry(entry):
+            snap = entry.state.snapshot()
+            if not is_terminal(snap.phase) or not snap.phase_since:
+                return None
+            return datetime.fromtimestamp(snap.phase_since, tz=timezone.utc).isoformat()
+
+        return self._campaign_fact(
+            cid, from_entry, read_campaign_finished_at, self._finished_at_cache)
 
     def _description_for(self, cid: str) -> Optional[str]:
         """The campaign's description, or None when it was launched without one.

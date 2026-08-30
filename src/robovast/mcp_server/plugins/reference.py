@@ -135,13 +135,17 @@ def get_service_info() -> dict:
     if they differ.
 
     **When ``code_revision`` is absent, this check is unavailable** — probe for the
-    behaviour you expect instead. ``code_version`` is no substitute: it is the package
-    semver, unchanged across every edit, so reading it as a revision silently defeats the
-    one thing this check exists for.
+    behaviour you expect instead. ``package_version`` is no substitute: it is the release,
+    unchanged across every edit, so reading it as a revision silently defeats the one thing
+    this check exists for.
 
     Returns:
         ``{code_version, api_version, backend, results_address, sources_address}``, plus
-        ``code_revision`` when known, or ``{error}``.
+        ``package_version`` and ``code_revision`` when known, or ``{error}``.
+
+        ``code_version`` is what the compatibility handshake compares, and is the revision
+        rather than the release wherever one exists — which is every deployed image. Ask
+        ``package_version`` for the release.
 
         ``backend`` is the lane this service runs, fixed when it started. Use
         ``get_resource_usage()`` to actually touch it before committing a long campaign.
@@ -155,6 +159,9 @@ def get_service_info() -> dict:
         ``in_pod``, ``api_server`` — which cluster a campaign would land in.
         ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
         fine for a pilot, fragile for a large campaign's result transfers.
+
+        ``built_at`` is when the running image was built (RFC 3339, UTC); absent for a
+        source checkout, which has no build to date.
 
         ``can_build_images`` says whether this deployment can build an experiment image at
         all — check it before authoring a container that adds packages, because otherwise
@@ -183,6 +190,14 @@ def get_service_info() -> dict:
     # that happens not to match, which is a different and wrong conclusion.
     if getattr(v, "code_revision", ""):
         info["code_revision"] = v.code_revision
+    # Same rule, other question: "" means no package metadata to read, not a release of
+    # zero. Absent rather than empty so a caller cannot print it as one.
+    if getattr(v, "package_version", ""):
+        info["package_version"] = v.package_version
+    # Same rule again: a source checkout has no build to date, and inventing one would be
+    # read as the age of the deployment.
+    if getattr(v, "built_at", ""):
+        info["built_at"] = v.built_at
     # Only when set: a null root reads as "unknown", when the truthful statement is
     # "this service has no path you can open" — so say nothing rather than say null.
     if v.results_root:

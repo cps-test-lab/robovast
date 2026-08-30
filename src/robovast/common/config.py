@@ -281,6 +281,118 @@ class ImageProvenanceConfig(BaseModel):
     build_recipe: Optional[str] = None
 
 
+#: The fields whose presence means a container's sizing was declared rather than measured.
+#: ``gpu`` is not among them: a device count is a count, not a rate, so nothing measures it
+#: and it never decides the mode.
+SIZED_FIELDS = ("cpu", "cpu_limit", "memory", "memory_limit")
+
+
+def infer_sizing(execution) -> str:
+    """The sizing mode *execution* means, whether or not it says so.
+
+    **One rule, reachable from both sides.** The model applies it in `resolve_sizing`; the
+    cluster lane needs the same answer from the RAW section, because what reaches a backend is
+    the parsed YAML rather than the validated model -- so an inferred mode was invisible there
+    and every campaign that declared nothing silently ran as `fixed`, which is the opposite of
+    what declaring nothing asks for. Written once so the two cannot answer differently.
+
+    *execution* may be the raw mapping or the model; both are read the same way.
+    """
+    stated = (execution.get("sizing") if isinstance(execution, dict)
+              else getattr(execution, "sizing", None))
+    if stated:
+        return str(stated)
+    containers = (execution.get("containers") if isinstance(execution, dict)
+                  else getattr(execution, "containers", None)) or {}
+    for container in containers.values():
+        resources = (container.get("resources") if isinstance(container, dict)
+                     else getattr(container, "resources", None))
+        if resources is None:
+            continue
+        for field in SIZED_FIELDS:
+            value = (resources.get(field) if isinstance(resources, dict)
+                     else getattr(resources, field, None))
+            if value is not None:
+                return "fixed"
+    return "calibrated"
+
+
+class CalibrationHeadroom(BaseModel):
+    """Margin above what a probe measured, per resource.
+
+    Two figures rather than one because the resources fail differently: overrunning a CPU
+    reservation slows a container, overrunning a memory one kills it, so memory is normally
+    given the larger margin.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    cpu: Optional[float] = None
+    memory: Optional[float] = None
+
+
+class CalibrationConfig(BaseModel):
+    """How one container's measurement becomes its allocation, under ``sizing: calibrated``.
+
+    **A family, not a setting** -- which percentile, how much margin, whether the container
+    may burst past its reservation -- so it is a named block from the start rather than loose
+    fields that accrete on :class:`ContainerConfig`. Adding an option later is one optional
+    field here, live in the ``.vast`` and in ``ROBOVAST_CALIBRATION`` at once.
+
+    Every field is optional and resolved most-specific-first: this block, then the service's
+    ``ROBOVAST_CALIBRATION`` entry for the container's role, then the role's own rule. A
+    campaign that states none of it is the normal case.
+
+    **Inert under ``sizing: fixed``**, where nothing is measured. Declaring one there is
+    reported as an advisory rather than ignored -- a file carrying settings that do nothing
+    reads as configured and behaves as default.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    #: The percentile the figure is taken at, over the probe's per-tick samples. ``100`` is
+    #: the sample's max -- the 100th percentile of a finite sample *is* its largest value, so
+    #: there is one spelling per value and no alias to keep in step. Omitted, the role
+    #: decides: 100 for the system under test, 95 for everything else.
+    #:
+    #: **The probe's throttle tolerance is derived from this**, because clipping cannot move
+    #: a figure while it stays inside the tail the percentile already discards. A container
+    #: read at 99 therefore tolerates a tenth of the throttling one read at 95 does.
+    size_on: Optional[float] = None
+
+    #: Whether the container may burst past its reservation. ``request`` sets the limit equal
+    #: to the request, so it never throttles and its budget is the same in every run;
+    #: ``declared`` keeps the ceiling from ``resources`` and lets it burst. Omitted, the role
+    #: decides: ``request`` for the system under test, ``declared`` for everything else.
+    limit: Optional[Literal["request", "declared"]] = None
+
+    #: Margin above the measurement, per resource. Omitted, the built-in constants apply.
+    headroom: Optional[CalibrationHeadroom] = None
+
+    @field_validator('size_on')
+    @classmethod
+    def validate_size_on(cls, v):
+        """A percentile, so ``(0, 100]``. Zero would ask for a figure below every sample."""
+        if v is None:
+            return v
+        if not 0 < v <= 100:
+            raise ValueError(
+                f"execution.containers.<name>.calibration.size_on is a percentile and must "
+                f"be greater than 0 and at most 100 (100 is the sample's max); got {v}")
+        return v
+
+    @field_validator('headroom')
+    @classmethod
+    def validate_headroom(cls, v):
+        """Below 1.0 it is not headroom -- it would size a container under what it used."""
+        for field in ("cpu", "memory"):
+            value = None if v is None else getattr(v, field, None)
+            if value is not None and value < 1.0:
+                raise ValueError(
+                    f"execution.containers.<name>.calibration.headroom.{field} is a "
+                    f"multiplier on the measured figure and must be at least 1.0; "
+                    f"got {value}")
+        return v
+
+
 class ContainerConfig(BaseModel):
     """One container of a campaign: what it starts from, and what it adds.
 
@@ -325,7 +437,13 @@ class ContainerConfig(BaseModel):
     #: scenario runner, a sidecar's scenario-execution server); required for an ad-hoc
     #: container, which nothing else knows how to start.
     command: Optional[list[str]] = None
+    #: What this container may have: its request under ``sizing: fixed``, and under
+    #: ``calibrated`` both what it starts at and the ceiling a measured figure may not
+    #: exceed. One meaning in either mode -- the most this container gets.
     resources: Optional[ResourcesConfig] = None
+    #: How a measurement becomes this container's allocation. Only read under
+    #: ``sizing: calibrated``; see :class:`CalibrationConfig`.
+    calibration: Optional[CalibrationConfig] = None
     #: Simulator backend entry point (``simulation`` role only) -- a name in the
     #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
     #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
@@ -518,7 +636,7 @@ class ExecutionConfig(BaseModel):
         sizing with nothing declared (refused at admission, which names the containers).
         """
         if self.sizing is None:
-            self.sizing = "fixed" if self._declares_resources() else "calibrated"
+            self.sizing = infer_sizing(self)
         return self
 
     def _declares_resources(self) -> bool:
@@ -531,36 +649,50 @@ class ExecutionConfig(BaseModel):
             for c in (self.containers or {}).values())
 
     @model_validator(mode="after")
-    def validate_sizing_excludes_resources(self):
-        """Under ``sizing: calibrated``, a declared ``resources`` is an error.
+    def validate_calibration_is_reachable(self):
+        """A ``calibration`` block under ``sizing: fixed`` decides nothing, and must say so.
 
-        The two decide the same thing. Accepting both and letting one win means a file that
-        states a number nobody honours -- the failure mode this block already refuses for an
-        unknown key, for the same reason: what a ``.vast`` says about the machine a run may
-        have should be what the run gets.
-
-        Named per container, because a campaign that declares resources on one of three is
-        the likely shape and "somewhere in execution.containers" would not be actionable.
-
-        ``gpu`` is exempt: a device count is a count, not a rate, so nothing measures it and
-        calibration has no answer to override. ``memory`` is NOT exempt -- it is declared and
-        honoured under both modes, but it is declared in the same block, so a campaign moving
-        to ``calibrated`` has to say which of the two it meant.
+        Nothing is measured in that mode, so every field in the block is inert. Silence would
+        make a file read as configured while behaving as default -- the failure this whole
+        area keeps producing. Raised rather than warned because it is unambiguous: the two
+        keys are in the same file, and there is no reading of them under which the block does
+        anything.
         """
-        if self.sizing != "calibrated":
+        if self.sizing == "calibrated":
             return self
         named = sorted(name for name, c in (self.containers or {}).items()
-                       if getattr(c, "resources", None) is not None
-                       and any(getattr(c.resources, f, None) is not None
-                               for f in ("cpu", "cpu_limit", "memory", "memory_limit")))
-        # Inference cannot reach here with a declaration -- it would have chosen `fixed` --
-        # so this only ever fires on a file that asked for `calibrated` in as many words.
+                       if getattr(c, "calibration", None) is not None)
+        if named and self.sizing == "fixed":
+            raise ValueError(
+                f"execution.sizing is 'fixed', so nothing is measured -- but "
+                f"{', '.join(named)} declare execution.containers.<name>.calibration, which "
+                f"decides how a measurement becomes an allocation and is therefore read only "
+                f"under 'calibrated'. Set execution.sizing: calibrated to use it, or remove "
+                f"the block.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_limit_rule_matches_the_ceiling(self):
+        """``calibration.limit: request`` and an explicit ``resources.cpu_limit`` conflict.
+
+        ``limit`` picks the rule and ``resources`` supplies the value it reads -- so with
+        ``request`` the ceiling becomes the measured request and a declared ``cpu_limit`` is
+        never used. Accepting both would leave a file stating a number nobody honours, which
+        is the same defect as the pair this block already refuses for an unknown key.
+        """
+        named = []
+        for name, container in (self.containers or {}).items():
+            calibration = getattr(container, "calibration", None)
+            resources = getattr(container, "resources", None)
+            if (getattr(calibration, "limit", None) == "request"
+                    and getattr(resources, "cpu_limit", None) is not None):
+                named.append(name)
         if named:
             raise ValueError(
-                f"execution.sizing is 'calibrated', so the reservation is measured per node "
-                f"-- but {', '.join(named)} also declare execution.containers.<name>."
-                f"resources. Remove the declaration, or set execution.sizing: fixed to keep "
-                f"it. (resources.gpu is unaffected and may stay.)")
+                f"{', '.join(sorted(named))} set calibration.limit: request, which makes the "
+                f"limit equal the measured request -- and also declare resources.cpu_limit, "
+                f"which is then never used. Remove the cpu_limit, or set "
+                f"calibration.limit: declared to keep it as the ceiling.")
         return self
 
     @field_validator('shm_size')

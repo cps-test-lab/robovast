@@ -14,10 +14,48 @@ It provides four views:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel. The campaign list itself is **streamed** over Server-Sent Events
+  **live log** panel. **Every** campaign is listed **folded**: one row carrying its phase,
+  id, description, a time, and a **compact run meter**, with the jobs list, the Details
+  panel and the log not rendered at all — so a page of campaigns is a page of rows rather
+  than metres of scroll. Clicking the row (or its chevron) unfolds the full card. Nothing
+  opens itself, including the newest campaign and one that ended badly: the row says which
+  it is, and opening it is always the reader's choice.
+
+  The **time** column asks a different question of each state. A campaign that is over shows
+  **how long ago it finished** — the freshness of its results, which its start time answers
+  badly: a campaign that ran for eight hours and ended a minute ago is the newest thing on the
+  page and started three days back. The listing orders the terminal group by the same figure,
+  so the column and the order agree; a campaign whose record carries no terminal outcome falls
+  back to its start time in both. A campaign that is still going shows **how much longer it has**,
+  and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
+  duration or the expected finish.
+
+  For a **search** that estimate is never its current round: a search runs an unknown number of
+  rounds, so the round it is on says nothing about the whole, and one starting its sixth of six
+  would otherwise claim the same remaining time as one starting its first. It is projected from
+  what *bounds* the search instead — a ``batches`` criterion (the rounds still to come) or a
+  ``runs`` one (the runs still to come), at the rate the current batch is achieving, and the
+  **smaller** of the two when both are declared, since the campaign stops at whichever fires
+  first. A search bounded only by an objective, a metric or ``no_improvement`` shows nothing:
+  those fire on a value nothing can project. Like the batches estimate it answers when the *work*
+  runs out, not when the search stops — another criterion may end it earlier.
+
+  The compact meter is the same bar the open card draws full width — same segments, same
+  ``done/total`` — with the counts inside the track and the rest (passed, failed, no
+  result, start and finish times) on hover; on a running campaign its striped segment is
+  the runs in flight, so the folded row is live. A **search** campaign's folded row adds a
+  small **rounds ring** with its round count in the hole, because a search's run counters
+  describe its *current batch* rather than the campaign; hovering the ring gives the round
+  bound, the best objective and the **objective-over-rounds chart**. A search whose rounds
+  nothing bounds draws the bare ring: there is no denominator, and none is invented. The campaign list itself is **streamed** over Server-Sent Events
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list
-  immediately — with its true live phase and its **start time** (shown in your
-  browser's locale and timezone) — and every phase change is pushed within a second.
+  immediately — with its true live phase and **how long ago it started** — and every phase
+  change is pushed within a second. That age is deliberately relative rather than a wall
+  clock: a campaign id already ends in a ``-YYYY-MM-DD-HHMMSS`` stamp, so an absolute start
+  time beside it says the same thing twice. Hovering it gives the exact start and finish in
+  your browser's locale and timezone, and how long the campaign took — and the exact time is
+  worth having, because the id's stamp comes from the *service host's* clock while this one
+  is the viewer's, which on a cluster are not the same reading.
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
   it was launched from; see `Where a campaign came from`_.
@@ -33,7 +71,13 @@ It provides four views:
   exact ``running N · pending M`` counts beside it. While a fixed-size campaign runs,
   an **ETA** (``~12m left (≈ 14:35)``, the estimated finish time in your locale)
   appears next to that count once at least one run has
-  finished, extrapolating from the average time per completed run. A collapsible **Jobs** list shows
+  finished, extrapolating from the average time per completed run. Below that progress, the open
+  card carries **two tabs**, and which two depends on what the campaign is: a running one gets
+  **Jobs** and **Log**, a finished one **Details** and **Log**. Details is not offered while a
+  campaign runs because its numbers come from a table postprocessing writes, and Jobs is not
+  offered once it is over because there are no live jobs left. Only the selected tab is rendered,
+  so an unwatched Log holds no stream open; a job whose log you expanded is still expanded when
+  you come back to the Jobs tab. The **Jobs** tab lists
   each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
   cluster — with its status; expanding a running one streams that **job's own live log**:
   every container it runs, merged into one stream, each line tagged ``[<container>]``
@@ -60,13 +104,19 @@ It provides four views:
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
   running work halts promptly (not only after the current batch). That is the whole
   campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
-  A finished campaign also shows a **download icon** that streams its ``tar.gz``
-  straight from the service — from the object store on a cluster, from disk on a local
-  one; the lane is not something a viewer should have to know. When that campaign also has
-  a copy on the share the icon becomes a small menu, adding **Copy share link** beside the download (omitted for a
-  share provider that has no link a browser could open — SFTP has none). No share copy,
-  no menu — one click. A finished campaign's
-  actions menu offers **Retrigger campaign**, which starts a **new** campaign from
+  It asks first, and says how many runs are in flight at that moment — the one thing a
+  reader needs before pressing it that nothing else on the card shows. Worth confirming
+  because there is no resume: a stopped campaign is over, and **Retrigger campaign** starts
+  a *new* one from run zero rather than continuing this one.
+  A card's controls are two buttons: the **actions menu** (☰) and the fold. The menu is
+  ordered by what a reader came for — open something, take something away, re-run something,
+  destroy something — and every entry is conditional, so a campaign with nothing to act on
+  yet is offered no menu at all. Its middle group is **Download**, which streams the
+  campaign's ``tar.gz`` straight from the service — from the object store on a cluster, from
+  disk on a local one; the lane is not something a viewer should have to know — and, when
+  that campaign also has a copy on the share, **Copy share link** (omitted for a share
+  provider that has no link a browser could open — SFTP has none). Below those,
+  **Retrigger campaign** starts a **new** campaign from
   what this one recorded — its frozen ``_config/`` and the image its runs actually
   used — rather than from the workspace it was launched from, which may be gone or
   may have moved on. The source campaign is untouched, so this works whatever state
@@ -145,10 +195,24 @@ against today's size.
 
 **What version is running, and is there a newer one.** The page reports the version, the
 git revision where the deployment can tell (blank means it cannot, which is not a
-mismatch), and the image digest the kubelet actually resolved — the only thing that
-distinguishes two builds of a floating tag. Against that it reports what the tag points at
-in the registry now. A registry that does not answer is reported as *unknown*, never as "up
-to date": that would tell you a fix you have just published is not there.
+mismatch), **when the running image was built**, and the image digest the kubelet actually
+resolved — the only thing that distinguishes two builds of a floating tag. Against that it
+reports what the tag points at in the registry now. A registry that does not answer is
+reported as *unknown*, never as "up to date": that would tell you a fix you have just
+published is not there.
+
+The build date is the one line that reads without a second thing to compare it against: a
+revision needs a checkout and a semver needs a changelog, while "built 18 days ago" answers
+"is this deployment old?" on its own. It comes from the image itself, baked in at build time
+(see :doc:`images`) rather than read from a label — a container cannot read its own labels —
+so it is **absent** on a source checkout or a hand-built image rather than guessed at.
+
+Note the asymmetry, which is deliberate: the *available* image is shown as a digest only. A
+version and a date can be asked of the image this service is executing and not of one it is
+not, and the answer would cost a walk through the registry's manifests and config blob on
+every poll. It would also decide nothing — Upgrade is not a choice between versions, it rolls
+onto whatever the tag points at — so the digest and the verdict beside it are the whole answer
+this page needs.
 
 **Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
 annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the
@@ -209,6 +273,28 @@ in a background tab costs the service nothing. That is what makes coming back th
 must be re-read: without it a card would show the phase from before you switched away for as
 long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
 therefore fetch once on return.
+
+**Switching pages counts as coming back**, and for a while it did not. Every page is kept
+mounted once visited so its state survives navigation — an editor buffer, a scroll position,
+an upgrade in progress — and a page that never unmounts is one whose data is never re-read
+either. So a page's readings are also gated on that page being the one on screen: they stop
+while it is not, and they are read again on the way back in. That is one rule with two
+halves, and the second is what answers "did the version I just published land?" on arriving
+at Admin, or shows a ``.vast`` that was added from the CLI without a browser reload.
+
+Which readings take the gate is a judgement about each one, not a blanket policy. It applies
+to what is **cheap and can change while you are elsewhere**: workspaces and file listings, the
+campaign phases and job lists, the service version and upgrade check, the campaign listing,
+a run view's panel layout. It deliberately does **not** apply to a finished campaign's
+results — the SQL behind the Explorer, the Data browser and every run-view panel, and the
+notebook render. That data cannot change, because the campaign that produced it is over, and
+re-reading it is the most expensive thing this UI does; making every visit pay for it would
+buy nothing. Re-running postprocessing is what invalidates those, and it already does.
+
+The gate is also what stops a hidden page from spending on the service's behalf: before it,
+the Admin page cost a container-registry round trip every minute for as long as the tab was
+open, whichever page you were actually looking at, and each running campaign cost a
+Kubernetes API call every two seconds from a card nobody could see.
 
 **The app itself** can go stale too, and it is the one thing here that no amount of
 polling helps with. Each view is a separate chunk fetched on first visit, named by a
@@ -379,12 +465,15 @@ image and code provenance it already reports. It is deliberately **not** on
 The Details panel
 -----------------
 
-A finished campaign's card carries a collapsed **Details** box: what the campaign cost, how
+A finished campaign's card opens onto its **Details** tab: what the campaign cost, how
 it behaved, and — the reason it exists — what the next one should reserve. It answers "did
 this run well, and what did it cost?"; the Results explorer keeps answering "what did it
-find?", which is why there is no per-configuration breakdown here.
+find?", which is why there is no per-configuration breakdown here. A campaign that has
+finished but not yet been postprocessed has no such measurements, and the tab says so rather
+than drawing an empty grid that would read as "this cost nothing".
 
-It is **closed by default and queries nothing until opened**. Its four SQL statements include
+It has no frame of its own — the tab is its title and its open state — and it **queries
+nothing until that tab is showing**. Its four SQL statements include
 one that scans every 1 Hz resource sample of every run, so a page of twenty campaigns would
 otherwise pay for twenty campaigns nobody asked about. Opening it reads once; the answer is
 re-read when the campaign's metric tables appear, since a campaign is *finished* some minutes
@@ -910,11 +999,13 @@ A URL naming a config or run the campaign does not have falls back to the campai
 finished campaign's structure is fixed, so that is a wrong link rather than a stale one, and
 nothing keeps re-checking it.
 
-Each campaign card in **Campaigns** also carries shortcut buttons — left of its gear — that jump
-straight into the Explorer or the Run view *for that campaign*. A card only offers what it can
-deliver: the Explorer button once the campaign is finished **and** postprocessed (the same gate
-the Results tab itself applies), and the Run view button only if the campaign also recorded runs
-to replay. Changing the selection inside a view updates the URL without adding a browser-history
+Each campaign card in **Campaigns** also offers shortcuts — in its **actions menu** (the ☰
+button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
+offers what it can deliver: **Open in results Explorer** once the campaign is finished **and**
+postprocessed (the same gate the Results tab itself applies), and **Replay runs in the Run
+view** only if the campaign also recorded runs to replay. They are named lines in a menu rather
+than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
+same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
 step, so **Back** always returns to where you came from in one press; a jump *between* views is a
 real step, so Back returns to the view you left.
 
@@ -923,8 +1014,8 @@ real step, so Back returns to the view you left.
 Reading the configuration a campaign ran
 ----------------------------------------
 
-The leftmost shortcut on a campaign card opens **Config** on that campaign's frozen
-``_config/`` — the configuration it was actually staged with — at
+**Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
+frozen ``_config/`` — the configuration it was actually staged with — at
 ``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
 (after variation expansion) and stays for the rest of its life, so the configuration of a
 campaign that is still running can be read while it runs.
