@@ -618,20 +618,39 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   return (
     <Paper sx={{ px: 2, py: collapsed ? 0.75 : 2 }}>
-      <Stack direction="row" spacing={1} alignItems="center" mb={collapsed ? 0 : 1.5}>
-        {/* The fold's click target: the row's whole non-interactive span, which is what makes a
-            collapsed card openable without aiming at the chevron (the same affordance
-            CollapsibleBox's header offers). It wraps only inert elements, so no child needs to
-            stop the click from propagating — the buttons after it are outside it entirely. */}
+      {/* The fold's click target is the WHOLE header, chevron row included: a folded card is
+          opened by clicking the line it occupies, not by aiming at one of the two spans that
+          happen to hold text. It bleeds into the Paper's own padding (negative margin, the same
+          padding added back inside) so the strip beside and above the row folds too — an edge
+          that looks like part of the row and did not act like it.
+
+          The controls stop the click from propagating; everything else in here is inert. */}
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        onClick={toggle}
+        // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
+        // target should not paint its phase dot and its age. The text worth copying opts back
+        // in individually.
+        sx={{
+          cursor: 'pointer',
+          userSelect: 'none',
+          // The Paper's padding, cancelled outside and restored inside, so the padded strip is
+          // part of the target and nothing moves. The gap the row used to hold below itself
+          // (`mb`) is folded into the bottom margin rather than kept as a second rule.
+          mx: -2,
+          px: 2,
+          mt: collapsed ? -0.75 : -2,
+          mb: collapsed ? -0.75 : -0.5,
+          py: collapsed ? 0.75 : 2,
+        }}
+      >
         <Stack
           direction="row"
           spacing={1}
           alignItems="center"
-          onClick={toggle}
-          // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
-          // target should not paint its phase dot and its age. The text worth copying opts back
-          // in individually.
-          sx={{ minWidth: 0, flexGrow: 1, cursor: 'pointer', userSelect: 'none' }}
+          sx={{ minWidth: 0, flexGrow: 1 }}
         >
           <PhaseDot phase={phase} issue={stepIssue} />
           {phaseAge ? (
@@ -776,7 +795,16 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           direction="row"
           spacing={1}
           alignItems="center"
-          sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
+          // Its own clicks stay its own: the column is inside the row-wide fold target, and
+          // without this a mis-aimed click on the gap beside the Stop button folded the card the
+          // reader was about to act on. The cursor goes back to the default for the same reason.
+          onClick={(e) => e.stopPropagation()}
+          sx={{
+            minWidth: CONTROLS_COLUMN,
+            flexShrink: 0,
+            justifyContent: 'flex-end',
+            cursor: 'default',
+          }}
         >
         {/* Left of the menu, and an icon like everything else in this column: a labelled button
             here was the one control wide enough to set the column's width, so a live card's
