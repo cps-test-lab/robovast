@@ -361,6 +361,11 @@ at phase ``unknown`` because their driver was lost rather than because they ende
 would otherwise announce an ending for every campaign at once; and a campaign moving between
 running phases, which is progress rather than news.
 
+**An upgrade announces itself the same way.** A service roll keeps running after you navigate
+away from Admin, and the handover starts a short countdown that reloads the tab — so the notice
+appears wherever you are, and offers the same **Not now** the panel does. Without it the reload
+arrives unannounced on a page you were reading.
+
 **Notifications outside the tab** are off until asked for. **Notify me on finish** in the
 sidebar asks the browser for permission and, once granted, shows a system notification when a
 campaign ends *and this tab is in the background* — never while you are looking at the page,

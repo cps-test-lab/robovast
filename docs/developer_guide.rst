@@ -1968,12 +1968,17 @@ member, which is the rule expressed as a type: a refusal or an error carries bac
 reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
 become transient.
 
-*It is not a notifier.* The provider draws a rectangle and nothing else. The one caller that
-also wants an OS-level notification — the campaign lifecycle watcher in
-``CampaignStreamProvider`` — calls ``lib/browserNotify.post`` itself, beside its ``notify``.
-That keeps the Notification API out of a React component and avoids an ``important`` flag
-threaded through the queue for a single caller. ``post`` enforces its own preconditions,
+*It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
+wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
+and the upgrade handover in ``AdminPage`` — calls ``lib/browserNotify.post`` itself, beside its
+``notify``. That keeps the Notification API out of a React component, and out of a flag threaded
+through the queue that only some callers would set. ``post`` enforces its own preconditions,
 including that the tab is actually hidden, so a later caller cannot forget them.
+
+Both callers have the same shape, which is what the sink is for: work that **outlives the view
+that started it**. A campaign runs on the service; a service roll keeps polling from a
+``KeepAlive``-mounted Admin page. In each case the thing that finishes has no reason to expect
+the user to still be looking at the page that started it.
 
 *It is not a route to ntfy.* Campaign lifecycle already reaches a phone from the server
 (``robovast.execution.notify``), once per campaign. Fanning out from the browser would send one

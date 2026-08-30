@@ -27,9 +27,10 @@ import {
 //  - **Not for errors.** `Severity` has no `error` member (see lib/toasts.ts). A failure carries
 //    backend text worth reading twice and belongs in an inline Alert with its ErrorText.
 //  - **Not a notifier.** This draws a rectangle and nothing else -- no OS notification, no
-//    sound, no push. The one caller that also wants an OS-level notice calls browserNotify
-//    itself, next to its notify(). Threading an `important` flag through the queue for a single
-//    caller would buy nothing and would put the Notification API behind a React component.
+//    sound, no push. A caller that also wants an OS-level notice calls browserNotify itself,
+//    next to its notify(). Threading an `important` flag through the queue would put the
+//    Notification API behind a React component and make every caller declare something only
+//    some of them mean.
 //  - **Not a route to ntfy.** Campaign lifecycle already reaches phones from the server
 //    (robovast.execution.notify), once per campaign. Fanning out from the browser instead would
 //    send one push per open tab and would need the ntfy token in the client.
