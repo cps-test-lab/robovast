@@ -1396,7 +1396,7 @@ class BatchJobRunner:
         # Belt and braces on the same question: a campaign with measured figures is not on
         # the bootstrap, whatever any flag says.
         calibration = getattr(self, "_calibration", None)
-        if calibration is not None and (calibration.outcome().get("calibrated") or []):
+        if calibration is not None and calibration.outcome().get("calibrated"):
             return
         from .node_calibration import (probe_refuse_ratio,  # noqa: PLC0415
                                        read_probe_measurement)
