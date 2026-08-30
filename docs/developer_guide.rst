@@ -1998,6 +1998,22 @@ that started it**. A campaign runs on the service; a service roll keeps polling 
 ``KeepAlive``-mounted Admin page. In each case the thing that finishes has no reason to expect
 the user to still be looking at the page that started it.
 
+*The opt-in is asked once, in context.* ``components/NotificationAsk.tsx`` is a banner above
+every view, raised the first time ``useCampaignStream`` shows a running campaign and
+``browserNotify.shouldAsk()`` is still true — a permission ask needs a reason on screen, and
+arriving is not one. It is deliberately not a toast: a toast clears itself after ten seconds by
+contract, and an ask nobody was looking at would be spent for nothing. Either button stores an
+answer (``setOptedIn``), which is what makes the key in ``lib/browserNotify.ts`` three-state —
+absent means *never asked*, and a decline that stored nothing would be re-asked on every
+campaign. The standing switch lives in ``AdminPage``'s **This browser** paper; it is kept out of
+``ServiceConfigPanel`` on purpose, since that panel reports one shared service environment and
+this preference is per browser on an instance several people share.
+
+The prompt itself can only be raised from a real click: Firefox and Safari resolve a
+gesture-less ``requestPermission()`` to ``default`` without ever showing it. That constraint is
+what shapes both surfaces — the banner exists to produce the click, and the Admin control is a
+switch rather than a setting read at start-up.
+
 *It is not a route to ntfy.* Campaign lifecycle already reaches a phone from the server
 (``robovast.execution.notify``), once per campaign. Fanning out from the browser would send one
 push per open tab and would put the ntfy token in the client.

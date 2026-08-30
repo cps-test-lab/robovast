@@ -9,6 +9,9 @@
 // campaign lifecycle already reaches a phone from the server via ntfy
 // (robovast.execution.notify), once per campaign rather than once per open tab.
 
+// Three states, one key: absent means nobody has been asked yet, '1' means on, '0' means off.
+// The absent state is what `shouldAsk` reads, and it is why declining is stored rather than
+// simply not-stored -- a decline that left no trace would be re-asked on every visit.
 const OPT_IN_KEY = 'robovast.browserNotifications'
 
 /** Whether this browser can do it at all (absent over plain http, and in some embeddings). */
@@ -37,6 +40,29 @@ export function setOptedIn(on: boolean): void {
   } catch {
     // Not being able to remember the choice is not a reason to refuse it for this session.
   }
+}
+
+/** Whether this browser has answered at all -- either button counts, not just the yes. */
+export function decided(): boolean {
+  try {
+    return window.localStorage.getItem(OPT_IN_KEY) !== null
+  } catch {
+    // A storage that throws can never remember an answer, so treating this as "already
+    // decided" is the kinder reading: the alternative is asking again on every single load.
+    return true
+  }
+}
+
+/**
+ * Whether to put the one-time ask in front of the user.
+ *
+ * Not `permission() === 'default'`: a browser that already granted permission but has lost our
+ * record of the choice (cleared site data, a second profile) must still be asked whether it
+ * *wants* them -- the grant is the browser's answer, not the user's. `denied` is excluded
+ * because it is sticky and cannot be re-prompted from the page, so an ask there offers nothing.
+ */
+export function shouldAsk(): boolean {
+  return supported() && !decided() && permission() !== 'denied'
 }
 
 /** Ask the browser. Must be called from a user gesture, or it resolves `default` unprompted. */

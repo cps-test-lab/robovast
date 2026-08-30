@@ -395,12 +395,20 @@ away from Admin, and the handover starts a short countdown that reloads the tab 
 appears wherever you are, and offers the same **Not now** the panel does. Without it the reload
 arrives unannounced on a page you were reading.
 
-**Notifications outside the tab** are off until asked for. **Notify me on finish** in the
-sidebar asks the browser for permission and, once granted, shows a system notification when a
-campaign ends *and this tab is in the background* — never while you are looking at the page,
-which already showed the notice. The switch is per browser and can be turned back off; if the
-browser has blocked notifications for the site the entry says so, since a permission denial
-cannot be re-prompted from the page.
+**Notifications outside the tab** are off until asked for, and asked for once. The first time
+a browser sees a campaign *running*, a banner above the page offers to tell you when it ends —
+in context, so the offer arrives with a reason rather than on arrival. **Enable** raises the
+browser's own permission prompt; **No thanks** declines, and either answer is remembered, so
+the question is never put twice. Once granted, a system notification appears when a campaign
+ends *and this tab is in the background* — never while you are looking at the page, which
+already showed the notice.
+
+The standing switch is on **Admin → This browser**, which is also the way back after either
+answer. It is a preference of the *browser*, not of the service: several people share one
+instance behind one token, and each of them answers for their own browser. If the browser has
+blocked notifications for the site the switch says so and stays off, since a permission denial
+is sticky and cannot be re-prompted from the page — only that browser's site settings can undo
+it.
 
 This is separate from the push notifications a campaign sends to a phone, which come from the
 service rather than the browser and arrive whether or not anything is open; see
