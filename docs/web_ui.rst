@@ -260,7 +260,8 @@ suspends or a tunnel is torn down, the socket raises no error, reports ``OPEN`` 
 delivers nothing more — indistinguishable from a campaign that simply has not changed. So
 the service heartbeats every quiet second with a *visible* event (:doc:`http_api`), and the
 UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
-connection whenever the tab becomes visible, the network returns, or the check next runs.
+connection whenever the tab becomes visible, the page it feeds is switched to, the network
+returns, or the check next runs.
 The **Refresh** button beside the campaign list's heading does the same thing on demand — it
 is not the only way to get there, which is why it is an icon rather than a labelled
 button: it sits next to the heading it acts on, the way the Explorer's and the run view's do.

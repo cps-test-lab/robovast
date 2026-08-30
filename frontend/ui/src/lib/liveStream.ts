@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useActiveView } from '@/lib/activeView'
 
 // A self-healing EventSource.
 //
@@ -21,10 +22,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //    keepalives usually are, because comments are invisible to the client — they keep proxies
 //    happy and tell the browser nothing.
 //
-// So every frame stamps a clock, and returning to the tab checks that clock. A stream that
-// is closed, or that has gone silent for longer than the server could plausibly be quiet,
-// is thrown away and replaced. The Refresh button does the same thing on demand; it just is
-// not the only way to get there.
+// So every frame stamps a clock, and coming back to the stream checks that clock — coming back
+// to the tab, and equally switching to the page the stream feeds, which is the same event one
+// level in (see lib/activeView.tsx). A stream that is closed, or that has gone silent for longer
+// than the server could plausibly be quiet, is thrown away and replaced. The Refresh button does
+// the same thing on demand; it just is not the only way to get there.
 
 /** Stream health, as far as the client can tell. */
 export type LiveState = 'connecting' | 'open' | 'reconnecting' | 'closed'
@@ -132,16 +134,17 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
     }
   }, [url, resetKey, epoch])
 
+  const check = useCallback(() => {
+    if (finished.current || document.visibilityState !== 'visible') return
+    const es = esRef.current
+    const silent = Date.now() - lastFrame.current > STALE_MS
+    if (!es || es.readyState === EventSource.CLOSED || silent) reconnect()
+  }, [reconnect])
+
   // Coming back to the tab is the moment staleness becomes visible, so it is the moment to
   // check — plus a timer, so a stream that dies while being watched heals too, and `online`,
   // for the laptop that just found a network again.
   useEffect(() => {
-    const check = () => {
-      if (finished.current || document.visibilityState !== 'visible') return
-      const es = esRef.current
-      const silent = Date.now() - lastFrame.current > STALE_MS
-      if (!es || es.readyState === EventSource.CLOSED || silent) reconnect()
-    }
     document.addEventListener('visibilitychange', check)
     window.addEventListener('online', check)
     const timer = window.setInterval(check, STALE_MS)
@@ -150,7 +153,20 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
       window.removeEventListener('online', check)
       window.clearInterval(timer)
     }
-  }, [reconnect])
+  }, [check])
+
+  // And switching to the page a stream feeds, which is the same moment for a view that is kept
+  // mounted while hidden: the tab never changed visibility, so none of the listeners above fire,
+  // yet a stream that zombied meanwhile is exactly as stale — and the campaign list is the first
+  // thing read on arriving at the monitor. Without this it goes on saying nothing, unlabelled,
+  // until the watchdog's next tick; `reconnecting…` only appears once the check has run.
+  //
+  // Cheap by construction: the servers heartbeat every second and the socket keeps delivering
+  // while the page is hidden, so a healthy stream has a fresh clock here and nothing is rebuilt.
+  const active = useActiveView()
+  useEffect(() => {
+    if (active) check()
+  }, [active, check])
 
   return { state, reconnect, finish, generation: epoch }
 }
