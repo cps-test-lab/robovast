@@ -4,9 +4,11 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
+import Switch from '@mui/material/Switch'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
@@ -371,6 +373,10 @@ export function AdminPage() {
         </Stack>
       </Paper>
 
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <BrowserPreferences />
+      </Paper>
+
       <CollapsibleBox
         open={configOpen}
         onToggle={() => setConfigOpen((v) => !v)}
@@ -414,6 +420,76 @@ export function AdminPage() {
           <LogPanel resetKey="service" streamUrl={robovast.serviceLogStreamUrl()} />
         </Box>
       </CollapsibleBox>
+    </Stack>
+  )
+}
+
+
+/**
+ * Preferences that belong to the browser rather than to the service.
+ *
+ * Its own paper, deliberately not a row in ServiceConfigPanel. That panel reports one shared
+ * environment read back out of the service, and this instance is used by several people behind
+ * one token -- so a browser-local switch sitting among those rows would read as something one
+ * person can change for everybody. The heading is what keeps the two apart, and the caption
+ * says the same thing in words for anyone who reads the switch before the heading.
+ *
+ * This is also the only way back once the one-time ask has been answered (NotificationAsk),
+ * which is why it exists at all rather than the ask standing alone.
+ */
+function BrowserPreferences() {
+  const [on, setOn] = useState(browserNotify.optedIn)
+  const [denied, setDenied] = useState(() => browserNotify.permission() === 'denied')
+  const supported = browserNotify.supported()
+
+  const toggle = async () => {
+    if (on) {
+      browserNotify.setOptedIn(false)
+      setOn(false)
+      return
+    }
+    // A click, so the gesture requirement is met: Firefox and Safari show no prompt at all for
+    // a request that no user action stands behind.
+    const result = await browserNotify.requestPermission()
+    if (result !== 'granted') {
+      // A denial is sticky and cannot be re-prompted, so say so rather than leaving a switch
+      // that silently refuses to stay on.
+      setDenied(result === 'denied')
+      browserNotify.setOptedIn(false)
+      return
+    }
+    browserNotify.setOptedIn(true)
+    setOn(true)
+    setDenied(false)
+  }
+
+  return (
+    <Stack spacing={1}>
+      <Typography variant="subtitle2">This browser</Typography>
+      {supported ? (
+        <>
+          <FormControlLabel
+            control={<Switch size="small" checked={on} disabled={denied} onChange={() => void toggle()} />}
+            label={
+              <Typography variant="body2">Notify me when a campaign finishes</Typography>
+            }
+            sx={{ ml: 0 }}
+          />
+          <Typography variant="caption" color="text.secondary">
+            {denied
+              ? 'This browser has blocked notifications for this site; re-allow them in its '
+                + 'site settings.'
+              : 'Shown only while this tab is in the background. Applies to this browser only — '
+                + 'everyone signed in to this service keeps their own setting, and this is not '
+                + 'a service setting.'}
+          </Typography>
+        </>
+      ) : (
+        <Typography variant="caption" color="text.secondary">
+          This browser has no notification support, so a campaign ending can only be announced
+          inside the page.
+        </Typography>
+      )}
     </Stack>
   )
 }
