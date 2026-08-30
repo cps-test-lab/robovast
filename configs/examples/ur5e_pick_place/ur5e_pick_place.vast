@@ -146,10 +146,10 @@ execution:
   # Generous, and it has to be: a trial is ~30 s of arm motion but move_group takes the better
   # part of a minute to come up (planners, kinematics plugin, the planning scene).
   timeout: 900
-  env:
-  - PYTHONUNBUFFERED: "1"
-  # No MUJOCO_GL, deliberately: which offscreen backend works is a property of the node the
-  # simulator lands on, and roqsim picks it at startup.
+  # No `env:` at all. PYTHONUNBUFFERED is already exported by the entrypoint of every container a
+  # campaign runs -- main and sidecar alike, whatever image it names -- so restating it here is dead
+  # config that reads like a requirement. And no MUJOCO_GL, deliberately: which offscreen backend
+  # works is a property of the node the simulator lands on, and roqsim picks it at startup.
 
 
 # The box's own trajectory, so a failure can be READ rather than guessed at: `out.csv` says the box
