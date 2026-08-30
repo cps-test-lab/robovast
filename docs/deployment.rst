@@ -63,9 +63,9 @@ The three modes
        vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
 
     It can run **from a venv or from its container image**, and that choice — not the lane
-    it drives — decides whether it can roll itself onto newer bytes. A venv service is
-    "however it was installed and started", so ``vast service upgrade`` refuses, naming
-    that. A containerised one has an image, so it can:
+    it drives — decides whether ``vast service restart`` can do anything. A venv service is
+    "however it was installed and started", with nothing watching for its exit, so the verb
+    refuses and names that. A containerised one has a restart policy, so it can:
 
     .. code-block:: bash
 
@@ -86,6 +86,17 @@ The three modes
     That is the **same image** the cluster Deployment runs, so a local campaign executes
     pinned, digest-identified bytes exactly as a cluster one does — the one image in the
     pipeline whose provenance a local run could not previously state.
+
+    **A restart here is not an upgrade.** On the cluster, ``vast service restart`` stamps
+    the Deployment and a floating tag moves onto new bytes. Docker's restart policy does
+    not: it re-runs the container it was given, and a container is pinned to the image *id*
+    it was created from, so the service comes back on exactly the bytes it left. The verb is
+    therefore the local answer to "the service is wedged" and reachable without a shell on
+    the host. Running a newer build is a recreate, by whoever runs the compose file:
+
+    .. code-block:: bash
+
+       docker compose -f container/service/docker-compose.yml up -d --pull always
 
     .. _deployment-sibling-paths:
 
@@ -115,7 +126,8 @@ The three modes
 
 Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2 for
 scaled, parallel execution. Within mode 1, the container form when you want the provenance
-and the self-restart, the venv form for an editable checkout you are changing between runs.
+and the remote restart, the venv form for an editable checkout you are changing between
+runs.
 
 There is no serviceless mode -- no third, in-process one where the CLI calls the interface
 directly, with no service, no workspace and no ``CampaignOrigin``. A campaign runs a

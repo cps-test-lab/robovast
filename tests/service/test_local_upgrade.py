@@ -1,14 +1,20 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Whether a local service can roll itself depends on how it was STARTED, not on its lane.
+"""Whether a local service can restart itself depends on how it was STARTED, not on its lane.
 
-``vast service upgrade`` used to refuse on the local lane unconditionally, with "this
+``vast service restart`` used to refuse on the local lane unconditionally, with "this
 service is not a Kubernetes Deployment". That was right while the only way to run locally
-was a venv, and it stops being right the moment the service has an image: a container can be
-replaced by a newer one, and the lane it drives has nothing to do with it.
+was a venv, and it stops being right the moment the service runs in a container: it can exit
+into a restart policy, and the lane it drives has nothing to do with it.
 
 So the refusal narrows from a statement about the lane to a statement about the deployment,
 which is the honest version and the one an operator can act on.
+
+What comes back is the *same image*: Docker re-runs the container it was given, and a
+container is pinned to the image id it was created from, so no restart re-resolves a tag.
+That is why the message asserted below says so -- the cluster's restart is a roll onto new
+bytes and this one is not, and a caller told otherwise would wait for a version change that
+cannot arrive.
 """
 
 import threading
@@ -69,6 +75,10 @@ def test_the_roll_defers_its_exit_so_the_reply_gets_out(transport, monkeypatch):
 
     assert result.ok is True
     assert "restarting" in result.message
+    # The difference from the cluster's roll, in the sentence an operator reads: a restart
+    # policy re-runs the container it was given, so this is not how newer bytes arrive.
+    assert "SAME image" in result.message
+    assert "--pull always" in result.message
     assert torn_down.is_set(), "the teardown must be scheduled, not skipped"
 
 

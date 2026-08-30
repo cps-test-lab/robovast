@@ -14,7 +14,8 @@
 #
 # The point is parity: this is the same image the in-cluster Deployment runs, so a local
 # campaign executes pinned, digest-identified bytes exactly as a cluster one does, and
-# `vast service restart` works on both.
+# `vast service restart` works on both -- as a restart here and as a roll there, which is
+# the one place the two deployments genuinely differ (see the restart policy below).
 #
 # EVERY bind path here is identity-mapped -- mounted at the same absolute path inside the
 # container as on the host. That is not tidiness. The service is a *sibling* of the
@@ -30,9 +31,12 @@
 services:
   robovast-service:
     image: ${ROBOVAST_IMAGE:-ghcr.io/cps-test-lab/robovast-controller:latest}
-    # Exiting is how `vast service restart` rolls onto a new image: the process ends and
-    # this policy brings it back on whatever the tag now resolves to. Without a restart
-    # policy the verb would report success and leave nothing running.
+    # Exiting is how `vast service restart` works: the process ends and this policy starts
+    # the container again. Without it the verb would report success and leave nothing
+    # running. It brings back the SAME image -- Docker re-runs the container it was given,
+    # and a container is pinned to the image id it was created from, so no restart
+    # re-resolves this tag. Newer bytes are a recreate, from the host:
+    #   docker compose -f container/service/docker-compose.yml up -d --pull always
     restart: unless-stopped
     command:
       - vast

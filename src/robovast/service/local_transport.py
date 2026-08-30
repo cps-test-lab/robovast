@@ -1531,19 +1531,27 @@ class LocalTransport(RobovastInterface):
         lane-neutral and belongs here, and the lane below fills in what only it knows.
 
         The answer depends on *how this service was started*, not on which lane it drives.
-        A service in a container has an image and can be rolled onto a newer one; a service
-        in a venv is "however it was installed and started" and has nothing to roll. So the
-        refusal, when there is one, names the way this deployment actually is updated rather
-        than reporting a capability it does not have.
+        A service in a container can be restarted -- it exits and its restart policy brings
+        it back; a service in a venv is "however it was installed and started" and there is
+        nothing watching for its exit. So the refusal, when there is one, names the way this
+        deployment actually is updated rather than reporting a capability it does not have.
+
+        **Restart, not upgrade, on this lane.** Docker's restart policy re-runs the
+        container it was given, which is pinned to the image *id* it was created from: it
+        never re-resolves the tag. So this reports what a local container can do -- come
+        back -- and :meth:`upgrade_service` says plainly that it comes back on the same
+        bytes. Moving onto newer ones is a recreate (``docker compose up -d --pull
+        always``) and belongs to whoever runs the compose file, not to the process being
+        replaced.
         """
         from robovast.service.sibling_paths import in_sibling_container
 
         listed = self.list_campaigns(ListCampaignsRequest(limit=100, offset=0)).campaigns
         active = [c for c in listed if not is_terminal(c.phase)]
         if in_sibling_container():
-            # It has an image, and the thing that started it is watching for its exit --
-            # which is what makes "stop" a restart. Whether the *newer* image is already
-            # pulled is the caller's business, exactly as on the cluster.
+            # The thing that started it is watching for its exit, which is what makes
+            # "stop" a restart. The digest fields stay empty on purpose: they describe a
+            # roll between two images, and there is no second image here.
             return UpgradeInfo(supported=True, active_campaigns=active)
         return UpgradeInfo(
             supported=False,
@@ -1553,12 +1561,14 @@ class LocalTransport(RobovastInterface):
             active_campaigns=active)
 
     def upgrade_service(self, force: bool = False) -> ActionResult:
-        """Roll a containerised service onto its image again, or refuse for a venv one.
+        """Restart a containerised service, or refuse for a venv one.
 
-        The roll is an *exit*: a container started with a restart policy comes back on the
-        image its tag now resolves to, which is the same mechanism the cluster's restart
-        annotation uses one level up. Nothing here pulls -- a service cannot fetch the bytes
-        it is about to be replaced by and still be running to do it.
+        The restart is an *exit*: the process ends and the restart policy that is watching
+        for it starts the container again. On the **same image** -- Docker re-runs the
+        container it was given, and a container is pinned to the image id it was created
+        from, so no restart re-resolves the tag. This is therefore the local answer to "the
+        service is wedged, bring it back", not to "run the newer build"; the second is a
+        recreate on the host, which is a thing only the operator of the compose file can do.
 
         Two refusals, two kinds. ``ValueError`` -> 400 for the venv one: a request that does
         not apply to this deployment at all. ``RuntimeError`` -> 409 for the live-campaign
@@ -1577,9 +1587,10 @@ class LocalTransport(RobovastInterface):
         self._exit_after_reply()
         return ActionResult(
             ok=True,
-            message="restarting: the service will exit and its supervisor brings it back "
-                    "on the image its tag now resolves to. Watch upgrade_info() for the "
-                    "handover.")
+            message="restarting: the service will exit and its restart policy brings the "
+                    "container back, on the SAME image -- a restart never re-resolves the "
+                    "tag. To run newer bytes, recreate it on the host: "
+                    "'docker compose up -d --pull always'.")
 
     def _exit_after_reply(self) -> None:
         """Tear the service down shortly, so this call's HTTP response gets out first.
