@@ -30,10 +30,14 @@ class _Service(ClusterService):
     image store.
     """
 
-    def __init__(self, campaigns=()):  # pylint: disable=super-init-not-called
+    def __init__(self, campaigns=(), results_dir=""):  # pylint: disable=super-init-not-called
         self.namespace, self.kube_context = "default", None
         self._campaigns = list(campaigns)
         self.published = "repo/robovast-controller@sha256:aaa"
+        # Where the roll's "could the replacement pick this up?" check looks for a
+        # campaign's records. Empty by default: a campaign with nothing on disk is one
+        # nothing could re-launch, which is the case the refusal exists for.
+        self._results_dir = results_dir or "/nonexistent"
 
     def list_campaigns(self, request=None):
         del request
@@ -70,16 +74,36 @@ def _live(campaign_id="nav-2026-01-01-000000", phase="running"):
     return CampaignSummary(campaign_id=campaign_id, phase=phase)
 
 
-def test_it_refuses_to_roll_while_a_campaign_is_live_and_names_it(svc):
-    s = svc(campaigns=[_live()])
+def test_it_refuses_for_a_campaign_the_replacement_could_not_pick_up(svc):
+    """Live is no longer reason enough — a campaign the successor adopts survives a roll.
+
+    What is left to protect is the campaigns it could *not* adopt, and the refusal names
+    each one's reason rather than its phase, because the reason is what an operator would
+    have to change.
+    """
+    s = svc(campaigns=[_live()])   # no records on disk, so nothing could re-launch it
     with pytest.raises(RuntimeError) as excinfo:
         s.upgrade_service()
-    assert "nav-2026-01-01-000000" in str(excinfo.value), (
+    message = str(excinfo.value)
+    assert "nav-2026-01-01-000000" in message, (
         "the refusal has to name what it protected, or it reads as an arbitrary no")
+    assert "launch.yaml" in message, "and why, or the operator cannot act on it"
     assert not s.patched, "nothing may be patched when the roll was refused"
 
 
-def test_force_rolls_over_a_live_campaign(svc):
+def test_a_campaign_that_survives_the_roll_is_not_a_reason_to_refuse(svc, monkeypatch):
+    """The point of the whole change: rolling mid-campaign stops being a data-loss event."""
+    from robovast.execution.cluster_execution import campaign_resume
+
+    monkeypatch.setattr(campaign_resume, "plan_for",
+                        lambda service, cid, root: (object(), object(), None))
+    s = svc(campaigns=[_live()])
+
+    assert s.upgrade_service().ok
+    assert s.patched == [("default", None)]
+
+
+def test_force_rolls_over_a_campaign_that_would_be_lost(svc):
     s = svc(campaigns=[_live()])
     assert s.upgrade_service(force=True).ok
     assert s.patched == [("default", None)]

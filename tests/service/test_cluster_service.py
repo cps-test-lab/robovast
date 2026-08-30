@@ -1639,42 +1639,100 @@ def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
     assert called["n"] == 0
 
 
-def test_shutdown_tears_down_every_running_campaign(cs, monkeypatch):
-    """Ctrl+C on a cluster ``vast serve`` deletes each running campaign's Jobs.
+def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
+    """Exiting a cluster service does NOT tear down its campaigns' Jobs.
 
-    Without this, a bare service exit would orphan the in-flight scenario Jobs, which
-    would keep consuming cluster resources.
+    A cluster campaign's compute outlives the process and the next one adopts it, so a
+    pod replacement must not be a data-loss event. The stop is not merely wasteful: it
+    persists a terminal outcome, after which no successor would pick the campaign up.
     """
     calls = []
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
         lambda **kw: calls.append(kw))
-    running = [types.SimpleNamespace(campaign_id="camp-a"),
-               types.SimpleNamespace(campaign_id="camp-b")]
+    stopped = []
+    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    entry = types.SimpleNamespace(campaign_id="camp-a", state=state, thread=None)
+    cs._campaigns["camp-a"] = entry
+    monkeypatch.setattr(type(cs), "_is_done", lambda self, e: False)
 
-    cs._terminate_running_campaigns(running)
+    cs.shutdown()
 
-    assert [c["campaign"] for c in calls] == ["camp-a", "camp-b"]
-    assert all(c["namespace"] == "ns1" for c in calls)
+    assert calls == []      # no teardown
+    assert stopped == []    # and no cooperative stop, which would end the campaign
 
 
-def test_shutdown_teardown_is_best_effort(cs, monkeypatch):
-    """One campaign's teardown failure never blocks the others (or the process exit)."""
-    seen = []
+def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
+    """The local lane does not adopt, so exiting still kills its scenario container.
 
-    def boom(**kw):
-        seen.append(kw["campaign"])
-        if kw["campaign"] == "camp-a":
-            raise RuntimeError("kube api down")
+    The counterpart of the test above: nothing comes back for a local campaign's
+    containers, so leaving them would orphan them.
+    """
+    from robovast.service.local_transport import LocalTransport
 
+    impl = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
+    assert impl._adopts_on_restart() is False
+    killed = []
+    monkeypatch.setattr(type(impl), "_kill_scenario_container",
+                        lambda self: killed.append(True))
+    stopped = []
+    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    impl._campaigns["camp-a"] = types.SimpleNamespace(
+        campaign_id="camp-a", state=state, thread=None)
+    monkeypatch.setattr(type(impl), "_is_done", lambda self, e: False)
+
+    impl.shutdown()
+
+    assert killed == [True]
+    assert stopped == [True]
+
+
+def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
+    """Not adopting on exit does not weaken ``stop``: that still deletes the Jobs.
+
+    Guards the seam the change above rests on -- exiting is not how a campaign is
+    stopped, and the way that *is* has to keep working.
+    """
+    calls = []
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
-        boom)
-    running = [types.SimpleNamespace(campaign_id="camp-a"),
-               types.SimpleNamespace(campaign_id="camp-b")]
+        lambda **kw: calls.append(kw))
 
-    cs._terminate_running_campaigns(running)  # must not raise
-    assert seen == ["camp-a", "camp-b"]  # continued past the failure
+    cs._teardown_campaign_jobs("camp-a")
+
+    assert [c["campaign"] for c in calls] == ["camp-a"]
+    assert calls[0]["namespace"] == "ns1"
+
+
+# -- the launch record reaches the store before anything can fail -----------
+
+def test_recording_the_launch_publishes_it(cs, tmp_path, monkeypatch):
+    """Written and published in one call, at the top of the driver.
+
+    This lane's driver disk is scratch, so a record left on it is missing from every
+    campaign that did not finish — which is the set someone comes looking at, and the set
+    a restart has to re-launch from.
+    """
+    published = []
+    monkeypatch.setattr(type(cs), "_publish_execution",
+                        lambda self, cid, root: published.append((cid, str(root))))
+
+    cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
+
+    assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
+    assert published == [("camp-a", str(tmp_path / "camp-a"))]
+
+
+def test_an_unpublishable_record_does_not_fail_the_campaign(cs, tmp_path, monkeypatch):
+    """The campaign's own uploads follow within seconds and report a dead store loudly."""
+    def boom(self, cid, root):
+        raise RuntimeError("store unreachable")
+
+    monkeypatch.setattr(type(cs), "_publish_execution", boom)
+
+    cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
+
+    assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
 
 
 # -- driver S3 endpoint (off-cluster host reachability) ---------------------

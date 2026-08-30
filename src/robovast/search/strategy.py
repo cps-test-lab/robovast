@@ -88,6 +88,47 @@ class SearchStrategy(ABC):
     def report(self) -> SearchReport:
         """Return the current deliverable (ranked best, archive, Pareto front)."""
 
+    #: Whether :meth:`resume` reproduces this strategy exactly. ``True`` because the default
+    #: implementation below is correct for any strategy that is a function of its seed and
+    #: the evaluations it was told, which is every strategy shipped here. A strategy that is
+    #: nondeterministic for a reason a seed cannot fix -- it reads the wall clock, or state
+    #: outside this process -- sets it ``False``, and its campaigns are then not resumed
+    #: rather than resumed into a subtly different search.
+    RESUMABLE: bool = True
+
+    def resume(self, batches) -> None:
+        """Re-drive this strategy through the ask/tell sequence a past run recorded.
+
+        *batches* is the campaign's own record, in execution order (see
+        :func:`robovast.search.history.recorded_batches`). Nothing about a strategy's
+        internal state is serialized anywhere; this replays its **public interface**, which
+        is what makes the default correct for every strategy at once rather than a
+        durability contract each one has to implement.
+
+        The proposals are discarded. They are asked for anyway because ``ask`` is what
+        advances a strategy's sequence -- each of the strategies here holds a seeded RNG or
+        a sequence index, and one told the evaluations without being asked for the
+        proposals would resume with its stream rewound and re-draw points it had already
+        spent.
+
+        Batch by batch, in the original order, rather than one bulk ``ask`` and one bulk
+        ``tell``, for the same reason turned around: a strategy may consult what it has been
+        told *while* proposing (``BoundaryRefinement`` does), so only the original
+        interleaving reproduces the original draws.
+
+        ``asked`` is the number **proposed**, which is not always the number told back: a
+        draw the variation pipeline could not realize, or one whose every run was lost,
+        costs a proposal and produces no evaluation. :meth:`tell` already copes with a
+        short generation, and this relies on exactly that contract rather than adding one.
+
+        A resumed search reproduces the original only if the strategy is seeded --
+        ``search.seed``. Without it a fresh process re-seeds from entropy, and the replay
+        rebuilds a *different* search; the caller checks that before getting here.
+        """
+        for batch in batches:
+            self.ask(batch.asked)
+            self.tell(batch.evaluations)
+
 
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
     """Instantiate the strategy plugin named by ``cfg.strategy``.
