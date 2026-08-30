@@ -213,6 +213,11 @@ class CampaignController:
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
             config_dir="_config", description=self.description,
             created_by=self.created_by, origin=self.origin)
+        # Before a single job exists. The row just written is the only place the
+        # campaign's description, who launched it and where its configuration came from
+        # are recorded, and on a lane whose driver disk is scratch a record published at
+        # the end is missing from every campaign that did not reach one.
+        self.backend.publish_records(self.campaign_root)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id,
                               progress_deadline_s=self._progress_deadline())
@@ -524,6 +529,12 @@ class CampaignController:
                                    invalid=invalid_runs_count)
             self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
+        # The same per-batch checkpoint the search loop takes. Redundant with
+        # ``finalize_campaign`` when the campaign goes on to finish -- and not when it does
+        # not, which is the case this exists for: the unit and run rows just written are the
+        # campaign's tally, and losing them to a crash in the finish tail would leave a
+        # campaign whose results are all in the store reading as if nothing had run.
+        self.backend.publish_records(self.campaign_root)
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
         return {"mode": "batch", "configs": len(configs), "campaign_root": self.campaign_root}
@@ -557,6 +568,11 @@ class CampaignController:
         # not lose the counts the stop record and the progress line are built from.
         self._evaluations_done = 0
         self._runs_done = 0
+        # Zero for a campaign starting now; for one being re-entered after a service
+        # restart, everything its earlier life recorded. `_search_loop` already begins at
+        # `self._batches_done` -- it was written that way so an abort mid-loop still counted
+        # the batches behind it -- so seeding these IS the resume.
+        start -= self._rehydrate_search(campaign_id)
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -586,6 +602,58 @@ class CampaignController:
                 elapsed_s=time.monotonic() - start, **self._abort_outcome(exc))
             raise
         return self._finish_search(campaign_id, result, self._batches_done, start)
+
+    def _rehydrate_search(self, campaign_id: int) -> float:
+        """Re-drive the strategy and the counters from what this campaign already recorded.
+
+        Returns how long the campaign has already been alive, in seconds, which the caller
+        subtracts from its ``time.monotonic()`` origin. Wall-clock age rather than time
+        actually spent computing, because that is what a ``time`` budget caps: a search that
+        got a fresh clock on every restart would have no wall-clock bound at all.
+
+        A no-op for a campaign starting now, whose store has no batches -- so there is no
+        resume branch here, only a loop over a record that is usually empty.
+
+        The strategy is re-driven through :meth:`~robovast.search.strategy.SearchStrategy.resume`
+        rather than restored from a serialized state, because nothing serializes one; see
+        that method for why the replay is by batch and asks before it tells.
+        """
+        from robovast.search.history import recorded_batches
+
+        batches = recorded_batches(self.store, campaign_id)
+        if not batches:
+            return 0.0
+        self.strategy.resume(batches)
+        self._batches_done = len(batches)
+        for batch in batches:
+            self._evaluations_done += len(batch.evaluations)
+            self._history.extend(batch.evaluations)
+            # What the batch COST, by the same measure the live loop uses: executions
+            # attempted, counted from what was asked for rather than from what produced a
+            # sample. A draw that composed to nothing still occupied the plan.
+            self._runs_done += sum(
+                (ev.params.n_reps or self.runs) for ev in batch.evaluations)
+            self._runs_done += (batch.asked - len(batch.evaluations)) * self.runs
+        logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
+                    "%d run(s) already spent.",
+                    self._batches_done, self._evaluations_done, self._runs_done)
+        return max(0.0, time.time() - (self._campaign_started_at(campaign_id) or time.time()))
+
+    def _campaign_started_at(self, campaign_id: int):
+        """The campaign row's ``created_at``, or ``None`` when it cannot be read.
+
+        ``None`` means the elapsed budget restarts from zero, which is the wrong answer but
+        the only honest one available -- and it is reported by the caller's own log line
+        rather than silently assumed.
+        """
+        try:
+            row = self.store._conn.execute(  # noqa: SLF001 - no narrower reader exists
+                "SELECT created_at FROM campaign WHERE id = ?", (campaign_id,)).fetchone()
+            return row[0] if row else None
+        except Exception as e:  # noqa: BLE001 - a clock is not worth ending a campaign
+            logger.warning("Could not read the start time of campaign %s: %s",
+                           self.campaign_id, e)
+            return None
 
     def _abort_outcome(self, exc) -> dict:
         """``stop_kind``/``stop_reason`` for a search that ended by raising.
@@ -670,6 +738,11 @@ class CampaignController:
                 self.state.update(batches_done=batch_idx, best_objective=best_objective,
                                   budget=[self._budget_item(p) for p in progress])
             self.notifier.batch_finished(batch_idx - 1, len(evaluations))
+            # The search's checkpoint. Everything the loop would need to pick up here --
+            # which batches ran and what each parameter set scored -- is in the rows just
+            # written, so publishing them per batch is what makes a search resumable at a
+            # batch boundary rather than only from the start.
+            self.backend.publish_records(self.campaign_root)
             result = stop.should_stop(snap)
             if not result and self.state is not None and self.state.stop_requested:
                 result = StopResult(kind="external",

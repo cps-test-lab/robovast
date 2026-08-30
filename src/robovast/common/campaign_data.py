@@ -291,8 +291,16 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     it. Infrastructure sidecars are excluded for free: ``s3-init`` appears in
     ``image_revisions`` but never in ``images``.
 
+    **The launch record wins when it has one.** ``launch.yaml``'s ``images`` are the refs the
+    launch itself resolved, written before the first job existed, and they are concrete by
+    construction -- so they answer this question earlier and better than ``execution.yaml``,
+    which the campaign only records once a batch has run. That earlier answer is what makes a
+    campaign that died *before* its first batch re-runnable at all, on the lane where that is
+    the usual shape of a failure.
+
     Args:
-        campaign_dir: the campaign directory (its ``_execution/execution.yaml`` is read).
+        campaign_dir: the campaign directory (``_execution/launch.yaml`` first, then
+            ``_execution/execution.yaml``).
 
     Returns:
         A pin per recorded container. Empty when the campaign recorded no containers at all,
@@ -307,6 +315,13 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     # Inline, like every other import in this module: it stays dependency-light so it loads
     # cleanly in the pod, the driver and the service alike.
     from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+
+    launched = (read_launch_record(Path(campaign_dir)) or {}).get("images") or {}
+    if launched:
+        # Already concrete and already per-container: the launch resolved these itself. No
+        # pullability screen either -- these are what the campaign's own jobs were created
+        # with, so "can a new run start from them?" was answered when they ran.
+        return {str(k): str(v) for k, v in launched.items()}
 
     try:
         meta = read_execution_metadata(Path(campaign_dir))
@@ -884,11 +899,14 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: That is not the same as the fact being unrecorded. Where the configuration *came from* is
 #: kept on the campaign row as ``origin_*`` (see ``common/store.py``) -- a record of the past,
 #: which nothing reads back to run anything. This file is the replay; that is the provenance.
+#:
+#: The written record carries one field beyond these: the resolved ``images``. See
+#: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
                   "upload_to_share", "show_gui")
 
 
-def write_launch_record(campaign_root: Path, request) -> None:
+def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:
     """Persist how the campaign was **asked for** to ``_execution/launch.yaml``.
 
     ``request`` is a :class:`robovast.service.interface.CreateCampaignRequest`. ``runs`` is
@@ -897,12 +915,24 @@ def write_launch_record(campaign_root: Path, request) -> None:
     ("3 because the ``.vast`` says 3" vs "3 because someone overrode a ``.vast`` saying 25").
     Neither number answers that alone.
 
+    ``images`` is ``{container name: image ref}`` as the launch **resolved** them, and is the
+    one thing here that is not a request field. It widens this record from "what was asked
+    for" to "…and what that resolved to", which is deliberate: a re-launch that re-resolves
+    would pick up a base image that moved since, and swap the image under half the runs of a
+    campaign already in flight. A symbolic ``build:<tag>`` is not an answer to "which bytes
+    ran"; the concrete ref is. Omitted (``None``) at the first write, because the build has
+    not happened yet — the launch path writes again once it has.
+
     Best-effort by the same reasoning as :func:`write_execution_outcome`'s caller: a campaign
     must not fail because a record could not be written.
     """
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
     record = {field: getattr(request, field) for field in _LAUNCH_FIELDS}
+    # Only when known: a null would be indistinguishable from "this campaign resolved no
+    # images", which is a different (and, for a re-launch, unusable) statement.
+    if images:
+        record["images"] = dict(images)
     with open(exec_dir / _LAUNCH_FILENAME, "w", encoding="utf-8") as f:
         yaml.dump(record, f, default_flow_style=False, sort_keys=False)
 

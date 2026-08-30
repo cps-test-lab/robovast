@@ -103,11 +103,15 @@ campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly. The deletions are label-scoped to the one campaign, so other
-queued/running campaigns are untouched. **Service shutdown** (Ctrl+C on
-``vast serve``, e.g. an off-cluster ``--backend cluster -x <context>`` driver) runs
-the same teardown for *every* running campaign via the
-``_terminate_running_campaigns`` hook — the cluster analogue of the local backend's
-single-container kill — so a bare exit never orphans in-flight Jobs on the cluster.
+queued/running campaigns are untouched. **Service shutdown** is deliberately *not*
+the same thing. Whether exiting tears a campaign down is a property of the lane, asked
+as ``_adopts_on_restart``: the local backend answers no and kills its scenario
+container, because nothing comes back for it; the cluster lane answers yes and leaves
+its Jobs running, because they outlive any one service process and the next one adopts
+them (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
+is not, and it never was a good way to say it — the cooperative stop persists a
+terminal ``outcome.json``, and a campaign that has recorded an ending is one no
+successor will pick up again.
 
 A stopped campaign is reported as a **clean terminal**, not a failure. Ctrl+C also
 tears down the storage port-forward (it shares the process group), so the driver's
