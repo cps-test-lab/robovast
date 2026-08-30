@@ -284,16 +284,25 @@ class ClusterService(LocalTransport):
         The live-campaign refusal is a ``RuntimeError`` (409, a conflict the caller can
         resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
         "not now", the other is "not here".
+
+        It now refuses only for the campaigns that would actually be lost. A live campaign
+        used to be reason enough, because the pod being replaced was the only thing driving
+        it; a replacement now picks it back up (see :meth:`resume_interrupted_campaigns`).
+        What is left is the campaigns that cannot be picked back up, and the refusal names
+        each one's reason rather than its phase -- because the reason is what the operator
+        would have to change.
         """
         info = self.upgrade_info()
         if not info.supported:
             raise ValueError(info.unsupported_reason)
-        if info.active_campaigns and not force:
-            live = ", ".join(f"{c.campaign_id} ({c.phase})" for c in info.active_campaigns)
+        blocked = self._campaigns_a_restart_would_lose(info.active_campaigns)
+        if blocked and not force:
+            named = "; ".join(f"{cid}: {why}" for cid, why in blocked.items())
             raise RuntimeError(
-                f"refusing to roll while {len(info.active_campaigns)} campaign(s) are "
-                f"live: {live}. The controller driving them runs in the pod this replaces. "
-                f"Stop them, wait for them, or force the roll.")
+                f"refusing to roll while {len(blocked)} live campaign(s) could not be "
+                f"picked up again by the replacement — {named}. Stop them, wait for them, "
+                f"or force the roll. Every other live campaign survives the roll: its Jobs "
+                f"keep running and the new pod re-attaches to them.")
         from .service_deploy import patch_restart_annotation
         stamped = patch_restart_annotation(self.namespace, self.kube_context)
         return ActionResult(ok=True, message=(
@@ -2588,6 +2597,27 @@ class ClusterService(LocalTransport):
             logger.info("Reaped %d orphaned aux pod(s) from a previous service instance",
                         reaped)
         return reaped
+
+    def _campaigns_a_restart_would_lose(self, active) -> dict:
+        """``{campaign_id: why}`` for the live campaigns a replacement could not pick up.
+
+        Asked of :mod:`.campaign_resume` -- the same decision the successor will make -- so
+        the warning before a roll and the behaviour after it cannot drift apart. A campaign
+        this cannot answer for is treated as one that would be lost: the whole point of the
+        refusal is to be wrong in the safe direction.
+        """
+        from . import campaign_resume
+        blocked = {}
+        for summary in active:
+            cid = summary.campaign_id
+            try:
+                _, _, refusal = campaign_resume.plan_for(
+                    self, cid, Path(self._campaign_dir(cid)))
+            except Exception as e:  # noqa: BLE001 - "cannot tell" is not "will survive"
+                refusal = f"could not be checked ({e})"
+            if refusal is not None:
+                blocked[cid] = refusal
+        return blocked
 
     def resume_interrupted_campaigns(self) -> dict:
         """Pick up the campaigns a previous service process was driving.

@@ -2317,9 +2317,17 @@ class BatchJobRunner:
         # `_jobs_already_done`.
         done = self._jobs_already_done(jobs, campaign_root)
         if done:
+            # Through the campaign's own logger, so this lands in its controller.log and
+            # travels with the results: a campaign that lost part of a batch to a restart
+            # is not the same artifact as one that ran clean, and it has to be able to say
+            # so afterwards, not only while it is happening.
             logger.info("Batch %s: %d of %d job(s) already have every verdict; "
                         "adopting their results instead of re-running them.",
                         self._batch_tag, len(done), total_jobs)
+            if self._state is not None:
+                # And live, for whoever is watching the campaign right now.
+                self._state.update(stage=f"resumed — adopted {len(done)} of {total_jobs} "
+                                         f"job(s) finished before the restart")
         pending = [(job, name) for job, name in zip(jobs, job_names)
                    if job.index not in done]
 
