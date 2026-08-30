@@ -94,17 +94,16 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
 
 /** The run meter, short enough to sit in a campaign card's header row.
  *
- *  The same bar the open card draws full width -- same segments, same `done/total` -- shrunk to a
- *  fixed column and carrying its label inside the track instead of above it. It exists so a
- *  COLLAPSED campaign still says what its runs did without the row growing a second line: a page of
- *  finished campaigns is a page of these, one per line.
+ *  The same bar the open card draws full width -- same segments -- shrunk to a fixed column and
+ *  carrying its label inside the track instead of above it, so a COLLAPSED campaign says what its
+ *  runs did without the row growing a second line.
  *
  *  Kept in this file rather than beside the card that uses it, deliberately: it is the same meter
  *  as the one above and a change to either must be made looking at the other.
  *
- *  Everything that does not survive the shrink goes on the hover -- the failure counts, the wall
- *  clock, the pass rate. A bar 140px wide has room for one pair of numbers, and `done/total` is the
- *  pair that answers "did this finish".
+ *  The track carries the percent done; a percentage is constant width, where a count pair grows
+ *  with the campaign. The counts, the failure tallies, the wall clock and the pass rate are on the
+ *  hover: a bar 140px wide holds one short label, and the rest is asked of a single row.
  */
 export function MiniRunMeter({
   status,

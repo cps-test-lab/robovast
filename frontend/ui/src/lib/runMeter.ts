@@ -35,10 +35,18 @@ export function runMeterSegments(status: Status, counts?: JobCounts): MeterSegme
   ]
 }
 
-/** `done/total`, the one pair the meter is labelled with. Uses `finishedRuns` so the label, the
- *  painted fraction and the ETA cannot disagree — see the note there. */
+/** The share done, as a whole percent — the label the meter carries inside its track.
+ *
+ *  A percentage stays the same width as a campaign's run count grows; the counts themselves are on
+ *  the meter's hover (`MiniRunMeter`'s `done` fact).
+ *
+ *  Uses `finishedRuns` so the label, the painted fraction and the ETA cannot disagree — see the
+ *  note there. With no denominator there is no share to state, so the bar goes unlabelled rather
+ *  than claiming 0%. */
 export function runMeterText(status: Status, counts?: JobCounts): string {
-  return `${finishedRuns(status, counts)}/${status.runs.total}`
+  const total = status.runs.total
+  if (total <= 0) return ''
+  return `${Math.round((finishedRuns(status, counts) / total) * 100)}%`
 }
 
 /** A `RunProgress` from a campaign LISTING, for the moment before the live status arrives.

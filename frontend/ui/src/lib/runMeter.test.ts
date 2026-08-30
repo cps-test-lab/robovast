@@ -44,12 +44,20 @@ describe('runMeterSegments', () => {
 })
 
 describe('runMeterText', () => {
-  it('counts a run that delivered nothing as done, so the label reaches total', () => {
-    expect(runMeterText(status({ total: 40, completed: 27, no_result: 13 }))).toBe('40/40')
+  it('counts a run that delivered nothing as done, so the label reaches 100%', () => {
+    expect(runMeterText(status({ total: 40, completed: 27, no_result: 13 }))).toBe('100%')
   })
 
-  it('never prints more than the total while the two counters settle', () => {
-    expect(runMeterText(status({ total: 40, completed: 40 }), counts({ failed: 1 }))).toBe('40/40')
+  it('never prints more than 100% while the two counters settle', () => {
+    expect(runMeterText(status({ total: 40, completed: 40 }), counts({ failed: 1 }))).toBe('100%')
+  })
+
+  it('states the share done, rounded to a whole percent', () => {
+    expect(runMeterText(status({ total: 40, completed: 27 }), counts({ running: 3 }))).toBe('68%')
+  })
+
+  it('says nothing with no denominator rather than claiming 0%', () => {
+    expect(runMeterText(status({ total: 0 }))).toBe('')
   })
 })
 
@@ -65,6 +73,6 @@ describe('runsFromSummary', () => {
     // runs that happened. The live status carries the planned total and supersedes this.
     const runs = runsFromSummary(summary({ num_runs: 41, num_passed: 41 }))
     expect(runs.total).toBe(41)
-    expect(runMeterText({ runs } as Status)).toBe('41/41')
+    expect(runMeterText({ runs } as Status)).toBe('100%')
   })
 })
