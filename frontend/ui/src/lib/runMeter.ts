@@ -8,7 +8,7 @@
 // Markup stays in `components/`; this is the same split `lib/eta.ts` and `lib/detailsGeometry.ts`
 // already make, and the reason those have tests while the charts do not.
 
-import type { CampaignSummary, JobCounts, Status } from './robovastClient'
+import { isTerminalPhase, type CampaignSummary, type JobCounts, type Status } from './robovastClient'
 import type { MeterSegment } from '@/components/MeterBar'
 import { finishedRuns, noResultRuns } from './eta'
 
@@ -35,18 +35,23 @@ export function runMeterSegments(status: Status, counts?: JobCounts): MeterSegme
   ]
 }
 
-/** The share done, as a whole percent — the label the meter carries inside its track.
+/** The label the meter carries inside its track, in the tense the campaign is in.
  *
- *  A percentage stays the same width as a campaign's run count grows; the counts themselves are on
- *  the meter's hover (`MiniRunMeter`'s `done` fact).
+ *  While it runs, the share done, to one decimal: the interesting movement on a long campaign is
+ *  the tenth of a percent, and a whole-percent label sits still for minutes at a time.
+ *
+ *  Once it is over, that share is 100% for every campaign and says nothing. The count of runs that
+ *  SUCCEEDED takes its place — the question asked of a finished campaign — with the failures beside
+ *  it (see `runMeterFailed`, rendered in the error color).
  *
  *  Uses `finishedRuns` so the label, the painted fraction and the ETA cannot disagree — see the
  *  note there. With no denominator there is no share to state, so the bar goes unlabelled rather
  *  than claiming 0%. */
 export function runMeterText(status: Status, counts?: JobCounts): string {
-  const total = status.runs.total
-  if (total <= 0) return ''
-  return `${Math.round((finishedRuns(status, counts) / total) * 100)}%`
+  const { runs } = status
+  if (isTerminalPhase(status.phase)) return `${Math.max(0, runs.completed - runs.failed)}\u2713`
+  if (runs.total <= 0) return ''
+  return `${((finishedRuns(status, counts) / runs.total) * 100).toFixed(1)}%`
 }
 
 /** Runs the meter paints red: a failing verdict and a run that delivered nothing, together.

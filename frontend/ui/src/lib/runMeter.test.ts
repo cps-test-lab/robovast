@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { runMeterFailed, runMeterSegments, runMeterText, runsFromSummary } from './runMeter'
 import type { CampaignSummary, JobCounts, Status } from './robovastClient'
 
-const status = (runs: Partial<Status['runs']>): Status =>
+const status = (runs: Partial<Status['runs']>, phase?: string): Status =>
   ({
     runs: { completed: 0, total: 0, failed: 0, no_result: 0, killed: 0, invalid: 0, ...runs },
     budget: [],
+    phase,
   } as unknown as Status)
 
 const counts = (c: Partial<JobCounts>): JobCounts =>
@@ -44,20 +45,28 @@ describe('runMeterSegments', () => {
 })
 
 describe('runMeterText', () => {
-  it('counts a run that delivered nothing as done, so the label reaches 100%', () => {
-    expect(runMeterText(status({ total: 40, completed: 27, no_result: 13 }))).toBe('100%')
+  it('counts a run that delivered nothing as done, so the share reaches 100%', () => {
+    expect(runMeterText(status({ total: 40, completed: 27, no_result: 13 }))).toBe('100.0%')
   })
 
-  it('never prints more than 100% while the two counters settle', () => {
-    expect(runMeterText(status({ total: 40, completed: 40 }), counts({ failed: 1 }))).toBe('100%')
+  it('never states more than 100% while the two counters settle', () => {
+    expect(runMeterText(status({ total: 40, completed: 40 }), counts({ failed: 1 }))).toBe('100.0%')
   })
 
-  it('states the share done, rounded to a whole percent', () => {
-    expect(runMeterText(status({ total: 40, completed: 27 }), counts({ running: 3 }))).toBe('68%')
+  it('states the share done to a tenth, so a long campaign visibly moves', () => {
+    expect(runMeterText(status({ total: 400, completed: 41 }))).toBe('10.2%')
   })
 
   it('says nothing with no denominator rather than claiming 0%', () => {
     expect(runMeterText(status({ total: 0 }))).toBe('')
+  })
+
+  it('drops the share once the campaign is over and states the successes', () => {
+    expect(runMeterText(status({ total: 40, completed: 38, failed: 3 }, 'finished'))).toBe('35\u2713')
+  })
+
+  it('reports a stopped campaign the same way -- terminal is terminal', () => {
+    expect(runMeterText(status({ total: 40, completed: 12 }, 'stopped'))).toBe('12\u2713')
   })
 })
 

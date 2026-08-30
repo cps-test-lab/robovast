@@ -101,11 +101,11 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
  *  Kept in this file rather than beside the card that uses it, deliberately: it is the same meter
  *  as the one above and a change to either must be made looking at the other.
  *
- *  The track carries the percent done; a percentage is constant width, where a count pair grows
- *  with the campaign. Beside it, the number of runs that failed, and only when there is one -- a
- *  percent alone reads as success on a bar that is part red, since it measures done and not
- *  passed. The rest -- the counts, the two failure axes apart, the wall clock -- is on the hover:
- *  a bar 140px wide holds one short label, and the rest is asked of a single row.
+ *  The track's label follows the campaign's tense (see `runMeterText`): the share done while it
+ *  runs, the successes once it is over. Beside it, the number of runs that failed, and only when
+ *  there is one -- red on the bar with no number against it leaves the reader counting pixels.
+ *  The rest -- the counts, the two failure axes apart, the wall clock -- is on the hover: a bar
+ *  140px wide holds one short label, and the rest is asked of a single row.
  */
 export function MiniRunMeter({
   status,
