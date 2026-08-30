@@ -38,11 +38,11 @@ import {
   isTerminalPhase,
   type CampaignSummary,
   type JobSummary,
-  type ListCampaignsResponse,
   type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
+import { useCampaignStream } from '@/components/CampaignStreamProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
@@ -50,7 +50,6 @@ import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
-import { useLiveStream } from '@/lib/liveStream'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
@@ -959,31 +958,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
       )}
     </Paper>
   )
-}
-
-// Live campaign list over SSE. The server pushes the full list on connect and on
-// every change (a server-side loop over list_campaigns), so this is the single
-// source for the list — no polling. useLiveStream owns the recovery: a dropped
-// connection, a stream the browser gave up on, and a socket that died silently
-// while the tab was in the background all end in a fresh EventSource, which re-sends
-// the whole list. `reconnect` is the same path on demand (the Refresh button).
-function useCampaignStream() {
-  const [data, setData] = useState<ListCampaignsResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const { state, reconnect } = useLiveStream(robovast.campaignsStreamUrl(), {
-    onMessage: (e) => {
-      setData(JSON.parse(e.data) as ListCampaignsResponse)
-      setError(null)
-    },
-    events: {
-      streamerror: (e) => setError(JSON.parse(e.data)),
-    },
-  })
-
-  // Anything but `open` means the list on screen may already be behind; keep showing it
-  // (it is still the best we have) and say so.
-  return { data, error, live: state === 'open', reconnect }
 }
 
 export function Monitor({
