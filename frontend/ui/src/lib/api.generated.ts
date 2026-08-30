@@ -2773,6 +2773,10 @@ export interface components {
             sim: {
                 [key: string]: unknown;
             };
+            /** Sut */
+            sut: {
+                [key: string]: unknown;
+            };
         };
         /**
          * PreviewResponse

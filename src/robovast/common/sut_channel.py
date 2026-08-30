@@ -168,25 +168,6 @@ def source_paths(execution: dict, vast_dir: str) -> list:
         return []
 
 
-def refuse_run_files_overlap(execution: dict, sources: dict) -> None:
-    """A declared source must not also be staged un-rewritten by ``run_files``.
-
-    ``run_files`` mounts a file at ``/config/<rel>`` while this channel mounts the
-    rewritten copy at ``/config/<config>/<rel>``. Declaring the same file both ways puts
-    two copies in the container, and if the stack reads the original then every cell runs
-    identical configuration -- a green campaign whose factor did nothing, reported nowhere.
-    Refused rather than documented, because the failure is invisible in the results.
-    """
-    staged = {str(p) for p in ((execution or {}).get("run_files") or [])}
-    clash = sorted(s.rel_path for s in sources.values() if s.rel_path in staged)
-    if clash:
-        raise SutChannelError(
-            "these files are declared as sut: config sources AND listed in "
-            f"execution.run_files: {', '.join(clash)}. Remove them from run_files -- the "
-            "channel stages a rewritten copy per configuration, and the un-rewritten one "
-            "beside it is what the stack would silently read instead.")
-
-
 def resolve_sut_path(sources: dict, destination: str):
     """``(Source or None, path)`` for *destination*; ``None`` for the environment.
 

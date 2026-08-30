@@ -52,6 +52,8 @@ def _project(tmp_path, configuration, run_files=""):
     files.mkdir()
     (files / "nav2_params.yaml").write_text(_PARAMS)
     (files / "nav2_bt.xml").write_text(_BT)
+    (files / "empty_room.yaml").write_text("image: empty_room.pgm\n")   # matched by the
+    # glob below but not a declared source, so it must still be staged normally
     # The caller's block is dedented and re-indented here rather than interpolated raw:
     # a `.vast` is whitespace-significant and every caller would otherwise have to know
     # this template's indentation.
@@ -189,17 +191,33 @@ def test_a_misspelled_destination_is_refused_before_anything_runs(tmp_path):
     """)
 
 
-def test_a_source_also_in_run_files_is_refused(tmp_path):
-    """Two copies in the container, and if the stack reads the un-rewritten one then every
-    cell ran the same configuration and nothing said so."""
-    with pytest.raises(Exception, match="run_files"):
-        _compose(tmp_path, f"""\
-        - name: clash
+def test_a_source_caught_by_a_run_files_glob_is_staged_only_as_the_rewritten_copy(tmp_path):
+    """Exactly one copy reaches the container.
+
+    Campaigns stage their inputs with patterns (``files/*.yaml`` for a map), so a declared
+    source is routinely caught by one. Staging the original beside the rewritten copy would
+    leave which file the stack reads deciding whether the campaign varied anything -- and a
+    run against unvaried configuration succeeds and reports normally. So the original is
+    dropped, and an `.osc` still naming the old path fails on a missing file rather than
+    quietly reading the wrong one.
+    """
+    data = _compose(tmp_path, f"""\
+        - name: glob
           variations:
           - ParameterVariationList:
               sut: {_BASE}.inflation_layer.inflation_radius
               values: [0.30, 0.55]
-    """, run_files="  run_files: [files/nav2_params.yaml]")
+    """, run_files='  run_files: ["files/*.yaml", "files/*.xml"]')
+
+    staged = [str(f) for f in data["_run_files"]]
+    # the declared sources are dropped ...
+    assert "files/nav2_params.yaml" not in staged, staged
+    assert "files/nav2_bt.xml" not in staged, staged
+    # ... and everything else the glob matched is staged exactly as before, which is what
+    # makes this an exclusion of what the channel owns rather than of the pattern.
+    assert "files/empty_room.yaml" in staged, staged
+    for config in data["configs"]:
+        _written(config, "files/nav2_params.yaml")
 
 
 def test_the_environment_carrier_refuses_rather_than_doing_nothing(tmp_path):

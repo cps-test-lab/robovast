@@ -18,8 +18,8 @@ import pytest
 from robovast.common.config import RESERVED_ENV_NAMES
 from robovast.common.sut_channel import (ABSENT, SutChannelError, check_destinations,
                                          declared_sources, is_absent, materialize,
-                                         merge_sut_block, refuse_run_files_overlap,
-                                         resolve_sut_path, split_destination)
+                                         merge_sut_block, resolve_sut_path,
+                                         split_destination)
 
 PARAMS = """local_costmap:
   local_costmap:
@@ -126,16 +126,6 @@ def test_a_source_name_used_twice_is_refused(tmp_path):
         "helper": {"config_files": {"nav2": "files/b.yaml"}}}}
     with pytest.raises(SutChannelError, match="unique across the campaign"):
         declared_sources(execution, str(tmp_path))
-
-
-def test_a_source_also_staged_by_run_files_is_refused(campaign):
-    """The failure this prevents is invisible: two copies in the container, the stack reads
-    the un-rewritten one, every cell runs the same configuration and the campaign is green."""
-    execution, vast_dir = campaign
-    execution = dict(execution, run_files=["files/nav2_params.yaml"])
-    sources = declared_sources(execution, vast_dir)
-    with pytest.raises(SutChannelError, match="run_files"):
-        refuse_run_files_overlap(execution, sources)
 
 
 # --- the pre-check ------------------------------------------------------------------------

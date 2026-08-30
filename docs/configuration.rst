@@ -423,11 +423,15 @@ Two things are refused rather than left to go wrong quietly:
 * a destination on the ``env`` carrier naming a variable RoboVAST sets for itself
   (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
   reaches the same environment by a different route, so it is guarded against the same set
-  rather than becoming a way around the rule;
-* a source that is **also** listed in ``execution.run_files``. That would put an
-  un-rewritten copy in the container beside the rewritten one, and if the stack read it then
-  every configuration would run identical settings — a campaign that is green and whose
-  factor did nothing.
+  rather than becoming a way around the rule.
+
+A declared source is **excluded from** ``run_files`` staging, so exactly one copy of it
+reaches the container. Campaigns stage their inputs with patterns (``files/*.yaml`` to pick
+up a map), and a source caught by one is not an author error to correct — but staging the
+original beside the rewritten copy would leave *which file the stack opens* deciding whether
+the campaign varied anything, and a run against unvaried configuration succeeds and reports
+normally. With one copy, a scenario still naming the old path fails on a missing file
+instead. The content still reaches the configuration's identity, hashed separately.
 
 What is checked before anything runs
 """"""""""""""""""""""""""""""""""""

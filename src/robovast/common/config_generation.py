@@ -703,16 +703,13 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     half needs nothing from either execution lane.
     """
     from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
-        ENV_SOURCE, SutChannelError, declared_sources, materialize, merge_sut_block,
-        refuse_run_files_overlap, split_destination)
+        ENV_SOURCE, SutChannelError, materialize, merge_sut_block, split_destination)
 
     execution = parameters.get("execution", {}) or {}
     authored = {c.get("name"): (c.get("sut") or {})
                 for c in (parameters.get("configuration") or [])}
     if not any(authored.values()) and not any(c.get("sut") for c in configs):
         return
-
-    refuse_run_files_overlap(execution, declared_sources(execution, vast_dir))
 
     for config in configs:
         block = merge_sut_block(authored.get(config.get("_config_name")) or {},
@@ -1540,6 +1537,27 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     pattern,
                 )
         run_files.extend(additional_run_files)
+
+    # A file the `sut:` channel addresses is staged as a REWRITTEN copy, per configuration.
+    # Staging the original beside it would put two copies in the container, and the one the
+    # stack read would decide whether the campaign varied anything -- silently, since a run
+    # against unvaried configuration succeeds and reports normally.
+    #
+    # Excluded here rather than refused in the `.vast`, because run_files are patterns: a
+    # campaign writes `files/*.yaml` to stage its map, and a source caught by that glob is
+    # not an author error to correct. Removing it leaves exactly one copy, and an `.osc`
+    # still naming the old path fails loudly on a missing file instead of quietly reading
+    # the wrong one. The content still reaches the configuration identity -- see
+    # `sut_source_paths` in common/execution.py, which hashes it separately for this reason.
+    from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+        source_paths as _sut_source_paths)
+    owned_by_sut = set(_sut_source_paths(parameters.get("execution", {}) or {}, vast_dir))
+    if owned_by_sut:
+        dropped = [f for f in run_files if f in owned_by_sut]
+        if dropped:
+            logger.info("staged as sut: config sources instead of run_files: %s",
+                        ", ".join(sorted(dropped)))
+        run_files = [f for f in run_files if f not in owned_by_sut]
 
     # Generated outputs join run_files, so everything downstream -- the config-identity
     # hash, the copy into <campaign>/_config/, the /config/<path> bind mount into the run
