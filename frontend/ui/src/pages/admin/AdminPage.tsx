@@ -32,6 +32,14 @@ const ROLL_TIMEOUT_MS = 180_000
 // stop it, short enough that nobody sits watching a page that said it would reload.
 const RELOAD_COUNTDOWN_S = 5
 
+/** Hover delay on the notification switch's caveat.
+ *
+ *  Past MUI's default, which fires fast enough that the tip appears while the pointer is only
+ *  passing over the row on its way somewhere else. This text is read once, by someone who has
+ *  stopped at the switch and is deciding -- so it waits for the pause that means deciding, and
+ *  stays out of the way of every other crossing. */
+const PREF_TIP_MS = 600
+
 /** One `label: value` line. Values are monospace: most of them are digests and refs. */
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -468,21 +476,35 @@ function BrowserPreferences() {
       <Typography variant="subtitle2">This browser</Typography>
       {supported ? (
         <>
-          <FormControlLabel
-            control={<Switch size="small" checked={on} disabled={denied} onChange={() => void toggle()} />}
-            label={
-              <Typography variant="body2">Notify me when a campaign finishes</Typography>
+          <Tooltip
+            placement="right"
+            enterDelay={PREF_TIP_MS}
+            title={
+              'Shown only while this tab is in the background. Applies to this browser only — '
+              + 'everyone signed in to this service keeps their own setting, and this is not '
+              + 'a service setting.'
             }
-            sx={{ ml: 0 }}
-          />
-          <Typography variant="caption" color="text.secondary">
-            {denied
-              ? 'This browser has blocked notifications for this site; re-allow them in its '
-                + 'site settings.'
-              : 'Shown only while this tab is in the background. Applies to this browser only — '
-                + 'everyone signed in to this service keeps their own setting, and this is not '
-                + 'a service setting.'}
-          </Typography>
+          >
+            {/* A disabled switch reports no events, so the tooltip needs a wrapper to hang on. */}
+            <Box sx={{ alignSelf: 'flex-start' }}>
+              <FormControlLabel
+                control={<Switch size="small" checked={on} disabled={denied} onChange={() => void toggle()} />}
+                label={
+                  <Typography variant="body2">Notify me when a campaign finishes</Typography>
+                }
+                sx={{ ml: 0 }}
+              />
+            </Box>
+          </Tooltip>
+          {/* The denial stays in print. It is not a caveat about the switch, it is the reason
+              the switch is dead, and an explanation for a disabled control that has to be
+              hunted for by hovering is not an explanation. */}
+          {denied ? (
+            <Typography variant="caption" color="text.secondary">
+              This browser has blocked notifications for this site; re-allow them in its site
+              settings.
+            </Typography>
+          ) : null}
         </>
       ) : (
         <Typography variant="caption" color="text.secondary">
