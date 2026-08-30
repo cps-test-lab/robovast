@@ -1069,18 +1069,56 @@ would be over-admission and pods that cannot be placed. Scaling the Deployment p
 replica requires making the queue cluster-wide state first; the ``replicas: 1`` in the
 service Deployment says so at the line.
 
-**A service restart abandons the campaigns that were running.** What is left behind:
+**A service restart leaves the campaigns that were running alone.** The queue is the
+part that does not survive it; the campaigns do.
 
 * Jobs already created keep running. They carry no owner reference, so Kubernetes does
-  not collect them, and startup reaping covers aux pods only -- they run to completion,
-  write their results, and hold capacity while nothing is listening.
-* Jobs still queued were never created, so there is nothing to orphan.
-* The successor process does **not** over-admit against the abandoned Jobs. Capacity is
+  not collect them, and startup reaping covers aux pods only -- they run to completion
+  and write their results to the object store, which is where a campaign's results live
+  anyway.
+* Jobs still queued were never created, so there is nothing to orphan. They are re-queued
+  when the campaign is adopted.
+* The successor process does **not** over-admit against the surviving Jobs. Capacity is
   measured from the pods actually bound to nodes rather than bookkept, so their requests
-  are visible to it exactly like any other tenant's.
+  are visible to it exactly like any other tenant's -- which is also what lets it adopt
+  them without any bookkeeping of its own.
 
-Surviving a restart with the campaign intact is separate work: it needs the campaign to
-be reattachable, which is a bigger question than the queue.
+This is what ``ClusterService._adopts_on_restart`` says, and why this lane has no
+shutdown-time job teardown: stopping a campaign is ``vast campaign stop``, and exiting the
+service is not. The distinction matters more than it looks, because a cooperative stop
+persists a terminal ``outcome.json`` -- and a campaign that has recorded an ending is one
+no successor will ever pick up again.
+
+**And the successor picks them back up.** At startup, before it answers anything, the
+service re-launches every campaign the store lists that recorded no ending
+(``campaign_resume``). There is no resume mode anywhere in the launch path, the batch loop
+or the controller; a resumed campaign is a re-launch under its own id, and four properties
+-- each equally true of a campaign starting now -- are what make that safe:
+
+* the campaign's records (``_execution/launch.yaml``, ``campaign.db``) are published when
+  they are written rather than at ``finalize_campaign``, so an unfinished campaign has
+  something to be re-launched from;
+* the campaign root is restored from the store first (``fetch_campaign``), so the driver
+  re-enters a directory holding what the earlier life produced;
+* the batch runner plans against that root, adopting every job whose runs already have a
+  verdict instead of running them a second time;
+* ``create_campaign`` is idempotent by name, so the restored store re-opens its row.
+
+**A search is picked up too.** Nothing about its strategy is serialized; the strategy is
+re-driven through the exact ``ask``/``tell`` sequence its own ``unit`` rows recorded, which
+reproduces the original search for a strategy that is a function of its seed and its
+evaluations -- every strategy shipped here. That is why ``campaign.db`` is published at
+each batch boundary: those rows *are* the checkpoint. Two conditions are checked before the
+campaign is re-launched rather than discovered halfway through its second half:
+``search.seed`` is set (an unseeded strategy re-seeds from entropy, so the replay would
+rebuild a different search) and the strategy does not declare ``RESUMABLE = False``.
+
+Campaigns are deliberately **left alone** when nothing says what to run (no launch record,
+or no frozen ``_config/``), when the frozen config cannot be read unchanged (resuming would
+mean migrating it mid-campaign, making the second half a different experiment from the
+first), or when a search fails either condition above. Each says which it is in the service
+log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
+stays recoverable with ``vast campaign import``.
 
 
 How free capacity is measured, and why it is not the whole cluster

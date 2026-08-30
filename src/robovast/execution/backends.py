@@ -149,6 +149,30 @@ class ExecutionBackend(ABC):
         through object storage fetch them in one shot rather than per config.
         """
 
+    def publish_records(self, campaign_root: str) -> None:
+        """Hook called whenever the campaign's records change materially.
+
+        Twice, at least: once the ``campaign`` row exists (before any compute is spent),
+        and once each batch closes. Records here means the small, derived-from-nothing
+        files a reader needs to say what a campaign *is* — ``campaign.db``'s campaign,
+        batch and unit rows: its description, who launched it, where its configuration
+        came from, and, for a search, every parameter set scored so far.
+
+        Default no-op: on the local lane those records are already in their durable home.
+        :class:`KubernetesBackend` overrides it, because there the driver's disk is
+        scratch and a record published only at the end is missing from exactly the
+        campaigns that did not reach one.
+
+        Deliberately **not** :meth:`finalize_campaign`, which is the other end of the same
+        idea. That one publishes the whole campaign root — gigabytes of results — and
+        releases the campaign's node calibration; neither is wanted mid-run, and calling
+        it per batch would re-upload every result of every earlier batch.
+
+        Best-effort in the implementation, never in the contract: a campaign must not fail
+        because a record could not be published, but a lane that means to publish must say
+        when it could not.
+        """
+
     def finalize_campaign(self, campaign_root: str) -> None:
         """Hook called once after the whole campaign completes (store closed).
 

@@ -85,6 +85,14 @@ class ConfigurationConfig(BaseModel):
         "`parameters` for the other channel: `parameters` is what the trial does, `sim` "
         "is what it runs in. Merged over `execution.containers.simulation`, which stays "
         "the campaign-wide default.")
+    sut: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Fixed values for how the system under test is configured in this "
+        "configuration, as a FLAT mapping of `<source>.<path>` to value (e.g. "
+        "`{'nav2.local_costmap.local_costmap.ros__parameters.plugins': [...]}`). Flat and "
+        "not nested, unlike `sim`: everything after the source name belongs to that file's "
+        "format and may be an XPath, which no nested mapping can express. `{$absent: true}` "
+        "removes the node. Merged under any variation writing the same destination.")
     variations: Optional[list[VariationConfig]] = None
 
     @field_validator('name')
@@ -448,6 +456,15 @@ class ContainerConfig(BaseModel):
     #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
     #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
     backend: Optional[str] = None
+    #: Configuration files this container reads, ``{source name: path}`` -- what the
+    #: ``sut:`` channel addresses. A value is the ``.vast``-relative path, or
+    #: ``{file: <path>, format: <name>}`` where the extension does not name the format.
+    #:
+    #: Named ``config_files`` and not ``config`` because the ``simulation`` container's
+    #: ``config`` is a *backend* key (the world it loads, validated by the backend's own
+    #: CONFIG_CLASS). One key meaning a backend's world on one container and RoboVAST's
+    #: source map on another is a collision rather than a parallel.
+    config_files: Optional[dict[str, Union[str, dict[str, str]]]] = None
 
     @field_validator('system_packages')
     @classmethod
@@ -514,6 +531,11 @@ DEFAULT_SHM_SIZE = "512Mi"
 #: arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
 #: Those steer how a container renders, not whether its results mean what they say, and a
 #: campaign has legitimate reasons to set them.
+#:
+#: **Module level, not inline in the validator below**, because ``execution.env`` is no
+#: longer the only way into a run's environment: the ``sut:`` channel's ``env`` carrier
+#: reaches the same place by a different route, and a guard living inside one field's
+#: validator would protect that field and silently not the other.
 #:
 #: This list is checked against the emitters by ``tests/common/test_reserved_env.py``, which
 #: fails when a lane starts injecting a name that is not registered here. A hand-maintained

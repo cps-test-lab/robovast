@@ -243,9 +243,11 @@ metrics-server, keeps reporting capacity, reservations, disk and job counts, and
 which of the two is missing instead of a 403 or a zero. So this one is a *reconcile when
 convenient*: run ``vast service upgrade`` and the fill appears.
 
-Before rolling, it asks the service which campaigns are live and names them, because the
-pod being replaced is where their controller runs — the same reason ``--no-restart``
-exists. ``--yes`` skips the question; without it a non-interactive run aborts rather than
+Before rolling, it asks the service which live campaigns the replacement could **not**
+pick up again, and names each with its reason. A live campaign is no longer reason enough
+on its own: its Jobs are not children of the pod being replaced, and the new pod
+re-attaches to them (:doc:`cluster_execution`). What still blocks a roll is a campaign
+nothing could re-launch — one with no records, or a search with no ``search.seed``. ``--yes`` skips the question; without it a non-interactive run aborts rather than
 rolling silently. A service that cannot be reached is reported and the roll proceeds, since
 a wedged service is a reason to upgrade rather than a reason to refuse, but it says so —
 a silent roll must never be read as "nothing was running".

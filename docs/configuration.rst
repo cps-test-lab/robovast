@@ -238,8 +238,9 @@ Multiple variations are combined using Cartesian product to generate all possibl
 
 .. _config-variation-destination:
 
-**Every factor names where it lands**, with exactly one of two keys — ``scenario:`` for a
-parameter the scenario file declares, ``sim:`` for the simulator's own configuration:
+**Every factor names where it lands**, with exactly one of three keys — ``scenario:`` for a
+parameter the scenario file declares, ``sim:`` for the simulator's own configuration,
+``sut:`` for a configuration file the system under test reads:
 
 .. code-block:: yaml
 
@@ -257,18 +258,39 @@ parameter the scenario file declares, ``sim:`` for the simulator's own configura
          values:
          - 0.6
          - 1.4
+     - ParameterVariationList:
+         sut: nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+         values:
+         - 0.30
+         - 0.55
 
-This example creates 3 × 2 = 6 run configurations.
+This example creates 3 × 2 × 2 = 12 run configurations.
 
-The two keys sit at the same level and neither is a default, so a factor's destination is
+The three keys sit at the same level and none is a default, so a factor's destination is
 readable from the line it is written on — and each is checked against the right schema: a
 ``scenario:`` name against the scenario file's declared parameters, a ``sim:`` key against
-the simulator backend's. See :ref:`the simulation channel <sim-channel>` for what can go
-on the second one.
+the simulator backend's, a ``sut:`` destination against the config file the campaign
+declared. See :ref:`the simulation channel <sim-channel>` and :ref:`the sut channel
+<sut-channel>` for what can go on the second and third.
+
+**Which channel a value belongs to is one question:** *who owns the schema it is checked
+against?* A key in a file the stack reads is ``sut:``. A value the ``.osc`` declares and
+acts on is ``scenario:`` — **including a launch argument**, because the scenario owns the
+launch invocation and there is no file to address. A value the simulator's own
+configuration declares is ``sim:``.
+
+.. warning::
+
+   **``scenario:`` and ``sut:`` overlap, and nothing validates the boundary.** A stack
+   parameter can be declared in the ``.osc`` and written into the stack's file at run time,
+   and RoboVAST cannot tell such a parameter from trial protocol — the scenario file
+   accepts any parameter it declares, whether or not the stack has a matching key. So this
+   is a rule you follow rather than one you are stopped from breaking, and the cost of
+   breaking it is a value checked by nobody.
 
 .. note::
 
-   ``name:`` is not a destination and is refused, naming the two keys that are. In a
+   ``name:`` is not a destination and is refused, naming the three keys that are. In a
    ``.vast`` that still carries it, it means ``scenario:``; one spelling per destination
    is what keeps the commonest line in a ``.vast`` from having two.
 
@@ -301,6 +323,133 @@ key could say so.
 Every declared slot must be bound, each to exactly one channel; an unknown slot is refused
 naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
 for a simulator to compile is one — which are simply not produced when left unbound.
+
+
+.. _sut-channel:
+
+Varying the system under test
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**How the stack is configured belongs to a configuration.** Not per campaign, and not per
+run: repetitions of a configuration share one configuration of the stack, which is what
+makes them repetitions.
+
+A container declares the files that configure it, and a ``sut:`` destination names one of
+them plus a path inside it:
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       sut:
+         config_files:
+           nav2: files/nav2_params.yaml                       # inferred: yaml
+           bt:   files/nav2_bt.xml                            # inferred: xml
+           rmw:  {file: files/dds_profile.custom, format: xml}  # inference cannot help
+
+   configuration:
+   - name: inflation-vs-recovery
+     variations:
+     - ParameterVariationList:
+         sut: nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+         values: [0.30, 0.55]
+     - ParameterVariationList:
+         sut: bt.//RecoveryNode[@name='NavigateRecovery']/@number_of_retries
+         values: [2, 6]
+
+**A source name is unique across the campaign**, even though it is declared on a container.
+A destination names a source and nothing else, so the container it sits under says *who
+owns and reads that file* rather than scoping its name — the ``sut`` role, or an ad-hoc
+container beside it for a stack that runs in more than one. Two containers declaring the
+same name is refused for that reason, naming both.
+
+**A format owns its own path syntax.** RoboVAST splits a destination once, on the first
+``.``, to find the source; everything after that goes to the file's format untouched. So
+the mapping formats take dotted keys — with ``[0]`` for a list index and ``['a.b']`` for a
+key a dot would otherwise split, which a ROS parameter file needs for
+``qos_overrides./tf`` — and the XML format takes XPath. The predicate in the example above
+is doing real work: that behaviour tree names three different nodes ``RecoveryNode``, so
+nothing without predicates could pick one.
+
+**Formats are plugins**, under the ``robovast.sut_formats`` entry point, with ``yaml``,
+``json`` and ``xml`` built in and registered through that same entry point. A stack
+configured by something else needs a package, not a change here — see
+:ref:`extending-sut-formats`.
+
+**The extension names the format**; ``format:`` is for a file whose name does not. An
+extension no registered format claims, with no ``format:`` beside it, is refused naming the
+ones that are — never guessed at, because the bad case is not the file that fails to parse
+but the one that parses into a document whose addresses are all wrong.
+
+**Varying structure, not only values.** A value need not be a scalar, so replacing a whole
+list, mapping or subtree is the ordinary case and each level is written out:
+
+.. code-block:: yaml
+
+   - ParameterVariationList:
+       sut: nav2.local_costmap.local_costmap.ros__parameters.plugins
+       values:
+       - ["obstacle_layer", "inflation_layer"]
+       - ["obstacle_layer", "voxel_layer", "inflation_layer"]
+
+Enumerating the levels rather than saying "append" is deliberate: it is what keeps the
+``.vast`` the single source of truth for the variation space. For XML the same move covers
+adding and removing children, because a subtree carries its own.
+
+**Absence** is the one level an assignment cannot express — a configuration block that is
+present and empty is not one that is absent, and stacks tell them apart. It is a value,
+usable both as a fixed setting and as a factor level:
+
+.. code-block:: yaml
+
+   configuration:
+   - name: no-voxel
+     sut:
+       nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
+
+**A per-configuration ``sut:`` block is flat**, unlike ``sim:``, and this is the one place
+the two channels differ. Everything after the source name belongs to the file's format and
+may be an XPath, which no nested mapping can express — so a block is one string key per
+destination, split exactly once.
+
+What each configuration gets
+""""""""""""""""""""""""""""
+
+A **rewritten copy** of every source it touched, staged under its own configuration
+directory and mounted at ``/config/<config-name>/<path>``. The campaign's own file is never
+modified. A scenario parameter whose value is the source's declared path is rewritten to
+that configuration's copy, so the trial launches the file belonging to the cell it is
+running.
+
+Two things are refused rather than left to go wrong quietly:
+
+* a source declared on the ``simulation`` or ``scenario`` container — their configuration is
+  addressed by ``sim:`` and ``scenario:``, and two channels addressing one surface is how
+  they come to disagree;
+* a destination on the ``env`` carrier naming a variable RoboVAST sets for itself
+  (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
+  reaches the same environment by a different route, so it is guarded against the same set
+  rather than becoming a way around the rule.
+
+A declared source is **excluded from** ``run_files`` staging, so exactly one copy of it
+reaches the container. Campaigns stage their inputs with patterns (``files/*.yaml`` to pick
+up a map), and a source caught by one is not an author error to correct — but staging the
+original beside the rewritten copy would leave *which file the stack opens* deciding whether
+the campaign varied anything, and a run against unvaried configuration succeeds and reports
+normally. With one copy, a scenario still naming the old path fails on a missing file
+instead. The content still reaches the configuration's identity, hashed separately.
+
+What is checked before anything runs
+""""""""""""""""""""""""""""""""""""
+
+Every destination is resolved against the declared source and checked against the file
+itself, at composition — the component that owns the schema is the one that says what is
+addressable. What must exist is the **parent**: a factor may legitimately set a key the file
+leaves at its default, so refusing an absent leaf would reject a correct campaign.
+
+A format that cannot decide (a malformed XPath, say) leaves that destination unchecked and
+**says so at warning level**. A skipped check is never silent, because silence is
+indistinguishable from a check that passed.
 
 Each plugin's slots, and whether they are required, are listed with it under
 :ref:`variation-points`.

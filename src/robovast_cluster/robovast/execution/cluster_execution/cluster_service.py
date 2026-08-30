@@ -196,6 +196,7 @@ class ClusterService(LocalTransport):
         self._index_refreshing = False
         if reap_on_start:
             self.reap_orphans()
+            self.resume_interrupted_campaigns()
 
     # -- version ------------------------------------------------------------
 
@@ -287,16 +288,25 @@ class ClusterService(LocalTransport):
         The live-campaign refusal is a ``RuntimeError`` (409, a conflict the caller can
         resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
         "not now", the other is "not here".
+
+        It now refuses only for the campaigns that would actually be lost. A live campaign
+        used to be reason enough, because the pod being replaced was the only thing driving
+        it; a replacement now picks it back up (see :meth:`resume_interrupted_campaigns`).
+        What is left is the campaigns that cannot be picked back up, and the refusal names
+        each one's reason rather than its phase -- because the reason is what the operator
+        would have to change.
         """
         info = self.upgrade_info()
         if not info.supported:
             raise ValueError(info.unsupported_reason)
-        if info.active_campaigns and not force:
-            live = ", ".join(f"{c.campaign_id} ({c.phase})" for c in info.active_campaigns)
+        blocked = self._campaigns_a_restart_would_lose(info.active_campaigns)
+        if blocked and not force:
+            named = "; ".join(f"{cid}: {why}" for cid, why in blocked.items())
             raise RuntimeError(
-                f"refusing to roll while {len(info.active_campaigns)} campaign(s) are "
-                f"live: {live}. The controller driving them runs in the pod this replaces. "
-                f"Stop them, wait for them, or force the roll.")
+                f"refusing to roll while {len(blocked)} live campaign(s) could not be "
+                f"picked up again by the replacement — {named}. Stop them, wait for them, "
+                f"or force the roll. Every other live campaign survives the roll: its Jobs "
+                f"keep running and the new pod re-attaches to them.")
         from .service_deploy import patch_restart_annotation
         stamped = patch_restart_annotation(self.namespace, self.kube_context)
         return ActionResult(ok=True, message=(
@@ -2529,20 +2539,28 @@ class ClusterService(LocalTransport):
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context)
 
-    def _terminate_running_campaigns(self, running) -> None:
-        """On ``vast serve`` shutdown (Ctrl+C), tear down every running campaign's Jobs.
+    def _adopts_on_restart(self) -> bool:
+        """True: this lane's campaigns outlive the process, and the next one adopts them.
 
-        Overrides the local single-container kill: a cluster campaign's compute is its
-        scenario Jobs, so a bare service exit would orphan them (they keep consuming
-        cluster resources). Each teardown is best-effort so one failure never blocks
-        the others or the process exit.
+        A cluster campaign's compute is its scenario Jobs. They are not children of this
+        process, they upload their own results to the object store, and
+        :mod:`~robovast.execution.cluster_execution.campaign_resume` re-attaches to them at
+        startup -- so exiting is not a reason to destroy them, and a pod replacement
+        (``vast service upgrade``, an eviction, a drain, an OOM) stops being a data-loss
+        event.
+
+        This is why there is no ``_terminate_running_campaigns`` override here any more.
+        Stopping a campaign is :meth:`stop`, which tears its Jobs down through
+        :meth:`_teardown_campaign_jobs` and records the stop; exiting the service is not,
+        and never was a good way to say it -- the cooperative stop persists a terminal
+        ``outcome.json``, and a campaign that has recorded an ending is one no successor
+        will pick up again.
+
+        Unconditional, and deliberately not a ``KUBERNETES_SERVICE_HOST`` test: an
+        off-cluster service driving a cluster adopts on its next start exactly like an
+        in-pod one, so keying on where the process runs would answer a different question.
         """
-        for entry in running:
-            try:
-                self._teardown_campaign_jobs(entry.campaign_id)
-            except Exception:  # noqa: BLE001 - shutdown must not mask the exit
-                logger.warning("Could not tear down jobs for %s during shutdown",
-                               entry.campaign_id, exc_info=True)
+        return True
 
     # -- container exec -----------------------------------------------------
 
@@ -2618,8 +2636,9 @@ class ClusterService(LocalTransport):
     def reap_orphans(self) -> int:
         """Delete campaign workloads left behind by a previous service instance.
 
-        A service restart abandons its in-flight campaigns (the accepted trade), so
-        their aux pods would linger. Aux pods are owned by the service pod and thus
+        Aux pods only, and that is the whole scope: a restart leaves the campaigns'
+        **scenario Jobs** running on purpose (see :meth:`_adopts_on_restart`), so this
+        must never widen to them. Aux pods are owned by the service pod and thus
         garbage-collected by Kubernetes when it is replaced; this is the backstop for
         the cases GC misses (e.g. the ownerReference could not be resolved), and the
         successor to the old launcher-side ``reap_orphaned_runs``. Best-effort.
@@ -2645,6 +2664,47 @@ class ClusterService(LocalTransport):
             logger.info("Reaped %d orphaned aux pod(s) from a previous service instance",
                         reaped)
         return reaped
+
+    def _campaigns_a_restart_would_lose(self, active) -> dict:
+        """``{campaign_id: why}`` for the live campaigns a replacement could not pick up.
+
+        Asked of :mod:`.campaign_resume` -- the same decision the successor will make -- so
+        the warning before a roll and the behaviour after it cannot drift apart. A campaign
+        this cannot answer for is treated as one that would be lost: the whole point of the
+        refusal is to be wrong in the safe direction.
+        """
+        from . import campaign_resume
+        blocked = {}
+        for summary in active:
+            cid = summary.campaign_id
+            try:
+                _, _, refusal = campaign_resume.plan_for(
+                    self, cid, Path(self._campaign_dir(cid)))
+            except Exception as e:  # noqa: BLE001 - "cannot tell" is not "will survive"
+                refusal = f"could not be checked ({e})"
+            if refusal is not None:
+                blocked[cid] = refusal
+        return blocked
+
+    def resume_interrupted_campaigns(self) -> dict:
+        """Pick up the campaigns a previous service process was driving.
+
+        Synchronously, and before this service answers anything. Not a background thread:
+        ``_launch_campaign`` returns as soon as a campaign is named, so the blocking part is
+        one index listing plus a restore per campaign — and registering the campaigns *here*
+        is what stops a fresh launch arriving over the API and racing a campaign that is
+        about to be adopted.
+
+        Returns ``{campaign_id: None | refusal}``; see :mod:`.campaign_resume` for what is
+        picked up and what is deliberately left alone. Never raises.
+        """
+        from . import campaign_resume
+        outcomes = campaign_resume.resume_all(self)
+        resumed = [cid for cid, refusal in outcomes.items() if refusal is None]
+        if resumed:
+            logger.info("Resumed %d campaign(s) interrupted by a service restart: %s",
+                        len(resumed), ", ".join(resumed))
+        return outcomes
 
     def cleanup_campaign_data(self, request) -> ActionResult:
         """Delete campaign result bucket(s) from the object store.
@@ -3398,6 +3458,25 @@ class ClusterService(LocalTransport):
         logger.info("Published edited config %s for %s to the object store",
                     vast.name, campaign_id)
 
+    def _publish_campaign_records(self, campaign_id: str, campaign_root) -> None:
+        """Publish the launch record now, not at ``finalize_campaign``.
+
+        This lane's driver disk is scratch (see :ref:`campaign-discovery`), so a record
+        written there and uploaded only when the campaign finishes is absent from every
+        campaign that did *not* finish — which is the set someone comes looking at, and the
+        set a restart has to re-launch from. It rides on :meth:`_publish_execution` rather
+        than a put of its own: ``_execution/`` holds only this record at launch time, and
+        one uploader for that directory is one fewer thing to keep in step.
+
+        Best-effort, and quiet about it: the campaign's own uploads follow within seconds
+        and will fail loudly if the store is genuinely unreachable.
+        """
+        try:
+            self._publish_execution(campaign_id, campaign_root)
+        except Exception as e:  # noqa: BLE001 - a record is not worth failing a campaign
+            logger.warning("Could not publish the launch record for %s: %s",
+                           campaign_id, e)
+
     def _publish_execution(self, campaign_id: str, campaign_root) -> None:
         """Upload a campaign's ``_execution/`` (outcome + logs + data.db) to the store."""
         from robovast.execution.cluster_execution import in_pod_storage
@@ -3735,8 +3814,8 @@ class ClusterService(LocalTransport):
             lambda tar: cfg.add_campaign_members(
                 tar, campaign_id, exclude_prefixes={"_postproc"}))
 
-    def fetch_campaign(self, campaign_id: str, force: bool = False):
-        """Pull a finished campaign from the object store to a local dir; return it.
+    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None):
+        """Pull a campaign from the object store to a local dir; return it.
 
         The object store is the durable home (the campaign loop published the full
         campaign there via ``finalize_campaign``). The stateless service pulls it
@@ -3746,6 +3825,12 @@ class ClusterService(LocalTransport):
         size are left untouched (see ``download_prefix``): repeat pulls — e.g. a
         notebook re-render — become near-noops. Pass ``force=True`` to overwrite
         the local cache unconditionally.
+
+        ``dest`` overrides where it lands, and there is exactly one caller that needs to:
+        :mod:`.campaign_resume`, restoring a campaign that is **not finished** into the
+        driver's own campaign root, so its controller re-enters a directory holding what
+        the earlier life produced. Everything else wants the shared scratch cache and the
+        deduplication that comes with it, so the default stands.
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
@@ -3753,7 +3838,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        dest = self._cache_dir(campaign_id)
+        dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
         with self._fetch_locks_guard:
