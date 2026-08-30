@@ -3093,6 +3093,11 @@
             "title": "Image Ref",
             "type": "string"
           },
+          "registry_built_at": {
+            "default": "",
+            "title": "Registry Built At",
+            "type": "string"
+          },
           "registry_digest": {
             "default": "",
             "title": "Registry Digest",
@@ -3134,6 +3139,7 @@
         "required": [
           "active_campaigns",
           "image_ref",
+          "registry_built_at",
           "registry_digest",
           "running_digest",
           "supported",
