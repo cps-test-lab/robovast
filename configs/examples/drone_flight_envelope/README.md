@@ -4,7 +4,7 @@ A Bitcraze **Crazyflie 2** flies a square course in a 6 × 6 m room while the ca
 thrust margin.
 
 This is RoboVAST's aerial example. It exists to show that the framework applies to drones as
-directly as it does to ground robots — same substrate, same `.vast`, same search strategies — and to
+directly as it does to ground robots — same substrate, same `.vast`, same variation plugins — and to
 be a template worth copying for an aerial campaign of your own.
 
 > Not to be confused with [`../quadrotor_landing/`](../quadrotor_landing/), which also has a
@@ -36,29 +36,26 @@ reproducibly outdoors, which is the argument for simulating them at all:
 
 Measured against a 1 m altitude hold, the boundary sits where physics says it does:
 
-| payload | T/W | altitude held |
-| --- | --- | --- |
-| 0 g | 1.32 | 1.00 m |
-| 3 g | 1.19 | 0.91 m |
-| 6 g | 1.08 | 0.82 m |
-| 9 g | 0.99 | never leaves the floor |
+| payload | T/W | mean altitude error | outcome |
+| --- | --- | --- | --- |
+| 0 g | 1.32 | 0.000 m | `held` |
+| 4 g | 1.15 | 0.121 m | `held` |
+| 8 g | 1.02 | 0.243 m | `sagged` |
 
 The graded sag before the collapse is real: `quadrotor_controller` has no integral term, so added
-weight buys steady-state altitude error rather than a cliff. The cliff arrives at T/W = 1. That
-sharp edge is why this example ships a `boundary` search as well as a grid — a grid can only bracket
-a boundary between two cells, and a search can walk along it.
+weight buys steady-state altitude error rather than a cliff. The cliff arrives at T/W = 1, and a
+grid can only bracket it between two cells: the top payload level is placed just above it rather
+than comfortably inside the envelope so that the bracket is a narrow one.
 
 ## What is in here
 
 ```text
 drone_envelope.vast            factorial grid, 3 x 2 x 2 = 12 configurations   <- start here
-drone_envelope_boundary.vast   boundary search: walk the edge of the envelope
 scenario.osc                   the trial: take off, fly a square, land on the pad
 world/drone_envelope.yaml      the roqsim world -- drone, weather, props, camera
 world/room.xml                 the room itself: floor, walls, lighting
 variations/wind.py             (speed, heading, turbulence) -> the simulator's wind field
-search/metrics.py              odometry -> trajectory.csv + metrics.csv
-search/extract.py              per-configuration objective and measures for the search
+files/metrics.py               odometry -> trajectory.csv + metrics.csv
 ```
 
 ## Three things worth knowing before you copy it
@@ -97,8 +94,8 @@ driving that picture sit beside it — without them a windy run and a heavy one 
 
 ## Metrics
 
-`search/metrics.py` writes `trajectory.csv` (what the panels bind to) and `metrics.csv` (one row of
-scalars) per run. The outcome label is deliberately four-valued rather than pass/fail, because the
+`files/metrics.py` writes `trajectory.csv` (what the panels bind to) and `metrics.csv` (one row of
+scalars) per run. The outcome label is deliberately three-valued rather than pass/fail, because the
 interesting part of this campaign is *how* a configuration fails:
 
 | outcome | meaning |

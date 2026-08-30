@@ -6,8 +6,8 @@ metadata:
     A Crazyflie 2 flies a square course in a 6 x 6 m room while the campaign eats its thrust
     margin. The airframe carries 0.35 N against 27 g -- a thrust-to-weight ratio of 1.32 -- so
     payload, air density and wind are not decoration: together they decide whether the drone holds
-    its commanded altitude, sags below it, or never leaves the pad. The grid brackets that boundary;
-    the search variants beside this file hunt it.
+    its commanded altitude, sags below it, or never leaves the pad. The grid brackets that boundary
+    between two cells.
 
 # --------------------------------------------------------------------------------------------
 # Factors. A full 3 x 2 x 2 grid = 12 configurations.
@@ -84,7 +84,7 @@ results_processing:
   postprocessing:
   # The bag -> CSV step must come first: EnvelopeMetrics reads what it writes.
   - rosbags_to_csv: {topics: [/drone/odom]}
-  - search/metrics.py:EnvelopeMetrics
+  - files/metrics.py:EnvelopeMetrics
 
 # --------------------------------------------------------------------------------------------
 # Visualisation. The roqsim `scene3d` panel is added automatically for a roqsim backend and is the
