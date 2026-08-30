@@ -519,14 +519,45 @@ class ContainerConfig(BaseModel):
 DEFAULT_SHM_SIZE = "512Mi"
 
 
-#: Environment variable names RoboVAST sets itself, which a campaign may not write.
+#: The environment variables RoboVAST sets itself, which a campaign may not write.
 #:
-#: Module level rather than inline in the validator below, because ``execution.env`` is no
+#: **What belongs here is the run's own protocol** -- what identifies it, where it writes,
+#: what it runs, and the credentials it uploads with. Overriding any of these does not fail;
+#: it produces a run that works and reports the wrong thing, which is the failure a campaign
+#: cannot see. ``SCENARIO_PARAMETER_FILE`` is the sharpest case: repointing it changes which
+#: parameters the runner reads while every result still carries the configuration's name.
+#:
+#: **What deliberately does NOT belong here** is the handful of display and GPU hints a lane
+#: arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
+#: Those steer how a container renders, not whether its results mean what they say, and a
+#: campaign has legitimate reasons to set them.
+#:
+#: **Module level, not inline in the validator below**, because ``execution.env`` is no
 #: longer the only way into a run's environment: the ``sut:`` channel's ``env`` carrier
-#: reaches the same place by a different route, and a guard that lived in one field's
-#: validator would protect one route and silently not the other.
+#: reaches the same place by a different route, and a guard living inside one field's
+#: validator would protect that field and silently not the other.
+#:
+#: This list is checked against the emitters by ``tests/common/test_reserved_env.py``, which
+#: fails when a lane starts injecting a name that is not registered here. A hand-maintained
+#: denylist goes stale silently -- it passes while it protects nothing -- and that test is
+#: what stops this one from doing so.
 RESERVED_ENV_NAMES = frozenset({
-    'CAMPAIGN_ID', 'ROS_LOG_DIR', 'PRE_COMMAND', 'POST_COMMAND',
+    # identity and the record
+    'CAMPAIGN_ID',
+    # where the run writes
+    'OUTPUT_DIR', 'SCENARIO_OUTPUT_DIR', 'RUN_OUTPUT_DIR', 'OUTPUT_RESULT_PER_SCENARIO',
+    # what the run executes, and with what
+    'SCENARIO_FILE', 'SCENARIO_PARAMETER_FILE', 'SCENARIO_EXECUTION_PARAMETERS',
+    'SCENARIO_MODE', 'SIMULATION', 'CONTAINER_NAME', 'ROBOVAST_CONTAINER_COMMAND',
+    # hooks the campaign declares by their own keys, not by env
+    'PRE_COMMAND', 'POST_COMMAND',
+    # logging derived from the .vast
+    'BT_LOG', 'LOG_TOPICS',
+    # what the container is allowed to use
+    'AVAILABLE_CPUS', 'AVAILABLE_MEM',
+    # upload credentials and where a campaign's objects land
+    'S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_PREFIX',
+    'S3_CAMPAIGN_PREFIX',
 })
 
 
@@ -708,7 +739,14 @@ class ExecutionConfig(BaseModel):
     @field_validator('env')
     @classmethod
     def validate_no_reserved_env_vars(cls, v: Optional[list[dict[str, str]]]) -> Optional[list[dict[str, str]]]:
-        """Validate that env does not contain reserved environment variable names."""
+        """Refuse an ``env`` entry naming something RoboVAST sets itself.
+
+        Refused at validation rather than left to the lanes, because whether a campaign's
+        value actually displaces RoboVAST's depends on emission order and on each lane's
+        duplicate-key semantics -- so "it happens not to win today" is not a property to
+        rely on, and a campaign that quietly had no effect is indistinguishable from one
+        that worked.
+        """
         if v is None:
             return v
 
