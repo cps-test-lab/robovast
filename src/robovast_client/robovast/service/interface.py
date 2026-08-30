@@ -910,6 +910,12 @@ class UpgradeInfo(BaseModel):
     #: What the tag points at in the registry right now. ``""`` means the registry did not
     #: say, which is **not** "nothing newer".
     registry_digest: str = ""
+    #: When the published image was built (RFC 3339), read from its OCI ``created`` label.
+    #: ``""`` when the registry did not say or the image carries no stamp -- never a
+    #: substituted date, which would be read as the age of what is published and believed.
+    #: There is no counterpart for :attr:`running_digest`: the running image reports its own
+    #: build date in ``VersionInfo.built_at``, from inside, without asking the registry.
+    registry_built_at: str = ""
     #: True/False when both digests are known. **``None`` means unknown** and must not be
     #: rendered as "up to date" -- a consumer still offers the roll, it just cannot promise
     #: the roll will change anything.
