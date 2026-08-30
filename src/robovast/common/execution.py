@@ -462,7 +462,7 @@ def resolve_sidecar_image(explicit: str | None = None) -> str:
 
 
 #: Env var carrying the revision this code was built from, set into the image at build
-#: time (``container/robovast/build.sh`` -> ``ARG``/``ENV``). It exists because the git
+#: time (``container/image_stamp.sh`` -> ``ARG``/``ENV``). It exists because the git
 #: lookup below **cannot** work in a deployed image: the package is installed, so there is
 #: no ``.git`` above ``site-packages/robovast/common/``, and ``git rev-parse`` there finds
 #: no repository however present the git binary is. Baking it at build time is the only
@@ -508,6 +508,29 @@ def _git_revision() -> "str | None":
     except Exception:  # noqa: BLE001 - no repo, no git binary: not a revision, not an error
         return None
     return f"{sha}+dirty" if dirty else sha
+
+
+#: Env var carrying the wall-clock time the image was built, set alongside
+#: :data:`GIT_REVISION_ENV` by ``container/image_stamp.sh``. Baked for the same reason and a
+#: sharper one: a container cannot read its own labels, so ``org.opencontainers.image.created``
+#: -- which every published image carries -- is invisible to the process running inside it.
+BUILD_DATE_ENV = "ROBOVAST_BUILD_DATE"
+
+
+def build_date() -> str:
+    """When this process's image was built (RFC 3339, UTC), or ``""`` when not determinable.
+
+    Answers the question a revision cannot: *how old is what is deployed?* A short sha is only
+    comparable against a checkout, so an operator looking at a service — deciding whether the
+    build in front of them predates a fix — has nothing to read it against. A timestamp is
+    legible on its own.
+
+    ``""`` carries the same meaning it does in :func:`code_revision`: **this deployment cannot
+    tell you**. A source checkout has no build to date, and neither has an image built by hand
+    without the build arg. Substituting anything here — the file's mtime, today's date — would
+    manufacture an answer to a question that has none, and it would be believed.
+    """
+    return os.environ.get(BUILD_DATE_ENV, "").strip()
 
 
 #: How many changed paths a provenance record keeps. A dirty tree can hold thousands, and a

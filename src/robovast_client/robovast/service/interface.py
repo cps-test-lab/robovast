@@ -747,6 +747,17 @@ class VersionInfo(BaseModel):
     #: older fields carried the same SHA and the semver was reported nowhere at all. A
     #: surface showing both was showing one string twice.
     package_version: str = ""
+    #: When the image this service runs was built (RFC 3339, UTC), or ``""`` when this
+    #: deployment cannot tell — a source checkout, or an image built without the build arg.
+    #:
+    #: The fourth question the three above cannot answer between them: *how old is what is
+    #: deployed?* A revision and a semver are both only comparable against something else —
+    #: a checkout, a changelog — while a date is legible on its own, which is what an
+    #: operator deciding whether to upgrade actually reads.
+    #:
+    #: ``""`` is information, exactly as it is for :attr:`code_revision`. A consumer prints
+    #: nothing rather than a placeholder: a substituted date would be believed.
+    built_at: str = ""
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
 

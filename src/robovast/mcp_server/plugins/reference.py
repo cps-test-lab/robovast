@@ -160,6 +160,9 @@ def get_service_info() -> dict:
         ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
         fine for a pilot, fragile for a large campaign's result transfers.
 
+        ``built_at`` is when the running image was built (RFC 3339, UTC); absent for a
+        source checkout, which has no build to date.
+
         ``can_build_images`` says whether this deployment can build an experiment image at
         all — check it before authoring a container that adds packages, because otherwise
         the refusal arrives at ``start_campaign``, after the push and the workspace.
@@ -191,6 +194,10 @@ def get_service_info() -> dict:
     # zero. Absent rather than empty so a caller cannot print it as one.
     if getattr(v, "package_version", ""):
         info["package_version"] = v.package_version
+    # Same rule again: a source checkout has no build to date, and inventing one would be
+    # read as the age of the deployment.
+    if getattr(v, "built_at", ""):
+        info["built_at"] = v.built_at
     # Only when set: a null root reads as "unknown", when the truthful statement is
     # "this service has no path you can open" — so say nothing rather than say null.
     if v.results_root:

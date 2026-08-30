@@ -191,10 +191,24 @@ against today's size.
 
 **What version is running, and is there a newer one.** The page reports the version, the
 git revision where the deployment can tell (blank means it cannot, which is not a
-mismatch), and the image digest the kubelet actually resolved — the only thing that
-distinguishes two builds of a floating tag. Against that it reports what the tag points at
-in the registry now. A registry that does not answer is reported as *unknown*, never as "up
-to date": that would tell you a fix you have just published is not there.
+mismatch), **when the running image was built**, and the image digest the kubelet actually
+resolved — the only thing that distinguishes two builds of a floating tag. Against that it
+reports what the tag points at in the registry now. A registry that does not answer is
+reported as *unknown*, never as "up to date": that would tell you a fix you have just
+published is not there.
+
+The build date is the one line that reads without a second thing to compare it against: a
+revision needs a checkout and a semver needs a changelog, while "built 18 days ago" answers
+"is this deployment old?" on its own. It comes from the image itself, baked in at build time
+(see :doc:`images`) rather than read from a label — a container cannot read its own labels —
+so it is **absent** on a source checkout or a hand-built image rather than guessed at.
+
+Note the asymmetry, which is deliberate: the *available* image is shown as a digest only. A
+version and a date can be asked of the image this service is executing and not of one it is
+not, and the answer would cost a walk through the registry's manifests and config blob on
+every poll. It would also decide nothing — Upgrade is not a choice between versions, it rolls
+onto whatever the tag points at — so the digest and the verdict beside it are the whole answer
+this page needs.
 
 **Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
 annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the

@@ -27,8 +27,8 @@ PLATFORM=""
 . "$ROOT/container/buildcache.sh"
 # shellcheck source=container/ask_push.sh
 . "$ROOT/container/ask_push.sh"
-# shellcheck source=../git_revision.sh
-. "$ROOT/container/git_revision.sh"
+# shellcheck source=../image_stamp.sh
+. "$ROOT/container/image_stamp.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -90,15 +90,17 @@ fi
 # scratch whenever the local builder has lost its cache.
 buildcache_args "$TAG" "${PUSH:-}"
 
-# The service image is the one asked "is the change I just made loaded?", so it is the one that
-# must carry the answer: the `ENV` this sets is all `code_revision()` has to go on in a pod,
-# where there is no `.git` above site-packages to ask instead.
-git_revision_args "$ROOT"
+# The service image is the one asked "is the change I just made loaded?" and "how old is what
+# is deployed?", so it is the one that must carry both answers: the `ENV`s this sets are all
+# `code_revision()` and `build_date()` have to go on in a pod, where there is no `.git` above
+# site-packages to ask and no way to read the image's own labels from inside it.
+image_stamp_args "$ROOT"
 
 docker buildx build \
   "${BUILDX_ARGS[@]}" \
   "${BUILDCACHE_ARGS[@]}" \
   "${GIT_REVISION_ARGS[@]}" \
+  "${BUILD_DATE_ARGS[@]}" \
   $EXTRA_ARGS \
   -t "$TAG" \
   -f "$BASEDIR/Dockerfile" \
