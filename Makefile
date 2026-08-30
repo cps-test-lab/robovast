@@ -241,11 +241,26 @@ image-digests:
 build-client:
 	cd src/robovast_client && poetry build
 
+# TestPyPI refuses to re-upload a filename it already holds, so a second rehearsal of the
+# same version is a 400. It does NOT build-client: the rehearsal is stamped with a
+# post-release of the tree's version (2.1.0, then 2.1.0.post1, .post2, ...) so it can be
+# repeated as often as the packaging claim needs, and pyproject.toml keeps the version
+# that will reach real PyPI rather than one inflated by rehearsals. The stamp is restored
+# on the way out, including on failure -- see tools/next_testpypi_version.py for why it is
+# a post-release and not a .devN.
+# DRY_RUN=1 stamps and builds but uploads nothing.
 .PHONY: publish-client-test
-publish-client-test: build-client
+publish-client-test:
 	@echo "Publishing robovast-client to TestPyPI..."
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
-	cd src/robovast_client && poetry publish --repository testpypi
+	@cd src/robovast_client && \
+		base=$$(poetry version -s) && \
+		stamp=$$(python3 ../../tools/next_testpypi_version.py robovast-client "$$base") && \
+		echo "Rehearsing as $$stamp; pyproject.toml stays at $$base." && \
+		trap 'poetry version "$$base" >/dev/null' EXIT && \
+		poetry version "$$stamp" >/dev/null && \
+		poetry build && \
+		poetry publish --repository testpypi $(if $(DRY_RUN),--dry-run,)
 
 # Where the packaging claim gets tested, from a real wheel rather than a source tree.
 # `--help` exiting 0 is not enough: the distribution's whole point is what it does NOT
@@ -255,7 +270,12 @@ publish-client-test-venv:
 	@echo "Installing ONLY robovast-client from TestPyPI, in a fresh venv..."
 	rm -rf /tmp/robovast-client-test-venv
 	python3 -m venv /tmp/robovast-client-test-venv
+# --no-cache-dir because pip caches the index page: without it, a rehearsal minutes after
+# its own upload resolves to the version cached BEFORE it and tests a wheel nobody just
+# built. That is not hypothetical -- it is how this target once reported a missing verb
+# against a stale release while the fresh one sat on the index unread.
 	/tmp/robovast-client-test-venv/bin/pip install \
+		--no-cache-dir \
 		--index-url https://test.pypi.org/simple/ \
 		--extra-index-url https://pypi.org/simple/ \
 		robovast-client
@@ -353,13 +373,33 @@ publish-client: build-client
 		exit 1; }
 	cd src/robovast_client && poetry publish
 
+# Post-release stamped and repeatable, for the same reason publish-client-test is; see the
+# comment there and tools/next_testpypi_version.py. Each distribution gets its own number
+# because each has its own TestPyPI history -- they share a version in the tree, not
+# necessarily on the index. It does NOT depend on `build`, which builds all four at the
+# tree's plain version; only the two published here are stamped and built.
+#
+# robovast first, then robovast-nav, which requires it: nav's `robovast = "^2.0.0"` is a
+# range, so it accepts the stamped robovast, but the release has to be on the index by the
+# time nav's install is resolved.
+#
+# DRY_RUN=1 stamps and builds but uploads nothing -- the check for "what would this
+# publish, and does the stamp come back off afterwards?" that costs no version.
 .PHONY: publish-test
-publish-test: build
-	@echo "Publishing robovast to TestPyPI..."
+publish-test: ui-stage
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
-	poetry publish --repository testpypi
-	@echo "Publishing robovast-nav to TestPyPI..."
-	cd src/robovast_nav && poetry publish --repository testpypi
+	@set -e; for spec in "robovast:." "robovast-nav:src/robovast_nav"; do \
+		dist=$${spec%%:*}; dir=$${spec#*:}; \
+		echo "Publishing $$dist to TestPyPI..."; \
+		( cd "$$dir" && \
+			base=$$(poetry version -s) && \
+			stamp=$$($(CURDIR)/tools/next_testpypi_version.py "$$dist" "$$base") && \
+			echo "Rehearsing as $$stamp; pyproject.toml stays at $$base." && \
+			trap 'poetry version "$$base" >/dev/null' EXIT && \
+			poetry version "$$stamp" >/dev/null && \
+			poetry build && \
+			poetry publish --repository testpypi $(if $(DRY_RUN),--dry-run,) ); \
+	done
 
 
 .PHONY: publish-test-venv
@@ -367,7 +407,10 @@ publish-test-venv:
 	@echo "Testing install from TestPyPI in a fresh venv..."
 	rm -rf /tmp/robovast-test-venv
 	python3 -m venv /tmp/robovast-test-venv
+# --no-cache-dir for the reason publish-client-test-venv carries it: pip's cached index
+# page outlives the upload, and the rehearsal would test the release before this one.
 	/tmp/robovast-test-venv/bin/pip install \
+		--no-cache-dir \
 		--index-url https://test.pypi.org/simple/ \
 		--extra-index-url https://pypi.org/simple/ \
 		robovast robovast-nav
