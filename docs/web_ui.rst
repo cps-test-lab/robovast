@@ -260,7 +260,8 @@ suspends or a tunnel is torn down, the socket raises no error, reports ``OPEN`` 
 delivers nothing more — indistinguishable from a campaign that simply has not changed. So
 the service heartbeats every quiet second with a *visible* event (:doc:`http_api`), and the
 UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
-connection whenever the tab becomes visible, the network returns, or the check next runs.
+connection whenever the tab becomes visible, the page it feeds is switched to, the network
+returns, or the check next runs.
 The **Refresh** button beside the campaign list's heading does the same thing on demand — it
 is not the only way to get there, which is why it is an icon rather than a labelled
 button: it sits next to the heading it acts on, the way the Explorer's and the run view's do.
@@ -295,6 +296,19 @@ The gate is also what stops a hidden page from spending on the service's behalf:
 the Admin page cost a container-registry round trip every minute for as long as the tab was
 open, whichever page you were actually looking at, and each running campaign cost a
 Kubernetes API call every two seconds from a card nobody could see.
+
+**The file open in the config editor is a stronger case than the rest**, because that editor
+autosaves on every keystroke. A buffer holding a file's old contents does not merely show you
+something out of date — the next character you type writes it back over whoever changed that
+file in the meantime. So returning to Config also re-reads the open file and compares it with
+what the server last held. Unchanged, nothing happens. Changed on disk while your buffer holds
+exactly what was last saved from it — the ordinary case, since autosave keeps those equal —
+and the new version is simply loaded, with the save chip saying ``reloaded from disk`` so the
+editor is never seen to swap its contents without a word. Only if *both* have moved is there
+anything to decide, and then it asks: **Load the new version**, discarding your unsaved edits,
+or **Keep mine**, which saves them over the change on disk. Keeping yours writes immediately
+rather than waiting for your next keystroke, so the answer you gave and the file on disk do
+not disagree in the meantime.
 
 **The app itself** can go stale too, and it is the one thing here that no amount of
 polling helps with. Each view is a separate chunk fetched on first visit, named by a
