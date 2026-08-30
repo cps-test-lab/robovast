@@ -28,6 +28,7 @@ import {
   type PlotSpec,
 } from '@/lib/robovastClient'
 import { FailureBox } from '@/components/StatusView'
+import { useToasts } from '@/components/ToastProvider'
 import { formatDataFetchLabel } from '@/lib/format'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
@@ -72,6 +73,7 @@ export function DataBrowser({
   sqlRequest?: SqlRequest
 }) {
   const qc = useQueryClient()
+  const { notify } = useToasts()
   const [sqlBuffer, setSqlBuffer] = useState(DEFAULT_SQL)
   const [activeSql, setActiveSql] = useState(DEFAULT_SQL)
   const [x, setX] = useState('')
@@ -145,10 +147,25 @@ export function DataBrowser({
   )
   const postprocess = useMutation({
     mutationFn: () => robovast.runPostprocessing(campaignId),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // `ok: false` is the busy guard refusing because something is already running. It used to
+      // land here and be discarded, which left the button looking like it had worked.
+      if (!res.ok) {
+        notify({
+          severity: 'warning',
+          message: 'Postprocessing was not started',
+          note: res.message || 'Another operation is already running on this campaign.',
+        })
+        return
+      }
       qc.invalidateQueries({ queryKey: ['describe', campaignId] })
       qc.invalidateQueries({ queryKey: ['query', campaignId] })
       qc.invalidateQueries({ queryKey: ['plots', campaignId] })
+      notify({
+        severity: 'info',
+        message: 'Postprocessing started',
+        note: 'These results refresh when it finishes.',
+      })
     },
   })
 

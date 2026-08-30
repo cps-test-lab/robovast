@@ -571,6 +571,12 @@ once an **hour** with the current run progress, when it is **uploaded** to the
 share, and exactly one message when the campaign **ends** — whether that end is
 a finish, a **stop**, or (urgently) a **failure**.
 
+Re-running a campaign also announces itself, on the topic of the campaign it was
+re-run *from*: the new campaign gets its own id, and someone following the old one
+otherwise has no way to learn which. It is not an ending — the source campaign is
+unmodified and still sends its own — and the re-run announces its own start as
+usual.
+
 The ending message is worth reading rather than glancing at. It is sent when the
 campaign is genuinely over, *after* postprocessing rather than when the last run
 stops, and it carries what the campaign actually produced: the run tally, and any

@@ -1957,6 +1957,38 @@ a finished campaign's runs are fixed, it is a ``useMemo`` and not a watcher.
 
 .. _frontend-tests:
 
+**Saying something short-lived: useToasts.** ``frontend/ui/src/components/ToastProvider.tsx``
+is the app-wide way to state a passing fact — mounted once in ``main.tsx``, used as
+``const { notify } = useToasts()``. It is the sibling of ``DialogProvider``: that one asks a
+question and blocks on the answer, this one states a fact and gets out of the way. Three rules
+travel with it.
+
+*Failures do not go through it.* The ``Severity`` union in ``lib/toasts.ts`` has no ``error``
+member, which is the rule expressed as a type: a refusal or an error carries backend text worth
+reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
+become transient.
+
+*It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
+wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
+and the upgrade handover in ``AdminPage`` — calls ``lib/browserNotify.post`` itself, beside its
+``notify``. That keeps the Notification API out of a React component, and out of a flag threaded
+through the queue that only some callers would set. ``post`` enforces its own preconditions,
+including that the tab is actually hidden, so a later caller cannot forget them.
+
+Both callers have the same shape, which is what the sink is for: work that **outlives the view
+that started it**. A campaign runs on the service; a service roll keeps polling from a
+``KeepAlive``-mounted Admin page. In each case the thing that finishes has no reason to expect
+the user to still be looking at the page that started it.
+
+*It is not a route to ntfy.* Campaign lifecycle already reaches a phone from the server
+(``robovast.execution.notify``), once per campaign. Fanning out from the browser would send one
+push per open tab and would put the ntfy token in the client.
+
+The queue itself (``lib/toasts.ts``) and the phase diff behind the lifecycle notices
+(``lib/campaignEvents.ts``) are pure and unit-tested; the provider around them is not. Note
+that remote panels (``frontend/panel-kit/``) share only ``react``/``react-dom`` with the host,
+so a federated panel **cannot** reach this context — one that needs it must be handed a builtin.
+
 **Frontend tests stay minimal.** ``npm run test`` runs `vitest
 <https://vitest.dev>`_ over the pure modules in ``frontend/ui/src/lib/`` — and nothing else.
 The checks that matter most here are still ``npm run lint`` (``tsc --noEmit``) and

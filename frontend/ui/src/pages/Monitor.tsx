@@ -38,11 +38,12 @@ import {
   isTerminalPhase,
   type CampaignSummary,
   type JobSummary,
-  type ListCampaignsResponse,
   type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
+import { useCampaignStream } from '@/components/CampaignStreamProvider'
+import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
@@ -50,7 +51,6 @@ import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
-import { useLiveStream } from '@/lib/liveStream'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
@@ -266,6 +266,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   })
 
   const { confirm, prompt } = useDialogs()
+  const { notify } = useToasts()
 
   // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
   // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
@@ -320,8 +321,12 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const del = useMutation({
     mutationFn: () => robovast.deleteCampaign(id),
-    // The row (and every cached query for this campaign) is gone on success.
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    // The row (and every cached query for this campaign) is gone on success — which is also why
+    // the toast is the only thing left that can say what went.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      notify({ severity: 'success', message: `Deleted ${id}` })
+    },
   })
 
   const onReprocess = () => {
@@ -333,7 +338,18 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // invalidates the listing (where the new card appears) and nothing about this one.
   const retrigger = useMutation({
     mutationFn: () => robovast.retriggerCampaign(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSuccess: (ref) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      // The new campaign's card appears at the top of the list — it is the live one — which is
+      // not the same as knowing WHICH id is yours, so the id is named here. Keyed on this
+      // campaign so leaning on the menu entry refreshes one notice instead of stacking them.
+      notify({
+        severity: 'success',
+        key: `retrigger:${id}`,
+        message: `Retriggered as ${ref.campaign_id}`,
+        note: ref.note || undefined,
+      })
+    },
   })
 
   const onRetrigger = () => {
@@ -549,6 +565,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             onClick={() => {
               void navigator.clipboard?.writeText(shareCopy.url as string)
               closeMenu()
+              notify({ severity: 'success', key: 'share-link', message: 'Share link copied' })
             }}
           >
             <ListItemIcon><LinkRoundedIcon fontSize="small" /></ListItemIcon>
@@ -865,18 +882,13 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         </Alert>
       ) : null}
 
-      {/* The new campaign's card appears at the top of the list — it is the live one — which is
-          not the same as knowing WHICH id is yours, so the id is named here. Its own description
-          also reads "retrigger of <this id>". */}
+      {/* Only the failure stays on the card. A refusal names what was not done and carries the
+          backend's own text, which a notice that erases itself would take with it; the success
+          is a passing fact and goes to a toast (see the mutation above). */}
       {retrigger.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Retrigger failed — this campaign was not modified.
           <ErrorText>{(retrigger.error as Error).message}</ErrorText>
-        </Alert>
-      ) : retrigger.data ? (
-        <Alert severity="success" sx={{ mb: 1 }}>
-          Retriggered as <code>{retrigger.data.campaign_id}</code>.
-          {retrigger.data.note ? <ErrorText>{retrigger.data.note}</ErrorText> : null}
         </Alert>
       ) : null}
 
@@ -959,31 +971,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
       )}
     </Paper>
   )
-}
-
-// Live campaign list over SSE. The server pushes the full list on connect and on
-// every change (a server-side loop over list_campaigns), so this is the single
-// source for the list — no polling. useLiveStream owns the recovery: a dropped
-// connection, a stream the browser gave up on, and a socket that died silently
-// while the tab was in the background all end in a fresh EventSource, which re-sends
-// the whole list. `reconnect` is the same path on demand (the Refresh button).
-function useCampaignStream() {
-  const [data, setData] = useState<ListCampaignsResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const { state, reconnect } = useLiveStream(robovast.campaignsStreamUrl(), {
-    onMessage: (e) => {
-      setData(JSON.parse(e.data) as ListCampaignsResponse)
-      setError(null)
-    },
-    events: {
-      streamerror: (e) => setError(JSON.parse(e.data)),
-    },
-  })
-
-  // Anything but `open` means the list on screen may already be behind; keep showing it
-  // (it is still the best we have) and say so.
-  return { data, error, live: state === 'open', reconnect }
 }
 
 export function Monitor({

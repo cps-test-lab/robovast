@@ -15,6 +15,7 @@ import { robovast } from '@/lib/robovastClient'
 import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
 import { type ConfigSource } from '@/lib/configSource'
 import { useDialogs } from '@/components/DialogProvider'
+import { useToasts } from '@/components/ToastProvider'
 import { ConfigEditorPane } from './ConfigEditorPane'
 import { ConfigListPane } from './ConfigListPane'
 import { ConfigViewPane } from './ConfigViewPane'
@@ -40,6 +41,7 @@ export function ConfigPage({
 } = {}) {
   const qc = useQueryClient()
   const { prompt, confirm } = useDialogs()
+  const { notify } = useToasts()
   const [workspaceId, setWorkspaceId] = useState('')
   const [tab, setTab] = useState<'editor' | 'files'>('editor')
   const campaignMode = !!campaignId
@@ -112,9 +114,15 @@ export function ConfigPage({
 
   const deleteWs = useMutation({
     mutationFn: (id: string) => robovast.deleteWorkspace(id),
-    onSuccess: () => {
+    // The picker empties and the pane clears, neither of which names what was removed — and
+    // this one cannot be undone, so it is worth saying out loud.
+    onSuccess: (_res, deletedId) => {
       qc.invalidateQueries({ queryKey: ['workspaces'] })
       setWorkspaceId('')
+      // Read off the pre-invalidation list: by the time this resolves the row is gone, and a
+      // workspace is known by its name rather than its id.
+      const name = list.find((w) => w.workspace_id === deletedId)?.name
+      notify({ severity: 'success', message: `Deleted workspace ${name || deletedId}` })
     },
   })
 

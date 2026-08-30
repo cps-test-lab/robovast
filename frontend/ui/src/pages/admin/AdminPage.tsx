@@ -12,6 +12,8 @@ import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
+import { useToasts } from '@/components/ToastProvider'
+import * as browserNotify from '@/lib/browserNotify'
 import { LogPanel } from '@/components/LogPanel'
 import { useActiveView } from '@/lib/activeView'
 import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
@@ -61,6 +63,7 @@ function upgradeVerdict(info: UpgradeInfo): string {
 export function AdminPage() {
   const qc = useQueryClient()
   const { confirm } = useDialogs()
+  const { notify } = useToasts()
   const [rolling, setRolling] = useState(false)
   const [rollNote, setRollNote] = useState<string | null>(null)
   // Its own flag rather than `isFetching`, which is also true for the background poll below
@@ -157,6 +160,29 @@ export function AdminPage() {
     setRollNote(null)
     setHandover(false)
     setReloadIn(null)
+    // A roll outlives the page that started it: this component stays mounted behind
+    // KeepAlive and keeps polling wherever the user has navigated to. The handover alert
+    // below therefore lands on a panel nobody is looking at, and the countdown it starts
+    // reloads the whole document a few seconds later -- which the comment on that effect
+    // describes as "an expected blink", and it only is one for someone who is watching.
+    // So say it where the user actually is, and offer the same way out the alert offers.
+    const announceHandover = () => {
+      notify({
+        severity: 'success',
+        key: 'upgrade-handover',
+        message: 'RoboVAST upgraded',
+        note: `This page reloads in ${RELOAD_COUNTDOWN_S}s to pick up the new build.`,
+        action: { label: 'Not now', onClick: () => setReloadIn(null) },
+      })
+      // The second caller of this sink, and for the same reason as the first: the tab may not
+      // be on screen at all. `post` decides that for itself.
+      browserNotify.post({
+        title: 'RoboVAST upgraded',
+        body: 'Reload the page to finish.',
+        tag: 'upgrade-handover',
+      })
+    }
+
     setRolling(true)
     try {
       // `force` is exactly the dialog's answer: the only thing the server refuses is a
@@ -186,6 +212,7 @@ export function AdminPage() {
           void version.refetch()
           setHandover(true)
           setReloadIn(RELOAD_COUNTDOWN_S)
+          announceHandover()
           return
         }
       } catch {

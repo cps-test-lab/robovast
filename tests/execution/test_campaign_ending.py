@@ -194,3 +194,40 @@ def test_two_scopes_ending_the_same_campaign_send_one_message():
                                 RunOptions(finalize_phase=True), notifier)
     controller.end_campaign("c1", state, notifier)  # the worker's finally
     assert len(sent) == 1
+
+
+def test_retriggered_is_not_a_terminal_message():
+    """A re-run says where it went without spending the source's one end-of-life message.
+
+    ``retriggered`` reports on the SOURCE campaign's topic, and the source is unmodified by
+    a re-run -- so it must not go through ``_send_terminal``, which would swallow the real
+    "Campaign finished" that is still to come.
+    """
+    from robovast.execution.notify import Notifier
+
+    notifier = Notifier("c1", topic="t")
+    sent = []
+    notifier._send = lambda msg, **kw: sent.append(msg)
+
+    notifier.retriggered("c2")
+    notifier.finished("2 runs")
+
+    assert len(sent) == 2
+    assert "c2" in sent[0]
+    assert "finished" in sent[1].lower()
+
+
+def test_retriggered_is_silent_without_a_topic(monkeypatch):
+    """Unconfigured stays a no-op, like every other event -- no request is attempted."""
+    import requests
+
+    from robovast.execution.notify import Notifier
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("a disabled notifier must not reach the network")
+
+    monkeypatch.setattr(requests, "post", _refuse)
+
+    notifier = Notifier("c1")           # no topic -> disabled
+    assert not notifier.enabled
+    notifier.retriggered("c2")          # must not raise

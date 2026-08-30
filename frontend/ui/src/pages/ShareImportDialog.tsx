@@ -31,12 +31,12 @@ import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
-import CheckRoundedIcon from '@mui/icons-material/CheckRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 
 import { robovast } from '@/lib/robovastClient'
 import { formatBytes } from '@/lib/format'
 import { shareImportLink } from '@/lib/nav'
+import { useToasts } from '@/components/ToastProvider'
 import { matchRows, shareRows, type ShareCampaignRow } from '@/lib/shareArchives'
 
 export function ShareImportDialog({
@@ -245,27 +245,22 @@ function Row({
 
 /** Copy the deep link that opens this dialog on this campaign.
  *
- *  There is no snackbar anywhere in this app, and one import dialog is not the place to
- *  introduce toast infrastructure — so the acknowledgement is the icon itself, briefly. A
- *  copy button that looks identical before and after is one people press twice. */
+ *  A copy button that looks identical before and after is one people press twice, so the press
+ *  is acknowledged — through the app-wide toast (useToasts), which is why this no longer runs a
+ *  timer of its own. The toast is drawn above the dialog on purpose; see ToastProvider. */
 function CopyLinkButton({ campaignId }: { campaignId: string }) {
-  const [copied, setCopied] = useState(false)
+  const { notify } = useToasts()
   return (
-    <Tooltip title={copied ? 'Copied' : 'Copy a link that opens this import'}>
+    <Tooltip title="Copy a link that opens this import">
       <IconButton
         size="small"
         aria-label={`copy import link for ${campaignId}`}
         onClick={() => {
           void navigator.clipboard?.writeText(shareImportLink(campaignId))
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1500)
+          notify({ severity: 'success', key: 'share-link', message: 'Import link copied' })
         }}
       >
-        {copied ? (
-          <CheckRoundedIcon fontSize="small" color="success" />
-        ) : (
-          <LinkRoundedIcon fontSize="small" />
-        )}
+        <LinkRoundedIcon fontSize="small" />
       </IconButton>
     </Tooltip>
   )
