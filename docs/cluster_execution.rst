@@ -1098,14 +1098,21 @@ or the controller; a resumed campaign is a re-launch under its own id, and four 
   verdict instead of running them a second time;
 * ``create_campaign`` is idempotent by name, so the restored store re-opens its row.
 
-Three kinds of campaign are deliberately **left alone**, and each says which it is in the
-service log: one with no launch record or no frozen ``_config/`` (nothing says what to
-run), one whose frozen config this service cannot read unchanged (resuming would mean
-migrating it mid-campaign, making the second half a different experiment from the first),
-and a **search** -- whose proposer state is recorded nowhere a fresh process could read it,
-so resuming would silently skip evaluations the strategy believes it made. Each keeps the
-``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data stays recoverable
-with ``vast campaign import``.
+**A search is picked up too.** Nothing about its strategy is serialized; the strategy is
+re-driven through the exact ``ask``/``tell`` sequence its own ``unit`` rows recorded, which
+reproduces the original search for a strategy that is a function of its seed and its
+evaluations -- every strategy shipped here. That is why ``campaign.db`` is published at
+each batch boundary: those rows *are* the checkpoint. Two conditions are checked before the
+campaign is re-launched rather than discovered halfway through its second half:
+``search.seed`` is set (an unseeded strategy re-seeds from entropy, so the replay would
+rebuild a different search) and the strategy does not declare ``RESUMABLE = False``.
+
+Campaigns are deliberately **left alone** when nothing says what to run (no launch record,
+or no frozen ``_config/``), when the frozen config cannot be read unchanged (resuming would
+mean migrating it mid-campaign, making the second half a different experiment from the
+first), or when a search fails either condition above. Each says which it is in the service
+log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
+stays recoverable with ``vast campaign import``.
 
 
 How free capacity is measured, and why it is not the whole cluster

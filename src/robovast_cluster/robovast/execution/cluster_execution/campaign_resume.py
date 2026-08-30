@@ -42,6 +42,13 @@ terminal ``_execution/outcome.json``. Listing live Jobs would be a second source
 same set — a campaign with live Jobs is indexed and has no outcome — and two sources of
 one truth is one more way for them to disagree.
 
+**A search is picked up too**, when it can be: it re-drives its strategy through the
+ask/tell sequence its own store recorded, which reproduces the original search exactly for
+a strategy that is a function of its seed and its evaluations. The two conditions that
+makes true -- a seed is set, and the strategy does not declare itself unresumable -- are
+checked before the campaign is re-launched rather than discovered halfway through its
+second half.
+
 **Refusals are left alone rather than failed.** A campaign this module will not pick up
 keeps whatever ``reconstruct_status_from_disk`` says about it, which is ``crashed``: the
 honest answer for a campaign nothing is driving. Its data stays recoverable by hand
@@ -132,11 +139,9 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
             f"Resuming it would mean migrating the config mid-campaign, which would make its "
             f"second half a different experiment from its first.")
     if campaign_config.search is not None:
-        return None, None, (
-            "it is a search, and a search's proposer state is not recorded anywhere a fresh "
-            "process could read it. Resuming without it would skip evaluations the strategy "
-            "believes it made; its batches so far are recoverable with 'vast campaign "
-            "import'.")
+        refusal = _search_refusal(campaign_config.search, vast_path)
+        if refusal is not None:
+            return None, None, refusal
 
     try:
         pinned = campaign_pinned_images(campaign_root)
@@ -157,6 +162,34 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
     target = WorkspaceTarget(config_path=str(vast_path), campaign_id=campaign_id,
                              pinned_images=pinned or None)
     return target, request, None
+
+
+def _search_refusal(search, vast_path) -> "str | None":
+    """Why this search cannot be picked up, or ``None`` when it can.
+
+    A search resumes by re-driving its strategy through the ask/tell sequence its own store
+    recorded (``SearchStrategy.resume``); nothing about the strategy is serialized. That
+    reproduces the original search exactly, but only under two conditions, and both are
+    checked here rather than discovered halfway through the second half of a campaign.
+    """
+    from robovast.search.plugins import STRATEGY_GROUP, load_ref
+
+    if search.seed is None:
+        return ("it is a search with no 'search.seed'. A resumed search re-drives its "
+                "strategy through the sequence it recorded, and an unseeded strategy "
+                "re-seeds from entropy -- so the second half would be a different search "
+                "from the first rather than a continuation of it. Set search.seed to make "
+                "a campaign resumable (and reproducible at all).")
+    try:
+        strategy_cls = load_ref(search.strategy, STRATEGY_GROUP, str(Path(vast_path).parent))
+    except Exception as e:  # noqa: BLE001 - an unloadable strategy is a refusal, not a crash
+        return (f"its strategy {search.strategy!r} could not be loaded here, so whether it "
+                f"can be resumed cannot be answered ({e}).")
+    if not getattr(strategy_cls, "RESUMABLE", False):
+        return (f"its strategy {search.strategy!r} declares itself not resumable "
+                f"(RESUMABLE = False): it depends on something a seed does not fix, so "
+                f"replaying its recorded batches would rebuild a different search.")
+    return None
 
 
 def _description(campaign_root: Path) -> str:

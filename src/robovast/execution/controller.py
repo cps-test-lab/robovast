@@ -568,6 +568,11 @@ class CampaignController:
         # not lose the counts the stop record and the progress line are built from.
         self._evaluations_done = 0
         self._runs_done = 0
+        # Zero for a campaign starting now; for one being re-entered after a service
+        # restart, everything its earlier life recorded. `_search_loop` already begins at
+        # `self._batches_done` -- it was written that way so an abort mid-loop still counted
+        # the batches behind it -- so seeding these IS the resume.
+        start -= self._rehydrate_search(campaign_id)
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -597,6 +602,58 @@ class CampaignController:
                 elapsed_s=time.monotonic() - start, **self._abort_outcome(exc))
             raise
         return self._finish_search(campaign_id, result, self._batches_done, start)
+
+    def _rehydrate_search(self, campaign_id: int) -> float:
+        """Re-drive the strategy and the counters from what this campaign already recorded.
+
+        Returns how long the campaign has already been alive, in seconds, which the caller
+        subtracts from its ``time.monotonic()`` origin. Wall-clock age rather than time
+        actually spent computing, because that is what a ``time`` budget caps: a search that
+        got a fresh clock on every restart would have no wall-clock bound at all.
+
+        A no-op for a campaign starting now, whose store has no batches -- so there is no
+        resume branch here, only a loop over a record that is usually empty.
+
+        The strategy is re-driven through :meth:`~robovast.search.strategy.SearchStrategy.resume`
+        rather than restored from a serialized state, because nothing serializes one; see
+        that method for why the replay is by batch and asks before it tells.
+        """
+        from robovast.search.history import recorded_batches
+
+        batches = recorded_batches(self.store, campaign_id)
+        if not batches:
+            return 0.0
+        self.strategy.resume(batches)
+        self._batches_done = len(batches)
+        for batch in batches:
+            self._evaluations_done += len(batch.evaluations)
+            self._history.extend(batch.evaluations)
+            # What the batch COST, by the same measure the live loop uses: executions
+            # attempted, counted from what was asked for rather than from what produced a
+            # sample. A draw that composed to nothing still occupied the plan.
+            self._runs_done += sum(
+                (ev.params.n_reps or self.runs) for ev in batch.evaluations)
+            self._runs_done += (batch.asked - len(batch.evaluations)) * self.runs
+        logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
+                    "%d run(s) already spent.",
+                    self._batches_done, self._evaluations_done, self._runs_done)
+        return max(0.0, time.time() - (self._campaign_started_at(campaign_id) or time.time()))
+
+    def _campaign_started_at(self, campaign_id: int):
+        """The campaign row's ``created_at``, or ``None`` when it cannot be read.
+
+        ``None`` means the elapsed budget restarts from zero, which is the wrong answer but
+        the only honest one available -- and it is reported by the caller's own log line
+        rather than silently assumed.
+        """
+        try:
+            row = self.store._conn.execute(  # noqa: SLF001 - no narrower reader exists
+                "SELECT created_at FROM campaign WHERE id = ?", (campaign_id,)).fetchone()
+            return row[0] if row else None
+        except Exception as e:  # noqa: BLE001 - a clock is not worth ending a campaign
+            logger.warning("Could not read the start time of campaign %s: %s",
+                           self.campaign_id, e)
+            return None
 
     def _abort_outcome(self, exc) -> dict:
         """``stop_kind``/``stop_reason`` for a search that ended by raising.

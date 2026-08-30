@@ -141,20 +141,47 @@ def test_a_campaign_with_no_frozen_config_is_left_alone(tmp_path):
     assert "_config/" in refusal
 
 
-def test_a_search_is_left_alone_and_says_why(tmp_path):
-    """Its proposer state is recorded nowhere a fresh process could read it.
+def _search(seed=7, strategy="random"):
+    return {"strategy": strategy, "per_batch": 2, "budget": [{"batches": 3}], "seed": seed,
+            "extract": {"plugin": "failure_rate"},
+            "objectives": [{"name": "t", "direction": "minimize"}],
+            "search_space": {"a": {"type": "float", "low": 0.0, "high": 1.0}}}
 
-    Resuming without it would skip evaluations the strategy believes it made — a quietly
-    different search, which is worse than a campaign that says it crashed.
+
+def test_a_seeded_search_is_picked_up(tmp_path):
+    """It resumes by re-driving its strategy through the batches its store recorded."""
+    root = _campaign(tmp_path, "camp-a", launch={"runs": 2}, vast=_vast(search=_search()))
+
+    target, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+
+    assert refusal is None
+    assert target.campaign_id == "camp-a"
+
+
+def test_an_unseeded_search_is_left_alone_and_says_why(tmp_path):
+    """Without a seed the replay rebuilds a *different* search, not a continuation.
+
+    Which is worse than a campaign that plainly says it crashed: nothing downstream would
+    ever report that the second half stopped being the same experiment as the first.
     """
-    root = _campaign(tmp_path, "camp-a", launch={"runs": 2}, vast=_vast(search={
-        "strategy": "random", "per_batch": 2, "budget": [{"batches": 3}],
-        "extract": {"plugin": "robovast.search.extractors.scenario:ScenarioOutcome"},
-        "objectives": [{"name": "t", "direction": "minimize"}],
-        "search_space": {"a": {"type": "float", "low": 0.0, "high": 1.0}}}))
+    root = _campaign(tmp_path, "camp-a", launch={"runs": 2},
+                     vast=_vast(search=_search(seed=None)))
 
     _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
-    assert "search" in refusal and "skip evaluations" in refusal
+
+    assert "search.seed" in refusal and "different search" in refusal
+
+
+def test_a_strategy_that_declares_itself_unresumable_is_left_alone(tmp_path, monkeypatch):
+    """The opt-out for a strategy that depends on something a seed does not fix."""
+    from robovast.search.strategies import random_search
+
+    monkeypatch.setattr(random_search.RandomSearch, "RESUMABLE", False, raising=False)
+    root = _campaign(tmp_path, "camp-a", launch={"runs": 2}, vast=_vast(search=_search()))
+
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+
+    assert "not resumable" in refusal and "random" in refusal
 
 
 # -- end to end through the fake --------------------------------------------------------
