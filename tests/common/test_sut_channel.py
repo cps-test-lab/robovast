@@ -113,6 +113,31 @@ def test_a_source_on_a_container_another_channel_owns_is_refused(tmp_path, conta
         declared_sources(execution, str(tmp_path))
 
 
+def test_every_defined_role_but_sut_is_refused_a_source(tmp_path):
+    """Driven off the role set, not off the two names that exist today.
+
+    The test above names ``simulation`` and ``scenario`` because it checks their messages;
+    this one is the rule. A defined role added later arrives here refused -- what it must be
+    until whichever channel owns its configuration says otherwise -- instead of being
+    permitted by a list nobody remembered to extend.
+    """
+    from robovast.common.config import CONTAINER_ROLES, SUT_CONTAINER
+    for role in CONTAINER_ROLES:
+        execution = {"containers": {role: {"config_files": {"x": "files/x.yaml"}}}}
+        if role == SUT_CONTAINER:
+            assert declared_sources(execution, str(tmp_path))["x"].container == role
+            continue
+        with pytest.raises(SutChannelError, match="system under test"):
+            declared_sources(execution, str(tmp_path))
+
+
+def test_an_ad_hoc_container_beside_the_sut_may_declare_a_source(tmp_path):
+    """The refusal is about *defined roles*, not about being other than ``sut``: a stack that
+    runs in several containers declares each one's files on the container that reads them."""
+    execution = {"containers": {"planner": {"config_files": {"moveit": "files/m.yaml"}}}}
+    assert declared_sources(execution, str(tmp_path))["moveit"].container == "planner"
+
+
 def test_env_cannot_be_declared_as_a_file_source(tmp_path):
     execution = {"containers": {"sut": {"config_files": {"env": "files/x.yaml"}}}}
     with pytest.raises(SutChannelError, match="reserved"):

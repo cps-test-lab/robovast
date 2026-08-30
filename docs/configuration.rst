@@ -357,6 +357,12 @@ them plus a path inside it:
          sut: bt.//RecoveryNode[@name='NavigateRecovery']/@number_of_retries
          values: [2, 6]
 
+**A source name is unique across the campaign**, even though it is declared on a container.
+A destination names a source and nothing else, so the container it sits under says *who
+owns and reads that file* rather than scoping its name — the ``sut`` role, or an ad-hoc
+container beside it for a stack that runs in more than one. Two containers declaring the
+same name is refused for that reason, naming both.
+
 **A format owns its own path syntax.** RoboVAST splits a destination once, on the first
 ``.``, to find the source; everything after that goes to the file's format untouched. So
 the mapping formats take dotted keys — with ``[0]`` for a list index and ``['a.b']`` for a

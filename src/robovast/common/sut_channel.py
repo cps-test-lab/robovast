@@ -33,7 +33,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from .config import RESERVED_ENV_NAMES, SCENARIO_CONTAINER, SIMULATION_CONTAINER
+from .config import (CONTAINER_ROLES, RESERVED_ENV_NAMES, SCENARIO_CONTAINER,
+                     SIMULATION_CONTAINER, SUT_CONTAINER)
 from .sut_formats import CannotAnswer, resolve_format
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,9 @@ SUT_CONFIG_FILE = "sut.config"
 #: data*, and is not a character a ROS parameter name can contain.
 ABSENT = "$absent"
 
-#: The containers whose configuration another channel already owns. A source declared on
-#: one of these is refused: two channels addressing one thing is how they come to disagree.
+#: Which channel already owns a defined role's configuration, for the refusal message. Only
+#: the wording lives here -- what is *refused* is decided from :data:`CONTAINER_ROLES`, so a
+#: role added later fails closed rather than being permitted by a list nobody extended.
 _OTHER_CHANNELS = {
     SIMULATION_CONTAINER: "sim: (the simulator's own configuration)",
     SCENARIO_CONTAINER: "scenario: (a parameter the .osc declares)",
@@ -116,19 +118,24 @@ def declared_sources(execution: dict, vast_dir: str) -> dict:
     """Every config source the campaign declares, ``{name: Source}``.
 
     Sources belong to the containers that *implement* the system under test -- the ``sut``
-    role and any ad-hoc container beside it. A declaration on ``simulation`` or
-    ``scenario`` is refused naming the channel that already owns that surface.
+    role and any ad-hoc container beside it. A declaration on any *other* defined role is
+    refused, naming the channel that already owns that surface.
+
+    **A source name is unique across the campaign**, not per container: a destination names
+    a source and nothing else, so the container a source is declared on says who owns and
+    reads the file rather than scoping its name.
     """
     sources: dict = {}
     for container, block in ((execution or {}).get("containers") or {}).items():
         declared = (block or {}).get("config_files") if isinstance(block, dict) else None
         if not declared:
             continue
-        if container in _OTHER_CHANNELS:
+        if container in CONTAINER_ROLES and container != SUT_CONTAINER:
+            owner = _OTHER_CHANNELS.get(container, "another channel")
             raise SutChannelError(
                 f"container '{container}' declares config_files, but its configuration is "
-                f"addressed by {_OTHER_CHANNELS[container]}. The sut: channel is for the "
-                "containers that implement the system under test.")
+                f"addressed by {owner}. The sut: channel is for the containers that "
+                "implement the system under test.")
         for name, entry in declared.items():
             if name == ENV_SOURCE:
                 raise SutChannelError(
