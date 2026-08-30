@@ -86,6 +86,11 @@ def test_list_jobs_classifies_runs(transport):
     assert resp.counts.total == 3
     # display name is human friendly
     assert any(j.display_name == "cfgA · run 0" for j in resp.jobs)
+    # The local lane has no calibration concept -- there are no nodes to size against -- so
+    # every job here is one of the campaign's runs, by the schema default and not by a branch
+    # this lane has to carry.
+    assert all(j.kind == "run" for j in resp.jobs)
+    assert resp.counts.calibration == 0
 
 
 def test_list_jobs_ignores_reserved_dirs(transport):
@@ -536,6 +541,40 @@ def test_stop_job_refuses_an_unknown_job(transport, monkeypatch):
 
     assert "cfgZ/9" in str(excinfo.value)
     assert _killed(cdir) == {}
+
+
+def test_stop_job_refuses_a_calibration_probe(transport, monkeypatch):
+    """Stopping a job records a ``killed`` intervention against the runs it was carrying, and
+    a probe carries none: it is not one of the campaign's runs, and is deliberately absent
+    from the job-links manifest that resolves them. Killing one would write a record naming
+    runs that do not exist.
+
+    Refused in the shared precondition rather than in the cluster lane's ``stop_job``, so
+    this local-lane test pins the rule for both -- and pins the rule the web UI mirrors when
+    it decides whether to offer the button at all.
+    """
+    from robovast.service.interface import JobCounts, JobSummary, ListJobsResponse
+
+    cid = "campaign-2026-08-13-143000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0")
+    _live(transport, cid, "running", total=1)
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: pytest.fail("nothing may be killed on a refusal"))
+    # The local lane has no probes of its own; the guard belongs to the shared precondition,
+    # so the listing is what it reads and the listing is what this substitutes.
+    monkeypatch.setattr(transport, "list_jobs", lambda campaign_id: ListJobsResponse(
+        jobs=[JobSummary(job_name="probe-a", status="running", kind="calibration",
+                         display_name="calibration probe · node-a")],
+        counts=JobCounts(calibration=1)))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        transport.stop_job(cid, "probe-a", None, "mcp")
+
+    message = str(excinfo.value)
+    assert "calibration probe" in message, "the refusal must say what the job is"
+    assert "probe-a" in message
+    assert _killed(cdir) == {}, "a refused stop must record nothing"
 
 
 def test_stop_job_refuses_an_untracked_campaign(transport):

@@ -87,7 +87,7 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .manifests import JOB_TEMPLATE, MAIN_CONTAINER_NAME
+from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL, JOB_TEMPLATE, MAIN_CONTAINER_NAME
 # Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
 # import inside the loop would be noise. node_admission imports nothing from this package,
 # so there is no cycle to route around by importing late.
@@ -235,18 +235,23 @@ SCENARIO_PARAMS_ENV = "SCENARIO_EXECUTION_PARAMETERS"
 TICK_LOG_FLAG = "--tick-log"
 
 
-def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: str) -> dict:
+def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: str,
+                   display_name: str) -> dict:
     """A calibration probe's manifest, from the manifest a real job of this batch would use.
 
     Derived rather than built, because the measurement is only worth anything if the probe
     runs what the campaign runs -- same image, same containers, same scenario, same declared
-    resources. Three things differ and nothing else:
+    resources. Four things differ **in what the pod runs**, and nothing else does:
 
     * the Job's **name**, since it is not one of the batch's jobs;
     * ``SCENARIO_PARAMETER_FILE``, pointing at the probe's own document, whose ``_output_dir``
       keeps the scenario's results out of the run tree;
     * ``OUTPUT_DIR``, which keeps the job artifacts -- the monitor CSVs this exists to read --
-      out of it too.
+      out of it too;
+    * :data:`TICK_LOG_FLAG` on :data:`SCENARIO_PARAMS_ENV` -- the one difference that adds
+      something rather than isolating something, and the reason it is confined to the probe:
+      it is per-tick instrumentation on the trial's hot path, and the run that has to be
+      validated is the one deciding the allocation.
 
     Both output overrides are needed: they govern different halves of what a job writes, and
     changing only one leaves the probe writing into a real campaign run directory.
@@ -255,10 +260,27 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     same extra env, and a sidecar still writing to the old ``OUTPUT_DIR`` would put the
     simulator's and the system under test's own CSVs -- the two that matter most here -- back
     into the run tree.
+
+    Beside those three, two pieces of **identity**, which no container reads and which
+    therefore leave the measurement untouched:
+
+    * the :data:`~.manifests.JOB_KIND_LABEL` label, on the Job and on the pod template, so
+      every reader can tell a probe from a trial without matching on its name;
+    * its own ``job-name-full``, because the deepcopy would otherwise hand the probe the
+      display label of the job it was derived from -- putting a second row with job 0's name
+      into every listing, indistinguishable from the real one.
     """
 
     manifest = copy.deepcopy(base)
-    manifest.setdefault("metadata", {})["name"] = job_name
+    meta = manifest.setdefault("metadata", {})
+    meta["name"] = job_name
+    # ``setdefault`` on both levels: a minimal base manifest (an offline emit, a test) carries
+    # neither key, and this is metadata rather than a container edit, so there is nothing to
+    # refuse over.
+    meta.setdefault("labels", {})[JOB_KIND_LABEL] = CALIBRATION_JOB_KIND
+    template_meta = manifest["spec"]["template"].setdefault("metadata", {})
+    template_meta.setdefault("labels", {})[JOB_KIND_LABEL] = CALIBRATION_JOB_KIND
+    template_meta.setdefault("annotations", {})["job-name-full"] = display_name
     spec = manifest["spec"]["template"]["spec"]
     overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir}
     for container in list(spec.get("containers") or []) + list(spec.get("initContainers") or []):
@@ -1349,10 +1371,15 @@ class BatchJobRunner:
 
     def _create_probe(self, base, key, output_dir, node_id=None):
         """Create one probe Job. Signature matches the queue's create callback."""
+        # The node names the probe as well as its parameter file: ``_job_display_name`` only
+        # strips the campaign prefix, so this string is what the job listing shows. It is the
+        # identity hash ``probe_tag`` is built from, which names no machine.
+        node = node_id or self._probes.get(key)
         manifest = probe_manifest(
             base, job_name=key,
-            params_file=f"/config/{probe_tag(node_id or self._probes.get(key))}.params.yaml",
-            output_dir=f"/out/{output_dir}")
+            params_file=f"/config/{probe_tag(node)}.params.yaml",
+            output_dir=f"/out/{output_dir}",
+            display_name=f"calibration probe · {node}")
         self._pin(manifest, node_id)
         try:
             self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,

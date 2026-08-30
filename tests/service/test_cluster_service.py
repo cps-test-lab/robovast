@@ -675,10 +675,14 @@ def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
 
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None):
     ann = {"job-name-full": full} if full is not None else {}
+    # No ``labels`` attribute at all unless a kind is asked for: that is a Job created before
+    # the label existed, and the listing has to read it as one of the campaign's runs.
+    meta = ({"name": name} if kind is None
+            else {"name": name, "labels": {"jobgroup": "scenario-runs", "job-kind": kind}})
     return types.SimpleNamespace(
-        metadata=types.SimpleNamespace(name=name),
+        metadata=types.SimpleNamespace(**meta),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
         # suspend is vestigial -- nothing suspends a Job now -- but the field is part of
         # the Job shape the code reads, so the fake keeps it rather than diverging.
@@ -757,10 +761,45 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
     assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
             resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
+    assert resp.counts.calibration == 0
+    assert all(j.kind == "run" for j in resp.jobs), "an unlabelled Job is a campaign run"
     running = next(j for j in resp.jobs if j.job_name == "j-run")
     assert running.status == "running"
     # campaign prefix stripped from job-name-full for a readable label
     assert running.display_name == "batch-0-job-0"
+
+
+def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch):
+    """A probe carries the campaign's labels -- it is real work on a real node, and every
+    selector that counts or cleans up scenario-runs has to keep seeing it -- so it reaches
+    this listing. It must not reach the counts.
+
+    These counts are read as facts about RUNS, not about jobs: the web UI takes
+    ``failed`` as the runs that will never deliver (``lib/eta.ts``), and feeds it to the run
+    meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
+    reports a campaign run that never existed as finished.
+    """
+    jobs = [
+        _job("j-run", active=1, full="camp-2026-07-17-120000-batch-0-job-0"),
+        _job("probe-a", failed=1, full="calibration probe · node-a", kind="calibration"),
+    ]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-run")]))
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    probe = next(j for j in resp.jobs if j.job_name == "probe-a")
+    assert probe.kind == "calibration"
+    assert probe.status == "failed", "its own status still reported -- a failed probe matters"
+    # Named for the node it measures, not for the job whose manifest it was derived from.
+    assert probe.display_name == "calibration probe · node-a"
+    assert resp.counts.calibration == 1
+    assert resp.counts.failed == 0, "the probe's failure is not a run's"
+    assert (resp.counts.running, resp.counts.total) == (1, 1)
 
 
 def _job_pod(job_name, phase="Running"):
