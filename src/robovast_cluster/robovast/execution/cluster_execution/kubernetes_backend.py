@@ -226,6 +226,15 @@ def probe_tag(node_id: str) -> str:
     return f"probe-{node_id}"
 
 
+#: The env var carrying extra flags to the scenario runner; the entrypoint appends it to the
+#: command line verbatim.
+SCENARIO_PARAMS_ENV = "SCENARIO_EXECUTION_PARAMETERS"
+
+#: What makes a probe report on the scenario runner itself. See
+#: :data:`~.node_calibration.PROBE_TICK_REFUSE_RATIO` for what the resulting file is used for.
+TICK_LOG_FLAG = "--tick-log"
+
+
 def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: str) -> dict:
     """A calibration probe's manifest, from the manifest a real job of this batch would use.
 
@@ -256,6 +265,19 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
         for entry in container.get("env") or []:
             if entry.get("name") in overrides and "value" in entry:
                 entry["value"] = overrides[entry["name"]]
+            # `--tick-log` on the PROBE only. It is per-tick instrumentation on the trial's
+            # hot path, and the run it has to validate is the one that decides the
+            # allocation -- so campaign runs keep it off and pay nothing for it. Appended
+            # rather than assigned: a campaign may already be passing flags of its own.
+            if entry.get("name") == SCENARIO_PARAMS_ENV and "value" in entry:
+                if TICK_LOG_FLAG not in (entry["value"] or ""):
+                    entry["value"] = f"{entry['value']} {TICK_LOG_FLAG}".strip()
+    # ... and added where the campaign passed none, since there is then no entry to append to.
+    for container in spec.get("containers") or []:
+        env = container.setdefault("env", [])
+        if not any(e.get("name") == SCENARIO_PARAMS_ENV for e in env):
+            env.append({"name": SCENARIO_PARAMS_ENV, "value": TICK_LOG_FLAG})
+        break
     return manifest
 
 
@@ -302,70 +324,110 @@ def _with_bootstrap(declared: dict, container_name: str = None, roles=()) -> dic
 
 
 def calibrated_resources(declared: dict, container_name: str, node_figures, roles=(),
-                         bootstrap: bool = False) -> dict:
+                         bootstrap: bool = False, settings=None) -> dict:
     """*declared* re-sized for one node, or unchanged when that node is not calibrated yet.
 
-    **The statistic depends on the container's ROLE, and this is where the roles live.**
+    *settings* is the container's resolved calibration -- ``size_on`` having already chosen
+    the statistic upstream, so what arrives here is one measured figure per resource and this
+    function only has to place it. ``limit`` decides whether the ceiling follows the request
+    or stays where it was declared.
 
-    * The **system under test** takes the measured *peak*, as request AND limit. Its budget
-      has to be one it never throttles against, because a run clipped mid-plan is a failure
-      that looks like the stack's rather than the allocation's.
-    * Everything else takes the *sustained* figure as its request and keeps its declared
-      ceiling. The simulator's peak-to-mean ratio is ~18, so reserving its peak per node
-      would cost more than the un-calibrated campaign did -- the opposite of the point.
+    **CPU takes the measured figure; memory takes the measured maximum.** Both with their own
+    headroom, both clamped to what the author declared, because calibration sizes a node's
+    jobs *down* to what they need and has no business raising a ceiling someone set.
 
-    Memory is never re-sized. It does not vary with how fast a machine is, and exceeding a
-    memory limit is an OOM kill rather than a slowdown, so there is nothing to win and a run
-    to lose.
+    **What ``limit: request`` buys is an IDENTICAL budget in every run, not a counter that
+    reads zero.** A container sized at its own measurement sits against that measurement, so
+    it throttles -- measured here, the system under test was quota-bound in every run of a
+    150-run campaign, at up to 10.5%, against 2 runs in 45 for a declared figure two to three
+    times larger. That is what a tight, measured ceiling looks like and not evidence of harm:
+    over the same pair, realtime factor was *better* calibrated (0.9994 against 0.9941),
+    errors were zero in both, and the verdict rate did not move.
+    
+    The property being protected is that the allocation is the same on every run of a node,
+    so it cannot become a hidden variable between them. Sizing for a counter of zero instead
+    would mean padding the largest container by 60-100%, which hands back most of the ~1.6x
+    density that measuring exists to find, in exchange for a harm no signal detects.
+
+    **A probe is judged far more strictly, and that is the asymmetry to keep in view.** It is
+    refused outright for throttling past what its own statistic absorbs (see
+    :func:`~.node_calibration.probe_refuse_ratio`), because a probe clipped while measuring
+    reports its ceiling rather than its demand -- and a campaign sized from that would inherit
+    it on every later run.
+
+    The two resources are not symmetric and the asymmetry is the reason memory is read at the
+    maximum whatever the role: exceeding a CPU reservation slows a container, exceeding a
+    memory one kills it.
     """
-    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415
-
     figures = (node_figures or {}).get(container_name)
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
-    # The bootstrap is the BASE on this path too, not only where no figures exist. Only CPU
-    # is calibrated, so every other field has to come from somewhere -- and under
-    # `sizing: calibrated` `declared` is empty by definition, so building on it alone leaves
-    # memory unset. An absent limit is not a generous one: the downward API substitutes the
-    # NODE's allocatable for it, so the container is told it has the whole machine's RAM and
-    # sizes `/dev/shm` from that too, turning an overrun into a SIGBUS with no reason
-    # attached rather than a clean OOM. The calibrated CPU figure then overwrites the
-    # bootstrap's below, which is the only field calibration was ever meant to change.
+
+    from .node_calibration import MIN_CPU  # noqa: PLC0415
+
+    settings = settings or {}
+    headroom = settings.get("headroom") or {}
+    # The bootstrap is the BASE on this path too, not only where no figures exist. Only the
+    # measured resources are overwritten below, so everything else -- memory where the probe
+    # could not read it, and the ceiling under `limit: declared` -- has to come from
+    # somewhere. Under `sizing: calibrated` `declared` is empty by definition, so building on
+    # it alone leaves a container with no limit at all: the downward API then substitutes the
+    # NODE's allocatable, the run is told it has the whole machine, and `/dev/shm` follows.
     out = dict(_with_bootstrap(declared, container_name, roles) if bootstrap else declared)
-    # The declared ROLE decides, not the container's name. For the three known roles the two
-    # are the same string today, because the role name is the key in ``execution.containers``
-    # -- but that is a coincidence of the schema rather than a fact this rule should rest on,
-    # and it is already not true in one real case: a stack that bundles its own simulator
-    # serves the simulation role from its sut container, which must still be sized on peak
-    # because it is the thing under test.
-    is_sut = SUT_CONTAINER in (roles or ()) or container_name == SUT_CONTAINER
-    if is_sut:
-        cpu = figures.get("peak")
-        if cpu:
-            # **Never above what the author declared.** The measured peak is already capped at
-            # the container's own quota, but ``record`` then multiplies it by
-            # CALIBRATION_HEADROOM -- so a container that genuinely ran at its ceiling comes
-            # back asking for 1.25x it. Nothing downstream would catch that: ``preflight``
-            # runs once, on the DECLARED sizing, and is never re-asked per node, so a
-            # calibrated figure no node can hold is not an error but an ordinary "no room
-            # now" -- forever, with the campaign reporting that it is queued for capacity.
-            #
-            # Calibration exists to size a node's jobs to what they need, which is a
-            # reduction. It has no business raising a ceiling the author set.
-            ceiling = _declared_cores(declared)
-            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
+    ceiling = _declared_cores(declared) or _declared_cores(out)
+
+    cores = figures.get("cores")
+    if cores:
+        cpu = max(MIN_CPU, round(cores * float(headroom.get("cpu") or 1.0), 3))
+        out["cpu"] = min(cpu, ceiling) if ceiling else cpu
+        if settings.get("limit") == "request":
+            # Request == limit: the container never throttles, and its budget is the same in
+            # every run of the campaign. What the system under test needs, and what makes a
+            # clipped plan impossible rather than merely unlikely.
             out["cpu_limit"] = out["cpu"]
-    else:
-        cpu = figures.get("sustained")
-        if cpu:
-            # Same clamp, same reason. The sustained figure is a p95 and so is normally well
-            # under the ceiling, but nothing in the arithmetic guarantees it.
-            ceiling = _declared_cores(declared)
-            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
-            # The ceiling stays where the author put it: a soft limit is what lets a burst
-            # through, and calibration is about the reservation.
+        else:
+            # The ceiling stays where the author -- or the bootstrap -- put it: a soft limit
+            # is what lets a burst through, and calibration is about the reservation.
             out.setdefault("cpu_limit", declared.get("cpu_limit") or declared.get("cpu"))
+
+    peak_bytes = figures.get("memory_peak")
+    if peak_bytes:
+        sized = _memory_reservation(peak_bytes, float(headroom.get("memory") or 1.0))
+        declared_bytes = _declared_bytes(declared) or _declared_bytes(out)
+        if declared_bytes:
+            sized = min(sized, declared_bytes)
+        out["memory"] = str(sized)
+        # Memory request == limit for every role. A soft memory ceiling buys nothing: a
+        # container that exceeds its limit is killed rather than slowed, so "allowed to burst"
+        # means "allowed to die", and the only safe reading of a measurement is one the
+        # container is actually held to.
+        out["memory_limit"] = out["memory"]
     return out
+
+
+def _memory_reservation(peak_bytes: float, headroom: float) -> int:
+    """*peak_bytes* with headroom, rounded up the way a reservation is written.
+
+    Reuses ``advice``'s granularity and rounding rather than repeating the arithmetic: it is
+    already the authority for memory sizing and reads the very counter this figure came from.
+    """
+    from robovast.results_processing.advice import (  # noqa: PLC0415
+        MEM_GRANULARITY_BYTES, ceil_to)
+
+    return int(ceil_to(peak_bytes * headroom, MEM_GRANULARITY_BYTES))
+
+
+def _declared_bytes(declared: dict):
+    """The memory ceiling *declared* states, in bytes, or ``None``."""
+    from .kube_client import parse_resource  # noqa: PLC0415
+
+    raw = (declared or {}).get("memory_limit") or (declared or {}).get("memory")
+    if raw is None:
+        return None
+    try:
+        return int(parse_resource(str(raw)))
+    except Exception:  # noqa: BLE001 - an unparseable ceiling is no ceiling
+        return None
 
 
 def _declared_cores(declared: dict):
@@ -609,7 +671,12 @@ class BatchJobRunner:
         #: ``fixed`` or ``calibrated`` -- see ``ExecutionConfig.sizing``. Read once here so
         #: the sizing path does not have to reach back into the campaign document, and so a
         #: runner built for an offline emit (which has no campaign) defaults to ``fixed``.
-        self.sizing_mode = execution_params.get("sizing") or "fixed"
+        # Inferred where the file does not say, by the same rule the model applies: what
+        # reaches a backend is the PARSED YAML rather than the validated model, so reading
+        # the key alone made every campaign that declared nothing run as `fixed` -- the
+        # opposite of what declaring nothing asks for, and silently.
+        from robovast.common.config import infer_sizing  # noqa: PLC0415
+        self.sizing_mode = infer_sizing(execution_params)
         self.pre_command = execution_params.get("pre_command")
         self.post_command = execution_params.get("post_command")
         self.run_as_user = execution_params.get("run_as_user", 1000)
@@ -797,7 +864,9 @@ class BatchJobRunner:
             sized = calibrated_resources(declared, MAIN_CONTAINER_NAME, node_figures,
                                          roles=(getattr(main_role, "roles", ())
                                                 or (main_name,)),
-                                         bootstrap=self._sizing_is_calibrated())
+                                         bootstrap=self._sizing_is_calibrated(),
+                                         settings=self._calibration_by_container().get(
+                                             MAIN_CONTAINER_NAME))
             if sized:
                 stamp_resources(spec['containers'][0], sized)
 
@@ -941,7 +1010,8 @@ class BatchJobRunner:
             sc_name = sc.name
             sc_resources = calibrated_resources(
                 resolve_resources(sc.resources, self.kube_context), sc_name, node_figures,
-                roles=getattr(sc, "roles", ()), bootstrap=self._sizing_is_calibrated())
+                roles=getattr(sc, "roles", ()), bootstrap=self._sizing_is_calibrated(),
+                settings=self._calibration_by_container().get(sc_name))
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
@@ -1191,6 +1261,24 @@ class BatchJobRunner:
         if not node_ids or not jobs:
             return calibration
         sizing = self._job_sizing(jobs[0], total_jobs)
+        # **A probe no node could ever hold is a configuration fault, not a wait.** Under
+        # calibrated sizing a probe runs at the bootstrap -- a deployment-wide default rather
+        # than anything this campaign chose -- so it can exceed the smallest node without the
+        # `.vast` saying anything wrong. Unchecked, the probe simply never places, and because
+        # a node being measured accepts no work, that node sits idle for the whole batch with
+        # nothing said. Checked here for the same reason the batch's own sizing is checked
+        # before it is enqueued.
+        try:
+            admission.preflight(sizing)
+        except Exception as exc:  # noqa: BLE001 - re-raised with what makes it actionable
+            raise CampaignConfigError(
+                f"A calibration probe needs {sizing.cpu:g} cpu and no node can hold it. Under "
+                "execution.sizing: calibrated a probe runs at the deployment's bootstrap "
+                "(ROBOVAST_BOOTSTRAP_CPU / _MEMORY) summed over this campaign's containers, "
+                "so this is the cluster's default being larger than its smallest node rather "
+                "than anything the campaign declared. Lower the bootstrap for a role, or "
+                "declare execution.containers.<name>.resources so the probe is sized from the "
+                f"campaign instead. ({exc})") from exc
         base = self.create_job_manifest(jobs[0], total_jobs)
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
@@ -1305,25 +1393,36 @@ class BatchJobRunner:
         """
         if not self._sizing_is_calibrated() or getattr(self, "_calibration_applies", True):
             return
-        from .node_calibration import (PROBE_THROTTLE_REFUSE_RATIO,  # noqa: PLC0415
+        # Belt and braces on the same question: a campaign with measured figures is not on
+        # the bootstrap, whatever any flag says.
+        calibration = getattr(self, "_calibration", None)
+        if calibration is not None and calibration.outcome().get("calibrated"):
+            return
+        from .node_calibration import (probe_refuse_ratio,  # noqa: PLC0415
                                        read_probe_measurement)
 
         index = getattr(self, "_job_index_by_name", {}).get(job_name)
         if index is None:
             return
+        percentiles = self._container_percentiles()
         job_prefix = f"{prefix}_jobs/{self._job_artifact_path(index)}/"
         try:
             measured = read_probe_measurement(
                 lambda k: storage.read_object(bucket_name, k), job_prefix,
-                self._probe_container_files(), limits=self._probe_container_limits())
+                self._probe_container_files(), limits=self._probe_container_limits(),
+                percentiles=percentiles)
         except Exception as exc:  # noqa: BLE001 - a counter we cannot read is not a verdict
             logger.debug("could not read counters for %s: %s", job_name, exc)
             return
 
         killed = sorted(n for n, st in (measured or {}).items()
                         if (st or {}).get("oom_kills", 0) > 0)
+        # Judged against each container's OWN tolerance, like a probe is: a flat strict ratio
+        # here would fail a campaign for throttling that the container's percentile absorbs
+        # by construction, which is the reading the tolerance exists to prevent.
         capped = {n: st["throttled_ratio"] for n, st in (measured or {}).items()
-                  if (st or {}).get("throttled_ratio", 0) > PROBE_THROTTLE_REFUSE_RATIO}
+                  if (st or {}).get("throttled_ratio", 0)
+                  > probe_refuse_ratio(percentiles.get(n, 100.0))}
         if not killed and not capped:
             return
         what = []
@@ -1350,7 +1449,7 @@ class BatchJobRunner:
         optimisation must never cost the campaign.
         """
         from .node_calibration import (probe_completed, probe_output_dir,  # noqa: PLC0415
-                                       read_probe_measurement)
+                                       read_probe_measurement, read_probe_tick_ratio)
 
         admission = self.admission
         if admission is None or not self._probes:
@@ -1358,8 +1457,19 @@ class BatchJobRunner:
         calibration = self._calibration
         if calibration is None:
             return
+        # **Only probes the queue actually CREATED can be finished.** "Not among the jobs
+        # still running" is true of a job that ended and equally of one that was never
+        # created -- so a probe still waiting for room read as one that ran and produced no
+        # verdict, and with a refusal now fatal that ended the campaign with a diagnosis
+        # naming the wrong cause and a remedy that could not have helped. Seen on a node the
+        # bootstrap pod does not fit, where the probe is unplaceable rather than broken.
+        created = {name for name, state in admission.states(self._probe_owner()).items()
+                   if state == _ADMIT_CREATED}
+        outstanding = [k for k in self._probes if k in created]
+        if not outstanding:
+            return
         try:
-            done = set(self._probes) - set(self.get_remaining_jobs(list(self._probes)))
+            done = set(outstanding) - set(self.get_remaining_jobs(outstanding))
         except Exception as exc:  # noqa: BLE001 - retried next cycle
             logger.debug("Batch %s: could not poll probes: %s", self._batch_tag, exc)
             return
@@ -1372,7 +1482,8 @@ class BatchJobRunner:
             try:
                 measured = read_probe_measurement(
                     lambda k: storage.read_object(bucket_name, k), prefix,
-                    self._probe_container_files(), limits=self._probe_container_limits())
+                    self._probe_container_files(), limits=self._probe_container_limits(),
+                    percentiles=self._container_percentiles())
             except Exception as exc:  # noqa: BLE001 - see docstring
                 logger.warning("Batch %s: could not read probe for node %s: %s",
                                self._batch_tag, node_id, exc)
@@ -1381,9 +1492,75 @@ class BatchJobRunner:
             # bool(measured) -- true of any probe that produced a CSV at all, which the
             # monitor writes whether or not the run got anywhere -- so it caught nothing.
             completed = probe_completed(lambda k: storage.read_object(bucket_name, k), prefix)
+            tick = read_probe_tick_ratio(
+                lambda k: storage.read_object(bucket_name, k), prefix)
             if not calibration.record(node_id, key, measured, completed=completed,
-                                      peak_sized=self._peak_sized_containers()):
+                                      percentiles=self._container_percentiles(),
+                                      tick_ratio=tick):
+                self._refuse_a_probe_that_could_not_measure(node_id, calibration)
                 calibration.abandon(node_id, key)
+
+    def _refuse_a_probe_that_could_not_measure(self, node_id, calibration) -> None:
+        """Fail the campaign when a node's probe was refused.
+
+        **A refused probe is not a node that merely stays unmeasured.** Its jobs would run at
+        the seed while every calibrated node's ran at a measured figure, so the campaign
+        silently mixes two sizings -- the inconsistency calibration exists to remove,
+        reintroduced by the act of failing to measure. Continuing spends the whole budget
+        producing runs that are not comparable with each other, and nothing in the results
+        says so.
+
+        Raised at the moment of refusal rather than at the end of the batch: the remaining
+        runs would all carry the same fault, so the cheapest honest outcome is to stop.
+
+        Not raised where calibration does not apply -- a pilot, or a cluster that can grow --
+        because nothing was measured there by design and the campaign is not mixing anything.
+        """
+        if not getattr(self, "_calibration_applies", False):
+            return
+        reason = (calibration.outcome().get("refused") or {}).get(node_id)
+        if not reason:
+            return
+        remedy = self._remedy_for(reason)
+        raise CampaignConfigError(
+            f"Node {node_id} could not be calibrated: {reason}. This campaign asked for "
+            f"execution.sizing: calibrated, so its runs are meant to be sized from what each "
+            f"node measures -- and a node that cannot be measured would run at the starting "
+            f"allocation while the others run at measured figures, which is not a comparable "
+            f"campaign. {remedy}, or set execution.sizing: fixed to declare the sizing "
+            f"outright.")
+
+    def _remedy_for(self, reason: str) -> str:
+        """What would actually change the outcome, for the reason this probe was refused.
+
+        The five reasons are not one fault with one fix, and a message that offers the same
+        remedy to all of them sends the reader to edit something that has no bearing on what
+        happened -- the "raise the allocation" advice reads especially wrong on a probe whose
+        scenario never reached a verdict, where nothing about the allocation was in question.
+        """
+        declared = any(getattr(c, "resources", None) is not None
+                       for c in (getattr(getattr(self, "plan", None), "containers", None) or ()))
+        raise_it = ("Raise execution.containers.<name>.resources for the container named above"
+                    if declared else
+                    "Raise ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for its role")
+        if "throttled" in reason:
+            # The measurement was of the ceiling, so the ceiling is what has to move.
+            return raise_it
+        if "OOM-killed" in reason:
+            return ("Raise the memory for the container named above -- "
+                    + ("execution.containers.<name>.resources.memory" if declared
+                       else "ROBOVAST_BOOTSTRAP_MEMORY for its role"))
+        if "no verdict" in reason:
+            # Nothing to do with sizing: the probe runs a real trial, and that trial failed.
+            return ("The probe runs one of this campaign's own configurations, so its "
+                    "scenario failing is the campaign's to diagnose rather than the "
+                    "allocation's -- read that node's probe log under _calibration/, and fix "
+                    "what stopped the trial reaching a verdict")
+        if "samples" in reason:
+            return ("The trial finished too quickly to measure, so the figures would rest on "
+                    "a handful of ticks -- lengthen the trial, or size this campaign yourself")
+        return ("The probe produced nothing readable -- check that node's monitor output "
+                "under _calibration/, and whether its runtime exposes the cgroup counters")
 
     def abandon_outstanding_probes(self) -> int:
         """Free every node this batch was still measuring. Returns how many.
@@ -1409,6 +1586,26 @@ class BatchJobRunner:
                         "the declared sizing", self._batch_tag, len(outstanding))
         return len(outstanding)
 
+    def unmeasured_nodes(self) -> list:
+        """Nodes this campaign held for measuring and never measured. Empty is the norm.
+
+        **A node that ends a batch with no figures does not simply lose an optimisation.**
+        It is held while its probe is outstanding, so it takes no work; when the probe is
+        abandoned it becomes eligible again, is re-probed on the next batch, hits whatever
+        stopped it the first time, and is held again. The campaign then runs to completion
+        on the rest of the cluster and nothing in its results says a machine sat out.
+
+        Reported rather than decided here: whether that ends the campaign is the caller's
+        question, and this store does not know what a campaign is.
+        """
+        calibration = self._calibration
+        if calibration is None or not getattr(self, "_calibration_applies", False):
+            return []
+        outcome = calibration.outcome()
+        measured = set(outcome.get("calibrated") or [])
+        return sorted(n for n in (self._probes.values() if self._probes else ())
+                      if n not in measured)
+
     def _probe_container_limits(self) -> dict:
         """``{container: declared cpu ceiling}`` -- what each container could at most use.
 
@@ -1430,27 +1627,58 @@ class BatchJobRunner:
                     limits[MAIN_CONTAINER_NAME] = cores
         return limits
 
-    def _peak_sized_containers(self) -> frozenset:
-        """Which containers `calibrated_resources` will size from the PEAK.
+    def _calibration_settings(self, container) -> dict:
+        """One container's resolved calibration: its own block over `.env` over the role rule.
 
-        The roles live here, not in the calibration store, so the tolerance a probe is judged
-        against is decided where the answer is known and passed in. It is the same test that
-        function applies, so a container cannot be judged against one statistic and then sized
-        from the other.
+        Resolved HERE because this is the layer that knows a container's role, and the role
+        is what both defaults key on. The calibration store is handed the results rather than
+        the rules -- it must not know what a container is for -- which is also why the same
+        resolution feeds the probe's throttle tolerance and the allocation: a container
+        cannot be judged against one statistic and then sized from another.
         """
-        from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415
+        from .node_calibration import calibration_defaults  # noqa: PLC0415
 
-        out = set()
+        out = calibration_defaults(_bootstrap_role(getattr(container, "name", "") or "",
+                                                   getattr(container, "roles", ()) or ()))
+        declared = getattr(container, "calibration", None)
+        if declared is None:
+            return out
+        for field in ("size_on", "limit"):
+            value = getattr(declared, field, None)
+            if value is not None:
+                out[field] = value
+        headroom = getattr(declared, "headroom", None)
+        if headroom is not None:
+            # Per field, so stating only `cpu` keeps the memory default rather than losing it.
+            out["headroom"] = {
+                **out["headroom"],
+                **{f: getattr(headroom, f) for f in ("cpu", "memory")
+                   if getattr(headroom, f, None) is not None}}
+        return out
+
+    def _calibration_by_container(self) -> dict:
+        """``{container: resolved settings}`` for every container this job runs.
+
+        The main container appears under BOTH the name the `.vast` gave it and
+        :data:`MAIN_CONTAINER_NAME`, because the monitor writes its files under the latter --
+        the same aliasing `_probe_container_limits` already applies, for the same reason.
+        """
+        out = {}
         plan = getattr(self, "plan", None)
         for container in (getattr(plan, "containers", None) or ()):
             name = getattr(container, "name", None)
             if not name:
                 continue
-            if SUT_CONTAINER in (getattr(container, "roles", ()) or ()) or name == SUT_CONTAINER:
-                out.add(name)
-                if container is getattr(plan, "main", None):
-                    out.add(MAIN_CONTAINER_NAME)
-        return frozenset(out)
+            settings = self._calibration_settings(container)
+            out[name] = settings
+            if container is getattr(plan, "main", None):
+                out[MAIN_CONTAINER_NAME] = settings
+        return out
+
+    def _container_percentiles(self) -> dict:
+        """``{container: percentile}``, for the probe reader and the refusal tolerance."""
+        return {name: float(settings.get("size_on") or 95.0)
+                for name, settings in self._calibration_by_container().items()}
 
     def _probe_container_files(self) -> dict:
         """``{container: resource_usage file}`` for every container a job runs.
@@ -1508,11 +1736,18 @@ class BatchJobRunner:
         # Whether this campaign ASKED to be measured is `execution.sizing`, in its own
         # `.vast`. Whether the cluster and the campaign's shape make a probe worth running
         # is `calibration_applies`. Both have to hold.
-        applies = self._sizing_is_calibrated() and calibration_applies(
-            total_jobs, len(node_ids), admission.growable())
-        # Remembered because the sizing a run actually got is not visible from the run: a
-        # campaign that asked to be calibrated and was not is running on the bootstrap, and
-        # that is the one case where hitting a limit is a fault rather than a finding.
+        # **Decided once for the campaign, then kept.** `total_jobs` is this BATCH's count,
+        # and the question is about the campaign's work against the cluster's nodes -- so
+        # re-deciding per batch judges a long search by whichever batch happened to be
+        # smallest, and a search that ramps its repetitions flips to "does not apply" while
+        # its nodes stay measured. Everything downstream then reads that a campaign running
+        # on measured figures is running on the bootstrap.
+        if calibration.applies is None:
+            calibration.applies = self._sizing_is_calibrated() and calibration_applies(
+                total_jobs, len(node_ids), admission.growable())
+        applies = calibration.applies
+        # Mirrored onto the runner because a runner is per batch and reads it often; the
+        # store holds the decision, this is a read of it.
         self._calibration_applies = applies
         if not applies:
             calibration.enabled = False
@@ -2366,11 +2601,17 @@ class BatchJobRunner:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                       f"{self._batch_tag}")
             if admission is not None:
+                # **Probes first, then the drain.** A node is held while its probe is out and
+                # freed the moment that probe reports -- per node, so one finishing does not
+                # wait for the others. Draining first spent that freedom on the NEXT poll
+                # instead of this one, leaving a measured node idle for a cycle for no reason.
+                # Collecting first means a node calibrated in this pass takes work in this
+                # pass.
+                self._collect_probes(storage, bucket_name, campaign_prefix)
                 # Works the GLOBAL queue, so this may create another campaign's jobs too --
                 # that is what makes the ordering cluster-wide while keeping the queue
                 # thread-free.
                 admission.drain()
-                self._collect_probes(storage, bucket_name, campaign_prefix)
                 states = admission.states(self.campaign)
                 created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
                 planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)
@@ -2758,8 +2999,14 @@ class KubernetesBackend(ExecutionBackend):
             image_digest_cache=self._image_digest_cache,
             admission=self._admission,
         )
+        batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
+        except BaseException as exc:  # noqa: BLE001 - recorded, never swallowed
+            # Remembered only so the cleanup below can tell a batch that ended from one that
+            # is unwinding. Re-raised untouched at the end of the `finally`.
+            batch_error = exc
+            raise
         finally:
             # Every exit, not just the happy one. A batch that raises on its way out --
             # stopped, a config error, anything unexpected -- would otherwise leave its
@@ -2787,7 +3034,24 @@ class KubernetesBackend(ExecutionBackend):
                 # was never created has no timer of any kind.
                 dropped += self._admission.cancel(
                     f"{campaign_id}{BatchJobRunner._PROBE_OWNER_SUFFIX}")
+                # Asked BEFORE abandoning, which is what clears the record of who was still
+                # being measured. Only when the batch is ending normally: during a stop or a
+                # failure an outstanding probe is expected, and raising here would replace
+                # the reason the campaign is unwinding with a consequence of it.
+                unmeasured = [] if batch_error else runner.unmeasured_nodes()
                 runner.abandon_outstanding_probes()
+                if unmeasured:
+                    raise CampaignConfigError(
+                        f"{', '.join(unmeasured)} could not be measured: their probes never "
+                        f"ran, so those machines took no work and the campaign would have "
+                        f"finished on the rest of the cluster without saying so. A node held "
+                        f"for measuring is re-probed on the next batch, meets whatever "
+                        f"stopped it before, and is held again -- so this does not resolve "
+                        f"itself. The usual cause is a probe larger than what the node can "
+                        f"spare: the bootstrap pod is the three roles summed "
+                        f"(ROBOVAST_BOOTSTRAP_CPU / _MEMORY), and a campaign that declares "
+                        f"execution.containers.<name>.resources sizes its probe from those "
+                        f"instead.")
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)

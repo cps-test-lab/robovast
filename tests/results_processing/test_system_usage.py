@@ -512,3 +512,80 @@ def test_the_node_column_alone_cannot_take_the_whole_finding_down():
     assert "node_cpu_stall_some_usec" in advice.contention_sql()
     assert "node_cpu_stall_some_usec" not in advice.contention_sql(with_node=False)
     assert "cpu_stall_full_usec" in advice.contention_sql(with_node=False)
+
+
+# -- memory, on both cgroup layouts ------------------------------------------------------
+
+
+def _memory_dirs(tmp_path, monkeypatch, *, v2=None, v1=None):
+    """Point the memory probes at written-out cgroup trees; a version omitted is absent."""
+    for name, files, attr in (("v2", v2, "MEMORY_PATH"), ("v1", v1, "MEMORY_PATH_V1")):
+        root = tmp_path / name
+        if files is None:
+            monkeypatch.setattr(mon, attr, str(tmp_path / f"missing-{name}"))
+            continue
+        root.mkdir(exist_ok=True)
+        for filename, text in files.items():
+            (root / filename).write_text(text, encoding="utf-8")
+        monkeypatch.setattr(mon, attr, str(root))
+
+
+def test_memory_on_cgroup_v2_is_read_as_it_comes(tmp_path, monkeypatch):
+    _memory_dirs(tmp_path, monkeypatch,
+                 v2={"memory.current": "1000\n", "memory.peak": "2500\n",
+                     "memory.max": "4000\n"})
+    assert mon.memory_probe() == {"memory_current": 1000, "memory_peak": 2500,
+                                  "memory_max": 4000}
+
+
+def test_memory_on_cgroup_v1_lands_in_the_same_columns(tmp_path, monkeypatch):
+    """The throttle counters were taught v1 and the memory probes were not, which is not an
+    even trade on a mixed cluster: the v1 node measured here is also the largest, so memory
+    went unmeasured on the majority of it while reading as merely absent."""
+    _memory_dirs(tmp_path, monkeypatch,
+                 v1={"memory.usage_in_bytes": "1000\n",
+                     "memory.max_usage_in_bytes": "2500\n",
+                     "memory.limit_in_bytes": "4000\n"})
+    assert mon.memory_probe() == {"memory_current": 1000, "memory_peak": 2500,
+                                  "memory_max": 4000}
+
+
+def test_an_unlimited_v1_limit_is_an_absence_like_v2s_max(tmp_path, monkeypatch):
+    """v1 reports "no limit" as a sentinel near 2^63 rather than the word ``max``. Recorded
+    as a number it would be a limit no usage could approach, which compares as "never close"
+    rather than as "there is none"."""
+    _memory_dirs(tmp_path, monkeypatch,
+                 v1={"memory.usage_in_bytes": "1000\n",
+                     "memory.max_usage_in_bytes": "2500\n",
+                     "memory.limit_in_bytes": str(2 ** 63 - 4096)})
+    got = mon.memory_probe()
+    assert "memory_max" not in got
+    assert got["memory_peak"] == 2500, "the rest still reads"
+
+
+def test_neither_layout_contributes_no_columns(tmp_path, monkeypatch):
+    _memory_dirs(tmp_path, monkeypatch)
+    assert mon.memory_probe() == {}
+
+
+def test_the_oom_counter_is_read_on_v1_too(tmp_path, monkeypatch):
+    """The counter the probe's OOM refusal reads. Left v2-only it did not merely lose a
+    column: absent reads as "not measured" and never as a refusal, so a probe OOM-killed on a
+    v1 node would have been calibrated from rather than rejected."""
+    root = tmp_path / "v1mem"
+    root.mkdir()
+    (root / "memory.failcnt").write_text("3\n", encoding="utf-8")
+    (root / "memory.oom_control").write_text(
+        "oom_kill_disable 0\nunder_oom 0\noom_kill 2\n", encoding="utf-8")
+    monkeypatch.setattr(mon, "MEMORY_EVENTS_PATH", str(tmp_path / "missing.events"))
+    monkeypatch.setattr(mon, "MEMORY_FAILCNT_PATH_V1", str(root / "memory.failcnt"))
+    monkeypatch.setattr(mon, "MEMORY_OOM_CONTROL_PATH_V1", str(root / "memory.oom_control"))
+    assert mon.memory_events_probe() == {"memory_events_max": 3, "memory_events_oom_kill": 2}
+
+
+def test_the_oom_counter_absent_on_both_stays_absent(tmp_path, monkeypatch):
+    """Still the rule: a counter nobody can read is not a report of zero kills."""
+    monkeypatch.setattr(mon, "MEMORY_EVENTS_PATH", str(tmp_path / "missing.events"))
+    monkeypatch.setattr(mon, "MEMORY_FAILCNT_PATH_V1", str(tmp_path / "missing.failcnt"))
+    monkeypatch.setattr(mon, "MEMORY_OOM_CONTROL_PATH_V1", str(tmp_path / "missing.oom"))
+    assert mon.memory_events_probe() == {}
