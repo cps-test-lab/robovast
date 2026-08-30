@@ -3,7 +3,7 @@
 // Deliberately separate from the toast layer. A toast is a rectangle in this document; this
 // leaves the document, needs a permission grant, and must not fire while the user is already
 // watching the thing it would announce. Keeping them apart means the toast provider never
-// touches the Notification API, and the one caller that wants both simply calls both.
+// touches the Notification API, and a caller that wants both simply calls both.
 //
 // This is NOT the durable channel. A browser that is closed gets nothing, and that is fine:
 // campaign lifecycle already reaches a phone from the server via ntfy
