@@ -25,6 +25,7 @@ bt
 buildx
 Burstable
 callables
+catalogue
 centroids
 classmethods
 codebase
@@ -223,6 +224,7 @@ rdflib
 reachability
 realtime
 recognised
+recognises
 reconstructable
 reimplement
 reimplementing

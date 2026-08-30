@@ -164,7 +164,7 @@ The Admin page
 --------------
 
 Every other page is about a campaign. This one is about the service running them, and it
-answers three questions no other page does.
+answers four questions no other page does.
 
 **How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
@@ -231,6 +231,35 @@ change rather than trusting the request it just made.
 Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
 cluster from outside it — there is no button, just the reason. The chart and the log work
 on both lanes unchanged.
+
+**What it is configured with.** RoboVAST is configured entirely through environment
+variables: an operator writes them into a ``.env`` and ``vast cluster setup`` /
+``vast service upgrade`` bake them into the pod. Nothing read them back, so "which share is
+this uploading to?" and "did the last upgrade pick up that credential?" needed ``kubectl``.
+The **Service configuration** panel — collapsed until you open it, and fetched only then —
+lists what this service is actually running with, grouped by what it configures, with the
+default printed beside a setting that is unset.
+
+The panel reports what is **in force**, not where it came from. In the pod every value
+arrives as an environment variable and nothing there can tell a ``.env`` line from a real
+one, so claiming a ``.env`` provenance would be a claim the process cannot check. The
+caption at the foot says what a change costs on *this* deployment, which differs: a pod
+loads its Secrets through ``envFrom`` at container start and never again, so only
+``vast service upgrade`` **without** ``--no-restart`` picks one up, while a ``vast serve``
+just needs restarting.
+
+**No credential is ever rendered** — not masked, not truncated, not behind a reveal. A
+secret shows as ``set`` and its value never leaves the service, because RoboVAST has no
+per-route authorization: anything a response carries is available to every logged-in
+caller. Two other kinds of value are held back for narrower reasons: registry endpoints and
+refs never cross the client interface at all, and a path on the service's own disk is shown
+only to a caller on that machine — the same rule ``/version`` applies to its roots.
+
+The list comes from the environment rather than from a catalogue in the code, so a setting
+added to RoboVAST appears here without anyone maintaining a list. The cost is that a key
+nothing recognises can turn up; it is shown as ``set`` with **no value**, since the next
+setting somebody adds may well be a credential. If you see one, that is the prompt to
+describe it in ``robovast.service.settings_report``.
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
 back, which is why several failures in RoboVAST are diagnosable only from a log nobody
