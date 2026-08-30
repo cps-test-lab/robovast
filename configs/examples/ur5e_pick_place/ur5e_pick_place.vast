@@ -1,0 +1,182 @@
+version: 3
+metadata:
+  name: ur5e-pick-place
+  title: "UR5e pick-and-place: how accurate does the reported box pose have to be?"
+  description: |
+    A UR5e with a Robotiq 2F-85 is bolted to a workbench. A 60 mm box sits in front of it and an
+    open bin stands to one side. Each trial: read the box's pose from a simulated detector, plan
+    with MoveIt 2, pick the box up, carry it across and drop it in the bin. In roqsim (MuJoCo),
+    over ROS 2.
+
+    The factor is `position_stddev` -- the noise on the reported box pose. The question it asks is
+    the one this cell is shaped by: the jaws open to about 87 mm around a 60 mm box, so there is
+    ~13 mm of clearance PER SIDE, and that is the entire error budget for detection plus IK plus
+    execution. The top level is expected to fail, which is the point -- an example that only ever
+    passes shows you nothing about where the edge is.
+  keywords: [robotics, manipulation, pick-and-place, moveit2, mujoco, roqsim, ur5e, robotiq,
+             grasping, perception-noise]
+
+configuration:
+# Config-block names may not contain underscores, spaces or periods (schema rule), hence `noise`
+# -- the FACTOR keeps its full name.
+- name: noise
+  variations:
+  # A `sim:` override, not a scenario parameter: this is a property of the WORLD, and the roqsim
+  # backend mounts the campaign's overrides as a document and hands the simulator `--override`.
+  # So the sweep needs no plumbing through the scenario at all.
+  #
+  # The path is `components.<entity>.<plugin>.<key>`, and it was MEASURED rather than guessed:
+  # `plugins.object_detector.position_stddev` and
+  # `components.ur5e.components.object_detector.position_stddev` are both REFUSED here. An
+  # unmatched override is refused outright, which is the good case -- the bad one is a path that
+  # is accepted and lands nowhere.
+  #
+  # 0.0 is the control: it isolates how much of any failure is the grasp and the arm rather than
+  # the perception.
+  #
+  # The upper levels were CALIBRATED by running them, not reasoned from the clearance. The first
+  # sweep used [0, 4, 8, 14] mm on the theory that ~13 mm of clearance per side was the budget, and
+  # the widest cell passed 3/3 -- because only the component ACROSS THE JAWS spends that budget,
+  # and at 14 mm per axis it exceeds 13 mm only about a third of the time. A 31.7 mm error succeeded
+  # in that sweep while a 21.7 mm one failed, which is why `detect_error_y_m` exists.
+  #
+  # So the levels are widened until failure is systematic rather than incidental: at 28 mm per axis
+  # the across-jaw error exceeds the budget in roughly 3 runs in 5.
+  - ParameterVariationList:
+      sim: components.ur5e.object_detector.position_stddev
+      values: [0.0, 0.008, 0.016, 0.028]
+
+execution:
+  # The robot description MoveIt plans against, DERIVED from the world the simulator loads rather
+  # than committed beside it. `roqsim export moveit` writes all six files move_group needs -- the
+  # URDF and its meshes, the SRDF with a sampled collision matrix, and the four YAMLs -- so nothing
+  # generated is in this directory and a stale description cannot happen: the outputs are appended
+  # to `run_files`, content-hashed into the configuration's identity, and skipped when nothing they
+  # read has changed (the exporter's own `--manifest` reports what that was).
+  #
+  # `--root-link base` is NOT cosmetic. The detector reports in the MuJoCo body `base`, and that
+  # string is also its published `frame_id`; the UR arms have no `base_link` body at all. Exporting
+  # under the default `base_link` would leave detections and MoveIt's planning frame named
+  # differently for the same frame, so every goal would need a transform that does not exist.
+  #
+  # `--tip-site pinch` ends the arm chain at the gripper's own grasp site instead of the flange.
+  # Without it a goal for the fingertips is an offset from the flange, and every orientation
+  # tolerance is multiplied by that lever arm.
+  #
+  # `image:` is SYMBOLIC, so this names no registry: the deployment decides which project serves
+  # `robovast-roqsim`, and that is the image carrying both roqsim and the exporter.
+  #
+  # `inputs` names the whole `world/` directory rather than the world file alone, because the world
+  # spawns a prop that lives beside it: the generator only stages what it is given, and a world whose
+  # sibling was left behind fails on a missing model. The reference inside the world resolves against
+  # the world's own directory wherever it is staged, so no mount and no working directory has to be
+  # arranged for it -- the same file compiles here and in the simulator.
+  generate:
+  - shell:
+      out: moveit/gen
+      image: family:robovast-roqsim
+      inputs: ["world"]
+      command: >-
+        bash -lc "source /ws/install/setup.bash &&
+        roqsim export moveit --world {inputs[0]}/ur5e_pick_place.yaml --out {out}
+        --name ur5e_2f85 --root-link base --tip-site pinch
+        --manifest {out}/.generated.json --check"
+
+  containers:
+  # The simulator, in a container of its own, running roqsim's ordinary CLI -- the same command
+  # that debugs this world by hand.
+    simulation:
+      backend: roqsim
+      config: world/ur5e_pick_place.yaml
+      # MEASURED over a full sweep rather than guessed, and left with headroom over the measurement.
+      # The first version of this file reserved 9 cpu and 10Gi for the pod against a measured 2.25
+      # and 1.1Gi -- which costs nothing on an idle lane and four times the throughput on a busy
+      # one, on every job of every sweep. An example's reservations get copied, so they should be
+      # the ones a reader ought to copy.
+      resources:
+        cpu: 1
+        memory: 1Gi
+
+  # The system under test: move_group and robot_state_publisher.
+  #
+  # `family:robovast-roqsim` rather than the default member, because MoveIt's SERVERS ship in the
+  # roqsim flavour -- an arm cell is a roqsim cell, since what executes a MoveIt trajectory is
+  # roqsim's own bridge. SYMBOLIC, so it still names no registry: which project serves it is the
+  # deployment's business.
+  #
+  # There are no `system_packages` anywhere in this file, and that is the point of putting MoveIt
+  # in the image: this campaign builds NO derived image, and the sut runs an image the node has
+  # already pulled for the simulator.
+    sut:
+      image: family:robovast-roqsim
+      # The most generous of the three: move_group's planning bursts are what this has to absorb.
+      resources:
+        cpu: 2
+        memory: 1Gi
+
+  # The trial and the measurement, nothing else. The DEFAULT image: `moveit_msgs` is in the base
+  # now, and a MoveGroup client needs the messages, not the servers.
+    scenario:
+      resources:
+        cpu: 1
+        memory: 512Mi
+
+  mode: ros2
+  # 5 repetitions, and the first sweep is why it is not 3: the outcome is a coin weighted by the
+  # noise draw, so 3 runs cannot separate a 30% failure rate from a 60% one. At 3 the widest cell
+  # read 3/3 successes, which inverted the curve. 4x5 = 20 runs still finishes in minutes.
+  runs: 5
+  scenario_file: scenario.osc
+  # Per-extension globs. NOT `files/*`: that pattern crosses `/` and sweeps `__pycache__/*.pyc`
+  # into the configuration's identity hash, so a stale bytecode file changes what looks like the
+  # same configuration.
+  run_files:
+  - "files/*.py"
+  - "moveit/*.py"
+  - "world/*.yaml"
+  - "world/*.xml"
+  # The generated description. Per-extension rather than `moveit/gen/*`, for the same reason as
+  # above -- and the meshes are named separately because the URDF references them by path: without
+  # them move_group loads a robot with NO collision geometry and plans straight through the bench,
+  # which is a wrong answer rather than a crash.
+  - "moveit/gen/*.urdf"
+  - "moveit/gen/*.srdf"
+  - "moveit/gen/*.yaml"
+  - "moveit/gen/meshes/*.stl"
+  # Generous, and it has to be: a trial is ~30 s of arm motion but move_group takes the better
+  # part of a minute to come up (planners, kinematics plugin, the planning scene).
+  timeout: 900
+  # No `env:` at all. PYTHONUNBUFFERED is already exported by the entrypoint of every container a
+  # campaign runs -- main and sidecar alike, whatever image it names -- so restating it here is dead
+  # config that reads like a requirement. And no MUJOCO_GL, deliberately: which offscreen backend
+  # works is a property of the node the simulator lands on, and roqsim picks it at startup.
+
+
+# The box's own trajectory, so a failure can be READ rather than guessed at: `out.csv` says the box
+# never rose, and this says where it was while the arm was busy not lifting it. `out.csv` itself
+# needs no step here -- a CSV in the run directory is ingested as a table named after the file.
+#
+# `require:` makes a missing frame a loud failure instead of an empty table. The box is the frame
+# the verdict is built from, so a run that recorded no box pose measured nothing at all.
+results_processing:
+  postprocessing:
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [graspable_box]
+
+# Replay one run. Three processes have to be read together to see what happened -- the trial's
+# phase, move_group's planner, and the simulator -- and the merged log is the only place they share
+# a timeline. Without it a failure in any of them looks identical from outside: nothing moved.
+visualization:
+  results:
+    run_view:
+      panels:
+      - scenario_tree:
+          title: Trial
+          position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
+          minimizable: true
+          source: {table: behaviors}
+      - log:
+          title: Trial, move_group and simulator
+          position: {anchor: bottom, height: 240}
+          minimizable: true

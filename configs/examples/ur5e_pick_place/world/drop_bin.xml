@@ -1,0 +1,35 @@
+<mujoco model="drop_bin">
+  <!-- An open bin, built from box primitives rather than a mesh.
+
+       Boxes, not a mesh, and that is load-bearing: MuJoCo collides a mesh geom by its CONVEX
+       HULL, and the hull of an open container is solid. A mesh bin therefore has no cavity to
+       place anything in -- the box would rest on an invisible lid at rim height and a "placed"
+       verdict could never become true whatever the arm did.
+
+       Sized around the 80 x 60 mm box it receives: a 186 x 286 mm mouth is forgiving, by design.
+       The drop is meant to be the easy half of the trial, because the GRASP is where this cell's
+       error budget lives.
+
+       Welded scenery -- no freejoint -- and the walls are thick enough (8 mm) not to be pushed
+       through by a box released a little too fast. Contact parameters stay at their defaults on
+       purpose: nothing here is grasped, so the tuning the box needs would be noise.
+
+       Geometry, with the bin standing on a surface at z = 0:
+         floor top   z = 0.008    (8 mm floor, so a box inside sits 8 mm up)
+         rim top     z = 0.094    (86 mm of wall above the floor)
+         cavity      |x| <= 0.093, |y| <= 0.143 -->
+  <worldbody>
+    <body name="drop_bin">
+      <geom name="drop_bin_floor" type="box" pos="0 0 0.004"
+            size="0.101 0.151 0.004" rgba="0.35 0.37 0.40 1"/>
+      <geom name="drop_bin_wall_xp" type="box" pos="0.097 0 0.051"
+            size="0.004 0.151 0.043" rgba="0.42 0.44 0.47 1"/>
+      <geom name="drop_bin_wall_xn" type="box" pos="-0.097 0 0.051"
+            size="0.004 0.151 0.043" rgba="0.42 0.44 0.47 1"/>
+      <geom name="drop_bin_wall_yp" type="box" pos="0 0.147 0.051"
+            size="0.101 0.004 0.043" rgba="0.42 0.44 0.47 1"/>
+      <geom name="drop_bin_wall_yn" type="box" pos="0 -0.147 0.051"
+            size="0.101 0.004 0.043" rgba="0.42 0.44 0.47 1"/>
+    </body>
+  </worldbody>
+</mujoco>
