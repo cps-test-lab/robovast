@@ -132,7 +132,7 @@ class PickPlace(Node):
         for name, pos in zip(msg.name, msg.position, strict=False):
             self.joints[name] = float(pos)
 
-    def at(self, frame: str) -> tuple[float, float, float] | None:
+    def origin_of(self, frame: str) -> tuple[float, float, float] | None:
         """``frame``'s origin in the PLANNING frame, or None while the chain is incomplete."""
         try:
             t = self.tf_buffer.lookup_transform(
@@ -148,7 +148,7 @@ class PickPlace(Node):
         Read at the end it cannot tell "never picked" from "picked, then dropped", which is the one
         distinction these columns exist to draw.
         """
-        box = self.at("graspable_box")
+        box = self.origin_of("graspable_box")
         if box is None:
             return
         if self.box_start_z is None:
@@ -266,9 +266,9 @@ class PickPlace(Node):
             return False, False, "startup:no_gripper_action"
         if not self.wait_for(lambda: self.detections is not None, 30.0, "/detections"):
             return False, False, "startup:no_detections"
-        if not self.wait_for(lambda: self.at("graspable_box"), 30.0, "the box in TF"):
+        if not self.wait_for(lambda: self.origin_of("graspable_box"), 30.0, "the box in TF"):
             return False, False, "startup:no_box_tf"
-        if not self.wait_for(lambda: self.at("drop_bin"), 30.0, "the bin in TF"):
+        if not self.wait_for(lambda: self.origin_of("drop_bin"), 30.0, "the bin in TF"):
             return False, False, "startup:no_bin_tf"
 
         det = self.detections
@@ -281,11 +281,11 @@ class PickPlace(Node):
         bx, by, bz = c.x, c.y, c.z
 
         # What the noise cost THIS run: |detected - true|, both already in the planning frame.
-        truth = self.at("graspable_box")
+        truth = self.origin_of("graspable_box")
         self.detect_delta = (bx - truth[0], by - truth[1], bz - truth[2])
 
         # From TF, so the world YAML stays the only place the bin's position is written down.
-        binp = self.at("drop_bin")
+        binp = self.origin_of("drop_bin")
         # Before the first plan: an obstacle added later cannot un-plan a path through it.
         if not self.scene.add_obstacles(binp, BIN_HALF_X, BIN_HALF_Y, BIN_RIM_Z):
             return False, False, "startup:planning_scene_rejected"
@@ -309,7 +309,7 @@ class PickPlace(Node):
         # LATERALLY from the tool (where the jaws closed), VERTICALLY from geometry (it rests on the
         # bench): the detection modelled a low box in the bench, the tool's height the settle error.
         bs = det.detections[0].bbox.size
-        held = self.at(TCP) or (bx, by, bz)
+        held = self.origin_of(TCP) or (bx, by, bz)
         if not self.scene.attach(held[0], held[1], bs.z / 2.0, (bs.x, bs.y, bs.z)):
             return False, False, "close:attach_rejected"
 
@@ -332,7 +332,7 @@ class PickPlace(Node):
 
         # Let it land before judging where it landed.
         self.spin(2.5)
-        box = self.at("graspable_box")
+        box = self.origin_of("graspable_box")
         # The cavity is axis-aligned and the frames differ only by a yaw of 180 deg, so |dx| and
         # |dy| are the same test in either.
         inside = (
@@ -345,7 +345,7 @@ class PickPlace(Node):
         return picked, True, None
 
     def place_error(self) -> float | None:
-        box, binp = self.at("graspable_box"), self.at("drop_bin")
+        box, binp = self.origin_of("graspable_box"), self.origin_of("drop_bin")
         if box is None or binp is None:
             return None
         return math.dist(box[:2], binp[:2])
