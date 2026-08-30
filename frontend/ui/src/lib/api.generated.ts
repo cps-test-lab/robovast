@@ -3520,6 +3520,11 @@ export interface components {
              */
             image_ref: string;
             /**
+             * Registry Built At
+             * @default
+             */
+            registry_built_at: string;
+            /**
              * Registry Digest
              * @default
              */

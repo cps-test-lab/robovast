@@ -289,11 +289,23 @@ export function AdminPage() {
           {info?.running_digest ? <Field label="running" value={info.running_digest} /> : null}
           {/* What the tag points at in the registry right now. Beside `running` because the
               two are only useful as a pair -- one digest alone says nothing a reader can act
-              on, and the verdict below puts the comparison in words. There is deliberately
-              no version or date for this one: an image this service is not executing cannot
-              be asked, and only its digest is knowable without going to the registry for
-              more. Absent when the registry did not answer, which the verdict already says. */}
-          {info?.registry_digest ? <Field label="available" value={info.registry_digest} /> : null}
+              on, and the verdict below puts the comparison in words. Absent when the registry
+              did not answer, which the verdict already says.
+
+              The date is the same question `built` answers above, asked of the image this
+              service is *not* executing: two differing digests say the published bytes are
+              other bytes, never which of them is newer. It comes from the image's own OCI
+              label, so it is appended to this line rather than given one of its own -- it
+              describes the digest beside it, and can be missing while the digest is not. */}
+          {info?.registry_digest ? (
+            <Field
+              label="available"
+              value={
+                info.registry_digest
+                + (info.registry_built_at ? ` · built ${builtLine(info.registry_built_at)}` : '')
+              }
+            />
+          ) : null}
 
           {/* The roll is offered only where it exists. On a local service, or a cluster
               service running outside the cluster, there is no Deployment of its own to
