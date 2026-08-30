@@ -3507,6 +3507,11 @@
             ],
             "title": "Build Unavailable"
           },
+          "built_at": {
+            "default": "",
+            "title": "Built At",
+            "type": "string"
+          },
           "can_build_images": {
             "anyOf": [
               {
@@ -3619,6 +3624,7 @@
           "api_version",
           "backend",
           "build_unavailable",
+          "built_at",
           "can_build_images",
           "code_revision",
           "in_pod",

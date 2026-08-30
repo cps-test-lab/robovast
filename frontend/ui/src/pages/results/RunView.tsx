@@ -214,7 +214,11 @@ export function RunView({
   const panels = useQuery({
     queryKey: ['panels', campaignId],
     queryFn: () => robovast.listCampaignPanels(campaignId),
-    enabled: available,
+    // `active` for the same reason as `refetchOnWindowFocus` below, one level in: this view is
+    // kept mounted, so arriving at it is the other moment an out-of-band edit should be picked up.
+    // The layout is a small read of the campaign's declared panels — unlike the run data beneath
+    // it, which is immutable and expensive and is deliberately left ungated.
+    enabled: active && available,
     retry: false,
     // Pick up out-of-band edits to the .vast (edited on disk, or via the editor) when the tab
     // regains focus — no manual browser refresh needed.

@@ -3697,6 +3697,11 @@ export interface components {
             backend: string | null;
             /** Build Unavailable */
             build_unavailable: string | null;
+            /**
+             * Built At
+             * @default
+             */
+            built_at: string;
             /** Can Build Images */
             can_build_images: boolean | null;
             /**

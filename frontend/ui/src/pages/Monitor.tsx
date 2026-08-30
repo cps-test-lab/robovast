@@ -51,6 +51,7 @@ import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useLiveStream } from '@/lib/liveStream'
+import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
@@ -183,6 +184,7 @@ function StepFailure({
 function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: boolean }) {
   const qc = useQueryClient()
   const id = summary.campaign_id
+  const active = useActiveView()
 
   const status = useQuery({
     queryKey: ['status', id],
@@ -195,6 +197,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     // away, for however long the timer takes to restart. The app-wide default is off (see
     // main.tsx); a live campaign's phase is the case that earns the exception.
     refetchOnWindowFocus: true,
+    // And the same again for switching *pages* rather than tabs, which this page is kept
+    // mounted across: the poll stops while Campaigns is not the view on screen, and returning
+    // re-reads. See lib/activeView.tsx.
+    enabled: active,
   })
 
   // Live per-job listing (running count + the clickable jobs list). Polled while the
@@ -219,7 +225,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const jobs = useQuery({
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
-    enabled: !bornAtRest,
+    // `active` for the reason the status above carries it, and with more at stake: on the
+    // cluster lane this is a Kubernetes API call per live campaign every two seconds, and it
+    // was being made for a page nobody was looking at.
+    enabled: active && !bornAtRest,
     refetchInterval: () => (terminal ? false : 2000),
     refetchOnWindowFocus: true,
   })
@@ -228,6 +237,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // jobs that were still `running` up to one poll before the campaign ended keep their
   // rows, so the live view never empties out. Read once more after the phase turns
   // terminal to pick up their final state.
+  //
+  // If the campaign ends while this page is not the one on screen, `invalidateQueries` reaches a
+  // disabled observer and refetches nothing — it marks the listing stale, and the read lands when
+  // the page is next entered. Deferred, not lost, and deferred to the moment someone can see it.
   useEffect(() => {
     if (terminal) qc.invalidateQueries({ queryKey: ['jobs', id] })
   }, [terminal, id, qc])
@@ -431,6 +444,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const shareArchives = useQuery({
     queryKey: ['shareArchives'],
     queryFn: () => robovast.listShareArchives(),
+    // Another system's state, read with the service's credentials: worth re-reading on arrival,
+    // and worth the 60s floor that bounds how often arriving can cost that.
+    enabled: active,
     staleTime: 60_000,
     retry: false,
   })
@@ -980,6 +996,7 @@ export function Monitor({
   onShareImportConsumed?: () => void
 }) {
   const { data, error, live, reconnect } = useCampaignStream()
+  const active = useActiveView()
   const [importAnchor, setImportAnchor] = useState<HTMLElement | null>(null)
   const [shareOpen, setShareOpen] = useState<string | null>(null)
   // The list is handed to the importer because it is how the import reports itself: the campaign
@@ -993,6 +1010,9 @@ export function Monitor({
   const shareListing = useQuery({
     queryKey: ['shareArchives'],
     queryFn: () => robovast.listShareArchives(),
+    // Another system's state, read with the service's credentials: worth re-reading on arrival,
+    // and worth the 60s floor that bounds how often arriving can cost that.
+    enabled: active,
     staleTime: 60_000,
     retry: false,
   })

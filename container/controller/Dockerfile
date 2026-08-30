@@ -191,7 +191,7 @@ RUN echo "2" > /etc/robovast_compat_version
 # reports "" rather than a value that looks like a revision and is not.
 #
 # container/controller/build.sh (and therefore `make release-images`) passes this automatically
-# from the checkout it lives in -- see container/git_revision.sh. It did not, once, and the
+# from the checkout it lives in -- see container/image_stamp.sh. It did not, once, and the
 # result was a locally released family whose deployed service could not say which code it ran.
 # A `docker build` invoked by hand is the remaining case that has to pass it itself:
 #   docker build -f container/controller/Dockerfile \
@@ -199,6 +199,19 @@ RUN echo "2" > /etc/robovast_compat_version
 #       | grep -q . && echo +dirty)" .
 ARG ROBOVAST_GIT_REVISION=""
 ENV ROBOVAST_GIT_REVISION=${ROBOVAST_GIT_REVISION}
+
+# When, for the same reason and with one difference. A revision answers "is my change loaded?";
+# this answers "how old is what is deployed?" -- the question an operator looking at an upgrade
+# button actually has, and one a revision cannot answer without a checkout to resolve it against.
+# It is an ENV rather than only a label because a container cannot read its own labels, which is
+# why the revision is baked this way too.
+#
+# The difference: a revision changes per commit, this changes per *build*, so it invalidates
+# everything after it on every build. That is why it sits last -- what follows is an ENV and two
+# LABELs, no install work. Empty is honest; `build_date()` then reports "" rather than a
+# timestamp that describes nothing.
+ARG ROBOVAST_BUILD_DATE=""
+ENV ROBOVAST_BUILD_DATE=${ROBOVAST_BUILD_DATE}
 
 # The same fact as a label, for a different reader. The ENV answers "which code is the running
 # service executing?"; these answer "which controller is sitting in this registry?" -- readable
@@ -209,6 +222,7 @@ ENV ROBOVAST_GIT_REVISION=${ROBOVAST_GIT_REVISION}
 # the only source.
 LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
+LABEL org.opencontainers.image.created="${ROBOVAST_BUILD_DATE}"
 
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a

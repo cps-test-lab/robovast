@@ -13,7 +13,9 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
 import { LogPanel } from '@/components/LogPanel'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
+import { formatAge, formatLocalTime } from '@/lib/time'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
 // How long to keep watching for the new pod before saying we cannot tell. Matches the
@@ -37,6 +39,13 @@ function Field({ label, value }: { label: string; value: string }) {
       </Typography>
     </Stack>
   )
+}
+
+// Absolute time and relative age together: the first is the fact, the second is the one that
+// answers "is this deployment old?" at a glance. Beside `upgradeVerdict` because both turn a
+// machine-readable field into the sentence a reader actually wants.
+function builtLine(iso: string): string {
+  return `${formatLocalTime(iso)} (${formatAge(iso)})`
 }
 
 // What the digests add up to, in words — and in words that do not assume the reader knows
@@ -66,13 +75,29 @@ export function AdminPage() {
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
 
-  const version = useQuery({ queryKey: ['version'], queryFn: robovast.version, retry: false })
+  // This page is kept mounted once visited, so both readings are gated on it being the one on
+  // screen: they then stop while it is not, and are re-read on the way back in — which is the
+  // moment someone asks "did the version I just published land?". See lib/activeView.tsx.
+  const active = useActiveView()
+  const version = useQuery({
+    queryKey: ['version'],
+    queryFn: robovast.version,
+    enabled: active,
+    retry: false,
+  })
   const upgrade = useQuery({
     queryKey: ['upgradeInfo'],
     queryFn: robovast.upgradeInfo,
+    // A roll keeps this live wherever the user has navigated to: the panel below still describes
+    // a handover in progress, and describing it from the pod that is going away would be worse
+    // than saying nothing.
+    enabled: active || rolling,
     // Fast while a roll is in flight — this poll IS how the handover is detected — and
     // slow otherwise: it costs a registry round trip on the cluster lane.
     refetchInterval: rolling ? 3_000 : 60_000,
+    // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
+    // thing to do, and it must not spend a registry round trip each time.
+    staleTime: 10_000,
     retry: false,
   })
 
@@ -204,6 +229,14 @@ export function AdminPage() {
               {version.data.code_revision ? (
                 <Field label="revision" value={version.data.code_revision} />
               ) : null}
+              {/* The question the two lines above cannot answer between them: how old is
+                  what is deployed? A revision and a semver are each only comparable against
+                  something else — a checkout, a changelog — while a date reads on its own,
+                  which is what someone about to press Upgrade is actually asking. Same rule
+                  as the lines above for an absent value. */}
+              {version.data.built_at ? (
+                <Field label="built" value={builtLine(version.data.built_at)} />
+              ) : null}
               <Field
                 label="backend"
                 value={
@@ -220,6 +253,13 @@ export function AdminPage() {
           )}
           {info?.image_ref ? <Field label="image" value={info.image_ref} /> : null}
           {info?.running_digest ? <Field label="running" value={info.running_digest} /> : null}
+          {/* What the tag points at in the registry right now. Beside `running` because the
+              two are only useful as a pair -- one digest alone says nothing a reader can act
+              on, and the verdict below puts the comparison in words. There is deliberately
+              no version or date for this one: an image this service is not executing cannot
+              be asked, and only its digest is knowable without going to the registry for
+              more. Absent when the registry did not answer, which the verdict already says. */}
+          {info?.registry_digest ? <Field label="available" value={info.registry_digest} /> : null}
 
           {/* The roll is offered only where it exists. On a local service, or a cluster
               service running outside the cluster, there is no Deployment of its own to
