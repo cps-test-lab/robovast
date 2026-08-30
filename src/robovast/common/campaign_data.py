@@ -291,8 +291,16 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     it. Infrastructure sidecars are excluded for free: ``s3-init`` appears in
     ``image_revisions`` but never in ``images``.
 
+    **The launch record wins when it has one.** ``launch.yaml``'s ``images`` are the refs the
+    launch itself resolved, written before the first job existed, and they are concrete by
+    construction -- so they answer this question earlier and better than ``execution.yaml``,
+    which the campaign only records once a batch has run. That earlier answer is what makes a
+    campaign that died *before* its first batch re-runnable at all, on the lane where that is
+    the usual shape of a failure.
+
     Args:
-        campaign_dir: the campaign directory (its ``_execution/execution.yaml`` is read).
+        campaign_dir: the campaign directory (``_execution/launch.yaml`` first, then
+            ``_execution/execution.yaml``).
 
     Returns:
         A pin per recorded container. Empty when the campaign recorded no containers at all,
@@ -307,6 +315,13 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     # Inline, like every other import in this module: it stays dependency-light so it loads
     # cleanly in the pod, the driver and the service alike.
     from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+
+    launched = (read_launch_record(Path(campaign_dir)) or {}).get("images") or {}
+    if launched:
+        # Already concrete and already per-container: the launch resolved these itself. No
+        # pullability screen either -- these are what the campaign's own jobs were created
+        # with, so "can a new run start from them?" was answered when they ran.
+        return {str(k): str(v) for k, v in launched.items()}
 
     try:
         meta = read_execution_metadata(Path(campaign_dir))

@@ -192,6 +192,7 @@ class ClusterService(LocalTransport):
         self._index_refreshing = False
         if reap_on_start:
             self.reap_orphans()
+            self.resume_interrupted_campaigns()
 
     # -- version ------------------------------------------------------------
 
@@ -2588,6 +2589,26 @@ class ClusterService(LocalTransport):
                         reaped)
         return reaped
 
+    def resume_interrupted_campaigns(self) -> dict:
+        """Pick up the campaigns a previous service process was driving.
+
+        Synchronously, and before this service answers anything. Not a background thread:
+        ``_launch_campaign`` returns as soon as a campaign is named, so the blocking part is
+        one index listing plus a restore per campaign — and registering the campaigns *here*
+        is what stops a fresh launch arriving over the API and racing a campaign that is
+        about to be adopted.
+
+        Returns ``{campaign_id: None | refusal}``; see :mod:`.campaign_resume` for what is
+        picked up and what is deliberately left alone. Never raises.
+        """
+        from . import campaign_resume
+        outcomes = campaign_resume.resume_all(self)
+        resumed = [cid for cid, refusal in outcomes.items() if refusal is None]
+        if resumed:
+            logger.info("Resumed %d campaign(s) interrupted by a service restart: %s",
+                        len(resumed), ", ".join(resumed))
+        return outcomes
+
     def cleanup_campaign_data(self, request) -> ActionResult:
         """Delete campaign result bucket(s) from the object store.
 
@@ -3696,8 +3717,8 @@ class ClusterService(LocalTransport):
             lambda tar: cfg.add_campaign_members(
                 tar, campaign_id, exclude_prefixes={"_postproc"}))
 
-    def fetch_campaign(self, campaign_id: str, force: bool = False):
-        """Pull a finished campaign from the object store to a local dir; return it.
+    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None):
+        """Pull a campaign from the object store to a local dir; return it.
 
         The object store is the durable home (the campaign loop published the full
         campaign there via ``finalize_campaign``). The stateless service pulls it
@@ -3707,6 +3728,12 @@ class ClusterService(LocalTransport):
         size are left untouched (see ``download_prefix``): repeat pulls — e.g. a
         notebook re-render — become near-noops. Pass ``force=True`` to overwrite
         the local cache unconditionally.
+
+        ``dest`` overrides where it lands, and there is exactly one caller that needs to:
+        :mod:`.campaign_resume`, restoring a campaign that is **not finished** into the
+        driver's own campaign root, so its controller re-enters a directory holding what
+        the earlier life produced. Everything else wants the shared scratch cache and the
+        deduplication that comes with it, so the default stands.
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
@@ -3714,7 +3741,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        dest = self._cache_dir(campaign_id)
+        dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
         with self._fetch_locks_guard:

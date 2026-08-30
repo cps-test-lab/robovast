@@ -1083,6 +1083,30 @@ service is not. The distinction matters more than it looks, because a cooperativ
 persists a terminal ``outcome.json`` -- and a campaign that has recorded an ending is one
 no successor will ever pick up again.
 
+**And the successor picks them back up.** At startup, before it answers anything, the
+service re-launches every campaign the store lists that recorded no ending
+(``campaign_resume``). There is no resume mode anywhere in the launch path, the batch loop
+or the controller; a resumed campaign is a re-launch under its own id, and four properties
+-- each equally true of a campaign starting now -- are what make that safe:
+
+* the campaign's records (``_execution/launch.yaml``, ``campaign.db``) are published when
+  they are written rather than at ``finalize_campaign``, so an unfinished campaign has
+  something to be re-launched from;
+* the campaign root is restored from the store first (``fetch_campaign``), so the driver
+  re-enters a directory holding what the earlier life produced;
+* the batch runner plans against that root, adopting every job whose runs already have a
+  verdict instead of running them a second time;
+* ``create_campaign`` is idempotent by name, so the restored store re-opens its row.
+
+Three kinds of campaign are deliberately **left alone**, and each says which it is in the
+service log: one with no launch record or no frozen ``_config/`` (nothing says what to
+run), one whose frozen config this service cannot read unchanged (resuming would mean
+migrating it mid-campaign, making the second half a different experiment from the first),
+and a **search** -- whose proposer state is recorded nowhere a fresh process could read it,
+so resuming would silently skip evaluations the strategy believes it made. Each keeps the
+``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data stays recoverable
+with ``vast campaign import``.
+
 
 How free capacity is measured, and why it is not the whole cluster
 ------------------------------------------------------------------
