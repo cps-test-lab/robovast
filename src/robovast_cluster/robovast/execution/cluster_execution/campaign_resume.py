@@ -89,8 +89,7 @@ def owed_work(service) -> list:
     """
     index = service._campaign_index()  # noqa: SLF001 - same package, one collaborator
     owed = []
-    for campaign_id, created_at in sorted(index.items(), key=lambda kv: kv[1] or "",
-                                          reverse=True):
+    for campaign_id in sorted(index, key=lambda cid: index[cid] or "", reverse=True):
         try:
             if not _terminal_outcome(service, campaign_id):
                 owed.append(campaign_id)

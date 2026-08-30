@@ -1713,8 +1713,6 @@ def test_recording_the_launch_publishes_it(cs, tmp_path, monkeypatch):
     campaign that did not finish — which is the set someone comes looking at, and the set
     a restart has to re-launch from.
     """
-    from robovast.service.interface import CreateCampaignRequest
-
     published = []
     monkeypatch.setattr(type(cs), "_publish_execution",
                         lambda self, cid, root: published.append((cid, str(root))))
@@ -1727,8 +1725,6 @@ def test_recording_the_launch_publishes_it(cs, tmp_path, monkeypatch):
 
 def test_an_unpublishable_record_does_not_fail_the_campaign(cs, tmp_path, monkeypatch):
     """The campaign's own uploads follow within seconds and report a dead store loudly."""
-    from robovast.service.interface import CreateCampaignRequest
-
     def boom(self, cid, root):
         raise RuntimeError("store unreachable")
 
