@@ -102,10 +102,12 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
  *  as the one above and a change to either must be made looking at the other.
  *
  *  The track's label follows the campaign's tense (see `runMeterText`): the share done while it
- *  runs, the successes once it is over. Beside it, the number of runs that failed, and only when
- *  there is one -- red on the bar with no number against it leaves the reader counting pixels.
- *  The rest -- the counts, the two failure axes apart, the wall clock -- is on the hover: a bar
- *  140px wide holds one short label, and the rest is asked of a single row.
+ *  runs, the size of the campaign once it is over. Beside it, the number of runs that failed, and
+ *  only when there is one -- red on the bar with no number against it leaves the reader counting
+ *  pixels. One color for the whole label: the segments under it already carry the red, and a label
+ *  in two colors reads as two labels. The rest -- the counts, the two failure axes apart, the wall
+ *  clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
+ *  single row.
  */
 export function MiniRunMeter({
   status,
@@ -163,9 +165,7 @@ export function MiniRunMeter({
           text={
             <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
               {runMeterText(status, counts)}
-              {failed > 0 ? (
-                <Box component="span" sx={{ color: 'error.main' }}>{` · ${failed}\u2717`}</Box>
-              ) : null}
+              {failed > 0 ? ` (${failed} failed)` : ''}
             </Box>
           }
         />

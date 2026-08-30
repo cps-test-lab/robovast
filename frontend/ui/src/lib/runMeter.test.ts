@@ -61,12 +61,12 @@ describe('runMeterText', () => {
     expect(runMeterText(status({ total: 0 }))).toBe('')
   })
 
-  it('drops the share once the campaign is over and states the successes', () => {
-    expect(runMeterText(status({ total: 40, completed: 38, failed: 3 }, 'finished'))).toBe('35\u2713')
+  it('drops the share once the campaign is over and states its size', () => {
+    expect(runMeterText(status({ total: 40, completed: 38, failed: 3 }, 'finished'))).toBe('40')
   })
 
   it('reports a stopped campaign the same way -- terminal is terminal', () => {
-    expect(runMeterText(status({ total: 40, completed: 12 }, 'stopped'))).toBe('12\u2713')
+    expect(runMeterText(status({ total: 40, completed: 12 }, 'stopped'))).toBe('40')
   })
 })
 
