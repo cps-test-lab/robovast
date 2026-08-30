@@ -42,7 +42,9 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SERVER = "https://ntfy.sh"
+#: Public ntfy instance used when ``ROBOVAST_NTFY_SERVER`` names none. Public so the
+#: service configuration report can state the default rather than restate the literal.
+DEFAULT_SERVER = "https://ntfy.sh"
 _DEFAULT_HEARTBEAT_S = 3600
 
 # Status snapshot for the heartbeat: (batch, completed, total, batches_done).
@@ -53,10 +55,10 @@ class Notifier:
     """Sends ntfy notifications for one campaign. Disabled instances are no-ops."""
 
     def __init__(self, campaign_id: str, *, topic: str = "",
-                 server: str = _DEFAULT_SERVER, token: str = ""):
+                 server: str = DEFAULT_SERVER, token: str = ""):
         self.campaign_id = campaign_id
         self.topic = (topic or "").strip()
-        self.server = (server or _DEFAULT_SERVER).strip().rstrip("/")
+        self.server = (server or DEFAULT_SERVER).strip().rstrip("/")
         self.token = (token or "").strip()
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
@@ -76,7 +78,7 @@ class Notifier:
         return cls(
             campaign_id,
             topic=os.environ.get("ROBOVAST_NTFY_TOPIC", ""),
-            server=os.environ.get("ROBOVAST_NTFY_SERVER", "") or _DEFAULT_SERVER,
+            server=os.environ.get("ROBOVAST_NTFY_SERVER", "") or DEFAULT_SERVER,
             token=os.environ.get("ROBOVAST_NTFY_TOKEN", ""),
         )
 
