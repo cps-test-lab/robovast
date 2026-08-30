@@ -196,6 +196,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_manipulation \
         /opt/roqsim/roqsim_manipulation_assets \
         /opt/roqsim/roqsim_mobile_manipulation \
+        /opt/roqsim/roqsim_aerial \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_walker \
         /opt/roqsim/roqsim_webctrl \

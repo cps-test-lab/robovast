@@ -1,0 +1,95 @@
+version: 3
+
+metadata:
+  name: drone_flight_envelope_boundary
+  description: >
+    The same drone and room as drone_envelope.vast, searched instead of gridded. The flight
+    envelope has a real, sharp boundary near a thrust-to-weight ratio of 1 -- the drone holds
+    altitude on one side of it and never leaves the pad on the other -- and `boundary` search exists
+    to find exactly that kind of surface. A grid can only bracket it between two cells; this walks
+    along it.
+
+# The searched space is in units a drone engineer reasons about, not in the simulator's fields.
+# `variations:` below is what converts them.
+search:
+  strategy: boundary
+  search_space:
+    payload_kg:   {type: float, low: 0.0,   high: 0.011}   # T/W 1.32 down to 0.95
+    density:      {type: float, low: 0.80,  high: 1.225}   # sea level up to ~4000 m
+    wind_speed:   {type: float, low: 0.0,   high: 5.0}     # m/s
+    wind_heading: {type: float, low: 0.0,   high: 360.0}   # degrees, CCW from +x
+    turbulence:   {type: float, low: 0.0,   high: 1.2}     # Dryden sigma, m/s
+
+  variations:
+  # Two of the five map straight onto simulator fields; a `$name` binds a search variable.
+  - ParameterVariationList: {sim: components.drone.payload.mass, values: [$payload_kg]}
+  - ParameterVariationList: {sim: sim.density, values: [$density]}
+  # The other three are physical weather that has to become a vector and a Dryden block. A real
+  # computation between the search and the simulator is what the `variations:` template is for.
+  - variations/wind.py:WindVariation:
+      wind_speed: $wind_speed
+      heading_deg: $wind_heading
+      turbulence: $turbulence
+      sim:
+        steady: components.wind_field.steady
+        turbulence: components.wind_field.turbulence
+
+  postprocessing:
+  - rosbags_to_csv: {topics: [/drone/odom]}
+  - search/metrics.py:EnvelopeMetrics
+  extract: {plugin: search/extract.py:EnvelopeExtract}
+
+  # Maximised, so the search is pulled toward configurations that fail -- which, for a boundary
+  # search, is what puts samples on both sides of the edge.
+  objectives:
+  - {name: envelope_failure, direction: maximize}
+
+  strategy_parameters:
+    # The level set to walk: half the runs of a configuration outside the envelope. That is the
+    # edge itself -- configurations where the drone holds altitude sometimes and not others, which
+    # is where the boundary actually lies once turbulence is in the picture.
+    level: 0.5
+
+  per_batch: 8
+  budget: [{batches: 4}]
+  seed: 0
+
+execution:
+  containers:
+    simulation:
+      backend: roqsim
+      config: world/drone_envelope.yaml
+      # Needs a simulator image carrying `roqsim_aerial` (the Crazyflie, `quadrotor_controller`,
+      # `payload` and `wind_field`). It is part of the standard robovast-roqsim image; an image
+      # built before that package existed fails at world load with "model 'crazyflie_2' not found",
+      # which names the cause precisely enough to act on.
+      resources: {cpu: 0.5, cpu_limit: 4, memory: 1536Mi}
+    scenario:
+      resources: {cpu: 0.5, cpu_limit: 2, memory: 768Mi}
+  mode: ros2
+  runs: 3
+  timeout: 240
+  scenario_file: scenario.osc
+  run_files:
+  - "world/*.yaml"
+  - "world/*.xml"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+visualization:
+  results:
+    run_view:
+      panels:
+      - state:
+          title: Flight state
+          position: {anchor: top-right, width: 380, height: 260}
+          source: {table: trajectory, time_column: t}
+          fields: [z, tilt_deg, speed, x, y]
+      - scene:
+          title: Ground track
+          position: {anchor: center, width: 420, height: 420}
+          source: {table: trajectory, time_column: t}
+          x: x
+          y: y
+          trail: true
+      timeline: {table: trajectory, time_column: t}
