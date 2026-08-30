@@ -12,6 +12,7 @@ import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import FolderRoundedIcon from '@mui/icons-material/FolderRounded'
 import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded'
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined'
+import { useActiveView } from '@/lib/activeView'
 import { robovast } from '@/lib/robovastClient'
 import { buildTree, type TreeNode } from '@/lib/fileTree'
 import {
@@ -32,10 +33,13 @@ import { useDirectoryUpload } from './useDirectoryUpload'
 // problem rather than a request the service refuses.
 export function FilesView({ source }: { source: ConfigSource }) {
   const readOnly = isReadOnlySource(source)
+  const active = useActiveView()
   const files = useQuery({
     queryKey: configFilesKey(source),
     queryFn: () => robovast.listFilesAt(configDirUrl(source)),
-    enabled: !isEmptySource(source),
+    // The same listing the editor pane reads, gated the same way and for the same reason —
+    // one query, two observers, so they must agree about when it is live (useConfigEditor).
+    enabled: active && !isEmptySource(source),
     retry: false,
   })
   const paths = useMemo(() => files.data?.entries ?? [], [files.data])

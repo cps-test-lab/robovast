@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { BatchObjectiveChart } from './BatchObjectiveChart'
-import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsCharts as Charts } from './DetailsCharts'
 import { robovast, type SearchHistory } from '@/lib/robovastClient'
 import { formatBytes, formatDuration } from '@/lib/format'
@@ -339,6 +338,7 @@ export function DetailsBox({
   campaignId,
   quotaCpu,
   postprocessed = false,
+  selected = true,
 }: {
   campaignId: string
   /** Lane CPU capacity, for the "jobs in flight" estimate. Omitted when unknown, and then
@@ -349,11 +349,13 @@ export function DetailsBox({
    *  appear minutes later. Without this the first answer -- correctly "not postprocessed" -- was
    *  cached for the session and the columns never filled in. */
   postprocessed?: boolean
+  /** Whether the Details tab is the one showing. This panel has no frame of its own any more --
+   *  the tab IS its open state -- but the gate it used to get from that frame still matters and
+   *  is now this prop: the queries below include one that scans every 1 Hz sample of every run,
+   *  and a card opened straight onto its Log tab must not pay for them. */
+  selected?: boolean
 }) {
-  // Closed by default, always: the campaign list holds every campaign, and this panel's three
-  // queries include one that scans every 1 Hz sample of every run. Opening it on mount would
-  // charge a page of twenty cards for twenty campaigns nobody asked about.
-  const [open, setOpen] = useState(false)
+  const open = selected
   const { data, isLoading, isError, error } = useDetails(campaignId, open, postprocessed)
   // Its own query rather than a fourth SQL statement in `useDetails`: this one is served by the
   // service from `campaign.db` directly, which is what makes the identical chart work on a
@@ -394,17 +396,22 @@ export function DetailsBox({
   const inFlightNow = jobsInFlight(model?.cpu?.declaredPod ?? null, quotaCpu ?? null)
   const inFlightThen = jobsInFlight(model?.cpu?.suggestedPod ?? null, quotaCpu ?? null)
 
+  // No frame and no title. This used to be a foldable box inside an already-folded card, so what
+  // a campaign cost took two clicks to reach; it is the content of a tab now, and the tab is both
+  // the label and the open state. The cpu headline that the old collapsed header carried is not
+  // reinstated here: it is a RECOMMENDATION, and it belongs beside the evidence for it in the CPU
+  // column rather than at the top of the panel.
   return (
-    <CollapsibleBox
-      // No meta. The collapsed header carried the cpu headline, which put a RECOMMENDATION on the
-      // campaign card itself -- beside the phase and the run bar, where everything else is a fact
-      // about what happened. The CPU column says it, one click in, next to the evidence for it.
-      title="Details"
-      open={open}
-      onToggle={() => setOpen((o) => !o)}
-    >
       <Box sx={{ p: 1 }}>
-        {isLoading ? (
+        {!postprocessed && !data ? (
+          // A campaign is FINISHED as soon as its runs are done, minutes before its metric tables
+          // exist -- and one whose postprocessing failed never gets them at all. Say which it is
+          // and what fixes it, rather than showing an empty grid that reads as "this cost nothing".
+          <Typography variant="caption" color="text.secondary">
+            not postprocessed — there is nothing to measure yet. If this campaign has finished,
+            retrigger postprocessing from the actions menu.
+          </Typography>
+        ) : isLoading ? (
           <Typography variant="caption" color="text.secondary">
             reading the campaign's runs…
           </Typography>
@@ -579,6 +586,5 @@ export function DetailsBox({
           </Stack>
         ) : null}
       </Box>
-    </CollapsibleBox>
   )
 }

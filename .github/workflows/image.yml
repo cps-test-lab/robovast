@@ -698,6 +698,14 @@ jobs:
         # puzzle. `github.sha` is the full 40 characters.
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      - name: Build date for the image to report
+        id: built
+        # The same value metadata-action puts in org.opencontainers.image.created, passed
+        # again as a build arg because a container cannot read its own labels: the service
+        # answers "how old is this deployment?" from its environment. Format fixed here and
+        # in container/image_stamp.sh so a CI image and a locally built one read alike.
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       # Read main's cache always; on a pull request read its own on top and write only there.
       #
       # Writing straight to main's ref from a PR would let unmerged code decide what every later
@@ -739,6 +747,7 @@ jobs:
           # answer that (`latest` moves) and the package version cannot either.
           build-args: |
             ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
+            ROBOVAST_BUILD_DATE=${{ steps.built.outputs.date }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: ${{ steps.cache.outputs.from }}

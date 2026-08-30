@@ -157,7 +157,6 @@ export function App() {
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>
           <ResultsPage
-            active={nav.topicId === 'results'}
             view={nav.viewId}
             campaignId={nav.campaignId}
             sel={nav.sel}

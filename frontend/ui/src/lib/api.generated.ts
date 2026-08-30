@@ -3701,6 +3701,11 @@ export interface components {
             backend: string | null;
             /** Build Unavailable */
             build_unavailable: string | null;
+            /**
+             * Built At
+             * @default
+             */
+            built_at: string;
             /** Can Build Images */
             can_build_images: boolean | null;
             /**
@@ -3716,6 +3721,11 @@ export interface components {
             kube_context_source: string | null;
             /** Namespace */
             namespace: string | null;
+            /**
+             * Package Version
+             * @default
+             */
+            package_version: string;
             /**
              * Results Address
              * @default /results/{campaign_id}/{path}

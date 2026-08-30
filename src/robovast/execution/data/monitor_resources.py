@@ -114,6 +114,29 @@ def cpu_stat_probe():
 MEMORY_PATH = "/sys/fs/cgroup"
 MEMORY_FILES = ("memory.current", "memory.peak", "memory.max")
 
+#: The same three under cgroup **v1**, mapped onto the v2 column names so a campaign spanning
+#: both kinds of node stays comparable -- exactly as :data:`CPU_STAT_PATH_V1` does for the
+#: throttle counters, and for the same reason. That fix was made for CPU alone and the memory
+#: probes were left v2-only, which is not an even trade on a mixed cluster: measured here, the
+#: single v1 node is also the largest, so memory went unmeasured on the majority of the
+#: cluster while reading as merely absent.
+#:
+#: **It silently disabled the OOM guard there too**, which matters more than the missing
+#: figure. ``oom_kills`` comes from ``memory.events``; absent, it is treated as "not measured"
+#: and never as a refusal, so a probe OOM-killed on such a node would be calibrated from
+#: rather than rejected -- a fragment of a run that died, believed.
+MEMORY_PATH_V1 = "/sys/fs/cgroup/memory"
+MEMORY_FILES_V1 = {
+    "memory.usage_in_bytes": "memory_current",
+    "memory.max_usage_in_bytes": "memory_peak",
+    "memory.limit_in_bytes": "memory_max",
+}
+
+#: v1 reports "no limit" as a sentinel near 2^63 rather than the word ``max``, so a limit at or
+#: above this is an absence like v2's ``max`` -- recorded as one rather than as a number no
+#: usage could ever approach.
+_V1_UNLIMITED = 1 << 62
+
 
 def memory_probe():
     """Container memory as the kernel accounts it, or ``{}`` where it cannot be read.
@@ -121,6 +144,8 @@ def memory_probe():
     ``memory.max`` reads ``max`` when no limit is set; that is recorded as an absence rather
     than as a number, because "unlimited" and "some very large limit" are different facts and
     only one of them can be compared against usage.
+
+    **Both cgroup versions**, v2 first, read into the same column names.
     """
     out = {}
     for name in MEMORY_FILES:
@@ -133,6 +158,17 @@ def memory_probe():
             out[name.replace(".", "_")] = int(raw)
         except ValueError:
             pass  # "max" -- no limit in force
+    if out:
+        return out
+    for name, column in MEMORY_FILES_V1.items():
+        try:
+            with open(os.path.join(MEMORY_PATH_V1, name), encoding="utf-8") as handle:
+                value = int(handle.read().strip())
+        except (OSError, ValueError):
+            continue
+        if column == "memory_max" and value >= _V1_UNLIMITED:
+            continue  # no limit in force, as v2's "max"
+        out[column] = value
     return out
 
 
@@ -330,15 +366,30 @@ def memory_stat_probe():
 MEMORY_EVENTS_PATH = "/sys/fs/cgroup/memory.events"
 MEMORY_EVENT_FIELDS = ("max", "oom", "oom_kill")
 
+#: cgroup **v1** has no ``memory.events``. It counts the same two things separately:
+#: ``memory.failcnt`` is how often an allocation hit the limit (v2's ``max``), and
+#: ``memory.oom_control`` carries an ``oom_kill`` line on kernels that report it.
+#:
+#: This is the counter the probe's OOM refusal reads, so leaving it v2-only did not merely
+#: lose a column: it disabled that guard on every v1 node, silently, in the direction that
+#: accepts a bad measurement. Absent reads as "not measured" and never as a refusal -- which
+#: is the right rule for a counter that cannot be read, and the wrong outcome when the reason
+#: it cannot be read is that nobody wrote the path.
+MEMORY_FAILCNT_PATH_V1 = "/sys/fs/cgroup/memory/memory.failcnt"
+MEMORY_OOM_CONTROL_PATH_V1 = "/sys/fs/cgroup/memory/memory.oom_control"
+
 
 def memory_events_probe():
-    """``{memory_events_max, memory_events_oom, memory_events_oom_kill}``, or ``{}``."""
+    """``{memory_events_max, memory_events_oom, memory_events_oom_kill}``, or ``{}``.
+
+    **Both cgroup versions**, v2 first, read into the same column names.
+    """
     out = {}
     try:
         with open(MEMORY_EVENTS_PATH, encoding="utf-8") as handle:
             raw = handle.read()
     except OSError:
-        return out
+        return _memory_events_v1()
     for line in raw.splitlines():
         key, _, value = line.partition(" ")
         if key not in MEMORY_EVENT_FIELDS:
@@ -347,6 +398,25 @@ def memory_events_probe():
             out[f"memory_events_{key}"] = int(value)
         except ValueError:
             pass
+    return out or _memory_events_v1()
+
+
+def _memory_events_v1():
+    """The v1 spelling of the same counters, or ``{}``."""
+    out = {}
+    try:
+        with open(MEMORY_FAILCNT_PATH_V1, encoding="utf-8") as handle:
+            out["memory_events_max"] = int(handle.read().strip())
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(MEMORY_OOM_CONTROL_PATH_V1, encoding="utf-8") as handle:
+            for line in handle.read().splitlines():
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    out["memory_events_oom_kill"] = int(value)
+    except (OSError, ValueError):
+        pass
     return out
 
 

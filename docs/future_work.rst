@@ -324,10 +324,6 @@ is why this is recorded rather than guessed at.
   minutes outlasts a typical trial", which is true of a 150 s trial. A campaign whose trials
   run 30-60 minutes has legitimately-waiting pods dropped as interventions and **its runs
   discarded**. It should come from ``execution.timeout``.
-* ``MIN_PROBE_SAMPLES = 30`` against the monitor's 1 Hz tick means a campaign whose trials run
-  under 30 s can never be calibrated: every probe is rejected as thin and every node silently
-  keeps whatever it started on. A fraction of the trial is the right floor, not an absolute
-  tick count.
 * ``container_cpu_profile`` takes its percentiles over the container's **whole lifetime**, not
   over the trial: it is the one reader of ``resource_usage_<container>.csv`` that meets the
   raw artifact, and ``in_window`` is added later by postprocessing. With nav2's short bring-up

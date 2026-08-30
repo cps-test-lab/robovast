@@ -96,6 +96,21 @@ def _listed(transport) -> list:
     return [c.campaign_id for c in transport.list_campaigns().campaigns]
 
 
+def _mark_live(transport, cid: str) -> None:
+    """Register *cid* as a campaign this transport is driving, so it is genuinely live."""
+    from robovast.common.store import read_campaign_created_at
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    state = ControllerState()
+    state.set_phase("running")
+    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    entry.created_at = (read_campaign_created_at(transport._campaign_dir(cid))
+                        or entry.created_at)
+    with transport._lock:
+        transport._campaigns[cid] = entry
+
+
 def test_a_reactivated_campaign_leads_the_listing_then_falls_back(transport):
     """A finished campaign put back to work is live again, and the listing says so.
 
@@ -165,4 +180,11 @@ def test_a_crashed_reactivation_still_falls_back(transport):
     assert transport._dispatch_background(old, phase=Phase.POSTPROCESSING, work=boom).ok
     transport._campaigns[old].thread.join(2)
 
-    assert _listed(transport) == [new, old]
+    # The crashed op ended the campaign, so it is the most recently *finished* one and leads
+    # the terminal group -- which is correct and is not what this guards. What matters is that
+    # it left the LIVE group: a genuinely live campaign, with the oldest start of the three,
+    # outranks it. Wedged in the live group, `old` would come first instead.
+    _campaign_with_start(transport, "live-2026-06-01-120000", 500.0)
+    _mark_live(transport, "live-2026-06-01-120000")
+    assert _listed(transport)[0] == "live-2026-06-01-120000"
+    assert set(_listed(transport)[1:]) == {old, new}

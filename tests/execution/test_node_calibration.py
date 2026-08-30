@@ -5,8 +5,7 @@
 import pytest
 
 from robovast.execution.cluster_execution import node_calibration as nc
-from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_HEADROOM, MIN_CPU,
-                                                                   NodeCalibration,
+from robovast.execution.cluster_execution.node_calibration import (MIN_CPU, NodeCalibration,
                                                                    calibration_applies)
 
 
@@ -42,32 +41,37 @@ def test_a_calibrated_node_never_probes_again():
     different environments -- the same inconsistency this removes, in a slower form."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200}})
+    c.record("n1", "j0", {"sut": {"cores": 1.4, "samples": 200}})
     assert c.claim_probe("n1", "j9") is False
-    assert c.calibrated("n1")["sut"]["peak"] == pytest.approx(2.0 * CALIBRATION_HEADROOM)
+    assert c.calibrated("n1")["sut"]["cores"] == pytest.approx(1.4), "stored as measured"
 
 
-def test_headroom_is_applied_because_a_peak_is_one_sample():
-    """Sizing exactly at what one run measured guarantees the next run is clipped."""
+def test_the_store_keeps_what_was_measured_not_what_will_be_asked_for():
+    """Headroom and the floor are applied where the ALLOCATION is built, not here.
+
+    Both are per-container settings now, and this store deliberately does not know what a
+    container is for -- the same reason it is told each container's percentile rather than
+    deciding it. Storing a padded figure would also make the log line a statement about
+    settings rather than about the machine."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200},
-                          "simulation": {"sustained": 0.4, "peak": 4.8, "samples": 200}})
+    c.record("n1", "j0", {"sut": {"cores": 1.4, "samples": 200},
+                          "simulation": {"cores": 0.4, "samples": 200}})
     got = c.calibrated("n1")
-    assert got["sut"]["peak"] == pytest.approx(2.5)
-    assert got["simulation"]["sustained"] == pytest.approx(0.5)
-    # Both statistics survive, because one number cannot serve both roles: the simulator
-    # sustains 0.4 and peaks at 4.8, and sizing it at either alone is wrong by ~12x.
-    assert got["simulation"]["peak"] == pytest.approx(6.0)
+    assert got["sut"]["cores"] == pytest.approx(1.4), "as measured, unpadded"
+    assert got["simulation"]["cores"] == pytest.approx(0.4)
 
 
 def test_a_container_that_did_almost_nothing_still_gets_a_floor():
     """A trial that failed early, or a simulator that never got past bring-up, would otherwise
-    pin the node to a figure the next run cannot live in."""
-    c = NodeCalibration()
-    c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 0.001, "peak": 0.001, "samples": 200}})
-    assert c.calibrated("n1")["sut"]["peak"] == MIN_CPU
+    pin the node to a figure the next run cannot live in. Applied where the allocation is
+    built, so the store still reports the measurement itself."""
+    from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
+
+    sized = calibrated_resources(
+        {}, "sut", {"sut": {"cores": 0.001, "samples": 200}}, roles=("sut",), bootstrap=True,
+        settings={"size_on": 100, "limit": "request", "headroom": {"cpu": 1.25}})
+    assert sized["cpu"] == MIN_CPU
 
 
 def test_a_probe_that_measured_nothing_leaves_the_node_uncalibrated():
@@ -100,7 +104,7 @@ def test_recording_against_the_wrong_job_is_refused():
     overwrite the figures every later run was already sized with."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    assert c.record("n1", "j-other", {"sut": {"peak": 9.0}}) is False
+    assert c.record("n1", "j-other", {"sut": {"cores": 9.0}}) is False
     assert c.calibrated("n1") is None
 
 
@@ -121,19 +125,21 @@ def test_a_tick_is_summed_over_processes_before_it_is_aggregated():
 
     rows = [{"timestamp": "1", "cpu_percent": "50"},
             {"timestamp": "1", "cpu_percent": "70"}]
-    assert container_cpu_profile(rows)["peak"] == pytest.approx(1.2), "0.5 + 0.7, not 0.7"
+    assert container_cpu_profile(rows)["cores"] == pytest.approx(1.2), "0.5 + 0.7, not 0.7"
 
 
-def test_sustained_and_peak_are_both_reported():
-    """The pair is the point. Measured on the shipped example a simulator sustains ~1 core
-    and peaks near 6, so a single figure is wrong by ~6x whichever one is chosen."""
+def test_the_percentile_decides_which_figure_comes_back():
+    """One reading per call, at the percentile the caller asked for -- so the choice of
+    statistic lives with the role rules rather than in the reader.
+
+    The spread is the point: on the shipped example a simulator sustains ~1 core and peaks
+    near 6, so which end is read is worth ~6x."""
     from robovast.execution.cluster_execution.node_calibration import container_cpu_profile
 
     rows = [{"timestamp": str(i), "cpu_percent": "100"} for i in range(150)]
     rows.append({"timestamp": "burst", "cpu_percent": "598"})
-    got = container_cpu_profile(rows)
-    assert got["sustained"] == pytest.approx(1.0)
-    assert got["peak"] == pytest.approx(5.98)
+    assert container_cpu_profile(rows, percentile=95)["cores"] == pytest.approx(1.0)
+    assert container_cpu_profile(rows, percentile=100)["cores"] == pytest.approx(5.98)
 
 
 def test_nothing_to_read_is_not_a_measurement_of_zero():
@@ -145,9 +151,17 @@ def test_nothing_to_read_is_not_a_measurement_of_zero():
 
 # -- applying it, per role ----------------------------------------------------------------
 
-def _calibrated(declared, name, figures):
+def _settings_for(role):
+    """The role's own rule, as the backend resolves it -- so a test states which role it is
+    talking about and never restates the rule it is checking."""
+    from robovast.execution.cluster_execution.node_calibration import calibration_defaults
+    return calibration_defaults(role)
+
+
+def _calibrated(declared, name, figures, role=None):
     from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
-    return calibrated_resources(declared, name, figures)
+    return calibrated_resources(declared, name, figures, roles=(role or name,),
+                                settings=_settings_for(role or name))
 
 
 def test_the_system_under_test_is_sized_on_its_peak_and_stays_pinned():
@@ -155,9 +169,9 @@ def test_the_system_under_test_is_sized_on_its_peak_and_stays_pinned():
     against: a run clipped mid-plan fails in a way that looks like the stack's fault rather
     than the allocation's, which is the confusion this separates."""
     got = _calibrated({"cpu": 3, "memory": "640Mi"}, "sut",
-                      {"sut": {"sustained": 1.4, "peak": 2.5}})
-    assert got["cpu"] == 2.5 and got["cpu_limit"] == 2.5
-    assert got["memory"] == "640Mi", "memory is never re-sized"
+                      {"sut": {"cores": 1.4}})
+    assert got["cpu"] == pytest.approx(1.75) and got["cpu_limit"] == pytest.approx(1.75)
+    assert got["memory"] == "640Mi", "no memory measurement here, so the declaration stands"
 
 
 def test_an_infrastructure_container_is_sized_on_what_it_sustains():
@@ -165,8 +179,8 @@ def test_an_infrastructure_container_is_sized_on_what_it_sustains():
     than the un-calibrated campaign did -- its peak-to-mean ratio is about 18 -- which is the
     opposite of the point."""
     got = _calibrated({"cpu": 0.5, "cpu_limit": 6, "memory": "2944Mi"}, "simulation",
-                      {"simulation": {"sustained": 0.42, "peak": 6.0}})
-    assert got["cpu"] == 0.42, "the reservation follows what it sustains"
+                      {"simulation": {"cores": 0.42}})
+    assert got["cpu"] == pytest.approx(0.42 * 1.25), "what it sustained, plus headroom"
     assert got["cpu_limit"] == 6, "the ceiling is the author's, and a burst still fits under it"
 
 
@@ -187,7 +201,7 @@ def test_a_node_takes_no_campaign_work_while_its_probe_is_out():
     assert c.accepts_work("n1") is True
     c.claim_probe("n1", "probe-1")
     assert c.accepts_work("n1") is False
-    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 200}})
+    c.record("n1", "probe-1", {"sut": {"cores": 1.0, "samples": 200}})
     assert c.accepts_work("n1") is True
 
 
@@ -201,7 +215,7 @@ def test_the_probe_directory_is_not_a_configuration():
 
 # -- the probe validity gate --------------------------------------------------------------
 
-_GOOD = {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200}}
+_GOOD = {"sut": {"cores": 1.4, "samples": 200}}
 
 
 def test_a_probe_whose_scenario_never_finished_does_not_calibrate():
@@ -226,7 +240,7 @@ def test_a_probe_with_too_few_samples_does_not_calibrate():
 
     c = NodeCalibration()
     c.claim_probe("n1", "p1")
-    thin = {"sut": {"sustained": 0.01, "peak": 0.02, "samples": MIN_PROBE_SAMPLES - 1}}
+    thin = {"sut": {"cores": 0.01, "samples": MIN_PROBE_SAMPLES - 1}}
     assert c.record("n1", "p1", thin) is False
     assert c.calibrated("n1") is None
 
@@ -236,8 +250,8 @@ def test_one_thin_container_refuses_the_whole_measurement():
     it: the containers would be scaled against different amounts of the same run."""
     c = NodeCalibration()
     c.claim_probe("n1", "p1")
-    mixed = {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200},
-             "simulation": {"sustained": 0.3, "peak": 5.0, "samples": 4}}
+    mixed = {"sut": {"cores": 1.4, "samples": 200},
+             "simulation": {"cores": 0.3, "samples": 4}}
     assert c.record("n1", "p1", mixed) is False
 
 
@@ -246,7 +260,7 @@ def test_sample_count_never_becomes_a_cpu_figure():
     c = NodeCalibration()
     c.claim_probe("n1", "p1")
     c.record("n1", "p1", _GOOD)
-    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+    assert set(c.calibrated("n1")["sut"]) == {"cores"}
 
 
 # -- reading a finished probe -------------------------------------------------------------
@@ -269,8 +283,8 @@ def test_a_probe_is_read_from_its_own_files_not_from_postprocessing():
     got = read_probe_measurement(
         store.get, "_calibration/node-a/",
         {"sut": "resource_usage_sut.csv", "simulation": "resource_usage_simulation.csv"})
-    assert got["sut"]["peak"] == pytest.approx(1.0)
-    assert got["simulation"]["peak"] == pytest.approx(0.4)
+    assert got["sut"]["cores"] == pytest.approx(1.0)
+    assert got["simulation"]["cores"] == pytest.approx(0.4)
     assert got["sut"]["samples"] == 50
 
 
@@ -414,8 +428,8 @@ def test_the_sizing_the_queue_uses_is_the_sizing_the_manifest_asks_for():
     """
     from robovast.execution.cluster_execution import kubernetes_backend as kb
 
-    figures = {"sut": {"sustained": 1.4, "peak": 2.0},
-               "simulation": {"sustained": 0.4, "peak": 5.0}}
+    figures = {"sut": {"cores": 1.4},
+               "simulation": {"cores": 0.4}}
     r = kb.BatchJobRunner()
 
     def _manifest(job, total, node_figures=None):
@@ -438,7 +452,7 @@ def test_the_sizing_the_queue_uses_is_the_sizing_the_manifest_asks_for():
 
     # 1 (main) + 3 (sut) + 0.75 (sim) declared; 1 + 2.0 (sut peak) + 0.4 (sim sustained).
     assert declared.cpu == pytest.approx(4.75)
-    assert calibrated.cpu == pytest.approx(3.4)
+    assert calibrated.cpu == pytest.approx(2.8)
     assert calibrated.cpu < declared.cpu, "a calibrated node holds more of them"
 
 
@@ -446,22 +460,25 @@ def test_the_declared_role_decides_not_the_container_name():
     """A stack that bundles its own simulator serves the simulation role from its sut
     container. It is still the thing under test, so it is still sized on peak -- and that is
     a case where role and name already differ, which is why the rule rests on the role."""
-    figures = {"my_stack": {"sustained": 1.4, "peak": 2.5}}
+    figures = {"my_stack": {"cores": 1.4}}
     got = _calibrated_with_roles({"cpu": 3}, "my_stack", figures, roles=("sut", "simulation"))
-    assert got["cpu"] == 2.5 and got["cpu_limit"] == 2.5, "peak, and pinned"
+    assert got["cpu"] == pytest.approx(1.75) and got["cpu_limit"] == pytest.approx(1.75)
 
 
 def test_a_container_with_no_role_is_treated_as_infrastructure():
     """An ad-hoc container is not under test, so it reserves what it sustains."""
-    figures = {"helper": {"sustained": 0.3, "peak": 4.0}}
+    figures = {"helper": {"cores": 0.3}}
     got = _calibrated_with_roles({"cpu": 1, "cpu_limit": 4}, "helper", figures, roles=())
-    assert got["cpu"] == pytest.approx(0.3)
-    assert got["cpu_limit"] == 4
+    assert got["cpu"] == pytest.approx(0.3 * 1.25), "what it sustained, plus headroom"
+    assert got["cpu_limit"] == 4, "and the ceiling its author set"
 
 
 def _calibrated_with_roles(declared, name, figures, roles):
     from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
-    return calibrated_resources(declared, name, figures, roles=roles)
+    from robovast.execution.cluster_execution.node_calibration import calibration_defaults
+    role = next((r for r in (roles or ())), name)
+    return calibrated_resources(declared, name, figures, roles=roles,
+                                settings=calibration_defaults(role))
 
 
 def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against():
@@ -480,7 +497,7 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
 
     cal = NodeCalibration()
     cal.claim_probe("fast", "p")
-    cal.record("fast", "p", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 200}})
+    cal.record("fast", "p", {"sut": {"cores": 1.0, "samples": 200}})
 
     r = kb.BatchJobRunner()
     r.campaign = "camp-2026-07-17-120000"
@@ -515,9 +532,10 @@ def test_a_sample_above_the_containers_own_quota_is_discarded():
     rows = [{"timestamp": "boot", "cpu_percent": "1040"}]
     rows += [{"timestamp": str(i), "cpu_percent": "150"} for i in range(150)]
 
-    assert container_cpu_profile(rows)["peak"] == pytest.approx(10.4), "unfiltered, as found"
+    assert container_cpu_profile(rows, percentile=100)["cores"] == pytest.approx(10.4), \
+        "unfiltered, as found"
     clamped = container_cpu_profile(rows, limit_cores=3.0)
-    assert clamped["peak"] == pytest.approx(1.5), "the impossible sample is gone"
+    assert clamped["cores"] == pytest.approx(1.5), "the impossible sample is gone"
     assert clamped["samples"] == 150, "and it is not counted as a sample either"
 
 
@@ -638,10 +656,11 @@ def test_calibration_never_asks_for_more_than_the_author_declared():
     from robovast.common.config import SUT_CONTAINER
 
     declared = {"cpu": 3.0}
-    # A container that genuinely ran at its ceiling: peak 3.0 * 1.25 headroom = 3.75.
-    figures = {SUT_CONTAINER: {"peak": 3.75, "sustained": 2.0}}
+    # A container that genuinely ran at its ceiling: 3.0 measured * 1.25 headroom = 3.75.
+    figures = {SUT_CONTAINER: {"cores": 3.0}}
 
-    out = calibrated_resources(declared, SUT_CONTAINER, figures, roles=(SUT_CONTAINER,))
+    out = calibrated_resources(declared, SUT_CONTAINER, figures, roles=(SUT_CONTAINER,),
+                               settings=_settings_for(SUT_CONTAINER))
 
     assert out["cpu"] == 3.0, "clamped to the declared ceiling"
     assert out["cpu_limit"] == 3.0, "and the SUT keeps request == limit"
@@ -653,8 +672,9 @@ def test_a_measured_figure_below_the_ceiling_is_still_used():
     from robovast.common.config import SUT_CONTAINER
 
     out = calibrated_resources({"cpu": 3.0}, SUT_CONTAINER,
-                               {SUT_CONTAINER: {"peak": 1.1}}, roles=(SUT_CONTAINER,))
-    assert out["cpu"] == 1.1 and out["cpu_limit"] == 1.1
+                               {SUT_CONTAINER: {"cores": 1.1}}, roles=(SUT_CONTAINER,),
+                               settings=_settings_for(SUT_CONTAINER))
+    assert out["cpu"] == pytest.approx(1.375) and out["cpu_limit"] == pytest.approx(1.375)
 
 
 def test_the_clamp_reads_the_split_limit_when_there_is_one():
@@ -662,7 +682,8 @@ def test_the_clamp_reads_the_split_limit_when_there_is_one():
     from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
 
     out = calibrated_resources({"cpu": 0.5, "cpu_limit": 6}, "simulation",
-                               {"simulation": {"sustained": 9.0}})
+                               {"simulation": {"cores": 9.0}}, roles=("simulation",),
+                               settings=_settings_for("simulation"))
     assert out["cpu"] == 6, "clamped at the ceiling, not at the 0.5 reservation"
 
 
@@ -675,7 +696,7 @@ def test_cores_come_from_the_billing_counter_delta():
             {"timestamp": "1001.0", "cpu_usage_usec": "2000000"},    # 2.0 cores over 1s
             {"timestamp": "1002.0", "cpu_usage_usec": "2500000"}]    # 0.5 cores over 1s
     got = nc.container_cpu_profile_from_billing(rows)
-    assert got["peak"] == pytest.approx(2.0)
+    assert got["cores"] == pytest.approx(2.0)
     assert got["samples"] == 2, "N rows give N-1 intervals"
 
 
@@ -690,7 +711,7 @@ def test_the_billing_reader_needs_no_ceiling_to_be_trusted():
     """
     rows = [{"timestamp": "0.0", "cpu_usage_usec": "0"},
             {"timestamp": "1.0", "cpu_usage_usec": "9000000"}]       # 9 cores, no clamp
-    assert nc.container_cpu_profile_from_billing(rows)["peak"] == pytest.approx(9.0)
+    assert nc.container_cpu_profile_from_billing(rows)["cores"] == pytest.approx(9.0)
 
 
 def test_a_counter_reset_is_dropped_rather_than_read_as_idle():
@@ -699,7 +720,7 @@ def test_a_counter_reset_is_dropped_rather_than_read_as_idle():
             {"timestamp": "1.0", "cpu_usage_usec": "0"},             # reset
             {"timestamp": "2.0", "cpu_usage_usec": "1000000"}]
     got = nc.container_cpu_profile_from_billing(rows)
-    assert got["samples"] == 1 and got["peak"] == pytest.approx(1.0)
+    assert got["samples"] == 1 and got["cores"] == pytest.approx(1.0)
 
 
 def test_too_few_rows_is_not_measured_rather_than_zero():
@@ -717,7 +738,7 @@ def test_the_billing_file_wins_over_the_per_process_one():
     }
     got = nc.read_probe_measurement(lambda k: files.get(k), "probe/",
                                     {"sut": "resource_usage_sut.csv"}, limits={"sut": 3.0})
-    assert got["sut"]["peak"] == pytest.approx(1.5), "the counter, not the summed processes"
+    assert got["sut"]["cores"] == pytest.approx(1.5), "the counter, not the summed processes"
 
 
 def test_it_falls_back_where_the_node_could_not_answer():
@@ -726,7 +747,7 @@ def test_it_falls_back_where_the_node_could_not_answer():
              b"timestamp,pid,name,cpu_percent\n1.0,1,a,100.0\n2.0,1,a,200.0\n"}
     got = nc.read_probe_measurement(lambda k: files.get(k), "probe/",
                                     {"sut": "resource_usage_sut.csv"}, limits={"sut": 3.0})
-    assert got["sut"]["peak"] == pytest.approx(2.0), "the per-process file still answers"
+    assert got["sut"]["cores"] == pytest.approx(2.0), "the per-process file still answers"
 
 
 # -- a probe that measured its own ceiling ---------------------------------------------
@@ -743,7 +764,7 @@ def test_a_throttled_probe_is_refused():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     stored = c.record("n1", "probe-1",
-                      {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                      {"sut": {"cores": 1.0, "samples": 60,
                                "throttled_ratio": 0.05}})
     assert stored is False, "a probe that hit its own ceiling must not size the node"
     assert not c.calibrated("n1"), "the node keeps whatever it started on"
@@ -755,7 +776,7 @@ def test_throttling_under_the_threshold_is_kept():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     assert c.record("n1", "probe-1",
-                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                    {"sut": {"cores": 1.0, "samples": 60,
                              "throttled_ratio": 0.001}}) is True
 
 
@@ -766,16 +787,16 @@ def test_a_node_that_cannot_report_throttling_is_still_calibrated():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     assert c.record("n1", "probe-1",
-                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60}}) is True
+                    {"sut": {"cores": 1.0, "samples": 60}}) is True
 
 
 def test_the_throttle_ratio_never_reaches_the_stored_figures():
     """It is evidence about the measurement, not a resource to size from."""
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
-    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+    c.record("n1", "probe-1", {"sut": {"cores": 1.0, "samples": 60,
                                        "throttled_ratio": 0.001}})
-    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+    assert set(c.calibrated("n1")["sut"]) == {"cores"}
 
 
 def test_the_billing_reader_reports_the_throttle_span():
@@ -802,7 +823,7 @@ def test_an_oom_killed_probe_is_refused():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     stored = c.record("n1", "probe-1",
-                      {"simulation": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+                      {"simulation": {"cores": 1.0, "samples": 60,
                                       "oom_kills": 1}})
     assert stored is False
     assert not c.calibrated("n1"), "the node keeps whatever it started on"
@@ -814,18 +835,158 @@ def test_a_node_that_cannot_report_ooms_is_still_calibrated():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
     assert c.record("n1", "probe-1",
-                    {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60}}) is True
+                    {"sut": {"cores": 1.0, "samples": 60}}) is True
 
 
 def test_the_oom_count_never_reaches_the_stored_figures():
     c = NodeCalibration()
     c.claim_probe("n1", "probe-1")
-    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 60,
+    c.record("n1", "probe-1", {"sut": {"cores": 1.0, "samples": 60,
                                        "oom_kills": 0}})
-    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+    assert set(c.calibrated("n1")["sut"]) == {"cores"}
 
 
 def test_the_billing_reader_reports_oom_kills():
     rows = [{"timestamp": "0.0", "cpu_usage_usec": "0", "memory_events_oom_kill": "0"},
             {"timestamp": "1.0", "cpu_usage_usec": "1000000", "memory_events_oom_kill": "2"}]
     assert nc.container_cpu_profile_from_billing(rows)["oom_kills"] == 2
+
+
+# -- what a probe's throttling costs depends on which statistic is read from it ----------
+
+
+def test_a_sustained_sized_container_survives_clipping_the_percentile_discards():
+    """Clipping removes the top of the distribution, so what it destroys depends on where the
+    figure is taken from. A p95 already throws away the top 5%; ticks clipped inside that band
+    cannot move it. Refusing such a probe leaves the node unmeasured to protect a number the
+    distortion could not have reached."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"simulation": {"cores": 1.0, "samples": 60,
+                                      "throttled_ratio": 0.02}},
+                      percentiles={"simulation": 95.0})
+    assert stored is True, "a p95 is unmoved by clipping inside the tail it discards"
+    assert c.calibrated("n1")
+
+
+def test_a_peak_sized_container_does_not_get_that_tolerance():
+    """The max is destroyed by the first clipped tick, so the same ratio that a p95 shrugs off
+    makes a peak unusable -- which is why one threshold could not serve both."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1",
+                      {"sut": {"cores": 1.0, "samples": 60,
+                               "throttled_ratio": 0.02}},
+                      percentiles={"sut": 100.0})
+    assert stored is False
+    assert not c.calibrated("n1")
+
+
+def test_a_caller_that_names_nothing_is_judged_strictly():
+    """`None` is not "nothing is peak-sized": it is "the caller does not know". Accepting a
+    distorted peak writes a wrong figure in silently; refusing only leaves the node
+    unmeasured, and the next job there probes again."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    assert c.record("n1", "probe-1",
+                    {"anything": {"cores": 1.0, "samples": 60,
+                                  "throttled_ratio": 0.02}}) is False
+
+
+def test_the_tolerance_is_tied_to_the_percentile_it_protects():
+    """Not two numbers that happen to agree: the tolerance IS what the percentile discards, so
+    moving the percentile moves it. Pinned so they cannot drift apart."""
+    from robovast.execution.cluster_execution.node_calibration import (
+        probe_refuse_ratio)
+
+    assert probe_refuse_ratio(95.0) == pytest.approx(0.05)
+    assert probe_refuse_ratio(100.0) < probe_refuse_ratio(95.0)
+
+
+# -- the scenario runner's own report, on probes only -----------------------------------
+
+
+def _tick_csv(rows):
+    head = "tick,wall_ts,timestamp,interval_s,duration_s,period_s,driver\n"
+    body = "".join(f"{i},0,0,{iv},0.01,{pd},ros_timer\n" for i, (iv, pd) in enumerate(rows, 1))
+    return (head + body).encode()
+
+
+def test_a_probe_that_held_its_tick_rate_is_calibrated():
+    """The healthy case: achieved matches intended, so the measurement is of a container that
+    had the CPU it needed."""
+    from robovast.execution.cluster_execution.node_calibration import \
+        read_probe_tick_ratio
+
+    ratio = read_probe_tick_ratio(lambda k: _tick_csv([(0.1, 0.1)] * 20), "")
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    assert c.record("n1", "p1", _GOOD, tick_ratio=ratio) is True
+
+
+def test_a_probe_whose_scenario_could_not_keep_up_is_refused():
+    """The scenario container is sized on a percentile with a ceiling it may burst into, so it
+    can be starved for a whole run without ever hitting its quota -- invisible to the throttle
+    counter that catches this for every other role. Its own tick rate is the only signal, and
+    a measurement taken while it was starved would size every later run on that node."""
+    from robovast.execution.cluster_execution.node_calibration import \
+        read_probe_tick_ratio
+
+    ratio = read_probe_tick_ratio(lambda k: _tick_csv([(0.5, 0.1)] * 20), "")
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    assert c.record("n1", "p1", _GOOD, tick_ratio=ratio) is False
+    assert "ticked at" in c.outcome()["refused"]["n1"]
+
+
+def test_no_tick_log_is_not_a_healthy_tick_rate():
+    """Absence is not a pass, the same rule the resource counters follow: a scenario runner
+    that wrote no tick log was not measured, and reading that as "held its rate" would grade a
+    campaign on a file that never existed."""
+    from robovast.execution.cluster_execution.node_calibration import read_probe_tick_ratio
+
+    assert read_probe_tick_ratio(lambda k: None, "") is None
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    assert c.record("n1", "p1", _GOOD, tick_ratio=None) is True
+
+
+def test_one_slow_tick_is_not_a_starved_container():
+    """A behaviour tree stalls for a moment on any machine -- a slow action, a blocking call.
+    What starvation looks like is the whole distribution shifting, so the median decides."""
+    from robovast.execution.cluster_execution.node_calibration import read_probe_tick_ratio
+
+    rows = [(0.1, 0.1)] * 30 + [(9.0, 0.1)]
+    assert read_probe_tick_ratio(lambda k: _tick_csv(rows), "") == pytest.approx(1.0)
+
+
+# -- memory, measured by the same probe --------------------------------------------------
+
+
+def test_memory_is_read_from_the_kernels_high_water_mark():
+    """`memory_peak` rather than a sample of `memory_current`: the limit has to clear what the
+    container actually reached, and a 1 Hz sample misses whatever happened between ticks."""
+    from robovast.execution.cluster_execution.node_calibration import \
+        container_cpu_profile_from_billing
+
+    rows = [{"timestamp": str(i), "cpu_usage_usec": str(i * 100000),
+             "memory_peak": str(500 * 1024 ** 2)} for i in range(40)]
+    rows[20]["memory_peak"] = str(900 * 1024 ** 2)
+    got = container_cpu_profile_from_billing(rows)
+    assert got["memory_peak"] == 900 * 1024 ** 2
+
+
+def test_memory_is_taken_at_the_maximum_for_every_role():
+    """The CPU percentile has no meaning here. Exceeding a CPU reservation slows a container;
+    exceeding a memory one kills it, so no role may be sized on a figure most of its samples
+    sat below."""
+    from robovast.execution.cluster_execution.node_calibration import \
+        container_cpu_profile_from_billing
+
+    rows = [{"timestamp": str(i), "cpu_usage_usec": str(i * 100000),
+             "memory_peak": str(100 * 1024 ** 2)} for i in range(40)]
+    rows[-1]["memory_peak"] = str(800 * 1024 ** 2)
+    for percentile in (50, 95, 100):
+        got = container_cpu_profile_from_billing(rows, percentile=percentile)
+        assert got["memory_peak"] == 800 * 1024 ** 2, "the max, whatever the CPU percentile"

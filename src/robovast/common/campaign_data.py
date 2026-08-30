@@ -25,7 +25,7 @@ import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -434,6 +434,35 @@ def read_execution_outcome(campaign_dir: Path):
     if not path.exists():
         return None
     return Status.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def read_campaign_finished_at(campaign_dir: Path) -> Optional[str]:
+    """When the campaign reached its terminal phase, as an ISO-8601 UTC string, or ``None``.
+
+    Read from the same ``outcome.json`` above: its ``phase_since`` is when the recorded phase
+    began, and for a terminal record that is the moment the campaign ended. The controller
+    writes it after share and postprocessing on every path, failures included, so this is a
+    recorded time rather than a derived one -- there is deliberately no fallback to a
+    directory mtime, for the reason :func:`~robovast.common.store.read_campaign_created_at`
+    gives about guessed start times.
+
+    ``None`` when the record is absent, unreadable, or **not terminal**: a record written
+    mid-campaign (the local lane writes one non-terminally when its tail does not own the
+    ending -- see ``run_campaign``) describes a campaign that is not over, and reading its
+    ``phase_since`` as a finish time would date the campaign to the middle of its own run.
+    """
+    try:
+        status = read_execution_outcome(Path(campaign_dir))
+    except Exception:  # noqa: BLE001 - a corrupt record is "unknown", never an error here
+        return None
+    if status is None:
+        return None
+    # Lazily imported for the same reason `read_execution_outcome` imports `Status` lazily:
+    # `robovast.common` must not depend on `robovast.execution` at module scope.
+    from robovast.execution.control_server import is_terminal  # pylint: disable=import-outside-toplevel
+    if not is_terminal(status.phase) or not status.phase_since:
+        return None
+    return datetime.fromtimestamp(status.phase_since, tz=timezone.utc).isoformat()
 
 
 #: Intervention ledger — what a human did to a campaign *while it ran*. One file for every

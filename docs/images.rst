@@ -284,11 +284,18 @@ of that looks like a bug in the change. It reports the baked value as ``code_rev
 
 Nothing has to be passed to get it. Both the environment variable and the revision label are
 derived at build time from the checkout the build scripts live in
-(``container/git_revision.sh``), so ``make release-images`` bakes them with no extra flag —
+(``container/image_stamp.sh``), so ``make release-images`` bakes them with no extra flag —
 there is deliberately no option for it, because an option is something to forget, and a
 forgotten one produced exactly this gap. A dirty tree bakes ``<sha>+dirty`` and the build says
 so: such an image corresponds to no commit anyone can check out, and a campaign run against it
 records that rather than looking reproducible.
+
+The same helper bakes ``ROBOVAST_BUILD_DATE`` into the service image, reported as ``built_at``
+and printed by ``vast service info`` as ``built``. It answers the question a revision cannot —
+*how old is what is deployed?* — and it is baked rather than read from
+``org.opencontainers.image.created`` because a container cannot read its own labels. Unlike the
+revision it changes on every build, so its ``ARG`` sits last in the Dockerfile, where only an
+``ENV`` and two ``LABEL``\ s follow it.
 
 A build outside a git checkout bakes nothing, and ``code_revision`` is then **absent** rather
 than filled with something else. That is a deliberate answer — *this deployment cannot tell
