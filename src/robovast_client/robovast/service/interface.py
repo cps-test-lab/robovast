@@ -884,6 +884,59 @@ class UpgradeInfo(BaseModel):
     active_campaigns: list[CampaignSummary] = Field(default_factory=list)
 
 
+class ServiceSetting(BaseModel):
+    """One environment setting this service is running with, as reported to one caller.
+
+    The **environment** is what produces this list -- everything a ``.env`` set arrives in
+    the pod as an environment variable -- so a setting the service reads is here whether or
+    not anyone has described it. An undescribed one arrives with empty :attr:`group` and
+    :attr:`description` and ``withheld="unclassified"``: visible, because it IS in force,
+    and valueless, because a credential added later must not leak through a surface written
+    earlier.
+    """
+
+    key: str
+    #: Where the consumer files it. ``""`` for a key nothing has classified yet.
+    group: str = ""
+    #: One line, for the operator. ``""`` for a key nothing has classified yet.
+    description: str = ""
+    #: Present, and non-empty, in this service's environment. This is what makes a
+    #: client-side comparison against a locally loaded ``.env`` possible: the service says
+    #: what it has, the client knows what it would send.
+    is_set: bool = False
+    #: The effective value, or ``None`` when the setting is unset **or** withheld from this
+    #: caller -- :attr:`withheld` distinguishes those, and :attr:`is_set` settles it too.
+    value: Optional[str] = None
+    #: What the reading code falls back to when unset. ``None`` where there is no default,
+    #: or where the constant lives in a distribution the service cannot import.
+    default: Optional[str] = None
+    #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
+    #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
+    #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
+    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
+    withheld: Optional[str] = None
+
+
+class ServiceConfig(BaseModel):
+    """What this service is configured with -- the read-back of the operator's ``.env``.
+
+    **Effective, not provenance.** In the pod every value arrives as an environment
+    variable, and nothing there can tell a ``.env`` line from a real environment variable.
+    So this reports what is in force; claiming a value "came from ``.env``" would be a claim
+    the process cannot check.
+
+    Read-only. Making settings writable means a ``PATCH`` and a field naming what accepts
+    one; adding that field later is additive, whereas one that is ``False`` in every
+    response until then states nothing and has to be kept truthful meanwhile.
+    """
+
+    settings: list[ServiceSetting] = Field(default_factory=list)
+    #: How a change is applied on THIS deployment, in the operator's terms -- the service
+    #: is the only party that knows whether that is a pod roll or a local restart.
+    how_to_change: str = ""
+
+
 class DiskSpace(BaseModel):
     """Capacity and current use of one filesystem, in bytes.
 
@@ -1841,6 +1894,8 @@ class Routes:
     #: published (GET), the roll onto it (POST), and this service's own log. One prefix so
     #: the dev proxy needs one entry and the generated route table reads as one section.
     ADMIN_UPGRADE = "/admin/upgrade"
+    #: What this service is configured with, read back out of its own environment.
+    ADMIN_CONFIG = "/admin/config"
     ADMIN_LOG = "/admin/log"
     ADMIN_LOG_STREAM = "/admin/log/stream"
     CAMPAIGNS = "/campaigns"

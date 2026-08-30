@@ -28,6 +28,10 @@ from .base import BaseShareProvider
 
 __all__ = ["SftpShareProvider"]
 
+#: Port used when ``ROBOVAST_SFTP_PORT`` names none. Named rather than inline so the
+#: service configuration report can state the default instead of restating the literal.
+DEFAULT_SFTP_PORT = 22
+
 
 def _paramiko():
     """The ``paramiko`` module, or a ``UsageError`` naming what to install.
@@ -154,7 +158,7 @@ class SftpShareProvider(BaseShareProvider):
         """
         paramiko = _paramiko()
         host = os.environ["ROBOVAST_SFTP_HOST"]
-        port = int(os.environ.get("ROBOVAST_SFTP_PORT", "22"))
+        port = int(os.environ.get("ROBOVAST_SFTP_PORT", "") or DEFAULT_SFTP_PORT)
         user = os.environ["ROBOVAST_SFTP_USER"]
         password = os.environ.get("ROBOVAST_SFTP_PASSWORD", "") or None
         # Host-side uses a key *file*; inside the controller pod the launcher

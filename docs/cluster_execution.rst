@@ -1895,6 +1895,14 @@ Which of the two: ``./.env`` is this *project's* configuration; the user file is
 is true of your machine, and is the one that keeps working when you run ``vast`` from
 another directory.  See :doc:`images` for the image settings specifically.
 
+**Reading it back.** A ``.env`` says what you *sent*; the Admin page's **Service
+configuration** panel says what the service is actually running with, which is not the same
+thing the moment a value changes. A pod loads its Secrets at container start and never
+again, so an edited ``.env`` reaches it only through ``vast service upgrade`` **without**
+``--no-restart`` — ``setup --force`` also works, and does more besides. A local
+``vast serve`` picks a change up when it is restarted. Credentials are reported there as
+set or not set; their values never leave the service. See :ref:`web-ui-admin`.
+
 **Required variables (for all share types):**
 
 .. code-block:: ini

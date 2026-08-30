@@ -18,6 +18,7 @@ import { LogPanel } from '@/components/LogPanel'
 import { useActiveView } from '@/lib/activeView'
 import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
 import { formatAge, formatLocalTime } from '@/lib/time'
+import { ServiceConfigPanel } from './ServiceConfigPanel'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
 // How long to keep watching for the new pod before saying we cannot tell. Matches the
@@ -77,6 +78,10 @@ export function AdminPage() {
   // Open by default: unlike a campaign log, which is one of many on a crowded
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
+  // Collapsed, unlike the log above: the log is one of the things this page exists to
+  // show, while the configuration is what you come looking for on a particular day. Its
+  // query is gated on this flag, so an unopened panel costs nothing.
+  const [configOpen, setConfigOpen] = useState(false)
 
   // This page is kept mounted once visited, so both readings are gated on it being the one on
   // screen: they then stop while it is not, and are re-read on the way back in — which is the
@@ -365,6 +370,27 @@ export function AdminPage() {
           ) : null}
         </Stack>
       </Paper>
+
+      <CollapsibleBox
+        open={configOpen}
+        onToggle={() => setConfigOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'What this service is running with, read back out of its own environment. '
+              + 'Credentials are reported as set or not set; their values never leave the '
+              + 'service.'
+            }
+          >
+            <span>Service configuration</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, so the request is made the first time somebody asks
+            for it rather than on every visit to this page. */}
+        {configOpen ? <ServiceConfigPanel /> : null}
+      </CollapsibleBox>
 
       <CollapsibleBox
         open={logOpen}

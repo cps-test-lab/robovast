@@ -30,6 +30,8 @@ export type ResourceUsage = Schemas['ResourceUsage']
 export type UsageHistory = Schemas['UsageHistory']
 export type UsageSample = Schemas['UsageSample']
 export type UpgradeInfo = Schemas['UpgradeInfo']
+export type ServiceConfig = Schemas['ServiceConfig']
+export type ServiceSetting = Schemas['ServiceSetting']
 
 export type CampaignSummary = Schemas['CampaignSummary']
 
@@ -385,6 +387,10 @@ export const robovast = {
     request<UsageHistory>('GET', `/usage/history?window=${window}`),
 
   upgradeInfo: () => request<UpgradeInfo>('GET', '/admin/upgrade'),
+
+  // What this service is configured with, read back out of its own environment.
+  // Only changes when the pod restarts, so callers poll it not at all.
+  serviceConfig: () => request<ServiceConfig>('GET', '/admin/config'),
 
   // Returns as soon as the roll is asked for, NOT when the new pod is serving: with one
   // replica Kubernetes starts the new pod before stopping the old, so the pod answering

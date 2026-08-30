@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.service import auth, service_log
+from robovast.service import auth, service_log, settings_report
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
                                         CampaignVisualizationsResponse, CleanupDataRequest,
@@ -55,6 +55,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, SearchHistory,
+                                        ServiceConfig, ServiceSetting,
                                         StagedArchive, Status,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
@@ -648,6 +649,25 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         before this one stops, so watch ``upgrade_info().running_digest`` for the handover.
         """
         return _guard(lambda: impl.upgrade_service(force))
+
+    @app.get(Routes.ADMIN_CONFIG, response_model=ServiceConfig, tags=["admin"])
+    def service_config(request: Request) -> ServiceConfig:
+        """What this service is configured with, read back out of its own environment.
+
+        Not a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it
+        describes the process that is serving rather than the campaigns it drives, and both
+        lanes answer it identically -- the pod and a `vast serve` both hold their settings
+        in the environment.
+
+        Host paths are blanked for a non-loopback caller, the same rule ``/version``
+        applies to ``results_root`` -- so the two admin surfaces do not disagree about
+        whether a path on the service's disk is publishable.
+        """
+        loopback = _from_loopback(request)
+        return ServiceConfig(
+            settings=[ServiceSetting(**vars(row))
+                      for row in settings_report.describe(loopback=loopback)],
+            how_to_change=settings_report.how_to_change())
 
     @app.get(Routes.ADMIN_LOG, response_model=LogChunk, tags=["admin"])
     def get_service_log(offset: int = 0) -> LogChunk:
