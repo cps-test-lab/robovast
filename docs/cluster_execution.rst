@@ -1276,6 +1276,13 @@ How the figure is found:
 * **One probe per node, and it is never a campaign run.** It writes to ``_calibration/<node-id>/``
   — a reserved directory nothing walks looking for runs — so it cannot enter the results in
   the first place. A campaign of 50 runs still delivers 50.
+* **A probe is listed, marked, and counted apart.** It holds real capacity on a real node, so
+  it carries the campaign's labels and appears in the job listing — as ``kind: calibration``,
+  named for the node it measures, and outside every figure in ``JobCounts``, which a reader
+  takes as facts about *runs*. It reports its own status like any other job, because a probe
+  that failed is one worth looking at, but it cannot be stopped individually: there is no run
+  to record as killed. In the web UI's campaign view it is the row with the ``calibration``
+  chip beside its status.
 * **A node with an outstanding probe takes no campaign work.** Otherwise the runs placed
   while it is measuring are the odd ones out on a node whose later runs are calibrated,
   reintroducing the inconsistency the probe exists to remove.

@@ -27,10 +27,12 @@ import {
   finishedRuns,
   noResultRuns,
 } from '@/lib/eta'
+import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock, formatLocalTime } from '@/lib/time'
+import { NEUTRAL, withAlpha } from '@/colors'
 import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
@@ -389,6 +391,10 @@ export function StatusView({
     counts && counts.waiting > 0 ? `waiting ${counts.waiting}` : null,
     counts && counts.failed > 0 ? `failed ${counts.failed}` : null,
     counts && counts.blocked > 0 ? `blocked ${counts.blocked}` : null,
+    // Beside the run states rather than among them, because it is not one of them. A batch
+    // that has started nothing because it is still measuring its nodes otherwise reads as
+    // `waiting N` with nothing anywhere saying what it is waiting for.
+    counts && counts.calibration > 0 ? `calibrating ${counts.calibration}` : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -664,6 +670,35 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   blocked: 'error',
 }
 
+// A node-calibration probe measures the machine the campaign's runs will be sized against.
+// It is listed because it holds real capacity on a real node, and marked because it is not
+// one of the trials — without this it arrives carrying batch job 0's display name.
+//
+// Marked with a second chip rather than by recolouring the status one, for two reasons. The
+// probe's `status` is telling the truth — a failed probe must still read as failed, and that
+// is the one probe worth looking at. And the four status hues are the only colours on this
+// screen that carry a meaning (see `colors.ts`): the band is held to one lightness on purpose
+// so no status shouts, and `data.series` is a brighter register tuned for 1px chart lines
+// rather than filled chips. Muted neutral is what this file already uses to say "listed, but
+// not a trial outcome" — see `killed` in JOB_STATUS_COLOR above.
+function CalibrationChip() {
+  return (
+    <Tooltip title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one.">
+      <Chip
+        label="calibration"
+        size="small"
+        variant="outlined"
+        sx={{
+          height: 18,
+          color: NEUTRAL,
+          borderColor: withAlpha(NEUTRAL, 0.7),
+          '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' },
+        }}
+      />
+    </Tooltip>
+  )
+}
+
 // The campaign's current-batch jobs. Collapsed by default; each job row expands its
 // own live log (running pod on the cluster / live system.log locally). Capped so a
 // huge fan-out stays responsive.
@@ -688,7 +723,10 @@ function JobsSection({
   onStopJob?: (job: JobSummary) => void
   stoppingJob?: string | null
 }) {
-  const shown = jobs.slice(0, JOBS_RENDER_CAP)
+  // Probes ahead of the cap, not behind it: a batch wide enough to truncate is exactly the
+  // one where a probe is both the reason nothing has started and the row that falls off the
+  // end. There is at most one per node, so the runs lose nothing.
+  const shown = calibrationFirst(jobs).slice(0, JOBS_RENDER_CAP)
   // The empty state is the reason this renders at all now. As a foldable section it simply
   // vanished when the live set emptied -- which happens between every pair of runs on the local
   // lane, where runs are sequential. A TAB that vanished would take the tab bar's shape with it,
@@ -741,10 +779,12 @@ function JobRow({
   onStopJob?: (job: JobSummary) => void
   stopping?: boolean
 }) {
+  const calibration = isCalibrationJob(job)
   // Offered only on a `running` job — the same rule the service enforces, so the UI never
   // shows a button the server would refuse. A pending or queued job has not started, and a
-  // blocked one has a cause that deleting it does not fix.
-  const canStop = Boolean(onStopJob) && job.status === 'running'
+  // blocked one has a cause that deleting it does not fix. Nor on a calibration probe: it
+  // carries no run, so the service refuses to record one as killed.
+  const canStop = Boolean(onStopJob) && job.status === 'running' && !calibration
   return (
     <CollapsibleBox
       variant="row"
@@ -767,14 +807,20 @@ function JobRow({
         ) : null
       }
       leading={
-        <Chip
-          label={job.status}
-          size="small"
-          color={JOB_STATUS_COLOR[job.status] ?? 'default'}
-          variant="outlined"
-          sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
-        />
+        <>
+          {calibration ? <CalibrationChip /> : null}
+          <Chip
+            label={job.status}
+            size="small"
+            color={JOB_STATUS_COLOR[job.status] ?? 'default'}
+            variant="outlined"
+            sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
+          />
+        </>
       }
+      // Left a plain string, and the chip carries the distinction on its own: CollapsibleBox
+      // derives its toggle's aria-label from the title only when it IS a string, so wrapping
+      // this to mute the colour would take the accessible name off every job row.
       title={job.display_name || job.job_name}
       // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
       // that can never start is legible without opening its (empty) log.
