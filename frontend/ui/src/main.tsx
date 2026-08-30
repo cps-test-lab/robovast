@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from './App'
 import { CampaignStreamProvider } from './components/CampaignStreamProvider'
 import { DialogProvider } from './components/DialogProvider'
+import { ToastProvider } from './components/ToastProvider'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { appTheme } from './theme'
 
@@ -52,13 +53,17 @@ createRoot(document.getElementById('root')!).render(
             by its own boundary; this catches everything outside them. */}
         <ErrorBoundary label="RoboVAST">
           <DialogProvider>
-            {/* Above App rather than inside the Campaigns page: the page is KeepAlive-mounted,
-                so it only exists once it has been visited, and a deep link elsewhere would
-                leave the campaign list unstreamed for anything app-wide that reads it. One
-                EventSource either way -- the provider opens it once. */}
-            <CampaignStreamProvider>
-              <App />
-            </CampaignStreamProvider>
+            {/* ToastProvider wraps CampaignStreamProvider, not the other way round: the stream
+                provider announces campaigns starting and ending, so it calls useToasts(). */}
+            <ToastProvider>
+              {/* Above App rather than inside the Campaigns page: the page is KeepAlive-mounted,
+                  so it only exists once it has been visited, and a deep link elsewhere would
+                  leave the campaign list unstreamed for anything app-wide that reads it. One
+                  EventSource either way -- the provider opens it once. */}
+              <CampaignStreamProvider>
+                <App />
+              </CampaignStreamProvider>
+            </ToastProvider>
           </DialogProvider>
         </ErrorBoundary>
       </ThemeProvider>

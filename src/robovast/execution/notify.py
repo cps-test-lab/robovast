@@ -140,6 +140,16 @@ class Notifier:
         self._send_terminal(f"Campaign STOPPED by request. {summary}", priority=4,
                             tags="octagonal_sign")
 
+    def retriggered(self, new_campaign_id: str) -> None:
+        """A re-run of this campaign was launched as *new_campaign_id*.
+
+        Sent from the **source** campaign's notifier, so a topic watching a long-running
+        campaign learns where its re-run went. Not terminal: the source is unchanged and
+        keeps whatever end-of-life message it is going to send, and the new campaign
+        announces its own :meth:`started` separately.
+        """
+        self._send(f"Retriggered as {new_campaign_id}.", priority=3, tags="repeat")
+
     def uploaded(self, share_type: str) -> None:
         self._send(f"Campaign uploaded to share ({share_type}).",
                    priority=3, tags="outbox_tray")

@@ -1859,6 +1859,7 @@ class LocalTransport(RobovastInterface):
         that needs the transport — which directory this lane reads the source from, the
         single-flight guard, and making sure a refusal leaves nothing staged behind.
         """
+        from robovast.execution.notify import Notifier
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
@@ -1873,7 +1874,7 @@ class LocalTransport(RobovastInterface):
         # running -- happens before there is a worker to have a ``finally``.
         try:
             self._guard_new_campaign()
-            return self._launch_campaign(plan.request, WorkspaceTarget(
+            ref = self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
                 origin=self._retrigger_origin(campaign_id),
                 materialize=plan.materialize,
@@ -1882,6 +1883,12 @@ class LocalTransport(RobovastInterface):
         except BaseException:
             plan.discard()
             raise
+        # Told on the SOURCE campaign's topic: a watcher following the campaign that was
+        # re-run is the one who cannot otherwise learn which id the re-run got. The new
+        # campaign announces its own start; this is not that message, and not a terminal
+        # one -- the source is unmodified. Best-effort like every other send.
+        Notifier.from_env(campaign_id).retriggered(ref.campaign_id)
+        return ref
 
     def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
         """The origin to record for a re-run of *source_id*.

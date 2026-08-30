@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
@@ -8,9 +9,12 @@ import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
+import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded'
+import NotificationsOffRoundedIcon from '@mui/icons-material/NotificationsOffRounded'
 import Typography from '@mui/material/Typography'
 import { accent } from '@/colors'
 import { robovast } from '@/lib/robovastClient'
+import * as browserNotify from '@/lib/browserNotify'
 import {
   bytesToGiB,
   formatBytes,
@@ -153,6 +157,7 @@ export function Sidebar({
           work. */}
       <List disablePadding>{topics.filter((t) => t.footer).map(renderLeaf)}</List>
 
+      <NotificationToggle />
       <ConnectionStatus />
     </Drawer>
   )
@@ -314,6 +319,69 @@ function UsageRow({
           <MeterBar fraction={fraction} text={text} color={color} />
         </Box>
       </Stack>
+    </Tooltip>
+  )
+}
+
+// Opt in to OS notifications for a campaign ending.
+//
+// It lives here rather than on the Campaigns page because it is not about a campaign: it is a
+// standing preference for this browser, and the thing it announces arrives while you are looking
+// at something else. The permission prompt can only be raised from a real click, which is the
+// other reason this is a button and not a setting read at start-up.
+function NotificationToggle() {
+  const [on, setOn] = useState(browserNotify.optedIn)
+  const [denied, setDenied] = useState(() => browserNotify.permission() === 'denied')
+
+  if (!browserNotify.supported()) return null
+
+  const toggle = async () => {
+    if (on) {
+      browserNotify.setOptedIn(false)
+      setOn(false)
+      return
+    }
+    const result = await browserNotify.requestPermission()
+    if (result !== 'granted') {
+      // A denial is sticky and cannot be re-prompted, so say so rather than leaving a switch
+      // that silently refuses to stay on.
+      setDenied(result === 'denied')
+      return
+    }
+    browserNotify.setOptedIn(true)
+    setOn(true)
+    setDenied(false)
+  }
+
+  const label = denied
+    ? 'Notifications blocked'
+    : on ? 'Notifying on finish' : 'Notify me on finish'
+
+  return (
+    <Tooltip
+      placement="right"
+      title={denied
+        ? 'This browser has blocked notifications for this site; re-allow them in its site settings.'
+        : 'Show a system notification when a campaign ends and this tab is in the background.'}
+    >
+      {/* A disabled button reports no events, so the tooltip needs a wrapper to hang on. */}
+      <Box>
+        <ListItemButton
+          onClick={toggle}
+          disabled={denied}
+          sx={{ borderRadius: 1, py: 0.5, mb: 0.5 }}
+        >
+          <ListItemIcon sx={{ minWidth: 32, color: on ? 'primary.main' : 'text.secondary' }}>
+            {on ? <NotificationsRoundedIcon fontSize="small" />
+                : <NotificationsOffRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          <ListItemText
+            primaryTypographyProps={{ variant: 'caption', color: on ? 'primary.main' : 'text.secondary' }}
+          >
+            {label}
+          </ListItemText>
+        </ListItemButton>
+      </Box>
     </Tooltip>
   )
 }

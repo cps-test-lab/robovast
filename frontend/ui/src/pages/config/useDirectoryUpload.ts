@@ -3,6 +3,7 @@ import type { DragEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { robovast } from '@/lib/robovastClient'
 import { useDialogs } from '@/components/DialogProvider'
+import { useToasts } from '@/components/ToastProvider'
 import { collectDroppedFiles, type DroppedFile } from '@/lib/dropEntries'
 
 const isInline = (p: string) => p.endsWith('.vast') || p.endsWith('.osc')
@@ -15,6 +16,7 @@ const isInline = (p: string) => p.endsWith('.vast') || p.endsWith('.osc')
 export function useDirectoryUpload(workspaceId: string) {
   const qc = useQueryClient()
   const { choose } = useDialogs()
+  const { notify } = useToasts()
   const [dragging, setDragging] = useState(false)
   const [progress, setProgress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -28,6 +30,11 @@ export function useDirectoryUpload(workspaceId: string) {
         (await robovast.listProjectFiles(workspaceId)).entries,
       )
       let overwriteAll = false
+      // Tallied rather than inferred from files.length: collisions can skip, and Cancel stops
+      // part-way, so the number asked for is routinely not the number written.
+      let uploaded = 0
+      let skipped = 0
+      let cancelled = false
       try {
         for (let i = 0; i < files.length; i++) {
           const { relPath, file } = files[i]
@@ -43,8 +50,8 @@ export function useDirectoryUpload(workspaceId: string) {
                 { label: 'Cancel', value: 'cancel' },
               ],
             })
-            if (choice === 'cancel' || choice === null) break
-            if (choice === 'skip') continue
+            if (choice === 'cancel' || choice === null) { cancelled = true; break }
+            if (choice === 'skip') { skipped++; continue }
             if (choice === 'all') overwriteAll = true
           }
           if (isInline(relPath)) {
@@ -53,13 +60,28 @@ export function useDirectoryUpload(workspaceId: string) {
             await robovast.uploadFile(workspaceId, relPath, file)
           }
           existing.add(relPath)
+          uploaded++
         }
+        // Inside the try, so a run that threw says nothing here: the callers surface that as an
+        // inline error, and a success toast beside it would contradict it.
+        notify(
+          uploaded === 0
+            ? { severity: 'warning', message: cancelled ? 'Upload cancelled' : 'Nothing uploaded' }
+            : {
+                severity: 'success',
+                message: `Uploaded ${uploaded} ${uploaded === 1 ? 'file' : 'files'}`,
+                note: [
+                  skipped ? `${skipped} skipped` : '',
+                  cancelled ? 'cancelled before the rest' : '',
+                ].filter(Boolean).join(' · ') || undefined,
+              },
+        )
       } finally {
         setProgress(null)
         await qc.invalidateQueries({ queryKey: ['files', workspaceId] })
       }
     },
-    [workspaceId, choose, qc],
+    [workspaceId, choose, qc, notify],
   )
 
   const onDragOver = useCallback((e: DragEvent) => {

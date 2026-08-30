@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useToasts } from '@/components/ToastProvider'
 import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -562,9 +563,16 @@ function VisualizationEditor({
   const original = src.data?.content ?? ''
   const changed = text != null && text !== original
 
+  const { notify } = useToasts()
+
   const save = useMutation({
     mutationFn: () => robovast.updatePanelsSource(campaignId, text ?? ''),
-    onSuccess: onSaved,
+    // The popover closing is the only other sign this worked, and an edit whose effect is not
+    // visible in the panels below leaves that ambiguous.
+    onSuccess: () => {
+      onSaved()
+      notify({ severity: 'success', message: 'Visualization saved' })
+    },
   })
 
   return (

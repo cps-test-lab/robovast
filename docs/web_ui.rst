@@ -332,6 +332,46 @@ snapshot of the campaign list and adopt a new one only when you ask (see
 someone mid-read would cost attention and return nothing. Freshness applies to what is
 still changing.
 
+.. _web-ui-notifications:
+
+Being told what happened
+------------------------
+
+Two kinds of thing the page has to say, and they are kept apart on purpose.
+
+**A passing fact gets a notice.** Retriggering a campaign, copying a share link, deleting a
+workspace, finishing an upload, starting postprocessing — these are worth confirming and not
+worth keeping. They appear as a notice at the bottom right, stack newest-nearest, and clear
+themselves after ten seconds. Hovering the stack holds every countdown for as long as the
+pointer is there, so one never expires mid-sentence; the ✕ dismisses one immediately. At most
+four are shown at once, and the oldest give way — a batch of campaigns ending together must
+not bury the list they are about. Repeating an action refreshes its own notice rather than
+stacking a second copy of it, so leaning on a menu entry does not build a tower.
+
+**A failure stays put.** A refusal or an error keeps its place in the card or panel that
+raised it, with the service's own message under it, because that text is worth reading twice
+and often worth copying. Nothing that carries a reason is put somewhere it will erase itself.
+
+**Campaigns announce themselves.** Starting and ending is reported wherever you are in the
+app, not only on the Campaigns page — a campaign that ends while you are reading results says
+so. A campaign that has finished *and* been postprocessed offers **View results** on the
+notice, which opens the Explorer on it; one with no results yet does not, since there would be
+nothing to open. Two cases are deliberately quiet: a service restart, which leaves campaigns
+at phase ``unknown`` because their driver was lost rather than because they ended, and which
+would otherwise announce an ending for every campaign at once; and a campaign moving between
+running phases, which is progress rather than news.
+
+**Notifications outside the tab** are off until asked for. **Notify me on finish** in the
+sidebar asks the browser for permission and, once granted, shows a system notification when a
+campaign ends *and this tab is in the background* — never while you are looking at the page,
+which already showed the notice. The switch is per browser and can be turned back off; if the
+browser has blocked notifications for the site the entry says so, since a permission denial
+cannot be re-prompted from the page.
+
+This is separate from the push notifications a campaign sends to a phone, which come from the
+service rather than the browser and arrive whether or not anything is open; see
+:doc:`cluster_execution`.
+
 .. _web-ui-import:
 
 Bringing a campaign in
