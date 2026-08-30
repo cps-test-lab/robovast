@@ -13,6 +13,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
+import { useActiveView } from '@/lib/activeView'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
 
@@ -56,9 +57,15 @@ export function LaunchBar() {
   const [configPath, setConfigPath] = useState('')
   const [showOptions, setShowOptions] = useState(false)
 
+  // What this form can launch is read on arrival rather than once per session: a workspace
+  // created, a `.vast` added or edited elsewhere — in Config, from the CLI, by another agent —
+  // must be offered here without a reload. Cheap reads, and nothing here holds an edit of its own
+  // that a refresh could discard. See lib/activeView.tsx.
+  const active = useActiveView()
   const workspaces = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => robovast.listWorkspaces(),
+    enabled: active,
   })
 
   // On startup pick a workspace so the form is ready to launch: the most recently
@@ -77,7 +84,7 @@ export function LaunchBar() {
   const files = useQuery({
     queryKey: ['files', workspaceId],
     queryFn: () => robovast.listProjectFiles(workspaceId),
-    enabled: !!workspaceId,
+    enabled: active && !!workspaceId,
   })
   const vastFiles = (files.data?.entries ?? []).filter((p) => p.endsWith('.vast'))
 
@@ -91,7 +98,7 @@ export function LaunchBar() {
   const configFile = useQuery({
     queryKey: ['file', workspaceId, configPath],
     queryFn: () => robovast.readProjectFile(workspaceId, configPath),
-    enabled: !!workspaceId && !!configPath,
+    enabled: active && !!workspaceId && !!configPath,
   })
 
   // When the selected .vast changes (or its content is edited), adopt its declared runs count. Keyed
