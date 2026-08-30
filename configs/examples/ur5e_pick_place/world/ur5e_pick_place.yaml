@@ -1,0 +1,135 @@
+# UR5e + Robotiq 2F-85 pick-and-place cell, for MoveIt 2 over ROS 2.
+#
+# A UR5e is bolted to a workbench, a small box sits in front of it, and an open bin stands off to
+# one side. The trial: see the box, pick it up, drop it in the bin.
+#
+# Debug it by hand exactly as a campaign runs it (the campaign adds only --override):
+#   roqsim sim world/ur5e_pick_place.yaml --headless --pacing realtime
+#
+# Every number below was MEASURED against this compiled world rather than read off a datasheet,
+# because getting one wrong produces a MoveIt that plans happily and a gripper that closes on air:
+#
+#   bench top surface        z = 0.76      (industrial_table; only its top collides)
+#   box                      80 x 60 x 50 mm, 0.5 kg, grasp axis = its own Y (60 mm)
+#   box settles at           z = 0.785     (bench top + half height -- it is not placed, it drops)
+#   bin cavity               186 x 286 mm mouth, 86 mm rim
+#   jaw aperture, open       ~87 mm between the pad faces
+#   clearance around the box (87 - 60) / 2 ~= 13 mm PER SIDE
+#   box  from the shoulder   0.471 m       (UR5e reach ~0.85 m)
+#   bin rim from the shoulder 0.477 m
+#
+# That clearance is the whole error budget for perception + IK + execution together, which is what
+# makes `position_stddev` worth sweeping.
+
+sim:
+  pacing: realtime
+  # Contact settings for HOLDING a pinched object, not for looking right. Without them a box held
+  # by two flat pads creeps out from under its own weight over a carry. `elliptic` + impratio 10
+  # make the friction cone stiff enough that the pads grip rather than slide; noslip_iterations
+  # cleans up the residual drift.
+  cone: elliptic
+  impratio: 10
+  noslip_iterations: 10
+
+components:
+  # The workbench. Only its top collides (the legs are visual in the model), so the arm cannot
+  # snag a leg while reaching across.
+  - spawn_model: {model: industrial_table, pos: [0.0, 0.0, 0.0]}
+    name: bench
+
+  # The UR5e, bolted to the bench top, with the gripper welded to its flange.
+  #
+  # `name:` is the entry's SIBLING, not a key inside the block -- written inside it is silently
+  # inert and the arm would be called `spawn_arm`, which is then what every consumer below has to
+  # address.
+  - spawn_arm:
+      model: ur5e
+      prefix: "ur5e_"
+      pos: [0.0, 0.0, 0.76]
+      end_effector:
+        model: robotiq_2f85
+        site: attachment_site
+        pos: [0.0, 0.0, 0.011]   # the UR -> Robotiq adapter plate
+      # Start FACING the box. The model's own home puts `shoulder_pan` at 0, which points the arm
+      # away from it: this arm's base body carries a 180 deg yaw of its own, so the box at world +x
+      # sits at -x in the arm's frame. MEASURED with that default, the grasp needed pan at 2.78 rad,
+      # so every trial opened with a 159 deg base swing -- a 41 s approach, and a detour close enough
+      # to the +-2pi wraparound that the planner once took it the long way round, through the bench.
+      #
+      # Only pan and the wrist roll move from the model's own home; its elbow-up shape is left alone,
+      # because that is the posture the model ships as its rest pose. `export moveit` reads this back
+      # out of the COMPILED model for the SRDF's `home` state and refuses to write a config whose
+      # home disagrees with the simulator, so it cannot drift from what move_group plans against.
+      home: [2.8, -1.5708, 1.5708, -1.5708, -1.5708, 2.7]
+    name: ur5e
+    components:
+      # -- perception ------------------------------------------------------------------------
+      # Where the campaign's factor acts. The detector publishes the box's pose the way a real
+      # perception stack would -- in the arm's own frame, at a finite rate, with noise -- and
+      # `position_stddev` is what the sweep varies, so the campaign asks "how accurate does this
+      # grasp need the pose to be?" rather than assuming it is exact.
+      #
+      # NESTED under the arm, not declared at top level. `object_detector` takes its robot from
+      # the entity it belongs to, so a top-level entry (even one saying `robot: ur5e`) resolves no
+      # entity, gets an empty prefix, and dies at startup with `reporting frame body not found`.
+      #
+      # `frame: base` names a MuJoCo BODY, and that same string is the published `frame_id`. The UR
+      # arms' root body is `base`; `base_link` exists only in the exported URDF. So the export must
+      # use `--root-link base`, and detection and planning then share one frame with no transform
+      # between them.
+      #
+      # `body: graspable_box`, not `parcel`: `name:` sets the ENTITY, while the body keeps the
+      # model's own name. The substrate refuses an unknown body outright rather than reporting an
+      # object it never sees, so a mistake here fails loudly at startup.
+      - object_detector:
+          frame: base
+          rate_hz: 10.0
+          position_stddev: 0.0
+          objects:
+            - {body: graspable_box, class_id: parcel, size: [0.08, 0.06, 0.05]}
+
+  # The place target: a real bin, not a painted pad. Its mouth is 186 x 286 mm against an
+  # 80 x 60 mm box, so the drop is the forgiving half of the trial by design -- the grasp is where
+  # the ~13 mm of clearance lives. Standing on the bench, so its floor is at z = 0.76 and its rim
+  # at 0.854; the driver lifts clear of the rim before it comes in.
+  #
+  # THIS EXAMPLE'S OWN MODEL, not a substrate prop, and for a reason that is not about taste: a
+  # mesh container collides by its CONVEX HULL, which fills the mouth, so nothing can be placed
+  # INSIDE one. See world/drop_bin.xml.
+  # `drop_bin.xml` is named as a plain sibling: a model path resolves against THIS file's directory,
+  # so the world is self-contained and moves wherever it is staged without anyone arranging a working
+  # directory for it.
+  #
+  # `publish_tf: static` so the TRIAL reads where the bin is instead of restating it. The pose is
+  # latched once on /tf_static, which is right for a welded prop -- and it means this line is the
+  # only place the bin's position is written down.
+  - spawn_model:
+      model: drop_bin.xml
+      pos: [0.25, 0.40, 0.76]
+      publish_tf: static
+    name: bin
+
+  # The box, spawned last so it settles onto the bench rather than being placed exactly.
+  # `free: true` gives it a freejoint (it is the only thing here meant to move on its own);
+  # `publish_tf: dynamic` streams its true pose, which is what the trial's verdict reads --
+  # nothing else publishes a free body's pose.
+  #
+  # At [0.45, 0.0] it is 0.471 m from the shoulder, comfortably inside the UR5e's ~0.85 m reach,
+  # and its 60 mm axis lies along Y -- the axis the pads close along at this posture, so a
+  # straight top-down grasp needs no wrist roll to line the jaws up.
+  - spawn_model:
+      model: graspable_box
+      free: true
+      publish_tf: dynamic
+      pos: [0.45, 0.0, 0.79]
+    name: parcel
+
+  # -- ROS 2 transport -------------------------------------------------------------------------
+  # /clock, /joint_states, the arm's FollowJointTrajectory and the gripper's GripperCommand, plus
+  # the box's pose on /tf and the detections. Listed LAST: the bridge publishes what the other
+  # plugins declared, so every endpoint producer has to come before it.
+  - ros2_bridge: {}
+
+  # Play/pause/reset and GetEntityState/SetEntityState, so a scenario can reset the cell between
+  # repetitions without restarting the simulator.
+  - sim_interfaces: {}
