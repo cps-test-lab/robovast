@@ -22,11 +22,19 @@ It provides four views:
   it is, and opening it is always the reader's choice.
 
   The **time** column asks a different question of each state. A campaign that is over shows
-  **how long ago it started**; a campaign that is still going shows **how much longer it has**
-  — and shows *nothing* when no honest estimate exists, which is the case before its first
-  run finishes, and for a search whose rounds nothing bounds (there only the *current round*
-  can be estimated, and printing that as the campaign's remaining time would be wrong rather
-  than approximate). Hovering gives the exact times, and the duration or the expected finish.
+  **how long ago it started**; a campaign that is still going shows **how much longer it has**,
+  and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
+  duration or the expected finish.
+
+  For a **search** that estimate is never its current round: a search runs an unknown number of
+  rounds, so the round it is on says nothing about the whole, and one starting its sixth of six
+  would otherwise claim the same remaining time as one starting its first. It is projected from
+  what *bounds* the search instead — a ``batches`` criterion (the rounds still to come) or a
+  ``runs`` one (the runs still to come), at the rate the current batch is achieving, and the
+  **smaller** of the two when both are declared, since the campaign stops at whichever fires
+  first. A search bounded only by an objective, a metric or ``no_improvement`` shows nothing:
+  those fire on a value nothing can project. Like the batches estimate it answers when the *work*
+  runs out, not when the search stops — another criterion may end it earlier.
 
   The compact meter is the same bar the open card draws full width — same segments, same
   ``done/total`` — with the counts inside the track and the rest (passed, failed, no

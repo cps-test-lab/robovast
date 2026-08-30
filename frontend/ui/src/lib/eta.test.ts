@@ -159,13 +159,18 @@ describe('batchesBudget', () => {
 })
 
 // The estimate a collapsed running row prints. Everything else in this module is scoped to the
-// current BATCH; this is the only function that answers for the campaign, and its whole job is
+// current BATCH; this is the only function that answers for the campaign, and most of its job is
 // knowing when it cannot.
 describe('campaignEtaSeconds', () => {
+  // perRun = 600s elapsed / 20 finished = 30s; the current batch has 20 of 40 left => 600s.
+  const search = (budget: BudgetItem[]) =>
+    status({ completed: 20 }, { mode: 'search', budget })
   const batches = (current: number, limit: number): BudgetItem =>
     ({ label: 'batches', kind: 'batches', current, limit, done: false }) as BudgetItem
-  const runsBudget: BudgetItem =
-    ({ label: 'runs', kind: 'runs', current: 90, limit: 150, done: false }) as BudgetItem
+  const runs = (current: number, limit: number): BudgetItem =>
+    ({ label: 'runs', kind: 'runs', current, limit, done: false }) as BudgetItem
+  const stale: BudgetItem =
+    ({ label: 'stale_batches', kind: 'no_improvement', current: 1, limit: 3, done: false }) as BudgetItem
 
   it('is the batch estimate for a batch campaign — it has exactly one batch', () => {
     freeze()
@@ -173,20 +178,31 @@ describe('campaignEtaSeconds', () => {
     expect(campaignEtaSeconds(s, undefined, false)).toBe(estimateEtaSeconds(s, undefined, false))
   })
 
-  it('projects the remaining rounds for a search bounded by batches', () => {
+  it('projects the rounds still to come when batches bound the search', () => {
     freeze()
-    const s = status({ completed: 20 }, { mode: 'search', budget: [batches(1, 4)] })
-    // Strictly longer than the current round alone: two whole rounds still follow this one.
-    expect(campaignEtaSeconds(s, undefined, false)!)
-      .toBeGreaterThan(estimateEtaSeconds(s, undefined, false)!)
+    // 600s to finish this round, then 2 whole rounds of 40 runs at 30s each.
+    expect(campaignEtaSeconds(search([batches(1, 4)]), undefined, false)).toBe(600 + 2 * 40 * 30)
   })
 
-  it('refuses a search whose rounds nothing bounds, rather than printing one round as the whole', () => {
+  it('projects the runs still to come when RUNS bound the search', () => {
     freeze()
-    // The runs budget bounds the campaign but says nothing about how many ROUNDS are left, and a
-    // round is what the batch estimate measures. Six of eight shipped nav_search examples are
-    // bounded this way, so this is the common case.
-    const s = status({ completed: 20 }, { mode: 'search', budget: [runsBudget] })
+    // 60 campaign runs left at 30s each — not this round's 600s, which describes 20 runs.
+    expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, false)).toBe(60 * 30)
+  })
+
+  it('takes the smaller when both bound it — the campaign stops at whichever fires first', () => {
+    freeze()
+    const both = campaignEtaSeconds(search([batches(1, 4), runs(90, 150)]), undefined, false)
+    expect(both).toBe(Math.min(600 + 2 * 40 * 30, 60 * 30))
+    expect(both).toBe(60 * 30)
+  })
+
+  it('never reports the current round as the campaign when nothing bounds the work', () => {
+    freeze()
+    // `no_improvement` fires on a value nothing can project, so it converts to no time at all.
+    // The batch estimate exists and is deliberately NOT used: a search on its sixth round would
+    // otherwise claim the same remaining time as one on its first.
+    const s = search([stale])
     expect(estimateEtaSeconds(s, undefined, false)).not.toBeNull()
     expect(campaignEtaSeconds(s, undefined, false)).toBeNull()
   })
@@ -195,5 +211,6 @@ describe('campaignEtaSeconds', () => {
     freeze()
     expect(campaignEtaSeconds(status({ completed: 0 }, { mode: 'batch' }), undefined, false)).toBeNull()
     expect(campaignEtaSeconds(status({ completed: 20 }, { mode: 'batch' }), undefined, true)).toBeNull()
+    expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, true)).toBeNull()
   })
 })
