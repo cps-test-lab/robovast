@@ -34,10 +34,11 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-# Bumped past the commit that added `roqsim_aerial`: the install list below names that directory,
-# and a bare `docker build` on the older pin failed on a path the clone does not contain. The
-# default has to be able to build this file on its own, or it is not a default.
-ARG ROQSIM_REF=770f37b34c28fc61bba4c7cbc474686ebff9b500
+# The default must be able to build this file on its own, or it is not a default: the install list
+# below names `roqsim_aerial`, so a pin from before that package existed fails on a path the clone
+# does not contain. This one also carries the `payload` and `wind_field` plugins the drone example
+# configures.
+ARG ROQSIM_REF=293b9ceef7348213b8c4d62950cd7bfcbcbf00b2
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves

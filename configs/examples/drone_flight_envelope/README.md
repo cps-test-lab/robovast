@@ -75,7 +75,8 @@ container and is short compared with the nav2 examples. The scenario's job is to
 and record what happened.
 
 **It needs a simulator image that carries `roqsim_aerial`.** That package holds the Crazyflie, the
-controller, `payload` and `wind_field`, and it is part of the standard `robovast-roqsim` image. An
+controller and `wind_field` (`payload` is a core roqsim plugin), and it is part of the standard
+`robovast-roqsim` image. An
 image built before the package existed fails at world load with `model 'crazyflie_2' not found`,
 listing the model providers it searched — which names the cause precisely enough to act on. If you
 need a package the base image does not carry, a container may declare `python_packages` and RoboVAST
