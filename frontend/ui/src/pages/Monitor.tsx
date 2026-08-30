@@ -506,7 +506,15 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // shut when they arrive, and costs a click every visit. It buys little height (the usual page
   // is one running campaign above many finished ones); what it buys is predictability.
   const [collapsed, setCollapsed] = useState(true)
-  const toggle = () => setCollapsed((c) => !c)
+  // A click that ends a drag-selection in the header row was a copy, not a fold. The id and the
+  // folded description are selectable (see below) and folding the card as the text is lifted
+  // takes it back — worse here than in a CollapsibleBox, because shutting the card also moves
+  // the description out of the row it was selected in. A plain click cannot trip this: its own
+  // mousedown collapses any earlier selection before the click event fires.
+  const toggle = () => {
+    if (window.getSelection()?.toString()) return
+    setCollapsed((c) => !c)
+  }
   // What the compact meter draws before this card's own `getStatus` answers. The listing arrives
   // for the whole page in one stream while the statuses are one request each, so without it every
   // meter paints empty and fills in one by one — a page that looks like it is still loading long
@@ -620,6 +628,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           spacing={1}
           alignItems="center"
           onClick={toggle}
+          // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
+          // target should not paint its phase dot and its age. The text worth copying opts back
+          // in individually.
           sx={{ minWidth: 0, flexGrow: 1, cursor: 'pointer', userSelect: 'none' }}
         >
           <PhaseDot phase={phase} issue={stepIssue} />
@@ -646,12 +657,22 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               so their widths vary by a factor of three, and without a column the timestamp and
               the meter on every row below would sit at a different x. Applied whether the card is
               open or shut so folding one does not shift the header sideways. */}
+          {/* Selectable, against the fold target it sits in: this is the one string on the
+              card that gets copied out — into a CLI, a message, an issue — and a header that
+              refuses the drag leaves retyping a timestamped id by hand as the only way. The
+              cursor stays the row's pointer; an I-beam would suggest a field that takes typing.
+              `noWrap` clips the column visually only, so a truncated id still copies whole. */}
           <CampaignOrigin origin={summary.origin}>
             <Typography
               variant="subtitle2"
               noWrap
               title={id}
-              sx={{ fontFamily: 'monospace', width: ID_COLUMN, flexShrink: 0 }}
+              sx={{
+                fontFamily: 'monospace',
+                width: ID_COLUMN,
+                flexShrink: 0,
+                userSelect: 'text',
+              }}
             >
               {id}
             </Typography>
@@ -667,7 +688,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               color="text.secondary"
               noWrap
               title={summary.description}
-              sx={{ minWidth: 0, flexGrow: 1 }}
+              sx={{ minWidth: 0, flexGrow: 1, userSelect: 'text' }}
             >
               {summary.description}
             </Typography>
