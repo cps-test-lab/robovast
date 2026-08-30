@@ -14,6 +14,7 @@ beside the rewritten one.
 import os
 
 import pytest
+import yaml
 
 from robovast.common.config import RESERVED_ENV_NAMES
 from robovast.common.sut_channel import (ABSENT, SutChannelError, check_destinations,
@@ -168,8 +169,7 @@ def test_materialize_writes_one_rewritten_copy_per_configuration(campaign, tmp_p
     assert contribution.env == {"NAV2_PROFILE": "aggressive"}
     assert {rel for rel, _ in contribution.files} == {"files/nav2_params.yaml",
                                                       "files/nav2_bt.xml"}
-    import yaml
-    written = {rel: abs_path for rel, abs_path in contribution.files}
+    written = dict(contribution.files)
     params = yaml.safe_load(open(written["files/nav2_params.yaml"], encoding="utf-8"))
     layer = params["local_costmap"]["local_costmap"]["ros__parameters"]
     assert layer["inflation_layer"]["inflation_radius"] == 0.30
@@ -191,7 +191,6 @@ def test_absence_removes_the_node_rather_than_emptying_it(campaign, tmp_path):
     contribution = materialize(execution, vast_dir,
                                {f"{base}.voxel_layer": {ABSENT: True}},
                                str(tmp_path / "out"), "config1")
-    import yaml
     written = dict(contribution.files)["files/nav2_params.yaml"]
     params = yaml.safe_load(open(written, encoding="utf-8"))
     assert "voxel_layer" not in params["local_costmap"]["local_costmap"]["ros__parameters"]

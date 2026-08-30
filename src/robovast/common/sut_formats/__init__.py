@@ -87,8 +87,7 @@ class SutConfigFormat:
         enumerable (any XPath expression is a potential address) loses only the listing,
         never the check, which is :meth:`can_address`'s job.
         """
-        del doc
-        return None
+        del doc      # the base format enumerates nothing; None is the documented answer
 
     def set(self, doc, path: str, value):
         """Put *value* at *path*, creating the node or replacing what is there.
