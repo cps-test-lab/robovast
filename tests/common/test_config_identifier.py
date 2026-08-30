@@ -44,3 +44,27 @@ def test_real_references_are_still_collected(tmp_path):
     launch.write_text("changed", encoding="utf-8")
     hash_config_referenced_files.cache_clear()   # the impl memoizes on (dir, config)
     assert hash_config_referenced_files(str(tmp_path), canonical) != before
+
+
+def test_editing_a_file_ref_variation_changes_the_config_identifier(tmp_path):
+    """A variation's own source decides which configurations exist, so it is part of them.
+
+    ``hash_variation_entrypoints`` walks and hashes every module of an *entry-point*
+    variation's package, but a ``<path>.py:<Class>`` reference matches no entry point and
+    contributed only ``sha256(name)`` -- so an edited plugin was indistinguishable from the
+    original, and a PROV-O export could not even name the module, since it lists only files
+    the campaign recorded carrying. Collecting the source as a run file fixes both at once:
+    ``hash_run_files`` reads content.
+    """
+    from robovast.common.config_identifier import hash_run_files
+
+    plugin = tmp_path / "variations"
+    plugin.mkdir()
+    source = plugin / "doorway.py"
+    source.write_text("GAP = 0.8\n", encoding="utf-8")
+
+    before = hash_run_files(str(tmp_path), ["variations/doorway.py"])
+    source.write_text("GAP = 1.6\n", encoding="utf-8")
+    after = hash_run_files(str(tmp_path), ["variations/doorway.py"])
+
+    assert before != after, "an edited variation must not keep the campaign's identity"

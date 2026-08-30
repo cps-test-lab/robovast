@@ -194,6 +194,28 @@ def test_staging_reproduces_the_run_files_at_their_recorded_paths(svc, tmp_path)
     assert (plan.staging_dir / "pilot.vast").is_file()
 
 
+def test_a_file_ref_variations_module_is_reproduced_in_the_staging_tree(svc, tmp_path):
+    """The reported failure, end to end: a retrigger re-composes, so it needs the module.
+
+    A retrigger does not replay recorded configurations -- it hands the staged ``.vast`` back
+    to composition, which resolves ``variations/doorway.py:DoorwayVariation`` against the
+    staging directory. Once the module is collected as a run file it is archived into
+    ``_config/`` and lands here at the path the reference names.
+    """
+    vast = _vast()
+    vast["configuration"] = [
+        {"name": "config1",
+         "variations": [{"variations/doorway.py:DoorwayVariation": {}}]}]
+    _source_campaign(tmp_path / "results", vast=vast,
+                     run_files=("variations/doorway.py",),
+                     extra_config=("variations/doorway.py",))
+
+    plan = _prepare(svc, "pilot-2026-08-08-120000")
+    plan.materialize()
+
+    assert (plan.staging_dir / "variations" / "doorway.py").is_file()
+
+
 def test_a_scenario_in_a_subdirectory_is_put_back_where_the_vast_says(svc, tmp_path):
     """``_config/`` flattens the scenario to its basename, but config generation requires it at
     the declared relative path — and the .vast must not be rewritten to match, because its

@@ -175,6 +175,9 @@ contexts, and it is rebuilt wherever a campaign is composed.
    For a single, dependency-free custom variation you do not need to package it: put
    the ``.py`` file in your project and reference the class directly from a
    ``variations`` entry as ``relative/path.py:ClassName`` (see :ref:`variation-points`).
+   The module is archived with the campaign and hashed into its config identity, so such a
+   variation stays re-runnable — but it has to be **one self-contained module**, with no
+   sibling imports and no data file of its own. Anything larger belongs in ``plugins:``.
 
 
 Configuration Section
