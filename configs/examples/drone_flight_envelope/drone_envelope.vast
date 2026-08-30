@@ -102,26 +102,57 @@ visualization:
   results:
     run_view:
       panels:
+      # The 3D scene is the picture; everything else floats over it. Declared rather than left to
+      # the backend's automatic one so it can claim `fill` -- without it the scene takes only what
+      # the docks leave, and a `bottom` bar of 300px was cutting it down to a strip.
+      - scene3d: {title: Room, fill: true}
+
+      # trajectory is written at the simulator's rate: ~500 rows/s, so a 50 s flight is ~24k rows
+      # against a 5000-row reply cap that truncates at the HEAD. Undecimated, every panel below
+      # showed the first ten seconds of the run and nothing after it -- a ground track that is one
+      # dot on the pad, because that is where the drone is for the first six. 50 Hz keeps the tilt
+      # and speed transients (the controller's step response is ~1 s) and lands well under the cap.
+      - scene:
+          title: Ground track
+          position: {anchor: top-left, width: 360, height: 360}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
+          x: x
+          y: y
+          trail: true
+
+      # `fields` are objects, not bare column names: the panel reads `column` off each entry, so a
+      # plain string renders as a dash -- a row with no name and no value.
       - state:
           title: Flight state
-          position: {anchor: top-right, width: 380, height: 260}
-          source: {table: trajectory, time_column: t}
-          fields: [z, tilt_deg, speed, x, y]
+          position: {anchor: top-right, width: 320, height: 200}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
+          fields:
+          - {column: z, label: altitude, unit: m}
+          - {column: tilt_deg, label: tilt, unit: deg}
+          - {column: speed, label: speed, unit: m/s}
+          - {column: x, label: x, unit: m}
+          - {column: y, label: y, unit: m}
+
       - timeseries:
           title: Altitude, tilt and speed
-          position: {anchor: bottom, height: 300}
-          source: {table: trajectory, time_column: t}
+          position: {anchor: bottom-right, width: 460, height: 240}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
           series:
           - {column: z, label: "altitude [m]"}
           - {column: tilt_deg, label: "tilt [deg]"}
           - {column: speed, label: "speed [m/s]"}
-      - scene:
-          title: Ground track
-          position: {anchor: center, width: 420, height: 420}
-          source: {table: trajectory, time_column: t}
-          x: x
-          y: y
-          trail: true
+
+      # Every container's output merged with /rosout on the playback clock. The declared width is
+      # what makes `bottom-center` float above the playback bar instead of docking into it.
+      - log:
+          title: Run log
+          position: {anchor: bottom-center, width: "calc(100% - 860px)", height: 200}
+          minimizable: true
+          minimized: true
+
       timeline: {table: trajectory, time_column: t}
 
     data_browser:
