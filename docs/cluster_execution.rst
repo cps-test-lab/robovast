@@ -571,6 +571,12 @@ once an **hour** with the current run progress, when it is **uploaded** to the
 share, and exactly one message when the campaign **ends** — whether that end is
 a finish, a **stop**, or (urgently) a **failure**.
 
+Re-running a campaign also announces itself, on the topic of the campaign it was
+re-run *from*: the new campaign gets its own id, and someone following the old one
+otherwise has no way to learn which. It is not an ending — the source campaign is
+unmodified and still sends its own — and the re-run announces its own start as
+usual.
+
 The ending message is worth reading rather than glancing at. It is sent when the
 campaign is genuinely over, *after* postprocessing rather than when the last run
 stops, and it carries what the campaign actually produced: the run tally, and any
@@ -1063,18 +1069,56 @@ would be over-admission and pods that cannot be placed. Scaling the Deployment p
 replica requires making the queue cluster-wide state first; the ``replicas: 1`` in the
 service Deployment says so at the line.
 
-**A service restart abandons the campaigns that were running.** What is left behind:
+**A service restart leaves the campaigns that were running alone.** The queue is the
+part that does not survive it; the campaigns do.
 
 * Jobs already created keep running. They carry no owner reference, so Kubernetes does
-  not collect them, and startup reaping covers aux pods only -- they run to completion,
-  write their results, and hold capacity while nothing is listening.
-* Jobs still queued were never created, so there is nothing to orphan.
-* The successor process does **not** over-admit against the abandoned Jobs. Capacity is
+  not collect them, and startup reaping covers aux pods only -- they run to completion
+  and write their results to the object store, which is where a campaign's results live
+  anyway.
+* Jobs still queued were never created, so there is nothing to orphan. They are re-queued
+  when the campaign is adopted.
+* The successor process does **not** over-admit against the surviving Jobs. Capacity is
   measured from the pods actually bound to nodes rather than bookkept, so their requests
-  are visible to it exactly like any other tenant's.
+  are visible to it exactly like any other tenant's -- which is also what lets it adopt
+  them without any bookkeeping of its own.
 
-Surviving a restart with the campaign intact is separate work: it needs the campaign to
-be reattachable, which is a bigger question than the queue.
+This is what ``ClusterService._adopts_on_restart`` says, and why this lane has no
+shutdown-time job teardown: stopping a campaign is ``vast campaign stop``, and exiting the
+service is not. The distinction matters more than it looks, because a cooperative stop
+persists a terminal ``outcome.json`` -- and a campaign that has recorded an ending is one
+no successor will ever pick up again.
+
+**And the successor picks them back up.** At startup, before it answers anything, the
+service re-launches every campaign the store lists that recorded no ending
+(``campaign_resume``). There is no resume mode anywhere in the launch path, the batch loop
+or the controller; a resumed campaign is a re-launch under its own id, and four properties
+-- each equally true of a campaign starting now -- are what make that safe:
+
+* the campaign's records (``_execution/launch.yaml``, ``campaign.db``) are published when
+  they are written rather than at ``finalize_campaign``, so an unfinished campaign has
+  something to be re-launched from;
+* the campaign root is restored from the store first (``fetch_campaign``), so the driver
+  re-enters a directory holding what the earlier life produced;
+* the batch runner plans against that root, adopting every job whose runs already have a
+  verdict instead of running them a second time;
+* ``create_campaign`` is idempotent by name, so the restored store re-opens its row.
+
+**A search is picked up too.** Nothing about its strategy is serialized; the strategy is
+re-driven through the exact ``ask``/``tell`` sequence its own ``unit`` rows recorded, which
+reproduces the original search for a strategy that is a function of its seed and its
+evaluations -- every strategy shipped here. That is why ``campaign.db`` is published at
+each batch boundary: those rows *are* the checkpoint. Two conditions are checked before the
+campaign is re-launched rather than discovered halfway through its second half:
+``search.seed`` is set (an unseeded strategy re-seeds from entropy, so the replay would
+rebuild a different search) and the strategy does not declare ``RESUMABLE = False``.
+
+Campaigns are deliberately **left alone** when nothing says what to run (no launch record,
+or no frozen ``_config/``), when the frozen config cannot be read unchanged (resuming would
+mean migrating it mid-campaign, making the second half a different experiment from the
+first), or when a search fails either condition above. Each says which it is in the service
+log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
+stays recoverable with ``vast campaign import``.
 
 
 How free capacity is measured, and why it is not the whole cluster
@@ -1165,14 +1209,36 @@ Deployment, so it is a property of the cluster rather than of any campaign:
 
 .. code-block:: bash
 
-   ROBOVAST_BOOTSTRAP_CPU={"sut": 8, "simulation": 3, "scenario": 2}
+   ROBOVAST_BOOTSTRAP_CPU={"sut": 5, "simulation": 3, "scenario": 2}
    ROBOVAST_BOOTSTRAP_MEMORY={"simulation": "4Gi"}
 
 A role left out keeps its default rather than disappearing, so raising one cannot silently
 drop another. With neither set the defaults below apply, and the service log says which of
 the two it is using.
 
+**A campaign may override it per container**, by declaring ``resources`` on that container:
+under ``execution.sizing: calibrated`` those figures are what the probe and every
+not-yet-measured node run at, and the ceiling a measured figure may not exceed. The
+deployment default still applies to every container that declares none, and per *field* — a
+``.vast`` stating only ``cpu`` keeps this ``memory``. See
+:ref:`the sizing mode <config-sizing>`.
+
+**How the measurement is turned into an allocation** is settable the same way, in a
+``calibration`` block on the container, defaulted per role from one more ``.env`` entry:
+
+.. code-block:: bash
+
+   ROBOVAST_CALIBRATION={"sut": {"size_on": 100, "limit": "request"},
+                         "simulation": {"headroom": {"cpu": 1.25}}}
+
+The same block a container may carry, keyed by role — so an option added to it later is
+settable here with no new variable.
+
 .. warning::
+
+   **The three roles sum to a pod that has to fit your smallest node.** The probe is pinned
+   to the node it measures, so a sum larger than that node's allocatable (less the cluster
+   headroom) leaves it unmeasurable -- refused at launch, naming the figure and the node.
 
    **Do not set a figure below what the container actually wants.** The bootstrap is also
    what the probe runs at, so a container capped under its own demand throttles against that
@@ -1210,16 +1276,42 @@ How the figure is found:
 * **One probe per node, and it is never a campaign run.** It writes to ``_calibration/<node-id>/``
   — a reserved directory nothing walks looking for runs — so it cannot enter the results in
   the first place. A campaign of 50 runs still delivers 50.
+* **A probe is listed, marked, and counted apart.** It holds real capacity on a real node, so
+  it carries the campaign's labels and appears in the job listing — as ``kind: calibration``,
+  named for the node it measures, and outside every figure in ``JobCounts``, which a reader
+  takes as facts about *runs*. It reports its own status like any other job, because a probe
+  that failed is one worth looking at, but it cannot be stopped individually: there is no run
+  to record as killed. In the web UI's campaign view it is the row with the ``calibration``
+  chip beside its status.
 * **A node with an outstanding probe takes no campaign work.** Otherwise the runs placed
   while it is measuring are the odd ones out on a node whose later runs are calibrated,
   reintroducing the inconsistency the probe exists to remove.
-* **The statistic depends on the container's role.** The system under test is sized on its
-  *peak*, as request and limit, so it never throttles — its budget must be identical in every
-  run or the allocation becomes a hidden independent variable. Everything else is sized on
-  what it *sustains* (p95) and keeps its declared ceiling, because the simulator's
-  peak-to-mean ratio is about 18 and reserving its peak would cost more than not calibrating
-  at all. Memory is never re-sized: it does not vary with how fast a machine is, and
-  exceeding a memory limit is an OOM kill rather than a slowdown.
+* **How a measurement becomes an allocation depends on the container's role**, and what
+  decides that is whether anything would report that squeezing it cost something. The system
+  under test is read at its maximum, as request *and* limit, so it never throttles: a run
+  clipped mid-plan fails in a way that looks like the stack's fault rather than the
+  allocation's. The simulator is read at the 95th percentile and keeps its ceiling — its
+  peak-to-mean ratio is about 18, so reserving the maximum would cost more than not
+  calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
+  runner is read the same way, but nothing grades how well *it* ran, so its ceiling is what
+  must not be tight; on a probe its own tick rate fills that gap (see below).
+
+  Every one of those is a default, and a container may state its own under
+  :ref:`the sizing mode <config-sizing>`. Memory is different in kind and takes one
+  rule for every role: the
+  measured **maximum**, with headroom. Exceeding a CPU reservation slows a container;
+  exceeding a memory one kills it, so no role is sized on a figure most of its samples sat
+  below.
+* **Memory is measured wherever the node can report it.** Both cgroup layouts are read into
+  the same columns, so a mixed cluster stays comparable. Where a node reports neither — an
+  older runtime, a kernel without the counter — the container keeps its declared or bootstrap
+  memory rather than being sized from nothing, and the same absence disables the OOM check
+  for that node rather than passing it.
+* **The scenario runner reports on itself, on probes only.** A probe runs with
+  ``--tick-log``, so ``tick_timing.csv`` records how closely the behaviour tree held its
+  configured period. A probe whose scenario could not keep up measured a starved container,
+  and is refused rather than believed. Campaign runs do not carry the flag: it is per-tick
+  instrumentation on the trial's hot path, and only the probe's file is ever read.
 * **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
   node's jobs down to what they need; it does not raise a ceiling the author set.
 * **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
@@ -1234,8 +1326,13 @@ How the figure is found:
 The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
 is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
 under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
-``ROBOVAST_NODE_CALIBRATION`` set, one without, everything else equal — measures it directly,
-and ``run_health`` says whether the tighter ceilings cost the stack anything.
+``execution.sizing: calibrated``, one with ``fixed``, everything else equal — measures it
+directly, and ``run_health`` says whether the tighter ceilings cost the stack anything.
+
+**Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
+is what says whether a tighter allocation cost the simulator its pacing, and a campaign whose
+factor drops is no longer comparable with one sized any other way — worse results rather than
+merely slower ones.
 
 **A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
 machine.** That is why this is switchable, and why the probe is one run rather than a
@@ -1804,6 +1901,14 @@ file, and a missing file is fine.
 Which of the two: ``./.env`` is this *project's* configuration; the user file is for what
 is true of your machine, and is the one that keeps working when you run ``vast`` from
 another directory.  See :doc:`images` for the image settings specifically.
+
+**Reading it back.** A ``.env`` says what you *sent*; the Admin page's **Service
+configuration** panel says what the service is actually running with, which is not the same
+thing the moment a value changes. A pod loads its Secrets at container start and never
+again, so an edited ``.env`` reaches it only through ``vast service upgrade`` **without**
+``--no-restart`` — ``setup --force`` also works, and does more besides. A local
+``vast serve`` picks a change up when it is restarted. Credentials are reported there as
+set or not set; their values never leave the service. See :ref:`web-ui-admin`.
 
 **Required variables (for all share types):**
 

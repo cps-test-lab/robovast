@@ -40,6 +40,8 @@ from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config import SIMULATION_CONTAINER
 from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
+from .sut_channel import SUT_CONFIG_FILE
+from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
 from .simulators import SIM_CONFIG_FILE
 
@@ -462,7 +464,7 @@ def resolve_sidecar_image(explicit: str | None = None) -> str:
 
 
 #: Env var carrying the revision this code was built from, set into the image at build
-#: time (``container/robovast/build.sh`` -> ``ARG``/``ENV``). It exists because the git
+#: time (``container/image_stamp.sh`` -> ``ARG``/``ENV``). It exists because the git
 #: lookup below **cannot** work in a deployed image: the package is installed, so there is
 #: no ``.git`` above ``site-packages/robovast/common/``, and ``git rev-parse`` there finds
 #: no repository however present the git binary is. Baking it at build time is the only
@@ -508,6 +510,29 @@ def _git_revision() -> "str | None":
     except Exception:  # noqa: BLE001 - no repo, no git binary: not a revision, not an error
         return None
     return f"{sha}+dirty" if dirty else sha
+
+
+#: Env var carrying the wall-clock time the image was built, set alongside
+#: :data:`GIT_REVISION_ENV` by ``container/image_stamp.sh``. Baked for the same reason and a
+#: sharper one: a container cannot read its own labels, so ``org.opencontainers.image.created``
+#: -- which every published image carries -- is invisible to the process running inside it.
+BUILD_DATE_ENV = "ROBOVAST_BUILD_DATE"
+
+
+def build_date() -> str:
+    """When this process's image was built (RFC 3339, UTC), or ``""`` when not determinable.
+
+    Answers the question a revision cannot: *how old is what is deployed?* A short sha is only
+    comparable against a checkout, so an operator looking at a service — deciding whether the
+    build in front of them predates a fix — has nothing to read it against. A timestamp is
+    legible on its own.
+
+    ``""`` carries the same meaning it does in :func:`code_revision`: **this deployment cannot
+    tell you**. A source checkout has no build to date, and neither has an image built by hand
+    without the build arg. Substituting anything here — the file's mtime, today's date — would
+    manufacture an answer to a question that has none, and it would be believed.
+    """
+    return os.environ.get(BUILD_DATE_ENV, "").strip()
 
 
 #: How many changed paths a provenance record keeps. A dirty tree can hold thousands, and a
@@ -1644,6 +1669,12 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
 
     # Compute hashes once per run (reused for all configs)
     run_files_hash = hash_run_files(vast_file_path, campaign_data.get("_run_files", []))
+    # The config files the `sut:` channel addresses are generation inputs too, and cannot
+    # ride in run_files_hash -- that list is also staged, and staging a source beside its
+    # rewritten copy is exactly what the channel refuses.
+    sut_sources_hash = hash_run_files(
+        vast_file_path,
+        sut_source_paths(campaign_data.get("execution", {}) or {}, vast_file_path))
     # Config generation already resolved this against the .vast's location, so it is usable as-is
     # (see the same note in execute_local). Re-prepending the .vast's directory doubled it -- e.g.
     # `<project>/<project>/scenario.osc` -- for every project whose config path has a
@@ -1750,6 +1781,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             run_files_hash,
             scenario_file_hash,
             variation_type_names,
+            sut_sources_hash,
         )
         config_yaml_path = os.path.join(run_config_dir, "config.yaml")
         os.makedirs(run_config_dir, exist_ok=True)
@@ -1808,14 +1840,24 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         # configuration it belongs to -- greppable, diffable, and directly replayable, its
         # two values being the arguments that reproduce the cell by hand.
         #
-        # Written for EVERY configuration, including one that varies nothing, so a reader
-        # never has to work out whether a missing file means "no simulator" or "nothing
-        # varied".
+        # Written for every configuration that HAS one. (The text here previously claimed
+        # every configuration without exception, which the guard below has never done; the
+        # code is the honest half -- a campaign with no simulator has nothing to record.)
         sim_block = config_data.get("sim")
         if sim_block:
             os.makedirs(run_config_dir, exist_ok=True)
             with open(os.path.join(run_config_dir, SIM_CONFIG_FILE), "w") as f:
                 yaml.dump(convert_dataclasses_to_dict(copy.deepcopy(sim_block)), f,
+                          default_flow_style=False, sort_keys=False)
+
+        # The same, for how the system under test is configured. The rewritten files are
+        # what the cell runs; this is what a reader consults to see which factor produced
+        # which value, without diffing two copies of a stack's config.
+        sut_block = config_data.get("sut")
+        if sut_block:
+            os.makedirs(run_config_dir, exist_ok=True)
+            with open(os.path.join(run_config_dir, SUT_CONFIG_FILE), "w") as f:
+                yaml.dump(convert_dataclasses_to_dict(copy.deepcopy(sut_block)), f,
                           default_flow_style=False, sort_keys=False)
 
         # Create config file if needed

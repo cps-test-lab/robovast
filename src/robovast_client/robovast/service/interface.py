@@ -528,6 +528,22 @@ class JobState(BaseModel):
     unavailable: list = Field(default_factory=list)
 
 
+class JobKind(StrEnum):
+    """The vocabulary carried by :attr:`JobSummary.kind`.
+
+    A ``StrEnum`` for the same reason :class:`OriginKind` is one: members *are* their string
+    value, and the field stays typed ``str`` so an unfamiliar kind reads as "some other kind
+    of job" rather than as an error.
+
+    This is the cluster's ``jobgroup`` axis narrowed to what a campaign's own listing shows:
+    everything here is a ``scenario-runs`` Job, and the question is whether it is one of the
+    campaign's trials.
+    """
+
+    RUN = "run"                  # one of the campaign's own trials
+    CALIBRATION = "calibration"  # a node-sizing probe (cluster lane only)
+
+
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
@@ -540,6 +556,14 @@ class JobSummary(BaseModel):
     """
 
     job_name: str
+    #: One of :class:`JobKind`, as a plain string.
+    #:
+    #: Defaults to ``RUN`` rather than to an empty "unknown": every job on the local lane and
+    #: every job of a campaign's own batch *is* a run, so the default is a true statement and
+    #: no construction site has to restate it. It is also what a client sees from a service
+    #: older than this field -- which is why a reader must test for the kind it cares about
+    #: (``== "calibration"``) and never for ``!= "run"``.
+    kind: str = JobKind.RUN
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
@@ -581,6 +605,18 @@ class JobCounts(BaseModel):
     # loaded cluster report work that needed a human, which is the one thing this
     # field is for.
     blocked: int = 0
+    # Node-calibration probes in the same listing. Its OWN tally, and part of none of the
+    # others -- ``total`` included -- for the reason ``killed`` sits outside ``failed``: a
+    # probe measures the machine, so it says nothing about the system under test.
+    #
+    # Excluded because these counts are read as RUN facts, not job facts: ``failed`` is what
+    # the web UI takes as the runs that will never deliver (``lib/eta.ts``), and it feeds the
+    # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
+    # reports a campaign run that never existed as finished.
+    #
+    # Cluster lane only; always 0 locally, where every job is a run.
+    calibration: int = 0
+    #: The campaign's own jobs. See :attr:`calibration` for what is deliberately not in it.
     total: int = 0
 
 
@@ -747,6 +783,17 @@ class VersionInfo(BaseModel):
     #: older fields carried the same SHA and the semver was reported nowhere at all. A
     #: surface showing both was showing one string twice.
     package_version: str = ""
+    #: When the image this service runs was built (RFC 3339, UTC), or ``""`` when this
+    #: deployment cannot tell — a source checkout, or an image built without the build arg.
+    #:
+    #: The fourth question the three above cannot answer between them: *how old is what is
+    #: deployed?* A revision and a semver are both only comparable against something else —
+    #: a checkout, a changelog — while a date is legible on its own, which is what an
+    #: operator deciding whether to upgrade actually reads.
+    #:
+    #: ``""`` is information, exactly as it is for :attr:`code_revision`. A consumer prints
+    #: nothing rather than a placeholder: a substituted date would be believed.
+    built_at: str = ""
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
 
@@ -863,6 +910,12 @@ class UpgradeInfo(BaseModel):
     #: What the tag points at in the registry right now. ``""`` means the registry did not
     #: say, which is **not** "nothing newer".
     registry_digest: str = ""
+    #: When the published image was built (RFC 3339), read from its OCI ``created`` label.
+    #: ``""`` when the registry did not say or the image carries no stamp -- never a
+    #: substituted date, which would be read as the age of what is published and believed.
+    #: There is no counterpart for :attr:`running_digest`: the running image reports its own
+    #: build date in ``VersionInfo.built_at``, from inside, without asking the registry.
+    registry_built_at: str = ""
     #: True/False when both digests are known. **``None`` means unknown** and must not be
     #: rendered as "up to date" -- a consumer still offers the roll, it just cannot promise
     #: the roll will change anything.
@@ -871,6 +924,59 @@ class UpgradeInfo(BaseModel):
     #: runs in, which is why this is a warning and not a note -- the same reasoning
     #: ``vast service upgrade --no-restart`` exists for.
     active_campaigns: list[CampaignSummary] = Field(default_factory=list)
+
+
+class ServiceSetting(BaseModel):
+    """One environment setting this service is running with, as reported to one caller.
+
+    The **environment** is what produces this list -- everything a ``.env`` set arrives in
+    the pod as an environment variable -- so a setting the service reads is here whether or
+    not anyone has described it. An undescribed one arrives with empty :attr:`group` and
+    :attr:`description` and ``withheld="unclassified"``: visible, because it IS in force,
+    and valueless, because a credential added later must not leak through a surface written
+    earlier.
+    """
+
+    key: str
+    #: Where the consumer files it. ``""`` for a key nothing has classified yet.
+    group: str = ""
+    #: One line, for the operator. ``""`` for a key nothing has classified yet.
+    description: str = ""
+    #: Present, and non-empty, in this service's environment. This is what makes a
+    #: client-side comparison against a locally loaded ``.env`` possible: the service says
+    #: what it has, the client knows what it would send.
+    is_set: bool = False
+    #: The effective value, or ``None`` when the setting is unset **or** withheld from this
+    #: caller -- :attr:`withheld` distinguishes those, and :attr:`is_set` settles it too.
+    value: Optional[str] = None
+    #: What the reading code falls back to when unset. ``None`` where there is no default,
+    #: or where the constant lives in a distribution the service cannot import.
+    default: Optional[str] = None
+    #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
+    #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
+    #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
+    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
+    withheld: Optional[str] = None
+
+
+class ServiceConfig(BaseModel):
+    """What this service is configured with -- the read-back of the operator's ``.env``.
+
+    **Effective, not provenance.** In the pod every value arrives as an environment
+    variable, and nothing there can tell a ``.env`` line from a real environment variable.
+    So this reports what is in force; claiming a value "came from ``.env``" would be a claim
+    the process cannot check.
+
+    Read-only. Making settings writable means a ``PATCH`` and a field naming what accepts
+    one; adding that field later is additive, whereas one that is ``False`` in every
+    response until then states nothing and has to be kept truthful meanwhile.
+    """
+
+    settings: list[ServiceSetting] = Field(default_factory=list)
+    #: How a change is applied on THIS deployment, in the operator's terms -- the service
+    #: is the only party that knows whether that is a pod roll or a local restart.
+    how_to_change: str = ""
 
 
 class DiskSpace(BaseModel):
@@ -1430,6 +1536,10 @@ class PreviewConfiguration(BaseModel):
     #: overrides on it. A different level from ``parameters`` rather than a subset —
     #: one says what the trial does, the other what it runs in.
     sim: dict = Field(default_factory=dict)
+    #: The resolved ``sut`` block: how the system under test is configured for this
+    #: configuration, as ``{"<source>.<path>": value}``. The third level beside the other
+    #: two — what the trial does, what it runs in, and what is under test.
+    sut: dict = Field(default_factory=dict)
     #: The ``_``-prefixed keys a variation wrote for other readers (``_map_file``,
     #: ``_path``, …). Shown behind a toggle, the way the desktop editor's ``--debug`` did.
     internals: dict = Field(default_factory=dict)
@@ -1826,6 +1936,8 @@ class Routes:
     #: published (GET), the roll onto it (POST), and this service's own log. One prefix so
     #: the dev proxy needs one entry and the generated route table reads as one section.
     ADMIN_UPGRADE = "/admin/upgrade"
+    #: What this service is configured with, read back out of its own environment.
+    ADMIN_CONFIG = "/admin/config"
     ADMIN_LOG = "/admin/log"
     ADMIN_LOG_STREAM = "/admin/log/stream"
     CAMPAIGNS = "/campaigns"
@@ -2367,6 +2479,10 @@ class RobovastInterface(ABC):
         A "job" is one execution unit (a run locally, a Kubernetes Job on the
         cluster). Reports live status only; pair with :meth:`get_job_log` to read a
         running job's log.
+
+        Jobs that are not the campaign's own runs are listed and marked with
+        :attr:`JobSummary.kind`, but kept out of the counts -- see
+        :attr:`JobCounts.calibration`.
         """
 
     @abstractmethod

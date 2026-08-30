@@ -16,6 +16,11 @@ import Typography from '@mui/material/Typography'
 // not to be the only target. The body is deliberately not a click target — it holds log text
 // and tracebacks people drag across to copy, and a collapse mid-selection would take the text
 // away as they read it.
+//
+// The header's title and meta are selectable all the same. A folded block is often the only
+// place its subject is named on screen, so the name has to be copyable without unfolding
+// anything first; a click that ends a drag-selection is ignored instead of toggling. The
+// header's blank space stays unselectable — dragging across a click target should not paint.
 
 export type BoxTone = 'neutral' | 'error'
 
@@ -67,6 +72,12 @@ export function CollapsibleBox({
 }) {
   const card = variant === 'card'
   const error = tone === 'error'
+  // See the header note: a click that ends a drag-selection is a copy, not a toggle. A plain
+  // click cannot trip it, because its own mousedown collapses any earlier selection first.
+  const toggleUnlessSelecting = () => {
+    if (window.getSelection()?.toString()) return
+    onToggle()
+  }
   return (
     <Box
       sx={{
@@ -83,7 +94,7 @@ export function CollapsibleBox({
       }}
     >
       <Box
-        onClick={onToggle}
+        onClick={toggleUnlessSelecting}
         sx={{
           cursor: 'pointer',
           userSelect: 'none',
@@ -99,7 +110,7 @@ export function CollapsibleBox({
           <Typography
             variant="caption"
             component="span"
-            sx={{ fontWeight: 600, minWidth: 0, overflowWrap: 'anywhere' }}
+            sx={{ fontWeight: 600, minWidth: 0, overflowWrap: 'anywhere', userSelect: 'text' }}
           >
             {title}
           </Typography>
@@ -108,7 +119,11 @@ export function CollapsibleBox({
             <Typography
               variant="caption"
               component="span"
-              sx={{ color: error ? 'inherit' : 'text.secondary', whiteSpace: 'nowrap' }}
+              sx={{
+                color: error ? 'inherit' : 'text.secondary',
+                whiteSpace: 'nowrap',
+                userSelect: 'text',
+              }}
             >
               {meta}
             </Typography>

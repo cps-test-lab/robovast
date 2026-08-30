@@ -59,9 +59,11 @@ from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
-from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobSummary,
-                                        ListJobsResponse, LogChunk, ResourceUsage,
+from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
+                                        JobSummary, ListJobsResponse, LogChunk, ResourceUsage,
                                         DiskSpace, UpgradeInfo, VersionInfo)
+
+from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +186,11 @@ class ClusterService(LocalTransport):
         # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
         # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
         # re-lists once a second; see _campaign_index.
-        self._index_cache: "tuple[float, dict] | None" = None
+        #: (when, {id: created_at}, {id: finished_at}) — both maps from ONE cached pass,
+        #: because ordering needs a start time for every campaign and a finish time for
+        #: every terminal one, and two listings of zero-byte keys cost far less than a
+        #: record fetch per campaign.
+        self._index_cache: "tuple[float, dict, dict] | None" = None
         self._index_lock = threading.Lock()
         # True while one caller is out doing the listing. Guards the single-flight in
         # _campaign_index: the listing itself must not hold _index_lock (it is network
@@ -192,6 +198,7 @@ class ClusterService(LocalTransport):
         self._index_refreshing = False
         if reap_on_start:
             self.reap_orphans()
+            self.resume_interrupted_campaigns()
 
     # -- version ------------------------------------------------------------
 
@@ -265,6 +272,14 @@ class ClusterService(LocalTransport):
         except Exception as e:  # noqa: BLE001 - a registry that will not answer is a fact
             logger.debug("could not read the published digest for %s: %s", ref, e)
             info.registry_digest = ""
+        # Its own try: the date is an addition to the digest above, so a registry that
+        # answers the HEAD but not the config blob must still report the digest it gave.
+        try:
+            info.registry_built_at = (
+                self._images.published_created(ref) if info.registry_digest else "")
+        except Exception as e:  # noqa: BLE001 - same fact, one question further in
+            logger.debug("could not read the published build date for %s: %s", ref, e)
+            info.registry_built_at = ""
         if info.running_digest and info.registry_digest:
             # The two sides spell a digest differently: the registry answers
             # ``repo@sha256:...`` while the kubelet's imageID is already reduced to the
@@ -283,16 +298,25 @@ class ClusterService(LocalTransport):
         The live-campaign refusal is a ``RuntimeError`` (409, a conflict the caller can
         resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
         "not now", the other is "not here".
+
+        It now refuses only for the campaigns that would actually be lost. A live campaign
+        used to be reason enough, because the pod being replaced was the only thing driving
+        it; a replacement now picks it back up (see :meth:`resume_interrupted_campaigns`).
+        What is left is the campaigns that cannot be picked back up, and the refusal names
+        each one's reason rather than its phase -- because the reason is what the operator
+        would have to change.
         """
         info = self.upgrade_info()
         if not info.supported:
             raise ValueError(info.unsupported_reason)
-        if info.active_campaigns and not force:
-            live = ", ".join(f"{c.campaign_id} ({c.phase})" for c in info.active_campaigns)
+        blocked = self._campaigns_a_restart_would_lose(info.active_campaigns)
+        if blocked and not force:
+            named = "; ".join(f"{cid}: {why}" for cid, why in blocked.items())
             raise RuntimeError(
-                f"refusing to roll while {len(info.active_campaigns)} campaign(s) are "
-                f"live: {live}. The controller driving them runs in the pod this replaces. "
-                f"Stop them, wait for them, or force the roll.")
+                f"refusing to roll while {len(blocked)} live campaign(s) could not be "
+                f"picked up again by the replacement — {named}. Stop them, wait for them, "
+                f"or force the roll. Every other live campaign survives the roll: its Jobs "
+                f"keep running and the new pod re-attaches to them.")
         from .service_deploy import patch_restart_annotation
         stamped = patch_restart_annotation(self.namespace, self.kube_context)
         return ActionResult(ok=True, message=(
@@ -1077,7 +1101,7 @@ class ClusterService(LocalTransport):
         object store, and the inherited disk scan sees only what this pod happens to still
         have in scratch.
         """
-        return set(self._campaign_index())
+        return set(self._campaign_index()[0])
 
     def _started_at_for(self, cid: str) -> "str | None":
         """Inherited precedence, plus the index as the last resort.
@@ -1096,20 +1120,80 @@ class ClusterService(LocalTransport):
         cached = self._started_at_cache.get(cid)
         if cached is not None:
             return cached
-        indexed = self._campaign_index().get(cid)
+        indexed = self._campaign_index()[0].get(cid)
         if indexed:
             self._started_at_cache[cid] = indexed
             return indexed
         return super()._started_at_for(cid)
+
+    def _finished_at_for(self, cid: str) -> "str | None":
+        """Inherited precedence, plus the index as the last resort — see
+        :meth:`_started_at_for`, whose reasoning this repeats exactly.
+
+        The marker matters more here than the start one does, because a finish time has no
+        cheap fallback: without it, ordering the terminal group would mean materialising a
+        record per campaign, which is what that override exists to avoid.
+
+        Not cached locally. The inherited cache is keyed to a value written once; this one
+        moves whenever a campaign ends again, and the index it reads is already cached for
+        :data:`_INDEX_CACHE_TTL`, so a second cache would only add a way to be stale.
+        """
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is None:
+            indexed = self._campaign_index()[1].get(cid)
+            if indexed:
+                return indexed
+        return super()._finished_at_for(cid)
+
+    def _on_campaign_finished(self, campaign_id: str, state) -> None:
+        """Publish the campaign's finish marker, so a listing can order by it.
+
+        Best-effort for the same reason as :meth:`_on_campaign_started`: a campaign that has
+        already run is not worth failing over its index entry, and a campaign whose marker
+        never lands simply orders by its start time.
+        """
+        from datetime import datetime, timezone
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.control_server import is_terminal
+        snap = state.snapshot() if state is not None else None
+        if snap is None or not is_terminal(snap.phase) or not snap.phase_since:
+            return
+        finished_at = datetime.fromtimestamp(snap.phase_since, tz=timezone.utc).isoformat()
+        try:
+            cfg = self._cluster_config()
+            # Interactive: one tiny marker PUT on the campaign's last breath, already
+            # best-effort, and nothing should wait minutes on a stalled tunnel for it.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            in_pod_storage.mark_campaign_finished(storage, cfg, campaign_id, finished_at)
+        except Exception as e:  # noqa: BLE001 - discoverability, not correctness
+            logger.warning("Could not record the finish time of campaign %s: %s",
+                           campaign_id, e)
+            return
+        with self._index_lock:
+            # Extended rather than dropped, for the reason `_on_campaign_started` gives:
+            # a cold listing at exactly this moment is the one worth avoiding.
+            cached = self._index_cache
+            if cached is not None:
+                self._index_cache = (cached[0], cached[1],
+                                     {**cached[2], campaign_id: finished_at})
 
     #: How long a campaign-index listing is reused. The campaign-list SSE stream re-lists
     #: every second (app.py ``_SSE_LIST_POLL_S``), so without this every one of those polls
     #: would be an object-store round-trip.
     _INDEX_CACHE_TTL = 10.0
 
-    def _campaign_index(self) -> dict:
-        """``{campaign_id: created_at}`` from the object store, cached for
-        :data:`_INDEX_CACHE_TTL`.
+    @staticmethod
+    def _empty_index() -> "tuple[dict, dict]":
+        return {}, {}
+
+    def _campaign_index(self) -> "tuple[dict, dict]":
+        """``({campaign_id: created_at}, {campaign_id: finished_at})`` from the object store,
+        cached together for :data:`_INDEX_CACHE_TTL`.
+
+        Two maps from one cached pass rather than two caches: they are read by the same
+        ordering loop, on the same tick, and a campaign appears in the second only once it
+        has ended.
 
         Best-effort: an unreachable store means "cannot tell what is stored right now", and
         the honest response is to list what we *can* see rather than fail the listing. The
@@ -1130,9 +1214,9 @@ class ClusterService(LocalTransport):
         with self._index_lock:
             cached = self._index_cache
             if cached is not None and now - cached[0] < self._INDEX_CACHE_TTL:
-                return cached[1]
+                return cached[1:]
             if self._index_refreshing:
-                return {} if cached is None else cached[1]
+                return self._empty_index() if cached is None else cached[1:]
             self._index_refreshing = True
         try:
             cfg = self._cluster_config()
@@ -1141,11 +1225,12 @@ class ClusterService(LocalTransport):
             # With the bulk budget a stalled tunnel made each poll block for minutes.
             storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             index = dict(in_pod_storage.list_indexed_campaigns(storage, cfg))
+            finished = dict(in_pod_storage.list_finished_campaigns(storage, cfg))
         except Exception as e:  # noqa: BLE001 - never fail a listing over discovery
             logger.warning("Could not read the campaign index: %s", e)
             with self._index_lock:
                 self._index_refreshing = False
-                return {} if self._index_cache is None else self._index_cache[1]
+                return self._empty_index() if self._index_cache is None else self._index_cache[1:]
         with self._index_lock:
             self._index_refreshing = False
             # A marker ``_on_campaign_started`` added while this listing was in flight is
@@ -1153,8 +1238,8 @@ class ClusterService(LocalTransport):
             # registry into its id set (``LocalTransport._extra_live_ids``), so a campaign
             # this process just started stays listed without the index, and the next
             # refresh picks the marker up from the store.
-            self._index_cache = (now, index)
-        return index
+            self._index_cache = (now, index, finished)
+        return index, finished
 
     def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
         """Publish the campaign's index marker, so it is discoverable from here on.
@@ -1191,7 +1276,8 @@ class ClusterService(LocalTransport):
             if cached is None:
                 self._index_cache = None  # nothing to extend; the next caller lists
             else:
-                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at})
+                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at},
+                                     cached[2])
 
     def _unmark_campaign(self, campaign_id: str) -> None:
         """Drop a deleted campaign's index marker, so it stops being listed."""
@@ -1201,6 +1287,7 @@ class ClusterService(LocalTransport):
             # Interactive: one tiny marker delete on a request path, already best-effort.
             storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             in_pod_storage.unmark_campaign_indexed(storage, cfg, campaign_id)
+            in_pod_storage.unmark_campaign_finished(storage, cfg, campaign_id)
         except Exception as e:  # noqa: BLE001 - the data itself is already gone
             logger.warning("Could not remove campaign %s from the index: %s",
                            campaign_id, e)
@@ -1295,6 +1382,13 @@ class ClusterService(LocalTransport):
         monitor's aggregate counter uses, so the two never drift. ``display_name``
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
+
+        **Node-calibration probes are listed but not tallied.** A probe carries the same
+        campaign labels -- it is real work on a real node, and every selector that counts or
+        cleans up has to keep seeing it -- so it appears here, marked
+        ``kind="calibration"`` and named for the node it measures. The counts are the
+        campaign's own jobs alone, because a reader takes them as facts about *runs*: see
+        :attr:`~robovast.service.interface.JobCounts.calibration`.
         """
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
         label = (f"jobgroup=scenario-runs,"
@@ -1302,20 +1396,24 @@ class ClusterService(LocalTransport):
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
         jobs = [
-            JobSummary(job_name=job.metadata.name, status=phase,
+            JobSummary(job_name=job.metadata.name, status=phase, kind=self._job_kind(job),
                        display_name=self._job_display_name(campaign_id, job),
                        detail=detail)
             for job, phase, detail in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
+        # Planned jobs are the campaign's own by construction: probes queue under a separate
+        # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
         jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
+        runs = [j for j in jobs if j.kind != JobKind.CALIBRATION]
         counts = JobCounts(
-            running=sum(1 for j in jobs if j.status == "running"),
-            pending=sum(1 for j in jobs if j.status == "pending"),
-            waiting=sum(1 for j in jobs if j.status == "waiting"),
-            completed=sum(1 for j in jobs if j.status == "completed"),
-            failed=sum(1 for j in jobs if j.status == "failed"),
-            blocked=sum(1 for j in jobs if j.status == "blocked"),
-            total=len(jobs))
+            running=sum(1 for j in runs if j.status == "running"),
+            pending=sum(1 for j in runs if j.status == "pending"),
+            waiting=sum(1 for j in runs if j.status == "waiting"),
+            completed=sum(1 for j in runs if j.status == "completed"),
+            failed=sum(1 for j in runs if j.status == "failed"),
+            blocked=sum(1 for j in runs if j.status == "blocked"),
+            calibration=len(jobs) - len(runs),
+            total=len(runs))
         return ListJobsResponse(jobs=jobs, counts=counts)
 
     def _planned_jobs(self, campaign_id, created) -> list:
@@ -1341,6 +1439,21 @@ class ClusterService(LocalTransport):
                            detail="queued for cluster capacity")
                 for name, state in sorted(admission.states(campaign_id).items())
                 if state == PLANNED and name not in created]
+
+    @staticmethod
+    def _job_kind(job) -> str:
+        """Which kind of ``scenario-runs`` Job this is, from the label the backend stamps.
+
+        Unlabelled means the campaign's own work: the label is stamped by
+        :func:`~.kubernetes_backend.probe_manifest` and by nothing else, and a Job created
+        before it existed is a run.
+        """
+        try:
+            labels = job.metadata.labels or {}
+        except AttributeError:
+            return JobKind.RUN
+        return (JobKind.CALIBRATION
+                if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
     @staticmethod
     def _job_display_name(campaign_id, job) -> "str | None":
@@ -2462,20 +2575,28 @@ class ClusterService(LocalTransport):
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context)
 
-    def _terminate_running_campaigns(self, running) -> None:
-        """On ``vast serve`` shutdown (Ctrl+C), tear down every running campaign's Jobs.
+    def _adopts_on_restart(self) -> bool:
+        """True: this lane's campaigns outlive the process, and the next one adopts them.
 
-        Overrides the local single-container kill: a cluster campaign's compute is its
-        scenario Jobs, so a bare service exit would orphan them (they keep consuming
-        cluster resources). Each teardown is best-effort so one failure never blocks
-        the others or the process exit.
+        A cluster campaign's compute is its scenario Jobs. They are not children of this
+        process, they upload their own results to the object store, and
+        :mod:`~robovast.execution.cluster_execution.campaign_resume` re-attaches to them at
+        startup -- so exiting is not a reason to destroy them, and a pod replacement
+        (``vast service upgrade``, an eviction, a drain, an OOM) stops being a data-loss
+        event.
+
+        This is why there is no ``_terminate_running_campaigns`` override here any more.
+        Stopping a campaign is :meth:`stop`, which tears its Jobs down through
+        :meth:`_teardown_campaign_jobs` and records the stop; exiting the service is not,
+        and never was a good way to say it -- the cooperative stop persists a terminal
+        ``outcome.json``, and a campaign that has recorded an ending is one no successor
+        will pick up again.
+
+        Unconditional, and deliberately not a ``KUBERNETES_SERVICE_HOST`` test: an
+        off-cluster service driving a cluster adopts on its next start exactly like an
+        in-pod one, so keying on where the process runs would answer a different question.
         """
-        for entry in running:
-            try:
-                self._teardown_campaign_jobs(entry.campaign_id)
-            except Exception:  # noqa: BLE001 - shutdown must not mask the exit
-                logger.warning("Could not tear down jobs for %s during shutdown",
-                               entry.campaign_id, exc_info=True)
+        return True
 
     # -- container exec -----------------------------------------------------
 
@@ -2551,8 +2672,9 @@ class ClusterService(LocalTransport):
     def reap_orphans(self) -> int:
         """Delete campaign workloads left behind by a previous service instance.
 
-        A service restart abandons its in-flight campaigns (the accepted trade), so
-        their aux pods would linger. Aux pods are owned by the service pod and thus
+        Aux pods only, and that is the whole scope: a restart leaves the campaigns'
+        **scenario Jobs** running on purpose (see :meth:`_adopts_on_restart`), so this
+        must never widen to them. Aux pods are owned by the service pod and thus
         garbage-collected by Kubernetes when it is replaced; this is the backstop for
         the cases GC misses (e.g. the ownerReference could not be resolved), and the
         successor to the old launcher-side ``reap_orphaned_runs``. Best-effort.
@@ -2578,6 +2700,47 @@ class ClusterService(LocalTransport):
             logger.info("Reaped %d orphaned aux pod(s) from a previous service instance",
                         reaped)
         return reaped
+
+    def _campaigns_a_restart_would_lose(self, active) -> dict:
+        """``{campaign_id: why}`` for the live campaigns a replacement could not pick up.
+
+        Asked of :mod:`.campaign_resume` -- the same decision the successor will make -- so
+        the warning before a roll and the behaviour after it cannot drift apart. A campaign
+        this cannot answer for is treated as one that would be lost: the whole point of the
+        refusal is to be wrong in the safe direction.
+        """
+        from . import campaign_resume
+        blocked = {}
+        for summary in active:
+            cid = summary.campaign_id
+            try:
+                _, _, refusal = campaign_resume.plan_for(
+                    self, cid, Path(self._campaign_dir(cid)))
+            except Exception as e:  # noqa: BLE001 - "cannot tell" is not "will survive"
+                refusal = f"could not be checked ({e})"
+            if refusal is not None:
+                blocked[cid] = refusal
+        return blocked
+
+    def resume_interrupted_campaigns(self) -> dict:
+        """Pick up the campaigns a previous service process was driving.
+
+        Synchronously, and before this service answers anything. Not a background thread:
+        ``_launch_campaign`` returns as soon as a campaign is named, so the blocking part is
+        one index listing plus a restore per campaign — and registering the campaigns *here*
+        is what stops a fresh launch arriving over the API and racing a campaign that is
+        about to be adopted.
+
+        Returns ``{campaign_id: None | refusal}``; see :mod:`.campaign_resume` for what is
+        picked up and what is deliberately left alone. Never raises.
+        """
+        from . import campaign_resume
+        outcomes = campaign_resume.resume_all(self)
+        resumed = [cid for cid, refusal in outcomes.items() if refusal is None]
+        if resumed:
+            logger.info("Resumed %d campaign(s) interrupted by a service restart: %s",
+                        len(resumed), ", ".join(resumed))
+        return outcomes
 
     def cleanup_campaign_data(self, request) -> ActionResult:
         """Delete campaign result bucket(s) from the object store.
@@ -2622,7 +2785,7 @@ class ClusterService(LocalTransport):
             return
         from robovast.execution.cluster_execution import bucket_ops
         gone = set(removed)
-        for cid in self._campaign_index():
+        for cid in self._campaign_index()[0]:
             if cid in gone or bucket_ops.bucket_name(cid) in gone:
                 self._unmark_campaign(cid)
 
@@ -3119,7 +3282,7 @@ class ClusterService(LocalTransport):
             tracked = cid in self._campaigns
         if tracked or (local / "campaign.db").is_file():
             return local
-        if cid not in self._campaign_index():
+        if cid not in self._campaign_index()[0]:
             return local
         try:
             # Interactive: two small objects, and ``list_campaigns`` reaches here per row
@@ -3330,6 +3493,25 @@ class ClusterService(LocalTransport):
         storage.upload_file(str(vast), bucket, f"{prefix}_config/{vast.name}")
         logger.info("Published edited config %s for %s to the object store",
                     vast.name, campaign_id)
+
+    def _publish_campaign_records(self, campaign_id: str, campaign_root) -> None:
+        """Publish the launch record now, not at ``finalize_campaign``.
+
+        This lane's driver disk is scratch (see :ref:`campaign-discovery`), so a record
+        written there and uploaded only when the campaign finishes is absent from every
+        campaign that did *not* finish — which is the set someone comes looking at, and the
+        set a restart has to re-launch from. It rides on :meth:`_publish_execution` rather
+        than a put of its own: ``_execution/`` holds only this record at launch time, and
+        one uploader for that directory is one fewer thing to keep in step.
+
+        Best-effort, and quiet about it: the campaign's own uploads follow within seconds
+        and will fail loudly if the store is genuinely unreachable.
+        """
+        try:
+            self._publish_execution(campaign_id, campaign_root)
+        except Exception as e:  # noqa: BLE001 - a record is not worth failing a campaign
+            logger.warning("Could not publish the launch record for %s: %s",
+                           campaign_id, e)
 
     def _publish_execution(self, campaign_id: str, campaign_root) -> None:
         """Upload a campaign's ``_execution/`` (outcome + logs + data.db) to the store."""
@@ -3668,8 +3850,8 @@ class ClusterService(LocalTransport):
             lambda tar: cfg.add_campaign_members(
                 tar, campaign_id, exclude_prefixes={"_postproc"}))
 
-    def fetch_campaign(self, campaign_id: str, force: bool = False):
-        """Pull a finished campaign from the object store to a local dir; return it.
+    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None):
+        """Pull a campaign from the object store to a local dir; return it.
 
         The object store is the durable home (the campaign loop published the full
         campaign there via ``finalize_campaign``). The stateless service pulls it
@@ -3679,6 +3861,12 @@ class ClusterService(LocalTransport):
         size are left untouched (see ``download_prefix``): repeat pulls — e.g. a
         notebook re-render — become near-noops. Pass ``force=True`` to overwrite
         the local cache unconditionally.
+
+        ``dest`` overrides where it lands, and there is exactly one caller that needs to:
+        :mod:`.campaign_resume`, restoring a campaign that is **not finished** into the
+        driver's own campaign root, so its controller re-enters a directory holding what
+        the earlier life produced. Everything else wants the shared scratch cache and the
+        deduplication that comes with it, so the default stands.
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
@@ -3686,7 +3874,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        dest = self._cache_dir(campaign_id)
+        dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
         with self._fetch_locks_guard:

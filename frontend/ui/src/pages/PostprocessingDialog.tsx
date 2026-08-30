@@ -13,6 +13,7 @@ import Typography from '@mui/material/Typography'
 import Editor from '@monaco-editor/react'
 import { robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
+import { useToasts } from '@/components/ToastProvider'
 
 // The 'Retrigger postprocessing' modal. A campaign is self-contained — it carries the `.vast`
 // that ran — so computing different metrics would otherwise mean hand-editing that file.
@@ -30,6 +31,7 @@ export function PostprocessingDialog({
   onClose: () => void
 }) {
   const qc = useQueryClient()
+  const { notify } = useToasts()
 
   const src = useQuery({
     queryKey: ['postprocessing-source', campaignId],
@@ -65,6 +67,12 @@ export function PostprocessingDialog({
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       qc.invalidateQueries({ queryKey: ['postprocessing-source', campaignId] })
       onClose()
+      // The dialog vanishing is ambiguous on its own — it is also what Cancel does.
+      notify({
+        severity: 'info',
+        message: 'Postprocessing started',
+        note: changed ? 'Saved the edited pipeline first.' : undefined,
+      })
     },
   })
 

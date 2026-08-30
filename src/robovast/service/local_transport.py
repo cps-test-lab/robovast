@@ -42,6 +42,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -53,6 +54,7 @@ from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
 from robovast.common.host_display import require_host_display
+from robovast.common.campaign_data import read_campaign_finished_at
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
@@ -62,7 +64,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DiskSpace, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText, ImageBuildRef,
-                                        ImportCampaignRequest, JobCounts,
+                                        ImportCampaignRequest, JobCounts, JobKind,
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
@@ -106,6 +108,20 @@ def _code_revision() -> str:
     try:
         from robovast.common.execution import code_revision
         return code_revision()
+    except Exception:  # noqa: BLE001 - diagnostics must not break the handshake
+        return ""
+
+
+def _build_date() -> str:
+    """When the image this process runs was built, or ``""`` when unavailable.
+
+    Never raises and never substitutes: a source checkout has no build to date, and a
+    manufactured one — the file's mtime, today — would be read as the age of the deployment
+    and believed. Same contract as :func:`_code_revision`, for the same reason.
+    """
+    try:
+        from robovast.common.execution import build_date
+        return build_date()
     except Exception:  # noqa: BLE001 - diagnostics must not break the handshake
         return ""
 
@@ -360,7 +376,6 @@ class _LocalCampaign:
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
                  created_by: str = "", origin=None):
-        from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
@@ -436,6 +451,16 @@ class WorkspaceTarget:
     #: image cannot be named fails the *request* with the reason instead of becoming a failed
     #: campaign someone has to go and inspect.
     pinned_images: Optional[dict] = None
+    #: Adopt this campaign id rather than minting a fresh one. Set only when re-entering a
+    #: campaign that already exists and is still owed work -- one whose driver a service
+    #: restart took away (see ``cluster_execution.campaign_resume``).
+    #:
+    #: This is the whole difference between a launch and a re-launch, which is why it is one
+    #: field here rather than a mode flag on :meth:`LocalTransport._launch_campaign`: that
+    #: method's contract is that everything a non-workspace project needs to say travels on
+    #: this object. Setting it also waives the "already exists" guard below, because for a
+    #: re-entry the directory being there is the point rather than a collision.
+    campaign_id: Optional[str] = None
 
 
 #: How long a job-state read may take. Short on purpose: this runs on the status path, so a wedged
@@ -563,6 +588,11 @@ class LocalTransport(RobovastInterface):
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes, so no invalidation is needed.
         self._started_at_cache: dict[str, str] = {}
+        #: campaign_id -> recorded finish time (see _finished_at_for). Unlike the caches
+        #: beside it this one CAN go stale: a re-triggered postprocessing or a re-run
+        #: export ends the campaign again and moves its finish time, so
+        #: `_dispatch_background` drops the entry when it registers such an operation.
+        self._finished_at_cache: dict[str, str] = {}
         # campaign_id -> recorded description (see _description_for). Same contract as
         # the start-time cache: write-once values only, so no invalidation is needed.
         self._description_cache: dict[str, str] = {}
@@ -1436,7 +1466,8 @@ class LocalTransport(RobovastInterface):
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),
                            code_revision=_code_revision(),
-                           package_version=_package_version(), backend="docker",
+                           package_version=_package_version(),
+                           built_at=_build_date(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root),
@@ -1838,6 +1869,7 @@ class LocalTransport(RobovastInterface):
         that needs the transport — which directory this lane reads the source from, the
         single-flight guard, and making sure a refusal leaves nothing staged behind.
         """
+        from robovast.execution.notify import Notifier
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
@@ -1852,7 +1884,7 @@ class LocalTransport(RobovastInterface):
         # running -- happens before there is a worker to have a ``finally``.
         try:
             self._guard_new_campaign()
-            return self._launch_campaign(plan.request, WorkspaceTarget(
+            ref = self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
                 origin=self._retrigger_origin(campaign_id),
                 materialize=plan.materialize,
@@ -1861,6 +1893,12 @@ class LocalTransport(RobovastInterface):
         except BaseException:
             plan.discard()
             raise
+        # Told on the SOURCE campaign's topic: a watcher following the campaign that was
+        # re-run is the one who cannot otherwise learn which id the re-run got. The new
+        # campaign announces its own start; this is not that message, and not a terminal
+        # one -- the source is unmodified. Best-effort like every other send.
+        Notifier.from_env(campaign_id).retriggered(ref.campaign_id)
+        return ref
 
     def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
         """The origin to record for a re-run of *source_id*.
@@ -1945,7 +1983,8 @@ class LocalTransport(RobovastInterface):
         campaign_config = validate_config(raw_config)
         # The shared root, asked for directly: it never varied per workspace.
         results_dir = str(self._campaigns_root())
-        campaign_id = campaign_id_for(campaign_config, request.campaign_name or None)
+        campaign_id = target.campaign_id or campaign_id_for(
+            campaign_config, request.campaign_name or None)
         is_search = campaign_config.search is not None
         config_filter = request.config_filter or None
 
@@ -1967,8 +2006,11 @@ class LocalTransport(RobovastInterface):
         # Fail loudly rather than silently adopt an existing campaign's directory.
         # Ids are timestamp-unique (see campaign_id_for), so this only fires on a
         # genuine collision (e.g. a hand-copied dir) — never in normal operation.
+        # Waived for a re-entry, which is the one caller that means to land on an
+        # existing campaign: ``target.campaign_id`` names the campaign it is resuming,
+        # and its directory holds what the earlier life already produced.
         campaign_root = os.path.join(results_dir, campaign_id)
-        if os.path.exists(campaign_root):
+        if target.campaign_id is None and os.path.exists(campaign_root):
             raise RuntimeError(
                 f"campaign {campaign_id} already exists at {campaign_root}")
 
@@ -2092,6 +2134,13 @@ class LocalTransport(RobovastInterface):
                             target, campaign_config,
                             image_project=options.image_project,
                             image_project_tag=options.image_project_tag)
+                # Re-record the launch, now that the symbolic image refs have become
+                # concrete ones. Written here rather than merged in later because this is
+                # the last moment before the campaign starts spending compute, and the
+                # record is what a re-launch after a restart pins its images from -- a
+                # re-resolve would silently pick up a base that moved in the meantime.
+                self._record_launch(campaign_id, results_dir, request,
+                                    images=options.images)
                 state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
@@ -2150,6 +2199,10 @@ class LocalTransport(RobovastInterface):
                 # postprocessing at all. Without this the run leaves the phase at
                 # `finishing` and every waiter blocks until its timeout.
                 end_campaign(campaign_id, state, notifier)
+                # After it, not before: `end_campaign` is what publishes the terminal
+                # phase, so this is the first point at which the campaign has a finish
+                # time to record anywhere.
+                self._on_campaign_finished(campaign_id, state)
 
         thread = threading.Thread(
             target=_worker, name=f"robovast-{campaign_id}", daemon=True)
@@ -2702,7 +2755,7 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.warning("Could not write outcome.json for %s: %s", campaign_id, e)
 
-    def _record_launch(self, campaign_id, results_dir, request):
+    def _record_launch(self, campaign_id, results_dir, request, images=None):
         """Persist how this campaign was asked for, to ``_execution/launch.yaml``.
 
         The counterpart of :meth:`_record_outcome` at the other end of the campaign: what was
@@ -2712,14 +2765,37 @@ class LocalTransport(RobovastInterface):
         any campaign in the results root, by a retrigger or by a human.
 
         Called at the top of the worker so it lands before anything that can fail, for the
-        same reason :meth:`_on_campaign_started` is there. Never fatal: a campaign that runs
-        correctly must not be failed by an unwritable record.
+        same reason :meth:`_on_campaign_started` is there, and **again** once the launch has
+        resolved its images — see ``write_launch_record``'s ``images``. Never fatal: a
+        campaign that runs correctly must not be failed by an unwritable record.
+
+        Publishing follows writing, in the same call: a record that exists only on this disk
+        is missing from precisely the campaigns worth looking at on a lane whose disk is
+        scratch, which is the defect :meth:`_publish_campaign_records` exists to close.
         """
         from robovast.common.campaign_data import write_launch_record
+        campaign_root = Path(results_dir) / campaign_id
         try:
-            write_launch_record(Path(results_dir) / campaign_id, request)
+            write_launch_record(campaign_root, request, images=images)
         except OSError as e:
             logger.warning("Could not write launch.yaml for %s: %s", campaign_id, e)
+            return
+        self._publish_campaign_records(campaign_id, campaign_root)
+
+    def _publish_campaign_records(self, campaign_id: str, campaign_root: Path) -> None:
+        """Put the campaign's records where they survive this process. No-op here.
+
+        A local campaign's durable home *is* this directory, so there is nowhere else to put
+        them. :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it: there the driver's disk is scratch, and a record left on it is lost by
+        the next restart — which is exactly the moment someone comes looking.
+
+        The service's half of a pair. This one publishes what the *service* writes before a
+        controller exists (``launch.yaml``); ``ExecutionBackend.publish_records`` publishes
+        what the *controller* writes (``campaign.db``), because by then the backend is the
+        only route to the store. Neither can do the other's job: at this point there is no
+        backend, and at that point there is no service.
+        """
 
     def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
         """Persist a cooperatively-stopped campaign's terminal ``Status``.
@@ -3654,6 +3730,14 @@ class LocalTransport(RobovastInterface):
         precondition is checked against the very status the caller was shown. ``KeyError``
         for a job that does not exist, ``RuntimeError`` naming the phase for one that
         exists but is not running: only a job that is *underway* has something to kill.
+
+        A node-calibration probe is refused outright, whatever its status. Stopping a job
+        records a ``killed`` intervention against the runs it was carrying, and a probe
+        carries none -- it is not one of the campaign's runs, and is deliberately absent from
+        the job-links manifest that resolves them -- so the record would name runs that do
+        not exist. Refused here rather than in the cluster lane's ``stop_job`` because this
+        is the precondition both lanes share and the one the web UI mirrors when it decides
+        whether to offer the button.
         """
         jobs = self.list_jobs(campaign_id).jobs
         job = next((j for j in jobs if j.job_name == job_name), None)
@@ -3661,6 +3745,11 @@ class LocalTransport(RobovastInterface):
             known = ", ".join(j.job_name for j in jobs) or "none"
             raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r} "
                            f"(jobs: {known})")
+        if job.kind == JobKind.CALIBRATION:
+            raise RuntimeError(
+                f"job {job_name!r} is a node-calibration probe, not one of the campaign's "
+                f"runs — it cannot be stopped individually: there is no run to record as "
+                f"killed, and the batch abandons its own probes when it ends")
         if job.status != "running":
             running = [j.job_name for j in jobs if j.status == "running"]
             hint = f"; running now: {', '.join(running)}" if running else ""
@@ -3683,6 +3772,22 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.warning("docker rm -f %s failed: %s", self._CONTAINER_NAME, e)
 
+    def _adopts_on_restart(self) -> bool:
+        """Whether a successor process picks this lane's running campaigns back up.
+
+        ``False`` here: a local campaign's compute is containers this process started, so
+        nothing comes back for them and exiting has to tear them down or they are orphaned.
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it -- a cluster campaign's compute is Kubernetes Jobs that outlive any one
+        service process, and startup adoption re-attaches to them.
+
+        A property of the **lane**, deliberately not of the environment. Asking whether this
+        process happens to run inside a pod answers a different question and gets it wrong
+        for an off-cluster service driving a cluster, which adopts on its next start like
+        any other.
+        """
+        return False
+
     def _terminate_running_campaigns(self, running) -> None:
         """Terminate the compute backing *running* campaigns so their workers unblock.
 
@@ -3702,6 +3807,9 @@ class LocalTransport(RobovastInterface):
         shutdown we request a cooperative stop of every still-running campaign
         (same path as :meth:`stop`) and briefly join the workers so their
         container-teardown traps complete before the process exits.
+
+        None of that happens on a lane that :meth:`_adopts_on_restart`: there the
+        campaigns are meant to outlive this process, and the successor re-attaches.
         """
         # Held containers first, and unconditionally: they are the ones nothing else
         # reaps, and a service with no running campaign would otherwise return below while
@@ -3715,6 +3823,15 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             running = [e for e in self._campaigns.values() if not self._is_done(e)]
         if not running:
+            return
+        if self._adopts_on_restart():
+            # Left running on purpose: this lane's compute outlives the process and the
+            # next one adopts it. Stopping here would do worse than discard the work --
+            # the cooperative stop below persists a terminal ``outcome.json``, and a
+            # campaign that has recorded an ending is one no successor will pick up again.
+            logger.info(
+                "Shutting down — leaving %d running campaign(s) for the successor: %s",
+                len(running), ", ".join(e.campaign_id for e in running))
             return
         logger.info("Shutting down — stopping %d running campaign(s)", len(running))
         for entry in running:
@@ -3755,6 +3872,20 @@ class LocalTransport(RobovastInterface):
         campaign can be in either, both, or neither.
         """
         return set()
+
+    def _on_campaign_finished(self, campaign_id: str, state) -> None:
+        """The campaign is over: record that wherever it must be discoverable.
+
+        No-op here. The local lane needs nothing — the driver has already written
+        ``_execution/outcome.json``, which is where :func:`read_campaign_finished_at` reads
+        the time from. :class:`ClusterService` publishes a marker as well, because ordering
+        a listing there must not mean fetching a record per campaign.
+
+        The counterpart of :meth:`_on_campaign_started`, and deliberately not symmetrical
+        with it in placement: that one runs before anything that can fail, so a doomed
+        campaign is still findable, while this one can only run once there is an ending to
+        report.
+        """
 
     def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
         """The campaign's driver is starting: record it wherever it must be discoverable.
@@ -3822,10 +3953,23 @@ class LocalTransport(RobovastInterface):
         # Every term is answered from memory — `_started_at_for` is memoised and the
         # liveness read is an in-memory snapshot — so this pass still costs no I/O, which
         # matters because the campaign-list SSE stream repeats it once a second.
+        # Within the terminal group the key is when a campaign ENDED, falling back to when
+        # it started. That is the question asked of a finished campaign -- which of these
+        # results is fresh -- and start time answers it badly: a campaign that ran for eight
+        # hours and ended a minute ago is the newest thing here and sorts near the bottom by
+        # start. Live campaigns keep sorting by start, because they have no end yet and
+        # because a just-launched one belongs at the top.
+        #
+        # The fallback is not a transitional measure: a campaign whose record carries no
+        # terminal outcome never gets one, so those keep ordering exactly as they did.
         started = {cid: self._started_at_for(cid) for cid in disk | mem}
-        all_ids = sorted(started,
-                         key=lambda c: (is_live(c), started[c] is not None, started[c] or "", c),
-                         reverse=True)
+        finished = {cid: self._finished_at_for(cid) for cid in started}
+        def _key(c: str):
+            live = is_live(c)
+            when = started[c] if live else (finished[c] or started[c])
+            return (live, when is not None, when or "", c)
+
+        all_ids = sorted(started, key=_key, reverse=True)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]
         summaries = [self._summary_for(cid) for cid in window]
@@ -3946,6 +4090,11 @@ class LocalTransport(RobovastInterface):
             # which that helper takes.
             entry.created_at = (read_campaign_created_at(self._campaign_dir(campaign_id))
                                 or entry.created_at)
+            # ...but the FINISH time is restamped, and must be: this operation ends the
+            # campaign again, later than last time. Dropping the cached value is what makes
+            # the next listing re-read it; `_started_at_cache` needs no such thing because
+            # a start time is written once and never edited.
+            self._finished_at_cache.pop(campaign_id, None)
             # Likewise the description: a tracked entry answers for the campaign while
             # it is live, so leaving this empty would blank the description out of every
             # listing for the duration of a re-triggered postprocess/share.
@@ -4142,6 +4291,7 @@ class LocalTransport(RobovastInterface):
                     name=c["name"],
                     parameters=convert_dataclasses_to_dict(c.get("config", {})),
                     sim=convert_dataclasses_to_dict(c.get("sim", {})),
+                    sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
                          if k.startswith("_") and k != "_config_block"}),
@@ -4967,6 +5117,7 @@ class LocalTransport(RobovastInterface):
             created_by=self._created_by_for(cid) or "",
             origin=self._origin_for(cid),
             started_at=started_at,
+            finished_at=self._finished_at_for(cid),
             # The store is consulted behind the snapshot rather than instead of it: a
             # reconstructed Status can carry no mode at all, because the `outcome.json`
             # early-return path hands back whatever the controller journalled and an older
@@ -5059,6 +5210,29 @@ class LocalTransport(RobovastInterface):
         return self._campaign_fact(
             cid, lambda entry: entry.created_at,
             read_campaign_created_at, self._started_at_cache)
+
+    def _finished_at_for(self, cid: str) -> Optional[str]:
+        """When *cid* ended, as an ISO-8601 UTC string, or None while it is still going.
+
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        What is specific here: a campaign this service is **driving** answers from its live
+        state, so the moment it ends its own listing already reflects that -- and answers
+        ``None`` until then, because a campaign that is not over has no finish time and
+        must not be given one derived from a phase it is still in.
+
+        Cached like its neighbours, but invalidated rather than assumed permanent: see
+        ``_finished_at_cache``. A campaign whose record says nothing (one that predates the
+        durable outcome, or an import that arrived without one) is simply unknown, and the
+        listing orders it by its start time instead.
+        """
+        def from_entry(entry):
+            snap = entry.state.snapshot()
+            if not is_terminal(snap.phase) or not snap.phase_since:
+                return None
+            return datetime.fromtimestamp(snap.phase_since, tz=timezone.utc).isoformat()
+
+        return self._campaign_fact(
+            cid, from_entry, read_campaign_finished_at, self._finished_at_cache)
 
     def _description_for(self, cid: str) -> Optional[str]:
         """The campaign's description, or None when it was launched without one.

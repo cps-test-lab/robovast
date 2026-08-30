@@ -390,6 +390,24 @@ See ``configs/examples/quadrotor_landing/variations/wind.py`` for a runnable
 example (a wind model that derives the simulator's ``wind_strength``), wired into
 the quadrotor search vasts.
 
+The referenced module travels with the campaign: it is archived into
+``<campaign>/_config/`` alongside the ``.vast``, so a **retrigger** — which re-composes
+from that snapshot rather than replaying recorded configurations — can resolve it, and it
+is content-hashed into the campaign's ``config_identifier``, because the source
+that decides which configurations exist is part of what the experiment is. Editing it
+therefore gives the campaign a new identity, exactly as editing a packaged variation's
+module does.
+
+.. important::
+
+   **A file-referenced plugin must be one self-contained module.** It is imported by path,
+   with nothing added to ``sys.path``, so it cannot import a sibling module in its own
+   directory. Nor can anything discover a *data* file it opens itself — that dependency
+   lives in the plugin's code rather than in the config, so nothing archives it and a
+   retrigger finds it missing. If you need more than one file, package the plugin and
+   declare it under ``plugins:``; if you need a data file, name it in
+   ``execution.run_files``.
+
 .. note::
 
    **Packaging a variation plugin as its own distribution.** If your variation
@@ -582,6 +600,55 @@ Example plugin registration:
 
     [tool.poetry.plugins."vast.plugins"]
     variation = "variation_utils.cli:variation"
+
+
+.. _extending-sut-formats:
+
+Add a config format for the system under test
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``sut:`` channel addresses values inside the stack's own configuration files.
+``yaml``, ``json`` and ``xml`` ship built in; a stack configured by something else — a
+bespoke ``.ini``, a proprietary descriptor — needs a format, not a change to RoboVAST.
+
+Subclass :class:`robovast.common.sut_formats.SutConfigFormat` and register it under
+``[tool.poetry.plugins."robovast.sut_formats"]``. The built-ins register through that same
+entry point, so the route your package takes is the one this repository exercises on every
+run.
+
+.. code-block:: python
+
+    class IniFormat(SutConfigFormat):
+        EXTENSIONS = (".ini", ".cfg")
+
+        def load(self, path): ...
+        def can_address(self, doc, path) -> bool: ...
+        def set(self, doc, path, value): ...
+        def remove(self, doc, path): ...
+        def dump(self, doc, path): ...
+
+Four things decide whether a format behaves like the built-ins:
+
+* **You own the path syntax.** RoboVAST splits a destination once, on the first ``.``, to
+  find the source; the rest arrives at your format verbatim. Use dotted keys, XPath, JSON
+  Pointer — whatever addresses your documents honestly.
+* **``can_address`` is the pre-check, and it is yours to answer.** It asks whether a path is
+  *writable*, not whether a value is already there: a factor may set a key the file leaves
+  at its default, and refusing that would reject a correct campaign. What must exist is the
+  parent. Raise :class:`~robovast.common.sut_formats.CannotAnswer` when you genuinely cannot
+  decide — that leaves the destination unchecked and reported, which is different from "no",
+  and keeping them distinct is what stops an unimplemented check from looking like a
+  rejection.
+* **``set`` creates or replaces**, and *value* may be a scalar, a mapping, a list or a
+  fragment. A factor swapping a whole subtree must be the same call as one changing a
+  number.
+* **``remove`` is separate from ``set``**, because a configuration block that is present and
+  empty is not one that is absent, and stacks tell them apart. It is what
+  ``{$absent: true}`` reaches.
+
+``addresses`` is optional and may return ``None``: it feeds error messages and editor
+completion, never the check. A format whose address space is not enumerable — any XPath
+expression is a potential address — loses only the listing.
 
 
 .. _extending-metadata-processing:
@@ -1907,6 +1974,54 @@ campaign have this node, and which round is it in" from the rows the tree alread
 a finished campaign's runs are fixed, it is a ``useMemo`` and not a watcher.
 
 .. _frontend-tests:
+
+**Saying something short-lived: useToasts.** ``frontend/ui/src/components/ToastProvider.tsx``
+is the app-wide way to state a passing fact — mounted once in ``main.tsx``, used as
+``const { notify } = useToasts()``. It is the sibling of ``DialogProvider``: that one asks a
+question and blocks on the answer, this one states a fact and gets out of the way. Three rules
+travel with it.
+
+*Failures do not go through it.* The ``Severity`` union in ``lib/toasts.ts`` has no ``error``
+member, which is the rule expressed as a type: a refusal or an error carries backend text worth
+reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
+become transient.
+
+*It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
+wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
+and the upgrade handover in ``AdminPage`` — calls ``lib/browserNotify.post`` itself, beside its
+``notify``. That keeps the Notification API out of a React component, and out of a flag threaded
+through the queue that only some callers would set. ``post`` enforces its own preconditions,
+including that the tab is actually hidden, so a later caller cannot forget them.
+
+Both callers have the same shape, which is what the sink is for: work that **outlives the view
+that started it**. A campaign runs on the service; a service roll keeps polling from a
+``KeepAlive``-mounted Admin page. In each case the thing that finishes has no reason to expect
+the user to still be looking at the page that started it.
+
+*The opt-in is asked once, in context.* ``components/NotificationAsk.tsx`` is a banner above
+every view, raised the first time ``useCampaignStream`` shows a running campaign and
+``browserNotify.shouldAsk()`` is still true — a permission ask needs a reason on screen, and
+arriving is not one. It is deliberately not a toast: a toast clears itself after ten seconds by
+contract, and an ask nobody was looking at would be spent for nothing. Either button stores an
+answer (``setOptedIn``), which is what makes the key in ``lib/browserNotify.ts`` three-state —
+absent means *never asked*, and a decline that stored nothing would be re-asked on every
+campaign. The standing switch lives in ``AdminPage``'s **This browser** paper; it is kept out of
+``ServiceConfigPanel`` on purpose, since that panel reports one shared service environment and
+this preference is per browser on an instance several people share.
+
+The prompt itself can only be raised from a real click: Firefox and Safari resolve a
+gesture-less ``requestPermission()`` to ``default`` without ever showing it. That constraint is
+what shapes both surfaces — the banner exists to produce the click, and the Admin control is a
+switch rather than a setting read at start-up.
+
+*It is not a route to ntfy.* Campaign lifecycle already reaches a phone from the server
+(``robovast.execution.notify``), once per campaign. Fanning out from the browser would send one
+push per open tab and would put the ntfy token in the client.
+
+The queue itself (``lib/toasts.ts``) and the phase diff behind the lifecycle notices
+(``lib/campaignEvents.ts``) are pure and unit-tested; the provider around them is not. Note
+that remote panels (``frontend/panel-kit/``) share only ``react``/``react-dom`` with the host,
+so a federated panel **cannot** reach this context — one that needs it must be handed a builtin.
 
 **Frontend tests stay minimal.** ``npm run test`` runs `vitest
 <https://vitest.dev>`_ over the pure modules in ``frontend/ui/src/lib/`` — and nothing else.

@@ -221,11 +221,15 @@ def test_recency_still_orders_within_the_live_group(transport):
     """Liveness only decides the group; inside it the newest still comes first."""
     _campaign_with_start(transport, "old-2026-07-01-120000", 1_000.0)
     _campaign_with_start(transport, "new-2026-07-26-120000", 2_000.0)
-    _mark_live(transport, "old-2026-07-01-120000")
-    _mark_live(transport, "new-2026-07-26-120000")
+    # Deliberately the OLDEST start of the three: if a lingering registration counted as
+    # liveness, the finished campaign below would outrank it and this assertion would fail.
+    _campaign_with_start(transport, "live-2026-06-01-120000", 500.0)
+    _mark_live(transport, "old-2026-07-01-120000", phase="finished")
+    _mark_live(transport, "live-2026-06-01-120000", phase="running")
 
     listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
-    assert listed == ["new-2026-07-26-120000", "old-2026-07-01-120000"]
+    assert listed[0] == "live-2026-06-01-120000", "only a campaign still being driven leads"
+    assert set(listed[1:]) == {"old-2026-07-01-120000", "new-2026-07-26-120000"}
 
 
 def test_a_finished_campaign_whose_entry_lingers_does_not_lead(transport):
@@ -238,10 +242,18 @@ def test_a_finished_campaign_whose_entry_lingers_does_not_lead(transport):
     """
     _campaign_with_start(transport, "old-2026-07-01-120000", 1_000.0)
     _campaign_with_start(transport, "new-2026-07-26-120000", 2_000.0)
+    # Deliberately the OLDEST start of the three: if a lingering registration counted as
+    # liveness, the finished campaign below would outrank it and this assertion would fail.
+    _campaign_with_start(transport, "live-2026-06-01-120000", 500.0)
     _mark_live(transport, "old-2026-07-01-120000", phase="finished")
+    _mark_live(transport, "live-2026-06-01-120000", phase="running")
 
+    # Not an exact order: the lingering entry's phase_since makes its campaign the most
+    # recently *finished* one, so it leads the terminal group -- correctly, and not what
+    # this guards. What matters is that it is in that group at all.
     listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
-    assert listed == ["new-2026-07-26-120000", "old-2026-07-01-120000"]
+    assert listed[0] == "live-2026-06-01-120000", "only a campaign still being driven leads"
+    assert set(listed[1:]) == {"old-2026-07-01-120000", "new-2026-07-26-120000"}
 
 
 def test_campaign_without_start_time_sorts_last(transport):
@@ -373,3 +385,69 @@ def test_unknown_vast_path_is_an_error_not_a_fallback(transport):
     wid = _make_workspace(transport)
     with pytest.raises(ValueError, match="no such .vast"):
         transport._resolve_project(wid, "nope.vast")
+
+
+def _campaign_finished_at(transport, cid: str, finished_at: float) -> None:
+    """Record a terminal outcome for *cid*, ending at *finished_at*.
+
+    The same durable record the controller writes at the end of a campaign — this is where
+    ``read_campaign_finished_at`` reads the time from, so a test that fakes it any other way
+    would not exercise the path the service uses.
+    """
+    from robovast.client.status import Status
+    from robovast.common.campaign_data import write_execution_outcome
+    from robovast.execution.control_server import Phase
+
+    write_execution_outcome(transport._campaign_dir(cid),
+                            Status(phase=Phase.FINISHED, phase_since=finished_at))
+
+
+def test_the_terminal_group_is_ordered_by_when_a_campaign_ended(transport):
+    """A long campaign that just ended is the freshest result, however old its start.
+
+    Start time answers "which of these is recent" badly for exactly the campaign most worth
+    seeing: `slow` ran for a day and finished a minute ago, `quick` started later and finished
+    long before it. Ordered by start, the one with the newest results sits underneath.
+    """
+    _campaign_with_start(transport, "slow-2026-07-01-120000", 1_000.0)
+    _campaign_with_start(transport, "quick-2026-07-20-120000", 5_000.0)
+    _campaign_finished_at(transport, "slow-2026-07-01-120000", 90_000.0)
+    _campaign_finished_at(transport, "quick-2026-07-20-120000", 6_000.0)
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["slow-2026-07-01-120000", "quick-2026-07-20-120000"]
+
+
+def test_a_campaign_with_no_recorded_ending_is_ordered_by_its_start(transport):
+    """The fallback, which is permanent rather than transitional.
+
+    A campaign whose record carries no terminal outcome — one that predates the record, or an
+    import that arrived without one — never gets a finish time, so it keeps ordering exactly as
+    it did. Here the campaign with no ending started later than the other one finished, and
+    leads on that basis.
+    """
+    _campaign_with_start(transport, "ended-2026-07-01-120000", 1_000.0)
+    _campaign_with_start(transport, "unknown-2026-07-20-120000", 5_000.0)
+    _campaign_finished_at(transport, "ended-2026-07-01-120000", 2_000.0)
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["unknown-2026-07-20-120000", "ended-2026-07-01-120000"]
+
+    summaries = {c.campaign_id: c for c in transport.list_campaigns().campaigns}
+    assert summaries["unknown-2026-07-20-120000"].finished_at is None
+    assert summaries["ended-2026-07-01-120000"].finished_at is not None
+
+
+def test_a_live_campaign_still_leads_and_is_ordered_by_its_start(transport):
+    """Liveness is the first key and a finish time cannot displace it.
+
+    A running campaign has no ending yet, and a just-launched one belongs at the top — so the
+    live group keeps sorting by start time even though the group below it no longer does.
+    """
+    _campaign_with_start(transport, "ended-2026-07-26-120000", 5_000.0)
+    _campaign_finished_at(transport, "ended-2026-07-26-120000", 90_000.0)
+    _campaign_with_start(transport, "live-2026-06-01-120000", 500.0)
+    _mark_live(transport, "live-2026-06-01-120000", phase="running")
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["live-2026-06-01-120000", "ended-2026-07-26-120000"]

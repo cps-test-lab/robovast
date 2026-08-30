@@ -100,7 +100,14 @@ export function PhaseDot({ phase, issue }: { phase: string; issue?: string | nul
           },
         }}
       />
-      <Box component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, lineHeight: 1 }}>
+      {/* `nowrap`: with an `issue` the label is a sentence fragment ("finished · postprocessing
+          failed"), and in a narrow flex slot it wrapped to three lines — which stretched the pill,
+          and with it the row it sits in, to three times its height. The pill is a marker; it takes
+          the width it needs on one line or it is not one. */}
+      <Box
+        component="span"
+        sx={{ fontSize: '0.75rem', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}
+      >
         {issue ? `${phase} · ${issue}` : phase}
       </Box>
     </Box>

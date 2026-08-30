@@ -1,0 +1,75 @@
+import osc.helpers
+import osc.ros
+# `remote()`: the MoveIt stack is launched INTO the sut container, not into this one. Without this
+# import the modifier is rejected as unknown, which reads like a typo rather than a missing library.
+import osc.remote
+
+# One UR5e pick-and-place trial.
+#
+# This scenario takes NO parameters, and that is worth a word because the campaign does sweep
+# something. The factor is the detector's `position_stddev`, a property of the WORLD, and the
+# roqsim backend applies it by handing the simulator an `--override` document. So the sweep never
+# passes through here: there is no parameter to declare, thread, or keep in step with the .vast.
+#
+# What this file owns is the ORDER: bring the simulator's clock up, start the stack, record, run the
+# trial, end. Everything the trial DOES lives in files/pick_place.py, because it is a closed-loop
+# sequence driven off measured state -- an .osc expressing the same thing would have to poll ROS for
+# each phase's completion condition.
+#
+# ASCII only, deliberately: scenario-execution decodes this file as ASCII, so a stray en-dash or a
+# non-breaking space in a COMMENT fails the whole campaign at parse time with
+# "'ascii' codec can't decode byte 0xe2".
+
+scenario ur5e_pick_place:
+    # The outer bound. The trial's own gates are tighter, so reaching this means something is
+    # wedged rather than slow.
+    timeout(870s)
+
+    do serial:
+        # The simulator publishes /clock, and everything downstream is on sim time -- move_group
+        # timestamps trajectories, bag_record(use_sim_time: true) stamps messages. Starting the
+        # stack before the clock exists gives every node a zero time it never recovers from.
+        #
+        # BOUNDED: an unbounded wait turns a dead simulator into a hung trial that burns the job's
+        # whole timeout and reports nothing, instead of a failed one that says why.
+        serial:
+            timeout(180s)
+            wait_for_topics(topics: ['/clock', '/joint_states'])
+
+        parallel:
+            # move_group + robot_state_publisher, in the sut container. An EMPTY package name makes
+            # the second argument a path, which is what removes the need for an ament package: the
+            # launch file is staged to /config with the run files, and run files are mounted into
+            # every container including this sidecar.
+            #
+            # `wait_for_shutdown: false` because this is a SERVER: it stays up for the whole trial
+            # and never exits on its own, so waiting on it would deadlock the parallel.
+            ros_launch('', '/config/moveit/moveit_ur5e.launch.py',
+                       wait_for_shutdown: false) with:
+                remote('ipc:///ipc/sut')
+
+            serial:
+                # /tf carries the box's ground-truth pose, which is what the verdict reads;
+                # /detections is what the trial actually planned against, so the bag holds both
+                # what was believed and what was true.
+                # No trailing comma after the last element: OSC rejects one, and the parse error it
+                # produces points at the modifiers on the next line rather than at the list.
+                bag_record([
+                    '/clock',
+                    '/tf',
+                    '/tf_static',
+                    '/joint_states',
+                    '/detections'
+                ], use_sim_time: true, timestamp_suffix: false)
+
+                # The trial. `--out` is REQUIRED by the script rather than defaulted, and it is
+                # given the run's own output directory: a hardcoded /out is how a campaign silently
+                # writes its results nowhere.
+                run_process(
+                    'python3 /config/files/pick_place.py'
+                    + ' --out ' + common.get_output_directory() + '/out.csv',
+                    wait_for_shutdown: true)
+
+                # Without this the trial ends and the scenario runs on to its timeout, so every run
+                # costs the full 870 s and the campaign looks hung.
+                emit end

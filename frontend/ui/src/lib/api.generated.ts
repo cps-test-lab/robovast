@@ -4,6 +4,35 @@
  */
 
 export interface paths {
+    "/admin/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Service Config
+         * @description What this service is configured with, read back out of its own environment.
+         *
+         *     Not a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it
+         *     describes the process that is serving rather than the campaigns it drives, and both
+         *     lanes answer it identically -- the pod and a `vast serve` both hold their settings
+         *     in the environment.
+         *
+         *     Host paths are blanked for a non-loopback caller, the same rule ``/version``
+         *     applies to ``results_root`` -- so the two admin surfaces do not disagree about
+         *     whether a path on the service's disk is publishable.
+         */
+        get: operations["service_config_admin_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/log": {
         parameters: {
             query?: never;
@@ -2518,6 +2547,11 @@ export interface components {
              */
             blocked: number;
             /**
+             * Calibration
+             * @default 0
+             */
+            calibration: number;
+            /**
              * Completed
              * @default 0
              */
@@ -2609,6 +2643,11 @@ export interface components {
             display_name: string | null;
             /** Job Name */
             job_name: string;
+            /**
+             * Kind
+             * @default run
+             */
+            kind: string;
             /**
              * Status
              * @default pending
@@ -2771,6 +2810,10 @@ export interface components {
             previews: components["schemas"]["VariationPreview"][];
             /** Sim */
             sim: {
+                [key: string]: unknown;
+            };
+            /** Sut */
+            sut: {
                 [key: string]: unknown;
             };
         };
@@ -3220,6 +3263,64 @@ export interface components {
             markers: components["schemas"]["SceneMarker"][];
         };
         /**
+         * ServiceConfig
+         * @description What this service is configured with -- the read-back of the operator's ``.env``.
+         *
+         *     **Effective, not provenance.** In the pod every value arrives as an environment
+         *     variable, and nothing there can tell a ``.env`` line from a real environment variable.
+         *     So this reports what is in force; claiming a value "came from ``.env``" would be a claim
+         *     the process cannot check.
+         *
+         *     Read-only. Making settings writable means a ``PATCH`` and a field naming what accepts
+         *     one; adding that field later is additive, whereas one that is ``False`` in every
+         *     response until then states nothing and has to be kept truthful meanwhile.
+         */
+        ServiceConfig: {
+            /**
+             * How To Change
+             * @default
+             */
+            how_to_change: string;
+            /** Settings */
+            settings: components["schemas"]["ServiceSetting"][];
+        };
+        /**
+         * ServiceSetting
+         * @description One environment setting this service is running with, as reported to one caller.
+         *
+         *     The **environment** is what produces this list -- everything a ``.env`` set arrives in
+         *     the pod as an environment variable -- so a setting the service reads is here whether or
+         *     not anyone has described it. An undescribed one arrives with empty :attr:`group` and
+         *     :attr:`description` and ``withheld="unclassified"``: visible, because it IS in force,
+         *     and valueless, because a credential added later must not leak through a surface written
+         *     earlier.
+         */
+        ServiceSetting: {
+            /** Default */
+            default: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Group
+             * @default
+             */
+            group: string;
+            /**
+             * Is Set
+             * @default false
+             */
+            is_set: boolean;
+            /** Key */
+            key: string;
+            /** Value */
+            value: string | null;
+            /** Withheld */
+            withheld: string | null;
+        };
+        /**
          * ShareArchive
          * @description One campaign archive on the configured share.
          */
@@ -3428,6 +3529,11 @@ export interface components {
              * @default
              */
             image_ref: string;
+            /**
+             * Registry Built At
+             * @default
+             */
+            registry_built_at: string;
             /**
              * Registry Digest
              * @default
@@ -3697,6 +3803,11 @@ export interface components {
             backend: string | null;
             /** Build Unavailable */
             build_unavailable: string | null;
+            /**
+             * Built At
+             * @default
+             */
+            built_at: string;
             /** Can Build Images */
             can_build_images: boolean | null;
             /**
@@ -3903,6 +4014,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    service_config_admin_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceConfig"];
+                };
+            };
+        };
+    };
     get_service_log_admin_log_get: {
         parameters: {
             query?: {

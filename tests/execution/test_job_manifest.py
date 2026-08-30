@@ -578,3 +578,49 @@ def test_the_toleration_is_not_duplicated(monkeypatch):
     m = _job_manifest(_runner(monkeypatch))
     tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
     assert len(tolerations) == len({tuple(sorted(t.items())) for t in tolerations})
+
+
+def test_a_probe_asks_the_scenario_runner_to_report_on_itself(monkeypatch):
+    """`--tick-log` is what gives the scenario container its only guard, and the probe is the
+    run that needs it: its measurement decides the allocation every later run gets."""
+    from robovast.execution.cluster_execution.kubernetes_backend import (SCENARIO_PARAMS_ENV,
+                                                                        TICK_LOG_FLAG,
+                                                                        probe_manifest)
+
+    r = _runner(monkeypatch)
+    base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    probe = probe_manifest(base, job_name="probe-n1", params_file="/config/p.yaml",
+                           output_dir="/out/_calibration/n1",
+                           display_name="calibration probe · n1")
+    main = probe["spec"]["template"]["spec"]["containers"][0]
+    params = next(e for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
+    assert TICK_LOG_FLAG in params["value"]
+
+
+def test_a_campaign_run_is_not_asked_to(monkeypatch):
+    """Per-tick instrumentation on the trial's hot path, so every run paying for it is a cost
+    with no reader: only the probe's file is ever read."""
+    from robovast.execution.cluster_execution.kubernetes_backend import (SCENARIO_PARAMS_ENV,
+                                                                        TICK_LOG_FLAG)
+
+    r = _runner(monkeypatch)
+    manifest = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    main = manifest["spec"]["template"]["spec"]["containers"][0]
+    values = [e.get("value", "") for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV]
+    assert TICK_LOG_FLAG not in " ".join(values)
+
+
+def test_a_campaigns_own_scenario_flags_survive_the_probe(monkeypatch):
+    """Appended, not assigned: a campaign passing flags of its own would otherwise have them
+    replaced on the one run whose behaviour must match the others'."""
+    from robovast.execution.cluster_execution.kubernetes_backend import (SCENARIO_PARAMS_ENV,
+                                                                        TICK_LOG_FLAG,
+                                                                        probe_manifest)
+
+    r = _runner(monkeypatch, execution={"log_tree": True})
+    base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    probe = probe_manifest(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x",
+                           display_name="calibration probe · n1")
+    main = probe["spec"]["template"]["spec"]["containers"][0]
+    value = next(e["value"] for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
+    assert TICK_LOG_FLAG in value and "-t" in value

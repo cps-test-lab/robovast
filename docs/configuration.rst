@@ -175,6 +175,9 @@ contexts, and it is rebuilt wherever a campaign is composed.
    For a single, dependency-free custom variation you do not need to package it: put
    the ``.py`` file in your project and reference the class directly from a
    ``variations`` entry as ``relative/path.py:ClassName`` (see :ref:`variation-points`).
+   The module is archived with the campaign and hashed into its config identity, so such a
+   variation stays re-runnable — but it has to be **one self-contained module**, with no
+   sibling imports and no data file of its own. Anything larger belongs in ``plugins:``.
 
 
 Configuration Section
@@ -238,8 +241,9 @@ Multiple variations are combined using Cartesian product to generate all possibl
 
 .. _config-variation-destination:
 
-**Every factor names where it lands**, with exactly one of two keys — ``scenario:`` for a
-parameter the scenario file declares, ``sim:`` for the simulator's own configuration:
+**Every factor names where it lands**, with exactly one of three keys — ``scenario:`` for a
+parameter the scenario file declares, ``sim:`` for the simulator's own configuration,
+``sut:`` for a configuration file the system under test reads:
 
 .. code-block:: yaml
 
@@ -257,18 +261,39 @@ parameter the scenario file declares, ``sim:`` for the simulator's own configura
          values:
          - 0.6
          - 1.4
+     - ParameterVariationList:
+         sut: nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+         values:
+         - 0.30
+         - 0.55
 
-This example creates 3 × 2 = 6 run configurations.
+This example creates 3 × 2 × 2 = 12 run configurations.
 
-The two keys sit at the same level and neither is a default, so a factor's destination is
+The three keys sit at the same level and none is a default, so a factor's destination is
 readable from the line it is written on — and each is checked against the right schema: a
 ``scenario:`` name against the scenario file's declared parameters, a ``sim:`` key against
-the simulator backend's. See :ref:`the simulation channel <sim-channel>` for what can go
-on the second one.
+the simulator backend's, a ``sut:`` destination against the config file the campaign
+declared. See :ref:`the simulation channel <sim-channel>` and :ref:`the sut channel
+<sut-channel>` for what can go on the second and third.
+
+**Which channel a value belongs to is one question:** *who owns the schema it is checked
+against?* A key in a file the stack reads is ``sut:``. A value the ``.osc`` declares and
+acts on is ``scenario:`` — **including a launch argument**, because the scenario owns the
+launch invocation and there is no file to address. A value the simulator's own
+configuration declares is ``sim:``.
+
+.. warning::
+
+   **``scenario:`` and ``sut:`` overlap, and nothing validates the boundary.** A stack
+   parameter can be declared in the ``.osc`` and written into the stack's file at run time,
+   and RoboVAST cannot tell such a parameter from trial protocol — the scenario file
+   accepts any parameter it declares, whether or not the stack has a matching key. So this
+   is a rule you follow rather than one you are stopped from breaking, and the cost of
+   breaking it is a value checked by nobody.
 
 .. note::
 
-   ``name:`` is not a destination and is refused, naming the two keys that are. In a
+   ``name:`` is not a destination and is refused, naming the three keys that are. In a
    ``.vast`` that still carries it, it means ``scenario:``; one spelling per destination
    is what keeps the commonest line in a ``.vast`` from having two.
 
@@ -301,6 +326,133 @@ key could say so.
 Every declared slot must be bound, each to exactly one channel; an unknown slot is refused
 naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
 for a simulator to compile is one — which are simply not produced when left unbound.
+
+
+.. _sut-channel:
+
+Varying the system under test
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**How the stack is configured belongs to a configuration.** Not per campaign, and not per
+run: repetitions of a configuration share one configuration of the stack, which is what
+makes them repetitions.
+
+A container declares the files that configure it, and a ``sut:`` destination names one of
+them plus a path inside it:
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       sut:
+         config_files:
+           nav2: files/nav2_params.yaml                       # inferred: yaml
+           bt:   files/nav2_bt.xml                            # inferred: xml
+           rmw:  {file: files/dds_profile.custom, format: xml}  # inference cannot help
+
+   configuration:
+   - name: inflation-vs-recovery
+     variations:
+     - ParameterVariationList:
+         sut: nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+         values: [0.30, 0.55]
+     - ParameterVariationList:
+         sut: bt.//RecoveryNode[@name='NavigateRecovery']/@number_of_retries
+         values: [2, 6]
+
+**A source name is unique across the campaign**, even though it is declared on a container.
+A destination names a source and nothing else, so the container it sits under says *who
+owns and reads that file* rather than scoping its name — the ``sut`` role, or an ad-hoc
+container beside it for a stack that runs in more than one. Two containers declaring the
+same name is refused for that reason, naming both.
+
+**A format owns its own path syntax.** RoboVAST splits a destination once, on the first
+``.``, to find the source; everything after that goes to the file's format untouched. So
+the mapping formats take dotted keys — with ``[0]`` for a list index and ``['a.b']`` for a
+key a dot would otherwise split, which a ROS parameter file needs for
+``qos_overrides./tf`` — and the XML format takes XPath. The predicate in the example above
+is doing real work: that behaviour tree names three different nodes ``RecoveryNode``, so
+nothing without predicates could pick one.
+
+**Formats are plugins**, under the ``robovast.sut_formats`` entry point, with ``yaml``,
+``json`` and ``xml`` built in and registered through that same entry point. A stack
+configured by something else needs a package, not a change here — see
+:ref:`extending-sut-formats`.
+
+**The extension names the format**; ``format:`` is for a file whose name does not. An
+extension no registered format claims, with no ``format:`` beside it, is refused naming the
+ones that are — never guessed at, because the bad case is not the file that fails to parse
+but the one that parses into a document whose addresses are all wrong.
+
+**Varying structure, not only values.** A value need not be a scalar, so replacing a whole
+list, mapping or subtree is the ordinary case and each level is written out:
+
+.. code-block:: yaml
+
+   - ParameterVariationList:
+       sut: nav2.local_costmap.local_costmap.ros__parameters.plugins
+       values:
+       - ["obstacle_layer", "inflation_layer"]
+       - ["obstacle_layer", "voxel_layer", "inflation_layer"]
+
+Enumerating the levels rather than saying "append" is deliberate: it is what keeps the
+``.vast`` the single source of truth for the variation space. For XML the same move covers
+adding and removing children, because a subtree carries its own.
+
+**Absence** is the one level an assignment cannot express — a configuration block that is
+present and empty is not one that is absent, and stacks tell them apart. It is a value,
+usable both as a fixed setting and as a factor level:
+
+.. code-block:: yaml
+
+   configuration:
+   - name: no-voxel
+     sut:
+       nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
+
+**A per-configuration ``sut:`` block is flat**, unlike ``sim:``, and this is the one place
+the two channels differ. Everything after the source name belongs to the file's format and
+may be an XPath, which no nested mapping can express — so a block is one string key per
+destination, split exactly once.
+
+What each configuration gets
+""""""""""""""""""""""""""""
+
+A **rewritten copy** of every source it touched, staged under its own configuration
+directory and mounted at ``/config/<config-name>/<path>``. The campaign's own file is never
+modified. A scenario parameter whose value is the source's declared path is rewritten to
+that configuration's copy, so the trial launches the file belonging to the cell it is
+running.
+
+Two things are refused rather than left to go wrong quietly:
+
+* a source declared on the ``simulation`` or ``scenario`` container — their configuration is
+  addressed by ``sim:`` and ``scenario:``, and two channels addressing one surface is how
+  they come to disagree;
+* a destination on the ``env`` carrier naming a variable RoboVAST sets for itself
+  (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
+  reaches the same environment by a different route, so it is guarded against the same set
+  rather than becoming a way around the rule.
+
+A declared source is **excluded from** ``run_files`` staging, so exactly one copy of it
+reaches the container. Campaigns stage their inputs with patterns (``files/*.yaml`` to pick
+up a map), and a source caught by one is not an author error to correct — but staging the
+original beside the rewritten copy would leave *which file the stack opens* deciding whether
+the campaign varied anything, and a run against unvaried configuration succeeds and reports
+normally. With one copy, a scenario still naming the old path fails on a missing file
+instead. The content still reaches the configuration's identity, hashed separately.
+
+What is checked before anything runs
+""""""""""""""""""""""""""""""""""""
+
+Every destination is resolved against the declared source and checked against the file
+itself, at composition — the component that owns the schema is the one that says what is
+addressable. What must exist is the **parent**: a factor may legitimately set a key the file
+leaves at its default, so refusing an absent leaf would reject a correct campaign.
+
+A format that cannot decide (a malformed XPath, say) leaves that destination unchecked and
+**says so at warning level**. A skipped check is never silent, because silence is
+indistinguishable from a check that passed.
 
 Each plugin's slots, and whether they are required, are listed with it under
 :ref:`variation-points`.
@@ -935,6 +1087,24 @@ Additional environment variables to set in the run container. Each list item sho
      - CUSTOM_VAR: custom_value
      - ENABLE_X11: "false"
 
+**Names RoboVAST sets itself are refused.** The run's own protocol travels in the
+environment — what identifies the campaign (``CAMPAIGN_ID``), where results are written
+(``OUTPUT_DIR``, ``SCENARIO_OUTPUT_DIR``, ``RUN_OUTPUT_DIR``), what the runner executes and
+with which parameters (``SCENARIO_FILE``, ``SCENARIO_PARAMETER_FILE``,
+``SCENARIO_EXECUTION_PARAMETERS``), and the credentials results are uploaded with
+(``S3_*``). Setting one of these is refused when the campaign is validated, naming it.
+
+The refusal is at validation and not left to the lanes on purpose. Whether a campaign's
+value would actually displace RoboVAST's depends on emission order and on each lane's
+duplicate-key semantics, so "it happens not to win today" is not something to build on —
+and the failure it would cause is the quiet kind. Repointing ``SCENARIO_PARAMETER_FILE``
+gives a run that succeeds, reads parameters belonging to nothing, and reports its results
+under the configuration's name regardless.
+
+Display and GPU hints — ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*`` — are
+deliberately *not* reserved. They steer how a container renders rather than whether its
+results mean what they say, and a campaign running headless has a real reason to set them.
+
 .. _config-resources:
 
 resources
@@ -1016,20 +1186,50 @@ measured on, so a ``.vast`` naming one asserts something it cannot know about th
 lands on. Under ``calibrated`` the file says what to run and the cluster says how much of
 itself that takes.
 
-**Declaring** ``resources`` **under** ``calibrated`` **is refused, not overridden.** The two
-answer the same question, and a file stating a number nobody honours is worse than one
-stating nothing — the same rule this block applies to an unknown key. ``resources.gpu`` is
-exempt: a device count is a count, not a rate, so nothing measures it.
-
-**What it measures, and what it does not.** CPU only. Memory is taken from the cluster's
-bootstrap figure for the container's role and is not yet measured per node — so a campaign
-whose memory needs are unusual should stay on ``fixed`` and declare them.
+**Declaring** ``resources`` **under** ``calibrated`` **states where measuring starts.**
+``resources`` has one meaning in either mode: the container's declared ceiling, the most it
+may have. Under ``fixed`` that is also what it gets, because nothing measures it down; under
+``calibrated`` it is what the probe and every not-yet-measured node run at, and the bound a
+measured figure may not exceed. ``resources.gpu`` is never measured: a device count is a
+count, not a rate.
 
 **Before a node has been measured** — the probe itself, and every job on a node whose probe
-has not reported — a container asks for the deployment's bootstrap for its role
-(``ROBOVAST_BOOTSTRAP_CPU`` / ``_MEMORY``, see :doc:`cluster_execution`). That figure belongs
-to the cluster rather than the campaign, which is the same argument that takes it out of the
-``.vast``.
+has not reported — a container that declares nothing asks for the deployment's bootstrap for
+its role (``ROBOVAST_BOOTSTRAP_CPU`` / ``_MEMORY``, see :doc:`cluster_execution`). Resolved
+per *field*, so a ``.vast`` stating only ``cpu`` keeps the deployment's ``memory``.
+
+**What it measures.** CPU and memory, both from the same probe. CPU is read at a percentile
+that depends on the container's role; memory is read at the **maximum** for every role,
+because exceeding a CPU reservation slows a container while exceeding a memory one kills it.
+
+**How the measurement becomes an allocation** is a per-container ``calibration`` block, every
+field optional and defaulted from the role and the deployment:
+
+.. code-block:: yaml
+
+   execution:
+     sizing: calibrated
+     containers:
+       sut:
+         image: nav2:latest
+         calibration:
+           size_on: 100        # percentile; 100 is the sample's max. Default: 100 for sut,
+                               # 95 for every other role.
+           limit: request      # limit == request, so it never throttles. Default: `request`
+                               # for sut, `declared` elsewhere -- keep the ceiling, allow a burst.
+           headroom:
+             cpu: 1.4          # margin above the measurement; per resource
+             memory: 1.5
+
+``size_on`` is worth knowing about for one reason beyond tuning: *which* statistic the system
+under test is sized on is a decision this substrate asserts rather than a measured fact, and
+setting it is how a campaign tests that decision. Doing so costs comparability — a system
+under test read below its maximum **will** be throttled mid-plan, which
+``run_validity_view.quota_bound`` flags, and its runs cannot be compared with a campaign sized
+any other way. That is the point when it is the experiment, and a mistake when it is not.
+
+The block is read only under ``calibrated``; declaring one under ``fixed`` is refused rather
+than ignored, since nothing there would read it.
 
 **Where calibration cannot run, the bootstrap stands — and is checked.** A campaign with no
 more jobs than the cluster has nodes, or a cluster that can grow, never probes: no node would
@@ -1040,8 +1240,15 @@ measured allocation, where such a run is recorded and kept: nobody chose the boo
 this workload, so a run that dies against it says the default does not fit rather than
 anything about the stack — and every remaining run would carry the same fault.
 
-The local Docker lane never probes and is **unconstrained** under ``calibrated``, which is
-what a quick local run already gets when it declares nothing.
+**A node that cannot be measured stops the campaign.** Its jobs would run at the starting
+allocation while every measured node's ran at a measured figure, so the campaign would
+silently mix two sizings — the inconsistency calibration exists to remove, arriving through
+the act of failing to measure. The error names the node, why its probe was refused, and which
+of the ``.vast`` or the deployment default to change.
+
+The local Docker lane never probes and knows nothing of ``sizing``: it reads ``resources`` as
+Compose limits, and a container declaring none runs **unconstrained**, which is what a quick
+local run already gets.
 
 .. _config-request-limit-split:
 

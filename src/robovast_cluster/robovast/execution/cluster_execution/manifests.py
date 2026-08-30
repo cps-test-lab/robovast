@@ -5,6 +5,20 @@
 #: appear in a ``.vast``. Must match the template below; ``test_job_manifest`` pins it.
 MAIN_CONTAINER_NAME = "robovast"
 
+#: Which KIND of ``jobgroup: scenario-runs`` Job this is. Absent means the campaign's own
+#: work -- what every Job the template below produces is -- and the one other value is a
+#: node-calibration probe.
+#:
+#: A second label rather than a second ``jobgroup``: a probe holds real capacity on a real
+#: node and is torn down with the campaign, so it has to stay inside every selector that
+#: counts or cleans up ``scenario-runs``. What it must not be is one of the campaign's
+#: trials, and that is the single distinction this label carries.
+JOB_KIND_LABEL = "job-kind"
+#: The label's value for a calibration probe. Deliberately the same string as
+#: ``JobKind.CALIBRATION`` puts on the wire -- one vocabulary, not two that can drift --
+#: which ``test_the_wire_kind_is_the_cluster_label`` pins.
+CALIBRATION_JOB_KIND = "calibration"
+
 JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:

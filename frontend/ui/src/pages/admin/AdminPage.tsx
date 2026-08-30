@@ -4,16 +4,23 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
+import Switch from '@mui/material/Switch'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
+import { useToasts } from '@/components/ToastProvider'
+import * as browserNotify from '@/lib/browserNotify'
 import { LogPanel } from '@/components/LogPanel'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
+import { formatAge, formatLocalTime } from '@/lib/time'
+import { ServiceConfigPanel } from './ServiceConfigPanel'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
 // How long to keep watching for the new pod before saying we cannot tell. Matches the
@@ -24,6 +31,14 @@ const ROLL_TIMEOUT_MS = 180_000
 // Grace between "the new pod is serving" and the reload. Long enough to read the line and
 // stop it, short enough that nobody sits watching a page that said it would reload.
 const RELOAD_COUNTDOWN_S = 5
+
+/** Hover delay on the notification switch's caveat.
+ *
+ *  Past MUI's default, which fires fast enough that the tip appears while the pointer is only
+ *  passing over the row on its way somewhere else. This text is read once, by someone who has
+ *  stopped at the switch and is deciding -- so it waits for the pause that means deciding, and
+ *  stays out of the way of every other crossing. */
+const PREF_TIP_MS = 600
 
 /** One `label: value` line. Values are monospace: most of them are digests and refs. */
 function Field({ label, value }: { label: string; value: string }) {
@@ -39,6 +54,13 @@ function Field({ label, value }: { label: string; value: string }) {
   )
 }
 
+// Absolute time and relative age together: the first is the fact, the second is the one that
+// answers "is this deployment old?" at a glance. Beside `upgradeVerdict` because both turn a
+// machine-readable field into the sentence a reader actually wants.
+function builtLine(iso: string): string {
+  return `${formatLocalTime(iso)} (${formatAge(iso)})`
+}
+
 // What the digests add up to, in words — and in words that do not assume the reader knows
 // what a tag or a registry is. Three outcomes and not two: `upgrade_available` is null when
 // the registry did not answer, and rendering that as "up to date" is the one wrong answer
@@ -52,6 +74,7 @@ function upgradeVerdict(info: UpgradeInfo): string {
 export function AdminPage() {
   const qc = useQueryClient()
   const { confirm } = useDialogs()
+  const { notify } = useToasts()
   const [rolling, setRolling] = useState(false)
   const [rollNote, setRollNote] = useState<string | null>(null)
   // Its own flag rather than `isFetching`, which is also true for the background poll below
@@ -65,14 +88,34 @@ export function AdminPage() {
   // Open by default: unlike a campaign log, which is one of many on a crowded
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
+  // Collapsed, unlike the log above: the log is one of the things this page exists to
+  // show, while the configuration is what you come looking for on a particular day. Its
+  // query is gated on this flag, so an unopened panel costs nothing.
+  const [configOpen, setConfigOpen] = useState(false)
 
-  const version = useQuery({ queryKey: ['version'], queryFn: robovast.version, retry: false })
+  // This page is kept mounted once visited, so both readings are gated on it being the one on
+  // screen: they then stop while it is not, and are re-read on the way back in — which is the
+  // moment someone asks "did the version I just published land?". See lib/activeView.tsx.
+  const active = useActiveView()
+  const version = useQuery({
+    queryKey: ['version'],
+    queryFn: robovast.version,
+    enabled: active,
+    retry: false,
+  })
   const upgrade = useQuery({
     queryKey: ['upgradeInfo'],
     queryFn: robovast.upgradeInfo,
+    // A roll keeps this live wherever the user has navigated to: the panel below still describes
+    // a handover in progress, and describing it from the pod that is going away would be worse
+    // than saying nothing.
+    enabled: active || rolling,
     // Fast while a roll is in flight — this poll IS how the handover is detected — and
     // slow otherwise: it costs a registry round trip on the cluster lane.
     refetchInterval: rolling ? 3_000 : 60_000,
+    // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
+    // thing to do, and it must not spend a registry round trip each time.
+    staleTime: 10_000,
     retry: false,
   })
 
@@ -132,6 +175,29 @@ export function AdminPage() {
     setRollNote(null)
     setHandover(false)
     setReloadIn(null)
+    // A roll outlives the page that started it: this component stays mounted behind
+    // KeepAlive and keeps polling wherever the user has navigated to. The handover alert
+    // below therefore lands on a panel nobody is looking at, and the countdown it starts
+    // reloads the whole document a few seconds later -- which the comment on that effect
+    // describes as "an expected blink", and it only is one for someone who is watching.
+    // So say it where the user actually is, and offer the same way out the alert offers.
+    const announceHandover = () => {
+      notify({
+        severity: 'success',
+        key: 'upgrade-handover',
+        message: 'RoboVAST upgraded',
+        note: `This page reloads in ${RELOAD_COUNTDOWN_S}s to pick up the new build.`,
+        action: { label: 'Not now', onClick: () => setReloadIn(null) },
+      })
+      // The second caller of this sink, and for the same reason as the first: the tab may not
+      // be on screen at all. `post` decides that for itself.
+      browserNotify.post({
+        title: 'RoboVAST upgraded',
+        body: 'Reload the page to finish.',
+        tag: 'upgrade-handover',
+      })
+    }
+
     setRolling(true)
     try {
       // `force` is exactly the dialog's answer: the only thing the server refuses is a
@@ -161,6 +227,7 @@ export function AdminPage() {
           void version.refetch()
           setHandover(true)
           setReloadIn(RELOAD_COUNTDOWN_S)
+          announceHandover()
           return
         }
       } catch {
@@ -204,6 +271,14 @@ export function AdminPage() {
               {version.data.code_revision ? (
                 <Field label="revision" value={version.data.code_revision} />
               ) : null}
+              {/* The question the two lines above cannot answer between them: how old is
+                  what is deployed? A revision and a semver are each only comparable against
+                  something else — a checkout, a changelog — while a date reads on its own,
+                  which is what someone about to press Upgrade is actually asking. Same rule
+                  as the lines above for an absent value. */}
+              {version.data.built_at ? (
+                <Field label="built" value={builtLine(version.data.built_at)} />
+              ) : null}
               <Field
                 label="backend"
                 value={
@@ -220,6 +295,25 @@ export function AdminPage() {
           )}
           {info?.image_ref ? <Field label="image" value={info.image_ref} /> : null}
           {info?.running_digest ? <Field label="running" value={info.running_digest} /> : null}
+          {/* What the tag points at in the registry right now. Beside `running` because the
+              two are only useful as a pair -- one digest alone says nothing a reader can act
+              on, and the verdict below puts the comparison in words. Absent when the registry
+              did not answer, which the verdict already says.
+
+              The date is the same question `built` answers above, asked of the image this
+              service is *not* executing: two differing digests say the published bytes are
+              other bytes, never which of them is newer. It comes from the image's own OCI
+              label, so it is appended to this line rather than given one of its own -- it
+              describes the digest beside it, and can be missing while the digest is not. */}
+          {info?.registry_digest ? (
+            <Field
+              label="available"
+              value={
+                info.registry_digest
+                + (info.registry_built_at ? ` · built ${builtLine(info.registry_built_at)}` : '')
+              }
+            />
+          ) : null}
 
           {/* The roll is offered only where it exists. On a local service, or a cluster
               service running outside the cluster, there is no Deployment of its own to
@@ -299,6 +393,31 @@ export function AdminPage() {
         </Stack>
       </Paper>
 
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <BrowserPreferences />
+      </Paper>
+
+      <CollapsibleBox
+        open={configOpen}
+        onToggle={() => setConfigOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'What this service is running with, read back out of its own environment. '
+              + 'Credentials are reported as set or not set; their values never leave the '
+              + 'service.'
+            }
+          >
+            <span>Service configuration</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, so the request is made the first time somebody asks
+            for it rather than on every visit to this page. */}
+        {configOpen ? <ServiceConfigPanel /> : null}
+      </CollapsibleBox>
+
       <CollapsibleBox
         open={logOpen}
         onToggle={() => setLogOpen((v) => !v)}
@@ -321,6 +440,90 @@ export function AdminPage() {
           <LogPanel resetKey="service" streamUrl={robovast.serviceLogStreamUrl()} />
         </Box>
       </CollapsibleBox>
+    </Stack>
+  )
+}
+
+
+/**
+ * Preferences that belong to the browser rather than to the service.
+ *
+ * Its own paper, deliberately not a row in ServiceConfigPanel. That panel reports one shared
+ * environment read back out of the service, and this instance is used by several people behind
+ * one token -- so a browser-local switch sitting among those rows would read as something one
+ * person can change for everybody. The heading is what keeps the two apart, and the caption
+ * says the same thing in words for anyone who reads the switch before the heading.
+ *
+ * This is also the only way back once the one-time ask has been answered (NotificationAsk),
+ * which is why it exists at all rather than the ask standing alone.
+ */
+function BrowserPreferences() {
+  const [on, setOn] = useState(browserNotify.optedIn)
+  const [denied, setDenied] = useState(() => browserNotify.permission() === 'denied')
+  const supported = browserNotify.supported()
+
+  const toggle = async () => {
+    if (on) {
+      browserNotify.setOptedIn(false)
+      setOn(false)
+      return
+    }
+    // A click, so the gesture requirement is met: Firefox and Safari show no prompt at all for
+    // a request that no user action stands behind.
+    const result = await browserNotify.requestPermission()
+    if (result !== 'granted') {
+      // A denial is sticky and cannot be re-prompted, so say so rather than leaving a switch
+      // that silently refuses to stay on.
+      setDenied(result === 'denied')
+      browserNotify.setOptedIn(false)
+      return
+    }
+    browserNotify.setOptedIn(true)
+    setOn(true)
+    setDenied(false)
+  }
+
+  return (
+    <Stack spacing={1}>
+      <Typography variant="subtitle2">This browser</Typography>
+      {supported ? (
+        <>
+          <Tooltip
+            placement="right"
+            enterDelay={PREF_TIP_MS}
+            title={
+              'Shown only while this tab is in the background. Applies to this browser only — '
+              + 'everyone signed in to this service keeps their own setting, and this is not '
+              + 'a service setting.'
+            }
+          >
+            {/* A disabled switch reports no events, so the tooltip needs a wrapper to hang on. */}
+            <Box sx={{ alignSelf: 'flex-start' }}>
+              <FormControlLabel
+                control={<Switch size="small" checked={on} disabled={denied} onChange={() => void toggle()} />}
+                label={
+                  <Typography variant="body2">Notify me when a campaign finishes</Typography>
+                }
+                sx={{ ml: 0 }}
+              />
+            </Box>
+          </Tooltip>
+          {/* The denial stays in print. It is not a caveat about the switch, it is the reason
+              the switch is dead, and an explanation for a disabled control that has to be
+              hunted for by hovering is not an explanation. */}
+          {denied ? (
+            <Typography variant="caption" color="text.secondary">
+              This browser has blocked notifications for this site; re-allow them in its site
+              settings.
+            </Typography>
+          ) : null}
+        </>
+      ) : (
+        <Typography variant="caption" color="text.secondary">
+          This browser has no notification support, so a campaign ending can only be announced
+          inside the page.
+        </Typography>
+      )}
     </Stack>
   )
 }

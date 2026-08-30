@@ -22,7 +22,7 @@ ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f1724
 # commit became unreachable, and every build from a clean clone failed with "fatal: reference
 # is not a tree". A pin whose commit can disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
-ARG SCENARIO_EXECUTION_REF=f1784d2f5afd5d23ee3b07b33bcc074514438dfe
+ARG SCENARIO_EXECUTION_REF=ac1759c7b3b80df5db5e82c42df957164adb7202
 
 # The scenario-execution *server*, the second source this image bakes. Same idiom deliberately: a
 # pin is only overridable if it is an ARG, and `make release-images-update-versions` finds a pin by
@@ -326,7 +326,7 @@ LABEL org.robovast.compat-version="2"
 # whose generated --label carries the full sha and overrides this instruction, while a local
 # build has no such thing and this ARG is the only source. So the ARG is not dead weight even
 # though CI never passes it -- container/robovast/build.sh does, from the checkout it lives in
-# (container/git_revision.sh), and until it did a locally released image recorded no origin at all.
+# (container/image_stamp.sh), and until it did a locally released image recorded no origin at all.
 ARG ROBOVAST_GIT_REVISION=""
 LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"

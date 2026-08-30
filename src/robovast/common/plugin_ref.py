@@ -47,6 +47,53 @@ def is_file_ref(ref: str) -> bool:
     return _FILE_REF_MARKER in ref
 
 
+def file_ref_path(ref: Any) -> "str | None":
+    """The ``<path>.py`` a ``<path>.py:<ClassName>`` reference names, else ``None``.
+
+    The one place that answers "which file does this reference mean", so a collector that
+    has to archive the module and the resolver that has to import it cannot disagree about
+    where it is.
+    """
+    if not isinstance(ref, str) or not is_file_ref(ref):
+        return None
+    rel_path, _, class_name = ref.partition(":")
+    return rel_path if class_name else None
+
+
+def iter_file_refs(node: Any, ref_value_keys: tuple) -> list:
+    """Every ``<path>.py:<Class>`` reference in a config subtree, in declaration order.
+
+    Two positions, because a config states a plugin two ways: a variation names its plugin as
+    the KEY of its single-key mapping (``- variations/doorway.py:DoorwayVariation: {...}``),
+    while a strategy, an extractor or a backend names it as a VALUE. Mapping keys are read
+    everywhere -- that also finds a OneOfVariation child three levels down, by the same
+    recursion, with no list of nestings to keep current. Values are read only under the keys
+    in *ref_value_keys*.
+
+    Values are NOT read blindly, and that asymmetry is the point: ``configuration[].parameters``
+    is arbitrary user data, and a scenario parameter that merely looks like a reference
+    (``"tools/run.py:main"``) would otherwise be archived and -- worse -- folded into the config
+    identity, which decides whether two campaigns describe the same experiment. A key position
+    is unambiguous; a value position is not.
+    """
+    found = []
+
+    def visit(obj, under_ref_key: bool):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(key, str) and is_file_ref(key):
+                    found.append(key)
+                visit(value, isinstance(key, str) and key in ref_value_keys)
+        elif isinstance(obj, list):
+            for item in obj:
+                visit(item, under_ref_key)
+        elif under_ref_key and isinstance(obj, str) and is_file_ref(obj):
+            found.append(obj)
+
+    visit(node, False)
+    return found
+
+
 def _load_from_file(ref: str, base_dir: str) -> Any:
     rel_path, _, class_name = ref.partition(":")
     if not class_name:

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, type PreviewResponse, type ValidationReport } from '@/lib/robovastClient'
 import {
   configDirUrl,
@@ -30,6 +31,7 @@ export function useConfigEditor(source: ConfigSource) {
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
   const [previewErr, setPreviewErr] = useState<string | null>(null)
   const [selectedCfg, setSelectedCfg] = useState(0)
+  const active = useActiveView()
 
   const sourceKey = configSourceKey(source)
   const readOnly = isReadOnlySource(source)
@@ -37,7 +39,11 @@ export function useConfigEditor(source: ConfigSource) {
   const files = useQuery({
     queryKey: configFilesKey(source),
     queryFn: () => robovast.listFilesAt(configDirUrl(source)),
-    enabled: !isEmptySource(source),
+    // Files change on disk without this tab doing anything, and the page stays mounted once
+    // visited, so arriving is when the tree must be re-read. This covers the *listing*; the open
+    // file's own contents are checked separately, and against a different question — see
+    // useEditableFile, where a stale buffer is a write conflict rather than a stale read.
+    enabled: active && !isEmptySource(source),
     // A campaign that froze no config answers 404 — a real answer about that campaign, not a
     // hiccup worth retrying three times before the view can say so.
     retry: false,

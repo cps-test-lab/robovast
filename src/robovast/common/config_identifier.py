@@ -210,6 +210,7 @@ def compute_config_identifier(
     run_files_hash: str,
     scenario_file_hash: str,
     variation_type_names: list[str],
+    sut_sources_hash: str = "",
 ) -> tuple[str, dict[str, str]]:
     """Compute unique config identifier from all inputs that affect config generation.
 
@@ -219,6 +220,11 @@ def compute_config_identifier(
         run_files_hash: Precomputed hash of run_files files.
         scenario_file_hash: Precomputed hash of scenario file content.
         variation_type_names: List of variation type names used in this config.
+        sut_sources_hash: Content hash of the config files the ``sut:`` channel
+            addresses, or ``""`` when the campaign declares none. They are inputs
+            to generation exactly as a world is, but they cannot ride in
+            ``run_files_hash``: that list is also *staged*, and a source mounted
+            un-rewritten beside its rewritten copy is what the channel refuses.
 
     Returns:
         Tuple of (12-char hex digest, dict of sub-identifiers for debugging).
@@ -245,6 +251,13 @@ def compute_config_identifier(
         f",ref={ref_files_hash}"
         f",var={var_hash}"
     )
+    # Appended only when the campaign uses the channel. Folding an empty component in
+    # unconditionally would change the identifier of every campaign already archived, and
+    # `merge_results` groups by it -- so a re-run would silently stop matching its own
+    # stored results.
+    if sut_sources_hash:
+        sub_identifier["sut_sources"] = sut_sources_hash
+        combined += f",sut={sut_sources_hash}"
     config_identifier = hashlib.sha256(combined.encode()).hexdigest()[:12]
 
     return config_identifier, sub_identifier

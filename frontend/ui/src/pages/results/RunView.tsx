@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useToasts } from '@/components/ToastProvider'
 import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -214,7 +215,11 @@ export function RunView({
   const panels = useQuery({
     queryKey: ['panels', campaignId],
     queryFn: () => robovast.listCampaignPanels(campaignId),
-    enabled: available,
+    // `active` for the same reason as `refetchOnWindowFocus` below, one level in: this view is
+    // kept mounted, so arriving at it is the other moment an out-of-band edit should be picked up.
+    // The layout is a small read of the campaign's declared panels — unlike the run data beneath
+    // it, which is immutable and expensive and is deliberately left ungated.
+    enabled: active && available,
     retry: false,
     // Pick up out-of-band edits to the .vast (edited on disk, or via the editor) when the tab
     // regains focus — no manual browser refresh needed.
@@ -558,9 +563,16 @@ function VisualizationEditor({
   const original = src.data?.content ?? ''
   const changed = text != null && text !== original
 
+  const { notify } = useToasts()
+
   const save = useMutation({
     mutationFn: () => robovast.updatePanelsSource(campaignId, text ?? ''),
-    onSuccess: onSaved,
+    // The popover closing is the only other sign this worked, and an edit whose effect is not
+    // visible in the panels below leaves that ambiguous.
+    onSuccess: () => {
+      onSaved()
+      notify({ severity: 'success', message: 'Visualization saved' })
+    },
   })
 
   return (

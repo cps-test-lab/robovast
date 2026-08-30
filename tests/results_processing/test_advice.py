@@ -311,3 +311,43 @@ def test_a_fallback_to_udp_reads_as_under_reserved_not_over_reserved():
     kinds = _by_kind(A.shm_advice(_measured(64 * _MIB + 1, 64 * _MIB), _shm("64Mi")))
     assert "shm_under_reserved" in kinds
     assert "shm_over_reserved" not in kinds
+
+
+# -- the same number means different things in the two sizing modes ----------------------
+
+
+_THROTTLED = [{"container": "sut", "periods": 1000, "throttled": 105, "runs": 150,
+               "runs_throttled": 150}]
+_DECLARED = [{"container": "sut", "cpu": "3"}]
+
+
+def test_throttling_is_a_warning_when_the_figure_was_declared():
+    """A container held at a ceiling its author chose may simply have been given too little,
+    and raising that ceiling is a thing the author can do."""
+    got = A.throttle_advice(_THROTTLED, _DECLARED, sizing="fixed")
+    assert got and got[0]["severity"] == "warning"
+    assert "resources.cpu" in got[0]["detail"]
+
+
+def test_it_is_only_a_suggestion_when_the_figure_was_measured():
+    """A container sized AT its own measurement sits against that measurement, so this fires
+    on every calibrated campaign -- measured, 150 runs of 150. Left at `warning` it would
+    train the reader to skip the one place the same number does mean something."""
+    got = A.throttle_advice(_THROTTLED, _DECLARED, sizing="calibrated")
+    assert got and got[0]["severity"] == "suggestion"
+    assert "Expected under calibrated sizing" in got[0]["title"]
+
+
+def test_the_remedy_named_is_one_that_would_change_anything():
+    """Under `calibrated` the limit IS the node's measurement, so raising the declared ceiling
+    changes nothing: what has to grow is the margin above the measurement."""
+    got = A.throttle_advice(_THROTTLED, _DECLARED, sizing="calibrated")
+    assert "calibration.headroom.cpu" in got[0]["detail"]
+    assert "resources.cpu -- sizing on sustained" not in got[0]["detail"]
+
+
+def test_a_campaign_that_recorded_no_mode_reads_as_the_mode_it_had():
+    """`sizing` predates nothing in a campaign recorded before the key existed, and every
+    campaign then had declared sizing."""
+    got = A.throttle_advice(_THROTTLED, _DECLARED, sizing=None)
+    assert got[0]["severity"] == "warning"

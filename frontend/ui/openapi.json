@@ -1511,6 +1511,11 @@
             "title": "Blocked",
             "type": "integer"
           },
+          "calibration": {
+            "default": 0,
+            "title": "Calibration",
+            "type": "integer"
+          },
           "completed": {
             "default": 0,
             "title": "Completed",
@@ -1549,6 +1554,7 @@
         },
         "required": [
           "blocked",
+          "calibration",
           "completed",
           "failed",
           "killed",
@@ -1666,6 +1672,11 @@
             "title": "Job Name",
             "type": "string"
           },
+          "kind": {
+            "default": "run",
+            "title": "Kind",
+            "type": "string"
+          },
           "status": {
             "default": "pending",
             "title": "Status",
@@ -1676,6 +1687,7 @@
           "detail",
           "display_name",
           "job_name",
+          "kind",
           "status"
         ],
         "title": "JobSummary",
@@ -1907,6 +1919,11 @@
             "additionalProperties": true,
             "title": "Sim",
             "type": "object"
+          },
+          "sut": {
+            "additionalProperties": true,
+            "title": "Sut",
+            "type": "object"
           }
         },
         "required": [
@@ -1915,7 +1932,8 @@
           "name",
           "parameters",
           "previews",
-          "sim"
+          "sim",
+          "sut"
         ],
         "title": "PreviewConfiguration",
         "type": "object"
@@ -2609,6 +2627,97 @@
           "markers"
         ],
         "title": "ServedContribution",
+        "type": "object"
+      },
+      "ServiceConfig": {
+        "description": "What this service is configured with -- the read-back of the operator's ``.env``.\n\n**Effective, not provenance.** In the pod every value arrives as an environment\nvariable, and nothing there can tell a ``.env`` line from a real environment variable.\nSo this reports what is in force; claiming a value \"came from ``.env``\" would be a claim\nthe process cannot check.\n\nRead-only. Making settings writable means a ``PATCH`` and a field naming what accepts\none; adding that field later is additive, whereas one that is ``False`` in every\nresponse until then states nothing and has to be kept truthful meanwhile.",
+        "properties": {
+          "how_to_change": {
+            "default": "",
+            "title": "How To Change",
+            "type": "string"
+          },
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceSetting"
+            },
+            "title": "Settings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "how_to_change",
+          "settings"
+        ],
+        "title": "ServiceConfig",
+        "type": "object"
+      },
+      "ServiceSetting": {
+        "description": "One environment setting this service is running with, as reported to one caller.\n\nThe **environment** is what produces this list -- everything a ``.env`` set arrives in\nthe pod as an environment variable -- so a setting the service reads is here whether or\nnot anyone has described it. An undescribed one arrives with empty :attr:`group` and\n:attr:`description` and ``withheld=\"unclassified\"``: visible, because it IS in force,\nand valueless, because a credential added later must not leak through a surface written\nearlier.",
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "group": {
+            "default": "",
+            "title": "Group",
+            "type": "string"
+          },
+          "is_set": {
+            "default": false,
+            "title": "Is Set",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "withheld": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withheld"
+          }
+        },
+        "required": [
+          "default",
+          "description",
+          "group",
+          "is_set",
+          "key",
+          "value",
+          "withheld"
+        ],
+        "title": "ServiceSetting",
         "type": "object"
       },
       "ShareArchive": {
@@ -3507,6 +3616,11 @@
             ],
             "title": "Build Unavailable"
           },
+          "built_at": {
+            "default": "",
+            "title": "Built At",
+            "type": "string"
+          },
           "can_build_images": {
             "anyOf": [
               {
@@ -3619,6 +3733,7 @@
           "api_version",
           "backend",
           "build_unavailable",
+          "built_at",
           "can_build_images",
           "code_revision",
           "in_pod",
@@ -3891,6 +4006,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/config": {
+      "get": {
+        "description": "What this service is configured with, read back out of its own environment.\n\nNot a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it\ndescribes the process that is serving rather than the campaigns it drives, and both\nlanes answer it identically -- the pod and a `vast serve` both hold their settings\nin the environment.\n\nHost paths are blanked for a non-loopback caller, the same rule ``/version``\napplies to ``results_root`` -- so the two admin surfaces do not disagree about\nwhether a path on the service's disk is publishable.",
+        "operationId": "service_config_admin_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service Config",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/log": {
       "get": {
         "description": "This service's own recent log, from byte *offset* -- what it has been doing.\n\nNot a ``RobovastInterface`` operation, for the reason ``/healthz`` is not one: it\ndescribes the process that is serving, not the campaigns it drives, and there is\nnothing a transport would implement differently. In the pod, these are the records\n``kubectl logs`` would show.",

@@ -53,6 +53,10 @@ export function HoverFacts({
   return (
     <Tooltip
       placement={placement}
+      // Read-only facts, so nothing is gained by letting the pointer into the panel -- and an
+      // interactive popper takes pointer events, which over a trigger people drag across (the
+      // campaign name is one) eats the selection they were making.
+      disableInteractive
       title={
         <Box>
           {title ? (

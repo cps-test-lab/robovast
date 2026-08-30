@@ -28,6 +28,45 @@
       "forbid"
     ]
   ],
+  "CalibrationConfig": [
+    [
+      "headroom",
+      false,
+      "Union[CalibrationHeadroom, NoneType]"
+    ],
+    [
+      "limit",
+      false,
+      "Union[Literal[request, declared], NoneType]"
+    ],
+    [
+      "size_on",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "CalibrationHeadroom": [
+    [
+      "cpu",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "memory",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "ChoiceDim": [
     [
       "type",
@@ -163,6 +202,11 @@
       "Union[dict, NoneType]"
     ],
     [
+      "sut",
+      false,
+      "Union[dict[str, Any], NoneType]"
+    ],
+    [
       "variations",
       false,
       "Union[list[VariationConfig], NoneType]"
@@ -180,9 +224,19 @@
       "Union[str, NoneType]"
     ],
     [
+      "calibration",
+      false,
+      "Union[CalibrationConfig, NoneType]"
+    ],
+    [
       "command",
       false,
       "Union[list[str], NoneType]"
+    ],
+    [
+      "config_files",
+      false,
+      "Union[dict[str, Union[str, dict[str, str]]], NoneType]"
     ],
     [
       "image",

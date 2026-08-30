@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
+import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -155,5 +155,62 @@ describe('batchesBudget', () => {
     // user's own metric or objective name, so a text match would put the objective chart on a
     // metric row and read that metric's value as a round count.
     expect(batchesBudget(search([{ label: 'batches', kind: 'metric' }]))).toBeNull()
+  })
+})
+
+// The estimate a collapsed running row prints. Everything else in this module is scoped to the
+// current BATCH; this is the only function that answers for the campaign, and most of its job is
+// knowing when it cannot.
+describe('campaignEtaSeconds', () => {
+  // perRun = 600s elapsed / 20 finished = 30s; the current batch has 20 of 40 left => 600s.
+  const search = (budget: BudgetItem[]) =>
+    status({ completed: 20 }, { mode: 'search', budget })
+  const batches = (current: number, limit: number): BudgetItem =>
+    ({ label: 'batches', kind: 'batches', current, limit, done: false }) as BudgetItem
+  const runs = (current: number, limit: number): BudgetItem =>
+    ({ label: 'runs', kind: 'runs', current, limit, done: false }) as BudgetItem
+  const stale: BudgetItem =
+    ({ label: 'stale_batches', kind: 'no_improvement', current: 1, limit: 3, done: false }) as BudgetItem
+
+  it('is the batch estimate for a batch campaign — it has exactly one batch', () => {
+    freeze()
+    const s = status({ completed: 20 }, { mode: 'batch' })
+    expect(campaignEtaSeconds(s, undefined, false)).toBe(estimateEtaSeconds(s, undefined, false))
+  })
+
+  it('projects the rounds still to come when batches bound the search', () => {
+    freeze()
+    // 600s to finish this round, then 2 whole rounds of 40 runs at 30s each.
+    expect(campaignEtaSeconds(search([batches(1, 4)]), undefined, false)).toBe(600 + 2 * 40 * 30)
+  })
+
+  it('projects the runs still to come when RUNS bound the search', () => {
+    freeze()
+    // 60 campaign runs left at 30s each — not this round's 600s, which describes 20 runs.
+    expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, false)).toBe(60 * 30)
+  })
+
+  it('takes the smaller when both bound it — the campaign stops at whichever fires first', () => {
+    freeze()
+    const both = campaignEtaSeconds(search([batches(1, 4), runs(90, 150)]), undefined, false)
+    expect(both).toBe(Math.min(600 + 2 * 40 * 30, 60 * 30))
+    expect(both).toBe(60 * 30)
+  })
+
+  it('never reports the current round as the campaign when nothing bounds the work', () => {
+    freeze()
+    // `no_improvement` fires on a value nothing can project, so it converts to no time at all.
+    // The batch estimate exists and is deliberately NOT used: a search on its sixth round would
+    // otherwise claim the same remaining time as one on its first.
+    const s = search([stale])
+    expect(estimateEtaSeconds(s, undefined, false)).not.toBeNull()
+    expect(campaignEtaSeconds(s, undefined, false)).toBeNull()
+  })
+
+  it('says nothing before the first run finishes, and nothing once terminal', () => {
+    freeze()
+    expect(campaignEtaSeconds(status({ completed: 0 }, { mode: 'batch' }), undefined, false)).toBeNull()
+    expect(campaignEtaSeconds(status({ completed: 20 }, { mode: 'batch' }), undefined, true)).toBeNull()
+    expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, true)).toBeNull()
   })
 })

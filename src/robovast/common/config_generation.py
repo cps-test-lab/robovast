@@ -40,7 +40,7 @@ from .errors import missing_input_error
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
-from .plugin_ref import is_file_ref, load_ref
+from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
 from .variation.base_variation import VariationInfeasibleError
 from .variation.loader import _validate_variation_class
 
@@ -217,6 +217,58 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     return configs, input_files, campaign_transient_files, config_transient_files
 
 
+#: Config sections whose local plugin sources a campaign cannot RUN without. A module named
+#: here is loaded while the campaign composes -- by a variation, a search strategy, an
+#: extractor, an input generator or the simulator backend -- so a campaign that does not carry
+#: it cannot be re-run from its own archive.
+RUN_REQUIRED_SECTIONS = ("configuration", "execution", "search")
+
+#: Value positions that name a plugin. Mapping keys are read everywhere (that is where a
+#: variation states its class); values only here, because `configuration[].parameters` is
+#: arbitrary user data and a parameter that merely looks like a reference must not be archived
+#: -- still less folded into the config identity.
+REF_VALUE_KEYS = ("strategy", "plugin", "backend", "postprocessing", "generate")
+
+
+def _config_plugin_refs(parameters, sections=RUN_REQUIRED_SECTIONS):
+    """Every run-required local plugin reference a raw config names, in declaration order.
+
+    Split out from :func:`_plugin_run_files` so that "which sections name run-required
+    plugins" is stated once, as policy, rather than tangled with resolving the paths.
+    """
+    refs = []
+    for section in sections:
+        for ref in iter_file_refs(parameters.get(section), REF_VALUE_KEYS):
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def _plugin_run_files(vast_dir, parameters):
+    """The local ``<path>.py`` sources this campaign's own plugin references name.
+
+    Run files rather than input files, for the reason `_backend_run_files` gives below: the
+    module has to be archived into ``<campaign>/_config/`` so a retrigger can reconstruct a
+    runnable project, AND content-hashed into the config identity, because a variation's source
+    decides which configurations exist -- an entry-point variation already hashes its whole
+    package, and a file reference that hashed only its name string made an edited plugin
+    indistinguishable from the original.
+
+    Filtered to relative paths that exist. A name that resolves to an installed entry point is
+    not a file; a reference whose file is absent is composition's failure to report, with the
+    plugin resolver's own message naming the path it looked at, rather than this collector's to
+    pre-empt with a worse one.
+    """
+    found = []
+    for ref in _config_plugin_refs(parameters):
+        rel = file_ref_path(ref)
+        if not rel or os.path.isabs(rel) or os.path.normpath(rel).startswith(".."):
+            continue
+        if rel not in found and os.path.isfile(os.path.join(vast_dir, rel)):
+            found.append(rel)
+    return found
+
+
 def _backend_run_files(vast_dir, parameters):
     """Files the simulator backend declares its simulator needs, relative to the ``.vast``.
 
@@ -330,6 +382,19 @@ def _last_json_line(lines):
     return None
 
 
+def _validated_variation_config(variation_class, parameters):
+    """The plugin's own config object for *parameters*, or *parameters* unchanged.
+
+    A plugin declares its destinations on its ``CONFIG_CLASS``; the composition loop
+    carries the raw mapping, because that is what other hooks want. Anything that asks a
+    plugin *what it will write* needs the validated form.
+    """
+    model = getattr(variation_class, "CONFIG_CLASS", None)
+    if model is None or not isinstance(parameters, dict):
+        return parameters
+    return model(**parameters)
+
+
 def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                             parameters, vast_dir):
     """Check what each variation says it will write, before any of them runs.
@@ -353,9 +418,17 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     execution = parameters.get('execution', {}) or {}
 
     backend = backend_key_checker = None
+    sut_destinations: list = []
     for variation_class, variation_parameters in classes_and_parameters:
         try:
-            declared = variation_class.declared_outputs(variation_parameters) or {}
+            # Validated first. `declared_outputs` reads `.outputs()` off the plugin's own
+            # config object, and what reaches here is the raw mapping from the `.vast` --
+            # on which that attribute does not exist, so every plugin answered "undeclared"
+            # and this whole check silently did nothing, for every channel. A config that
+            # will not validate is skipped rather than reported here; it is refused a
+            # moment later with a message about the config itself.
+            declared = variation_class.declared_outputs(
+                _validated_variation_config(variation_class, variation_parameters)) or {}
         except Exception as exc:  # noqa: BLE001 - a plugin that cannot answer is not checked
             logger.debug("%s did not declare its outputs: %s",
                          variation_class.__name__, exc)
@@ -367,6 +440,8 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                 f"Scenario '{config['name']}': {variation_class.__name__} writes "
                 f"{unknown}, which the scenario file does not declare. "
                 f"Valid parameters are: {valid_names}")
+
+        sut_destinations.extend(declared.get('sut', []))
 
         sim_outputs = declared.get('sim', [])
         if not sim_outputs:
@@ -385,6 +460,14 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
         name, resolve = backend_key_checker
         for path in sim_outputs:
             resolve(backend, path, name)
+
+    # The sut arm. Checked against the file the campaign declared -- the component that
+    # owns the schema is the one that says what is addressable, which is what all three
+    # channels have in common.
+    if sut_destinations:
+        from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+            check_destinations)
+        check_destinations(execution, vast_dir, sut_destinations)
 
 
 #: OSC types whose values carry an ``entity_name``. The scenario file declares them
@@ -657,6 +740,48 @@ def _validated_block(backend, block, name):
     """The backend's validated view of a resolved ``sim`` block."""
     from robovast.common.simulators import _validated_cfg  # pylint: disable=import-outside-toplevel
     return _validated_cfg(backend, dict(block or {}), name)
+
+
+def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
+    """Resolve every configuration's ``sut`` block and write the files it implies.
+
+    Runs after the variation loop, for the same reason the ``sim`` twin does: a
+    configuration's settings do not exist before it. The authored ``sut:`` block is the
+    fixed part and a variation's value wins over it, which is the precedence the other two
+    channels already have.
+
+    Each cell gets its own rewritten copy of every source it touched, staged through
+    ``_config_files`` -- machinery that is already per configuration, which is why this
+    half needs nothing from either execution lane.
+    """
+    from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+        ENV_SOURCE, SutChannelError, materialize, merge_sut_block, split_destination)
+
+    execution = parameters.get("execution", {}) or {}
+    authored = {c.get("name"): (c.get("sut") or {})
+                for c in (parameters.get("configuration") or [])}
+    if not any(authored.values()) and not any(c.get("sut") for c in configs):
+        return
+
+    for config in configs:
+        block = merge_sut_block(authored.get(config.get("_config_name")) or {},
+                                config.get("sut") or {})
+        if not block:
+            continue
+        # The environment is the channel's second carrier and no execution backend
+        # delivers it per configuration yet. Refused rather than dropped: a destination
+        # that quietly does nothing is a campaign whose factor did not vary, reported
+        # nowhere.
+        env_bound = [d for d in block if split_destination(d)[0] == ENV_SOURCE]
+        if env_bound:
+            raise SutChannelError(
+                f"{', '.join(sorted(env_bound))}: the sut: channel's environment carrier "
+                "is not delivered per configuration yet, so these would silently do "
+                "nothing. Address a declared config file instead.")
+        contribution = materialize(execution, vast_dir, block, output_dir,
+                                   config.get("name", ""))
+        config["sut"] = block
+        config.setdefault("_config_files", []).extend(contribution.files)
 
 
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
@@ -1043,7 +1168,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
         """Collect a local module path from an entry-point/file ref or file value."""
         if not isinstance(value, str) or os.path.isabs(value):
             return
-        path_part = value.rsplit(".py:", 1)[0] + ".py" if is_file_ref(value) else value
+        path_part = file_ref_path(value) or value
         candidate = os.path.join(base_dir, path_part) if base_dir else path_part
         if os.path.isfile(candidate):
             analysis_files.append(path_part)
@@ -1138,7 +1263,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # 8: execution is carried as a copy rather than a hand-listed subset, so a cached entry
 # from 7 is missing the keys that list forgot -- a .vast unchanged since then composes
 # byte-identically and would otherwise replay the gap.
-_CACHE_FORMAT_VERSION = 8
+# 9: _run_files now also carries the local plugin modules the config references, so a cached
+# entry from 8 describes both a different input set and a different config identity -- the
+# modules are content-hashed, and were previously not carried at all.
+_CACHE_FORMAT_VERSION = 9
 
 
 def _build_generate_cache_key(
@@ -1465,6 +1593,27 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 )
         run_files.extend(additional_run_files)
 
+    # A file the `sut:` channel addresses is staged as a REWRITTEN copy, per configuration.
+    # Staging the original beside it would put two copies in the container, and the one the
+    # stack read would decide whether the campaign varied anything -- silently, since a run
+    # against unvaried configuration succeeds and reports normally.
+    #
+    # Excluded here rather than refused in the `.vast`, because run_files are patterns: a
+    # campaign writes `files/*.yaml` to stage its map, and a source caught by that glob is
+    # not an author error to correct. Removing it leaves exactly one copy, and an `.osc`
+    # still naming the old path fails loudly on a missing file instead of quietly reading
+    # the wrong one. The content still reaches the configuration identity -- see
+    # `sut_source_paths` in common/execution.py, which hashes it separately for this reason.
+    from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
+        source_paths as _sut_source_paths)
+    owned_by_sut = set(_sut_source_paths(parameters.get("execution", {}) or {}, vast_dir))
+    if owned_by_sut:
+        dropped = [f for f in run_files if f in owned_by_sut]
+        if dropped:
+            logger.info("staged as sut: config sources instead of run_files: %s",
+                        ", ".join(sorted(dropped)))
+        run_files = [f for f in run_files if f not in owned_by_sut]
+
     # Generated outputs join run_files, so everything downstream -- the config-identity
     # hash, the copy into <campaign>/_config/, the /config/<path> bind mount into the run
     # -- treats them exactly like hand-written inputs, with no second code path. In the
@@ -1492,6 +1641,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # `.vast` declares and therefore what the composition cache key must cover; a campaign
     # whose every configuration replaces it simply carries one file it never opens.
     for rel in _backend_run_files(vast_dir, parameters):
+        if rel not in run_files:
+            run_files.append(rel)
+
+    # And the campaign's own plugin modules -- a variation's `<path>.py:<Class>`, a search
+    # strategy, an extractor, a generator. Run files for the same three reasons as a world
+    # file: mounted, archived into <campaign>/_config/ so a retrigger can reconstruct a
+    # runnable project, and hashed into the config identity because the source that decides
+    # which configurations exist is part of what the experiment IS.
+    for rel in _plugin_run_files(vast_dir, parameters):
         if rel not in run_files:
             run_files.append(rel)
 
@@ -1736,6 +1894,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         configs.extend(current_configs)
 
+    # Resolve how the system under test is configured in each cell, and write the files
+    # that implies. Before the normalisation below, so those files are treated exactly like
+    # any other artifact a variation produced.
+    _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir)
+
     # Normalize _config_files and _config_transient_files: convert artifact absolute
     # paths (those inside output_dir) to paths relative to output_dir.  This makes
     # cached and non-cached results structurally identical, and lets execution.py
@@ -1820,7 +1983,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # their hashes, what it wrote. Dumped into <campaign>/_transient/configurations.yaml,
         # so a campaign records the provenance of inputs it did not author.
         "_generated": generated_records,
-        "_input_files": campaign_input_files,
+        # Deduplicated, and minus anything already carried as a run file. One file is
+        # legitimately named twice -- a metrics plugin under `search.postprocessing` and
+        # again under `results_processing.postprocessing`, a BT xml as a param of both --
+        # and staging copies each entry in turn, so a duplicate is a repeated copy and a
+        # repeated line in the campaign's own record of what it carried.
+        "_input_files": list(dict.fromkeys(
+            f for f in campaign_input_files if f not in run_files)),
         "_transient_files": campaign_transient_files,
         # Not underscore-prefixed, so it crosses the isolated-compose boundary and the
         # on-disk cache untouched -- and a cache hit reports it just as truly, since which

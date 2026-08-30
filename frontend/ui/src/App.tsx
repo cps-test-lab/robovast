@@ -12,6 +12,7 @@ import {
   SUBVIEW_ICON_SIZE,
 } from '@/components/viewIcons'
 import { KeepAlive } from '@/components/KeepAlive'
+import { NotificationAsk } from '@/components/NotificationAsk'
 import { lazyView } from '@/lib/lazyView'
 import { CAMPAIGN_SEL, hashFor, navFromHash, nextNav, type Nav, type ResultsSel } from '@/lib/hashNav'
 
@@ -145,6 +146,9 @@ export function App() {
           navigation instead of resetting on unmount. That also means a view that throws stays
           mounted and keeps throwing — hence a boundary per view, inside lazyView. */}
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3, position: 'relative' }}>
+        {/* Above every view rather than inside one: it is asked of the browser, not of the page
+            you happen to be on, and the campaign that prompts it can be started from anywhere. */}
+        <NotificationAsk />
         <KeepAlive active={nav.topicId === 'config'}>
           {/* `campaignId` set means the page is showing that campaign's frozen config instead of a
               workspace — a deep link from a campaign card, never a sidebar click. `onExit` is the
@@ -157,7 +161,6 @@ export function App() {
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>
           <ResultsPage
-            active={nav.topicId === 'results'}
             view={nav.viewId}
             campaignId={nav.campaignId}
             sel={nav.sel}

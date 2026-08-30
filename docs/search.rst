@@ -470,6 +470,41 @@ of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
 ``elapsed_s`` — directly SQL-queryable) and mirrored in
 ``SearchReport.extra['stop']``; the campaign analysis notebook prints it.
 
+Surviving a service restart
+---------------------------
+
+A search whose service process goes away — a pod replacement, an eviction, an OOM — is
+picked back up by the next one, at the batch boundary it reached. **Nothing about the
+strategy is serialized.** The campaign's ``unit`` rows already record every parameter set
+it proposed, so a fresh strategy is re-driven through the exact ``ask``/``tell`` sequence
+the first one saw (``SearchStrategy.resume``), and from there it carries on identically.
+``campaign.db`` is published at each batch boundary for this reason: those rows are the
+checkpoint.
+
+The replay asks before it tells, batch by batch, and both halves matter. ``ask`` is what
+advances a strategy's sequence, so one told the evaluations without being asked for the
+proposals would resume with its stream rewound and re-draw points it had already spent. And
+a strategy may consult what it has been told *while* proposing — ``boundary`` does — so
+only the original interleaving reproduces the original draws. The count replayed is what
+was **proposed**, not what came back: a draw the variation pipeline could not realize, or
+one whose runs were all lost, costs a proposal and produces no evaluation.
+
+Two conditions, both checked before the campaign is re-launched:
+
+* **``search.seed`` must be set.** An unseeded strategy re-seeds from entropy, so the
+  replay would rebuild a *different* search rather than continue this one. This is the same
+  seed that makes a search reproducible at all — a search without one is not resumable, and
+  the service says so instead of resuming it into something else.
+* **The strategy must not declare** ``RESUMABLE = False``. Every strategy here is a
+  function of its seed and the evaluations it was told, so the default replay is exact for
+  all of them. A custom strategy that depends on something a seed cannot fix — the wall
+  clock, state outside the process — sets that class attribute and opts out.
+
+A search that fails either condition keeps its ``crashed`` phase and its batches stay
+recoverable with ``vast campaign import``. An **elapsed** budget is measured from the
+campaign's recorded start, not from when the new process picked it up, so a restart cannot
+hand a time-capped search a fresh clock.
+
 Repetitions and noisy systems
 -----------------------------
 
