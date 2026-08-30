@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
@@ -317,6 +317,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const closeMenu = () => setMenuAnchor(null)
+
+  // Wraps a control that sits inside the row-wide fold target: the row folds on any click the
+  // controls do not claim, so a control must claim its own or it both acts and folds the card
+  // under itself. The chevron needs it too — folding twice is folding not at all.
+  const claim = (fn: () => void) => (e: MouseEvent) => {
+    e.stopPropagation()
+    fn()
+  }
   const [ppOpen, setPpOpen] = useState(false)
 
   const del = useMutation({
@@ -795,16 +803,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           direction="row"
           spacing={1}
           alignItems="center"
-          // Its own clicks stay its own: the column is inside the row-wide fold target, and
-          // without this a mis-aimed click on the gap beside the Stop button folded the card the
-          // reader was about to act on. The cursor goes back to the default for the same reason.
-          onClick={(e) => e.stopPropagation()}
-          sx={{
-            minWidth: CONTROLS_COLUMN,
-            flexShrink: 0,
-            justifyContent: 'flex-end',
-            cursor: 'default',
-          }}
+          // No handler of its own: the column is mostly empty space on a folded row, and space
+          // that looks like the row must fold like the row. Each control claims its own click
+          // instead (`claim`), which is the smallest thing that is not the fold.
+          sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
         >
         {/* Left of the menu, and an icon like everything else in this column: a labelled button
             here was the one control wide enough to set the column's width, so a live card's
@@ -827,7 +829,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               color="error"
               aria-label="stop campaign"
               disabled={stop.isPending}
-              onClick={onStop}
+              onClick={claim(() => void onStop())}
             >
               {stop.isPending ? <CircularProgress size={16} /> : <StopRoundedIcon fontSize="small" />}
             </IconButton>
@@ -852,7 +854,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 size="small"
                 aria-label="campaign actions"
                 aria-haspopup="menu"
-                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuAnchor(e.currentTarget)
+                }}
                 disabled={del.isPending}
               >
                 {del.isPending ? (
@@ -862,7 +867,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 )}
               </IconButton>
             </Tooltip>
-            <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
+            {/* The menu is portalled out of the card but its events still travel this React
+                tree, so without this every entry picked from it also folded the card. */}
+            <Menu
+              anchorEl={menuAnchor}
+              open={!!menuAnchor}
+              onClose={closeMenu}
+              onClick={(e) => e.stopPropagation()}
+            >
               {menuItems}
             </Menu>
           </>
@@ -877,7 +889,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             size="small"
             aria-label={collapsed ? 'expand campaign' : 'collapse campaign'}
             aria-expanded={!collapsed}
-            onClick={toggle}
+            onClick={claim(toggle)}
           >
             {collapsed ? (
               <KeyboardArrowDownRoundedIcon fontSize="small" />
