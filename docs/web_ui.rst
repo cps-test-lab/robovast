@@ -256,6 +256,28 @@ must be re-read: without it a card would show the phase from before you switched
 long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
 therefore fetch once on return.
 
+**Switching pages counts as coming back**, and for a while it did not. Every page is kept
+mounted once visited so its state survives navigation — an editor buffer, a scroll position,
+an upgrade in progress — and a page that never unmounts is one whose data is never re-read
+either. So a page's readings are also gated on that page being the one on screen: they stop
+while it is not, and they are read again on the way back in. That is one rule with two
+halves, and the second is what answers "did the version I just published land?" on arriving
+at Admin, or shows a ``.vast`` that was added from the CLI without a browser reload.
+
+Which readings take the gate is a judgement about each one, not a blanket policy. It applies
+to what is **cheap and can change while you are elsewhere**: workspaces and file listings, the
+campaign phases and job lists, the service version and upgrade check, the campaign listing,
+a run view's panel layout. It deliberately does **not** apply to a finished campaign's
+results — the SQL behind the Explorer, the Data browser and every run-view panel, and the
+notebook render. That data cannot change, because the campaign that produced it is over, and
+re-reading it is the most expensive thing this UI does; making every visit pay for it would
+buy nothing. Re-running postprocessing is what invalidates those, and it already does.
+
+The gate is also what stops a hidden page from spending on the service's behalf: before it,
+the Admin page cost a container-registry round trip every minute for as long as the tab was
+open, whichever page you were actually looking at, and each running campaign cost a
+Kubernetes API call every two seconds from a card nobody could see.
+
 **The app itself** can go stale too, and it is the one thing here that no amount of
 polling helps with. Each view is a separate chunk fetched on first visit, named by a
 hash of its contents; restarting the service onto a new build rehashes all of them. A tab

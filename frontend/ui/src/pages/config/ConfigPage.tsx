@@ -10,6 +10,7 @@ import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
+import { useActiveView } from '@/lib/activeView'
 import { robovast } from '@/lib/robovastClient'
 import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
 import { type ConfigSource } from '@/lib/configSource'
@@ -45,9 +46,17 @@ export function ConfigPage({
   const source: ConfigSource = campaignMode
     ? { kind: 'campaign', id: campaignId }
     : { kind: 'workspace', id: workspaceId }
+  const active = useActiveView()
   const editor = useConfigEditor(source)
 
-  const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => robovast.listWorkspaces() })
+  // Workspaces come and go outside this tab — another session, another agent, the CLI. The page
+  // is kept mounted once visited, so without this gate the list is whatever it was on the first
+  // visit, for the rest of the session. See lib/activeView.tsx.
+  const workspaces = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => robovast.listWorkspaces(),
+    enabled: active,
+  })
   useQuery({
     queryKey: ['configSchema'],
     queryFn: async () => {

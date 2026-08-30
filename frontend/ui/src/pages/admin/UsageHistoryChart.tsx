@@ -5,6 +5,7 @@ import Stack from '@mui/material/Stack'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, type UsageHistory } from '@/lib/robovastClient'
 import { formatLocalTime } from '@/lib/time'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
@@ -53,12 +54,15 @@ function encodingNote(rows: { kind: string }[], metricsUnavailable?: string | nu
 
 export function UsageHistoryChart() {
   const [window, setWindow] = useState<Window>('1h')
+  const active = useActiveView()
   const history = useQuery({
     queryKey: ['usageHistory', window],
     queryFn: () => robovast.usageHistory(window),
     // The recorder samples every 30s, so polling faster only costs round trips. Refetch on
     // focus for the reason the sidebar meters do: a stale chart is what you look at first
-    // on coming back to the tab.
+    // on coming back to the tab — and `enabled` says the same thing about coming back to the
+    // page, which this one is kept mounted behind (lib/activeView.tsx).
+    enabled: active,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     retry: false,
