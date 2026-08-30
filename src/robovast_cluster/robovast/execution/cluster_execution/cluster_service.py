@@ -184,7 +184,11 @@ class ClusterService(LocalTransport):
         # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
         # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
         # re-lists once a second; see _campaign_index.
-        self._index_cache: "tuple[float, dict] | None" = None
+        #: (when, {id: created_at}, {id: finished_at}) — both maps from ONE cached pass,
+        #: because ordering needs a start time for every campaign and a finish time for
+        #: every terminal one, and two listings of zero-byte keys cost far less than a
+        #: record fetch per campaign.
+        self._index_cache: "tuple[float, dict, dict] | None" = None
         self._index_lock = threading.Lock()
         # True while one caller is out doing the listing. Guards the single-flight in
         # _campaign_index: the listing itself must not hold _index_lock (it is network
@@ -1077,7 +1081,7 @@ class ClusterService(LocalTransport):
         object store, and the inherited disk scan sees only what this pod happens to still
         have in scratch.
         """
-        return set(self._campaign_index())
+        return set(self._campaign_index()[0])
 
     def _started_at_for(self, cid: str) -> "str | None":
         """Inherited precedence, plus the index as the last resort.
@@ -1096,20 +1100,80 @@ class ClusterService(LocalTransport):
         cached = self._started_at_cache.get(cid)
         if cached is not None:
             return cached
-        indexed = self._campaign_index().get(cid)
+        indexed = self._campaign_index()[0].get(cid)
         if indexed:
             self._started_at_cache[cid] = indexed
             return indexed
         return super()._started_at_for(cid)
+
+    def _finished_at_for(self, cid: str) -> "str | None":
+        """Inherited precedence, plus the index as the last resort — see
+        :meth:`_started_at_for`, whose reasoning this repeats exactly.
+
+        The marker matters more here than the start one does, because a finish time has no
+        cheap fallback: without it, ordering the terminal group would mean materialising a
+        record per campaign, which is what that override exists to avoid.
+
+        Not cached locally. The inherited cache is keyed to a value written once; this one
+        moves whenever a campaign ends again, and the index it reads is already cached for
+        :data:`_INDEX_CACHE_TTL`, so a second cache would only add a way to be stale.
+        """
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is None:
+            indexed = self._campaign_index()[1].get(cid)
+            if indexed:
+                return indexed
+        return super()._finished_at_for(cid)
+
+    def _on_campaign_finished(self, campaign_id: str, state) -> None:
+        """Publish the campaign's finish marker, so a listing can order by it.
+
+        Best-effort for the same reason as :meth:`_on_campaign_started`: a campaign that has
+        already run is not worth failing over its index entry, and a campaign whose marker
+        never lands simply orders by its start time.
+        """
+        from datetime import datetime, timezone
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.control_server import is_terminal
+        snap = state.snapshot() if state is not None else None
+        if snap is None or not is_terminal(snap.phase) or not snap.phase_since:
+            return
+        finished_at = datetime.fromtimestamp(snap.phase_since, tz=timezone.utc).isoformat()
+        try:
+            cfg = self._cluster_config()
+            # Interactive: one tiny marker PUT on the campaign's last breath, already
+            # best-effort, and nothing should wait minutes on a stalled tunnel for it.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            in_pod_storage.mark_campaign_finished(storage, cfg, campaign_id, finished_at)
+        except Exception as e:  # noqa: BLE001 - discoverability, not correctness
+            logger.warning("Could not record the finish time of campaign %s: %s",
+                           campaign_id, e)
+            return
+        with self._index_lock:
+            # Extended rather than dropped, for the reason `_on_campaign_started` gives:
+            # a cold listing at exactly this moment is the one worth avoiding.
+            cached = self._index_cache
+            if cached is not None:
+                self._index_cache = (cached[0], cached[1],
+                                     {**cached[2], campaign_id: finished_at})
 
     #: How long a campaign-index listing is reused. The campaign-list SSE stream re-lists
     #: every second (app.py ``_SSE_LIST_POLL_S``), so without this every one of those polls
     #: would be an object-store round-trip.
     _INDEX_CACHE_TTL = 10.0
 
-    def _campaign_index(self) -> dict:
-        """``{campaign_id: created_at}`` from the object store, cached for
-        :data:`_INDEX_CACHE_TTL`.
+    @staticmethod
+    def _empty_index() -> "tuple[dict, dict]":
+        return {}, {}
+
+    def _campaign_index(self) -> "tuple[dict, dict]":
+        """``({campaign_id: created_at}, {campaign_id: finished_at})`` from the object store,
+        cached together for :data:`_INDEX_CACHE_TTL`.
+
+        Two maps from one cached pass rather than two caches: they are read by the same
+        ordering loop, on the same tick, and a campaign appears in the second only once it
+        has ended.
 
         Best-effort: an unreachable store means "cannot tell what is stored right now", and
         the honest response is to list what we *can* see rather than fail the listing. The
@@ -1130,9 +1194,9 @@ class ClusterService(LocalTransport):
         with self._index_lock:
             cached = self._index_cache
             if cached is not None and now - cached[0] < self._INDEX_CACHE_TTL:
-                return cached[1]
+                return cached[1:]
             if self._index_refreshing:
-                return {} if cached is None else cached[1]
+                return self._empty_index() if cached is None else cached[1:]
             self._index_refreshing = True
         try:
             cfg = self._cluster_config()
@@ -1141,11 +1205,12 @@ class ClusterService(LocalTransport):
             # With the bulk budget a stalled tunnel made each poll block for minutes.
             storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             index = dict(in_pod_storage.list_indexed_campaigns(storage, cfg))
+            finished = dict(in_pod_storage.list_finished_campaigns(storage, cfg))
         except Exception as e:  # noqa: BLE001 - never fail a listing over discovery
             logger.warning("Could not read the campaign index: %s", e)
             with self._index_lock:
                 self._index_refreshing = False
-                return {} if self._index_cache is None else self._index_cache[1]
+                return self._empty_index() if self._index_cache is None else self._index_cache[1:]
         with self._index_lock:
             self._index_refreshing = False
             # A marker ``_on_campaign_started`` added while this listing was in flight is
@@ -1153,8 +1218,8 @@ class ClusterService(LocalTransport):
             # registry into its id set (``LocalTransport._extra_live_ids``), so a campaign
             # this process just started stays listed without the index, and the next
             # refresh picks the marker up from the store.
-            self._index_cache = (now, index)
-        return index
+            self._index_cache = (now, index, finished)
+        return index, finished
 
     def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
         """Publish the campaign's index marker, so it is discoverable from here on.
@@ -1191,7 +1256,8 @@ class ClusterService(LocalTransport):
             if cached is None:
                 self._index_cache = None  # nothing to extend; the next caller lists
             else:
-                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at})
+                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at},
+                                     cached[2])
 
     def _unmark_campaign(self, campaign_id: str) -> None:
         """Drop a deleted campaign's index marker, so it stops being listed."""
@@ -1201,6 +1267,7 @@ class ClusterService(LocalTransport):
             # Interactive: one tiny marker delete on a request path, already best-effort.
             storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             in_pod_storage.unmark_campaign_indexed(storage, cfg, campaign_id)
+            in_pod_storage.unmark_campaign_finished(storage, cfg, campaign_id)
         except Exception as e:  # noqa: BLE001 - the data itself is already gone
             logger.warning("Could not remove campaign %s from the index: %s",
                            campaign_id, e)
@@ -2622,7 +2689,7 @@ class ClusterService(LocalTransport):
             return
         from robovast.execution.cluster_execution import bucket_ops
         gone = set(removed)
-        for cid in self._campaign_index():
+        for cid in self._campaign_index()[0]:
             if cid in gone or bucket_ops.bucket_name(cid) in gone:
                 self._unmark_campaign(cid)
 
@@ -3119,7 +3186,7 @@ class ClusterService(LocalTransport):
             tracked = cid in self._campaigns
         if tracked or (local / "campaign.db").is_file():
             return local
-        if cid not in self._campaign_index():
+        if cid not in self._campaign_index()[0]:
             return local
         try:
             # Interactive: two small objects, and ``list_campaigns`` reaches here per row

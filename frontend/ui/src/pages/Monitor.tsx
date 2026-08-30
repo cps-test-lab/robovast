@@ -659,10 +659,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           )}
           {/* One column, two questions, decided by whether the campaign is still going.
         
-              A campaign that is OVER is asked "which of these is recent": the age, not a wall
-              clock — the id already ends in a `-YYYY-MM-DD-HHMMSS` stamp, so an absolute start
-              time beside it printed the same fact twice and spent 150px doing it. The duration,
-              which neither the id nor a start time gives, is on the hover.
+              A campaign that is OVER is asked "which of these is recent", and the honest answer
+              is when it FINISHED, not when it started: one that ran for eight hours and ended a
+              minute ago is the freshest thing on the page and its start time says three days.
+              The listing orders the terminal group the same way, so this column and the order
+              agree — see `list_campaigns`. It falls back to the start time for a campaign whose
+              record carries no terminal outcome, which is also how such a campaign is ordered.
+              An age rather than a wall clock, because the id already ends in a
+              `-YYYY-MM-DD-HHMMSS` stamp; the exact times and the duration are on the hover.
         
               A campaign that is RUNNING is asked "how much longer": the estimate. It is empty
               rather than dashed when none can be had — nothing has finished yet, or it is a
@@ -694,7 +698,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                   ? eta != null
                     ? `~${formatDuration(eta)} left`
                     : ''
-                  : formatAge(summary.started_at)}
+                  : formatAge(summary.finished_at ?? summary.started_at)}
               </Typography>
             </HoverFacts>
           ) : null}

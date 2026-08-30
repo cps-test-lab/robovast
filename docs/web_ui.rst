@@ -22,7 +22,11 @@ It provides four views:
   it is, and opening it is always the reader's choice.
 
   The **time** column asks a different question of each state. A campaign that is over shows
-  **how long ago it started**; a campaign that is still going shows **how much longer it has**,
+  **how long ago it finished** — the freshness of its results, which its start time answers
+  badly: a campaign that ran for eight hours and ended a minute ago is the newest thing on the
+  page and started three days back. The listing orders the terminal group by the same figure,
+  so the column and the order agree; a campaign whose record carries no terminal outcome falls
+  back to its start time in both. A campaign that is still going shows **how much longer it has**,
   and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
   duration or the expected finish.
 
