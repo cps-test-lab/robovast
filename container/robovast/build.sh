@@ -55,8 +55,8 @@ PLATFORM=""
 . "$BASEDIR/../buildcache.sh"
 # shellcheck source=container/ask_push.sh
 . "$BASEDIR/../ask_push.sh"
-# shellcheck source=../git_revision.sh
-. "$BASEDIR/../git_revision.sh"
+# shellcheck source=../image_stamp.sh
+. "$BASEDIR/../image_stamp.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -260,7 +260,7 @@ build_base() {
   # the Dockerfile's LABEL); locally nothing filled it at all, so a released family recorded no
   # origin. Only the base needs it: Dockerfile.roqsim is FROM the resolved base tag and image
   # labels are inherited, so the derived image carries this one.
-  git_revision_args
+  image_stamp_args
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \

@@ -110,6 +110,20 @@ def _code_revision() -> str:
         return ""
 
 
+def _build_date() -> str:
+    """When the image this process runs was built, or ``""`` when unavailable.
+
+    Never raises and never substitutes: a source checkout has no build to date, and a
+    manufactured one — the file's mtime, today — would be read as the age of the deployment
+    and believed. Same contract as :func:`_code_revision`, for the same reason.
+    """
+    try:
+        from robovast.common.execution import build_date
+        return build_date()
+    except Exception:  # noqa: BLE001 - diagnostics must not break the handshake
+        return ""
+
+
 def _package_version() -> str:
     """The packaged semver of the running code, or ``""`` when there is no metadata.
 
@@ -1436,7 +1450,8 @@ class LocalTransport(RobovastInterface):
         # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(),
                            code_revision=_code_revision(),
-                           package_version=_package_version(), backend="docker",
+                           package_version=_package_version(),
+                           built_at=_build_date(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root),
