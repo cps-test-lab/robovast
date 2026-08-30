@@ -1,6 +1,16 @@
 # A robovast-service on the local Docker lane, running in the image it is shipped as.
 #
-#   ROBOVAST_ROOT=$PWD/robovast-data docker compose -f container/service/docker-compose.yml up
+#   export ROBOVAST_ROOT=$PWD/robovast-data
+#   mkdir -p "$ROBOVAST_ROOT"/{results,workspaces,tmp}
+#   export ROBOVAST_UID=$(id -u) ROBOVAST_GID=$(id -g)
+#   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+#   export ROBOVAST_AUTH_TOKEN=$(openssl rand -hex 16)
+#   docker compose -f container/service/docker-compose.yml up -d
+#
+# The directories are made first on purpose. The daemon would create the identity mount
+# itself, but only its top level, and a TMPDIR that does not exist is not an error to
+# Python -- tempfile falls back to /tmp, which the startup check then refuses while naming
+# /tmp rather than the directory nobody made.
 #
 # The point is parity: this is the same image the in-cluster Deployment runs, so a local
 # campaign executes pinned, digest-identified bytes exactly as a cluster one does, and
@@ -43,6 +53,10 @@ services:
       # covers all of them at once, and any future one -- as against identity-mapping the
       # whole of /tmp, which would share far more than intended.
       TMPDIR: "${ROBOVAST_ROOT}/tmp"
+      # The uploaded-workspace store. Left at its default it lands under HOME, which for
+      # the uid below is a path inside the container: unwritable, lost on every recreate,
+      # and one the host daemon could not resolve. Named here so it is neither.
+      ROBOVAST_WORKSPACES_ROOT: "${ROBOVAST_ROOT}/workspaces"
       ROBOVAST_AUTH_TOKEN: "${ROBOVAST_AUTH_TOKEN:?generate one; there is no unauthenticated mode}"
       # Passed through for --show-gui. The *simulator* container gets the host's X socket
       # directly from the host daemon, so this image needs no X libraries of its own -- it
@@ -57,4 +71,16 @@ services:
     # The host uid, so the results tree is owned by the person reading it. The lane bakes
     # os.getuid() of THIS process into the scenario containers it starts, so a service
     # running as root would write a results tree its operator cannot delete.
-    user: "${UID:-1000}:${GID:-1000}"
+    #
+    # Named ROBOVAST_UID rather than UID because bash makes UID readonly: neither `export
+    # UID=$(id -u)` nor `UID=$(id -u) docker compose up` can set it, so a `${UID:-1000}`
+    # here is not a default, it is a constant -- and one that is silently wrong for
+    # everyone whose uid is not 1000.
+    user: "${ROBOVAST_UID:?set it to your uid, from 'id -u'}:${ROBOVAST_GID:?set it to your gid, from 'id -g'}"
+    # The socket above is root:docker 0660, and the uid is not in that group *inside* this
+    # container however many groups it has on the host -- so without this the service comes
+    # up, serves, accepts a campaign, and only then fails on "permission denied while trying
+    # to connect to the docker API". Required rather than defaulted: the group id is a
+    # property of the host, and a guessed one fails exactly the same way.
+    group_add:
+      - "${DOCKER_GID:?the host's docker group id, from 'getent group docker'}"

@@ -20,6 +20,11 @@ cleanup() {
     timeout 3 docker kill "$CONTAINER_NAME" 2>/dev/null || true
     # Force remove the container with timeout
     timeout 3 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    # The staged copy of this directory, when there was one. Guarded on the variable and
+    # not on the mode, so an interrupt before it was made removes nothing.
+    if [ -n "${STAGED_SCRIPT_DIR:-}" ]; then
+        rm -rf "$STAGED_SCRIPT_DIR"
+    fi
 }
 
 # Set up signal handlers
@@ -92,6 +97,20 @@ if [ $# -eq 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# A service running as a sibling container hands every bind source below to the HOST's
+# daemon, and this one is the robovast install itself -- a path that exists only inside the
+# image. The daemon cannot find it, so it creates an empty directory and mounts that, and
+# the container starts and reports "/scripts/ros2_exec.sh: No such file or directory".
+# Staging the scripts under TMPDIR fixes it because TMPDIR is identity-mapped for exactly
+# this reason (see container/service/docker-compose.yml, and robovast.service.sibling_paths):
+# one absolute path, the same on both sides. The cluster lane solves the same problem one
+# level up, with an initContainer copying them into an emptyDir.
+if [ -n "${ROBOVAST_IN_CONTAINER:-}" ]; then
+    STAGED_SCRIPT_DIR="$(mktemp -d -t robovast_scripts_XXXXXXXX)"
+    cp -a "$SCRIPT_DIR/." "$STAGED_SCRIPT_DIR/"
+    SCRIPT_DIR="$STAGED_SCRIPT_DIR"
+fi
 echo "Script directory: $SCRIPT_DIR"
 
 # Extract the last argument (input folder path)

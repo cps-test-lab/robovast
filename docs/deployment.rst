@@ -70,8 +70,18 @@ The three modes
     .. code-block:: bash
 
        export ROBOVAST_ROOT=$PWD/robovast-data
+       mkdir -p "$ROBOVAST_ROOT"/{results,workspaces,tmp}
+       export ROBOVAST_UID=$(id -u) ROBOVAST_GID=$(id -g)
+       export DOCKER_GID=$(getent group docker | cut -d: -f3)
        export ROBOVAST_AUTH_TOKEN=$(openssl rand -hex 16)
        docker compose -f container/service/docker-compose.yml up -d
+
+    ``DOCKER_GID`` is not optional and not guessable: the socket is ``root:docker`` mode
+    0660, and the uid the service runs as is not in that group *inside* the container
+    however many groups it has outside. Without it the service starts, serves, accepts a
+    campaign and only then fails on "permission denied while trying to connect to the
+    docker API". ``ROBOVAST_UID`` is spelled that way because bash makes ``UID`` readonly,
+    so a compose file reading ``${UID}`` cannot be told anything but its default.
 
     That is the **same image** the cluster Deployment runs, so a local campaign executes
     pinned, digest-identified bytes exactly as a cluster one does — the one image in the
@@ -91,7 +101,9 @@ The three modes
     told which paths are identity-mapped (``ROBOVAST_IDENTITY_MOUNTS``) and refuses at
     startup — naming the path and the mount to add — rather than leaving you to find the
     empty directory hours later. ``TMPDIR`` belongs inside the mapped root too: every staging
-    directory the lane binds is a ``mkdtemp()``, so one setting covers them all.
+    directory the lane binds is a ``mkdtemp()``, so one setting covers them all, and so does
+    the workspaces store (``ROBOVAST_WORKSPACES_ROOT``), which otherwise defaults under
+    ``HOME`` — a path inside the container, unwritable and lost on every recreate.
 
 **Mode 2 — cluster service** (in-cluster Deployment)
     ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +

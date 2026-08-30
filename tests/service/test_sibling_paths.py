@@ -68,3 +68,77 @@ def test_several_mounts_are_each_honoured(monkeypatch, tmp_path_factory):
     monkeypatch.setenv(IDENTITY_MOUNTS_ENV, f"{first}:{second}")
     require_identity_mapped(first / "a", what="x")
     require_identity_mapped(second / "b", what="x")
+
+
+# --- the wiring, not the helper ---------------------------------------------
+#
+# Every case above proves the check *can* refuse. What decides whether an operator ever
+# sees one is which paths ``vast serve`` asks about, and that list is the part with no
+# natural reminder: a path is added where it gets *used*, not where it is checked. The
+# workspaces store was already missing from it -- startup succeeded and the first upload
+# 500'd on a mkdir into a container-only path, naming the symptom and not the cause.
+
+
+@pytest.fixture
+def serve_cli(monkeypatch, tmp_path):
+    """``vast serve --backend local`` as a sibling, stopped where the checks end."""
+    import tempfile
+
+    from click.testing import CliRunner
+
+    from robovast.common.cli import core_commands
+
+    monkeypatch.setenv(IN_CONTAINER_ENV, "1")
+    monkeypatch.setenv(IDENTITY_MOUNTS_ENV, str(tmp_path))
+    # It has to exist: gettempdir() silently falls back to /tmp for a TMPDIR it cannot
+    # write into, which is the same thing an operator sees for a directory the compose
+    # file names but nobody created.
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
+    # gettempdir() caches into this on first use, and pytest has used it long before now.
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    # The SPA build runs first and wants npm; it is not what is under test.
+    monkeypatch.setattr(core_commands, "_ensure_ui_built", lambda rebuild=False: None)
+    monkeypatch.setattr("robovast.service.serve_backends.resolve",
+                        lambda name: _StopAtTheEndOfTheChecks())
+
+    def run(*args):
+        return CliRunner().invoke(core_commands.serve, ["--backend", "local", *args])
+    return run
+
+
+class _StopAtTheEndOfTheChecks:
+    """A lane that ends the run where the checks do: past them nothing is under test."""
+
+    storage = "local filesystem"
+
+    def build(self, **kwargs):
+        del kwargs
+        raise SystemExit(0)
+
+
+@pytest.mark.parametrize("named", ["--results-dir", "ROBOVAST_WORKSPACES_ROOT", "TMPDIR"])
+def test_serve_checks_every_path_it_hands_the_daemon(serve_cli, monkeypatch, tmp_path,
+                                                     tmp_path_factory, named):
+    outside = tmp_path_factory.mktemp("outside")
+    args = []
+    if named == "--results-dir":
+        args = [named, str(outside)]
+    else:
+        monkeypatch.setenv(named, str(outside))
+        # The default results root is derived from the workspaces store, so moving that
+        # out moves both; name one inside the mount so this asserts about the store.
+        args = ["--results-dir", str(tmp_path / "results")]
+
+    result = serve_cli(*args)
+
+    assert result.exit_code != 0, f"{named} reaches the daemon unchecked"
+    assert named in result.output, "the refusal has to name the input the operator sets"
+    assert str(outside) in result.output
+
+
+def test_serve_starts_when_every_path_is_mapped(serve_cli):
+    """The other half: a correctly mounted service must not be refused."""
+    result = serve_cli()
+    assert result.exit_code == 0, result.output
