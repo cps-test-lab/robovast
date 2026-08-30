@@ -1108,6 +1108,33 @@ class BatchJobRunner:
         """
         return build_jobs(self.configs, self.num_runs, self.campaign_data.get("execution") or {})
 
+    @staticmethod
+    def _jobs_already_done(jobs, campaign_root: str) -> set:
+        """Indices of *jobs* whose every run already has a verdict under *campaign_root*.
+
+        Empty for a campaign starting now -- the root is bare, so this is one ``isfile``
+        miss per job and the batch behaves exactly as it always did. It is not empty for a
+        campaign being **re-entered**: one whose driver a service restart took away, whose
+        root has been restored from the object store, and whose jobs are therefore about to
+        be planned a second time. Creating those again would re-run work that is finished
+        and overwrite its results.
+
+        The verdict, not the presence of a job artifact directory: ``test.xml`` is the
+        evidence ``_run_batch_mode`` builds the store from and
+        ``reconstruct_status_from_disk`` decides finished-vs-crashed on, so using anything
+        else here would let two readers disagree about the same run. A job whose items
+        landed *partly* is therefore not done, and is re-created whole -- the honest
+        granularity, since a packed job's items share one simulator process and there is no
+        way to re-enter it halfway.
+        """
+        done = set()
+        for job in jobs:
+            if all(os.path.isfile(os.path.join(campaign_root, item.config_name,
+                                               str(item.run_number), "test.xml"))
+                   for item in job.items):
+                done.add(job.index)
+        return done
+
     def _write_job_param_files(self, out_dir, campaign_root=None):
         """Write one multi-document scenario-parameter file per packed job into
         ``out_dir/_transient/`` so they upload with the campaign and are mirrored
@@ -2284,6 +2311,17 @@ class BatchJobRunner:
         # the plan, the artifact paths and job_links all key on it, and they must agree.
         job_names = [_short_job_name(self.campaign, self._job_tag(job.index), job.index)
                      for job in jobs]
+        # What the campaign root already holds. Empty for a campaign starting now -- so this
+        # costs one `isfile` miss per job and changes nothing -- and, for one being re-entered
+        # after its driver was taken away, the work that must not be run a second time. See
+        # `_jobs_already_done`.
+        done = self._jobs_already_done(jobs, campaign_root)
+        if done:
+            logger.info("Batch %s: %d of %d job(s) already have every verdict; "
+                        "adopting their results instead of re-running them.",
+                        self._batch_tag, len(done), total_jobs)
+        pending = [(job, name) for job, name in zip(jobs, job_names)
+                   if job.index not in done]
 
         def _create_job(job, name, node_id=None):
             # The node's figures, or None while it is uncalibrated. **This is the same lookup
@@ -2307,17 +2345,25 @@ class BatchJobRunner:
                     raise
 
         admission = self.admission
-        if admission is None:
+        if not pending:
+            # Every job this batch plans already has its results. Nothing to create and
+            # nothing to queue -- and nothing to probe for either: calibration measures
+            # nodes in order to place work on them, and there is none to place.
+            created_names = []
+            planned_count = 0
+            logger.info("Batch %s: all %d job(s) already finished in an earlier life of "
+                        "this campaign; waiting on nothing.", self._batch_tag, total_jobs)
+        elif admission is None:
             # No queue: create everything at once, exactly as before. This is the path every
             # offline caller and every existing test takes.
-            for job, name in zip(jobs, job_names):
+            for job, name in pending:
                 # Unpinned: without a queue nothing has reserved a node, so choosing one here
                 # would be a guess the scheduler is better placed to make.
                 _create_job(job, name)
-            created_names = list(job_names)
+            created_names = [name for _, name in pending]
             planned_count = 0
-            logger.info("Batch %s: created %d job(s); waiting for completion...",
-                        self._batch_tag, len(job_names))
+            logger.info("Batch %s: created %d of %d job(s); waiting for completion...",
+                        self._batch_tag, len(created_names), len(job_names))
         else:
             from functools import partial  # noqa: PLC0415
 
@@ -2340,14 +2386,14 @@ class BatchJobRunner:
             admission.submit(
                 self.campaign,
                 [(name, sizing, partial(_create_job, job, name))
-                 for job, name in zip(jobs, job_names)],
+                 for job, name in pending],
                 started_at=campaign_start_key(self.campaign),
                 sizing_for_node=self._sizing_for_node(jobs[0], total_jobs, calibration),
                 accepts_node=(calibration.accepts_work if calibration else None))
             created_names = []
-            planned_count = len(jobs)
-            logger.info("Batch %s: queued %d job(s) for admission; creating as room appears...",
-                        self._batch_tag, len(job_names))
+            planned_count = len(pending)
+            logger.info("Batch %s: queued %d of %d job(s) for admission; creating as "
+                        "room appears...", self._batch_tag, planned_count, len(job_names))
         # Job name -> its planned work, so a restart can be resolved to the runs it ruins
         # and to the artifact dir the ledger keys on. Built here and NOT read back from
         # ``_transient/job_links.yaml``: that manifest is downloaded after this loop

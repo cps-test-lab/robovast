@@ -436,6 +436,16 @@ class WorkspaceTarget:
     #: image cannot be named fails the *request* with the reason instead of becoming a failed
     #: campaign someone has to go and inspect.
     pinned_images: Optional[dict] = None
+    #: Adopt this campaign id rather than minting a fresh one. Set only when re-entering a
+    #: campaign that already exists and is still owed work -- one whose driver a service
+    #: restart took away (see ``cluster_execution.campaign_resume``).
+    #:
+    #: This is the whole difference between a launch and a re-launch, which is why it is one
+    #: field here rather than a mode flag on :meth:`LocalTransport._launch_campaign`: that
+    #: method's contract is that everything a non-workspace project needs to say travels on
+    #: this object. Setting it also waives the "already exists" guard below, because for a
+    #: re-entry the directory being there is the point rather than a collision.
+    campaign_id: Optional[str] = None
 
 
 #: How long a job-state read may take. Short on purpose: this runs on the status path, so a wedged
@@ -1945,7 +1955,8 @@ class LocalTransport(RobovastInterface):
         campaign_config = validate_config(raw_config)
         # The shared root, asked for directly: it never varied per workspace.
         results_dir = str(self._campaigns_root())
-        campaign_id = campaign_id_for(campaign_config, request.campaign_name or None)
+        campaign_id = target.campaign_id or campaign_id_for(
+            campaign_config, request.campaign_name or None)
         is_search = campaign_config.search is not None
         config_filter = request.config_filter or None
 
@@ -1967,8 +1978,11 @@ class LocalTransport(RobovastInterface):
         # Fail loudly rather than silently adopt an existing campaign's directory.
         # Ids are timestamp-unique (see campaign_id_for), so this only fires on a
         # genuine collision (e.g. a hand-copied dir) — never in normal operation.
+        # Waived for a re-entry, which is the one caller that means to land on an
+        # existing campaign: ``target.campaign_id`` names the campaign it is resuming,
+        # and its directory holds what the earlier life already produced.
         campaign_root = os.path.join(results_dir, campaign_id)
-        if os.path.exists(campaign_root):
+        if target.campaign_id is None and os.path.exists(campaign_root):
             raise RuntimeError(
                 f"campaign {campaign_id} already exists at {campaign_root}")
 
