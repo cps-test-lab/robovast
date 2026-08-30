@@ -1393,6 +1393,17 @@ class BatchJobRunner:
         """
         if not self._sizing_is_calibrated() or getattr(self, "_calibration_applies", True):
             return
+        # **And not where this campaign HAS measured figures.** `_calibration_applies` is
+        # recomputed per batch from that batch's job count, while the calibration itself
+        # lives for the whole campaign -- so a search whose later batch is smaller than the
+        # node count flips the flag without un-measuring anything. Read alone it says "this
+        # campaign is on the bootstrap" of a campaign whose nodes were calibrated in batch 0,
+        # and then reports the calibrated container sitting at its own measured ceiling as a
+        # bootstrap that does not fit. Observed: a ramping search killed at 8.1% on a node it
+        # had measured, with a message naming a default it was not using.
+        calibration = getattr(self, "_calibration", None)
+        if calibration is not None and (calibration.outcome().get("calibrated") or []):
+            return
         from .node_calibration import (probe_refuse_ratio,  # noqa: PLC0415
                                        read_probe_measurement)
 

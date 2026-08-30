@@ -687,3 +687,49 @@ def test_nothing_created_yet_polls_nothing():
         AssertionError("must not poll a probe that was never created"))
     r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
                       bucket_name="b", campaign_prefix="c/")
+
+
+# -- a campaign that measured its nodes is not on the bootstrap --------------------------
+
+
+def _bootstrap_guard_runner(calibrated_nodes, applies=False):
+    """A runner past the per-batch gate, with *calibrated_nodes* already measured."""
+    import types
+
+    r = kb.BatchJobRunner()
+    r.sizing_mode = "calibrated"
+    r._calibration_applies = applies
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": list(calibrated_nodes), "refused": {}})
+    r._job_index_by_name = {}
+    return r
+
+
+def test_the_bootstrap_guard_leaves_a_campaign_that_calibrated_alone():
+    """`_calibration_applies` is recomputed per batch from that batch's job count, while the
+    calibration lives for the whole campaign -- so a search whose later batch is smaller than
+    the node count flips the flag without un-measuring anything.
+
+    Read alone the flag then says "this campaign is on the bootstrap" of a campaign whose
+    nodes were measured in batch 0, and the guard reports the calibrated container sitting at
+    its own measured ceiling as a default that does not fit. Observed on a ramping search:
+    killed at 8.1% throttling on a node it had itself calibrated, naming a bootstrap it was
+    not using."""
+    r = _bootstrap_guard_runner(["n1", "n2"])
+    # Returns before reading any artifact: with nodes measured there is no bootstrap to judge.
+    r._refuse_a_bootstrap_that_did_not_hold(None, "bucket", "prefix/", "job-0")
+
+
+def test_it_still_guards_a_campaign_that_measured_nothing():
+    """The case it exists for -- a pilot, or a cluster that can grow -- where every container
+    really is on a cluster-wide default nobody chose for this workload."""
+    r = _bootstrap_guard_runner([])
+    r._job_index_by_name = {"job-0": 0}
+    r._probe_container_files = lambda: {}
+    r._probe_container_limits = lambda: {}
+    r._container_percentiles = lambda: {}
+    r._job_artifact_path = lambda i: f"j{i}"
+    # Reaches the read, which is where a real campaign would fetch counters; an unreadable
+    # one is not a verdict, so this returns rather than raising.
+    r._refuse_a_bootstrap_that_did_not_hold(
+        type("S", (), {"read_object": staticmethod(lambda *a: None)})(), "b", "p/", "job-0")
