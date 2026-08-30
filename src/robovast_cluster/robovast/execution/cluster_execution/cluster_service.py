@@ -242,12 +242,19 @@ class ClusterService(LocalTransport):
         and replaces the refusal only once every precondition actually holds. Written that
         way round so a lane that cannot roll always carries a *reason*, and never an empty
         ``supported=False`` a reader has to interpret.
+
+        Each refusal below sets ``supported`` as well as the reason. The base answer is no
+        longer always a refusal -- a containerised service reports that it *can* roll -- so
+        a branch that wrote only the reason would leave a ``supported=True`` carrying one,
+        which ``upgrade_service`` reads as permission to patch a Deployment this process is
+        not running in.
         """
         info = super().upgrade_info()
         if not os.environ.get("KUBERNETES_SERVICE_HOST"):
             # A service driving the cluster from outside it: there is a Deployment, but it
             # is not this process, and rolling it would not update the thing the caller is
             # talking to.
+            info.supported = False
             info.unsupported_reason = (
                 "this service drives the cluster from outside it, so it has no Deployment "
                 "of its own to roll. Restart it where it runs.")
@@ -259,6 +266,7 @@ class ClusterService(LocalTransport):
             # apps/deployments grant arrived with this feature, and a deployment set up
             # before it has a Role without it. Named with the fix, and the fix deliberately
             # does not need a roll -- which is what makes it available mid-campaign.
+            info.supported = False
             info.unsupported_reason = (
                 "this deployment's service account may not read its own Deployment. Run "
                 "'vast service upgrade --no-restart' once, from somewhere with "

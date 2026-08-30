@@ -151,6 +151,31 @@ def test_a_service_outside_the_cluster_has_no_deployment_of_its_own(svc):
     assert "outside" in info.unsupported_reason
 
 
+@pytest.mark.parametrize("kwargs, expected", [
+    ({"in_pod": False}, "outside"),
+    ({"denied": True}, "--no-restart"),
+])
+def test_a_containerised_service_does_not_inherit_permission_to_roll(
+        svc, monkeypatch, kwargs, expected):
+    """Each cluster refusal has to write ``supported`` too, not only the reason.
+
+    The base answer stopped being a refusal in every case: a service running from a
+    container image reports that it *can* roll itself. So a branch here that set only
+    ``unsupported_reason`` would leave a ``supported=True`` carrying one -- and
+    ``upgrade_service`` reads ``supported`` alone, so it would patch a Deployment this
+    process is not running in, or one it has just been told it may not even read.
+    """
+    monkeypatch.setenv("ROBOVAST_IN_CONTAINER", "1")
+    s = svc(**kwargs)
+    info = s.upgrade_info()
+
+    assert info.supported is False
+    assert expected in info.unsupported_reason
+    with pytest.raises(ValueError):
+        s.upgrade_service()
+    assert not s.patched, "nothing may be patched when the roll was refused"
+
+
 def test_the_roll_patches_the_annotation_and_nothing_else(monkeypatch):
     """``patch_restart_annotation`` must not grow into a re-deploy.
 
