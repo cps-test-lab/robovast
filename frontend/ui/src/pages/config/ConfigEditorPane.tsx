@@ -85,11 +85,27 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
               <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
                 New .vast
               </Button>
+              {/* `reloaded` is not a save state, but it belongs on the save chip: this is where
+                  someone looks to find out what just happened to the file they are editing, and
+                  the editor swapping its own contents is the one event here worth saying out loud
+                  without a dialog. It is what the arrival check does when the file changed on disk
+                  and the buffer had nothing unsaved to lose (see useEditableFile). */}
               <Chip
                 size="small"
                 variant="outlined"
-                label={saving === 'saving' ? 'saving…' : saving === 'saved' ? 'saved' : saving === 'error' ? 'save failed' : '—'}
-                color={saving === 'error' ? 'error' : saving === 'saved' ? 'success' : 'default'}
+                label={
+                  saving === 'saving' ? 'saving…'
+                    : saving === 'saved' ? 'saved'
+                      : saving === 'error' ? 'save failed'
+                        : saving === 'reloaded' ? 'reloaded from disk'
+                          : '—'
+                }
+                color={
+                  saving === 'error' ? 'error'
+                    : saving === 'saved' ? 'success'
+                      : saving === 'reloaded' ? 'info'
+                        : 'default'
+                }
               />
             </>
           )}

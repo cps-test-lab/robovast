@@ -935,6 +935,24 @@ Additional environment variables to set in the run container. Each list item sho
      - CUSTOM_VAR: custom_value
      - ENABLE_X11: "false"
 
+**Names RoboVAST sets itself are refused.** The run's own protocol travels in the
+environment — what identifies the campaign (``CAMPAIGN_ID``), where results are written
+(``OUTPUT_DIR``, ``SCENARIO_OUTPUT_DIR``, ``RUN_OUTPUT_DIR``), what the runner executes and
+with which parameters (``SCENARIO_FILE``, ``SCENARIO_PARAMETER_FILE``,
+``SCENARIO_EXECUTION_PARAMETERS``), and the credentials results are uploaded with
+(``S3_*``). Setting one of these is refused when the campaign is validated, naming it.
+
+The refusal is at validation and not left to the lanes on purpose. Whether a campaign's
+value would actually displace RoboVAST's depends on emission order and on each lane's
+duplicate-key semantics, so "it happens not to win today" is not something to build on —
+and the failure it would cause is the quiet kind. Repointing ``SCENARIO_PARAMETER_FILE``
+gives a run that succeeds, reads parameters belonging to nothing, and reports its results
+under the configuration's name regardless.
+
+Display and GPU hints — ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*`` — are
+deliberately *not* reserved. They steer how a container renders rather than whether its
+results mean what they say, and a campaign running headless has a real reason to set them.
+
 .. _config-resources:
 
 resources
