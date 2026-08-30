@@ -733,3 +733,60 @@ def test_it_still_guards_a_campaign_that_measured_nothing():
     # one is not a verdict, so this returns rather than raising.
     r._refuse_a_bootstrap_that_did_not_hold(
         type("S", (), {"read_object": staticmethod(lambda *a: None)})(), "b", "p/", "job-0")
+
+
+def test_whether_calibration_applies_is_decided_once_for_the_campaign():
+    """It compares the work there is against the nodes there are, and a batch is only part of
+    the work -- so asking per batch judges a long search by whichever batch was smallest. A
+    ramping search then flips to "does not apply" while its nodes stay measured, and
+    everything reading the answer is told the campaign is on the bootstrap when it is not."""
+    from robovast.execution.cluster_execution.node_calibration import (NodeCalibration,
+                                                                       calibration_applies)
+
+    c = NodeCalibration()
+    assert c.applies is None, "undecided until the first batch"
+
+    # First batch: plenty of jobs against four nodes.
+    c.applies = calibration_applies(total_jobs=15, node_count=4)
+    assert c.applies is True
+
+    # A later, smaller batch would answer differently on its own numbers ...
+    assert calibration_applies(total_jobs=3, node_count=4) is False
+    # ... but the campaign's decision is already made and is not revisited.
+    assert c.applies is True
+
+
+def test_a_node_that_was_never_measured_is_reported():
+    """Held while its probe is out, so it takes no work; freed when the probe is abandoned,
+    re-probed next batch, stopped by the same thing, held again. The campaign finishes on the
+    rest of the cluster and nothing in the results says a machine sat out."""
+    import types
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._probes = {"probe-a": "n1", "probe-b": "n2"}
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": ["n1"], "refused": {}})
+    assert r.unmeasured_nodes() == ["n2"], "n1 was measured; n2 never was"
+
+
+def test_nothing_outstanding_is_nothing_to_report():
+    import types
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._probes = {}
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": ["n1", "n2"], "refused": {}})
+    assert r.unmeasured_nodes() == []
+
+
+def test_a_campaign_calibration_never_applied_to_reports_nothing():
+    """A pilot holds no node and measures none by design, so there is no machine sitting out."""
+    import types
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = False
+    r._probes = {"probe-a": "n1"}
+    r._calibration = types.SimpleNamespace(outcome=lambda: {"calibrated": [], "refused": {}})
+    assert r.unmeasured_nodes() == []

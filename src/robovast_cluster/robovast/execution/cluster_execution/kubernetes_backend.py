@@ -1393,14 +1393,8 @@ class BatchJobRunner:
         """
         if not self._sizing_is_calibrated() or getattr(self, "_calibration_applies", True):
             return
-        # **And not where this campaign HAS measured figures.** `_calibration_applies` is
-        # recomputed per batch from that batch's job count, while the calibration itself
-        # lives for the whole campaign -- so a search whose later batch is smaller than the
-        # node count flips the flag without un-measuring anything. Read alone it says "this
-        # campaign is on the bootstrap" of a campaign whose nodes were calibrated in batch 0,
-        # and then reports the calibrated container sitting at its own measured ceiling as a
-        # bootstrap that does not fit. Observed: a ramping search killed at 8.1% on a node it
-        # had measured, with a message naming a default it was not using.
+        # Belt and braces on the same question: a campaign with measured figures is not on
+        # the bootstrap, whatever any flag says.
         calibration = getattr(self, "_calibration", None)
         if calibration is not None and (calibration.outcome().get("calibrated") or []):
             return
@@ -1592,6 +1586,26 @@ class BatchJobRunner:
                         "the declared sizing", self._batch_tag, len(outstanding))
         return len(outstanding)
 
+    def unmeasured_nodes(self) -> list:
+        """Nodes this campaign held for measuring and never measured. Empty is the norm.
+
+        **A node that ends a batch with no figures does not simply lose an optimisation.**
+        It is held while its probe is outstanding, so it takes no work; when the probe is
+        abandoned it becomes eligible again, is re-probed on the next batch, hits whatever
+        stopped it the first time, and is held again. The campaign then runs to completion
+        on the rest of the cluster and nothing in its results says a machine sat out.
+
+        Reported rather than decided here: whether that ends the campaign is the caller's
+        question, and this store does not know what a campaign is.
+        """
+        calibration = self._calibration
+        if calibration is None or not getattr(self, "_calibration_applies", False):
+            return []
+        outcome = calibration.outcome()
+        measured = set(outcome.get("calibrated") or [])
+        return sorted(n for n in (self._probes.values() if self._probes else ())
+                      if n not in measured)
+
     def _probe_container_limits(self) -> dict:
         """``{container: declared cpu ceiling}`` -- what each container could at most use.
 
@@ -1722,11 +1736,18 @@ class BatchJobRunner:
         # Whether this campaign ASKED to be measured is `execution.sizing`, in its own
         # `.vast`. Whether the cluster and the campaign's shape make a probe worth running
         # is `calibration_applies`. Both have to hold.
-        applies = self._sizing_is_calibrated() and calibration_applies(
-            total_jobs, len(node_ids), admission.growable())
-        # Remembered because the sizing a run actually got is not visible from the run: a
-        # campaign that asked to be calibrated and was not is running on the bootstrap, and
-        # that is the one case where hitting a limit is a fault rather than a finding.
+        # **Decided once for the campaign, then kept.** `total_jobs` is this BATCH's count,
+        # and the question is about the campaign's work against the cluster's nodes -- so
+        # re-deciding per batch judges a long search by whichever batch happened to be
+        # smallest, and a search that ramps its repetitions flips to "does not apply" while
+        # its nodes stay measured. Everything downstream then reads that a campaign running
+        # on measured figures is running on the bootstrap.
+        if calibration.applies is None:
+            calibration.applies = self._sizing_is_calibrated() and calibration_applies(
+                total_jobs, len(node_ids), admission.growable())
+        applies = calibration.applies
+        # Mirrored onto the runner because a runner is per batch and reads it often; the
+        # store holds the decision, this is a read of it.
         self._calibration_applies = applies
         if not applies:
             calibration.enabled = False
@@ -2580,11 +2601,17 @@ class BatchJobRunner:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                       f"{self._batch_tag}")
             if admission is not None:
+                # **Probes first, then the drain.** A node is held while its probe is out and
+                # freed the moment that probe reports -- per node, so one finishing does not
+                # wait for the others. Draining first spent that freedom on the NEXT poll
+                # instead of this one, leaving a measured node idle for a cycle for no reason.
+                # Collecting first means a node calibrated in this pass takes work in this
+                # pass.
+                self._collect_probes(storage, bucket_name, campaign_prefix)
                 # Works the GLOBAL queue, so this may create another campaign's jobs too --
                 # that is what makes the ordering cluster-wide while keeping the queue
                 # thread-free.
                 admission.drain()
-                self._collect_probes(storage, bucket_name, campaign_prefix)
                 states = admission.states(self.campaign)
                 created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
                 planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)
@@ -2972,8 +2999,14 @@ class KubernetesBackend(ExecutionBackend):
             image_digest_cache=self._image_digest_cache,
             admission=self._admission,
         )
+        batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
+        except BaseException as exc:  # noqa: BLE001 - recorded, never swallowed
+            # Remembered only so the cleanup below can tell a batch that ended from one that
+            # is unwinding. Re-raised untouched at the end of the `finally`.
+            batch_error = exc
+            raise
         finally:
             # Every exit, not just the happy one. A batch that raises on its way out --
             # stopped, a config error, anything unexpected -- would otherwise leave its
@@ -3001,7 +3034,24 @@ class KubernetesBackend(ExecutionBackend):
                 # was never created has no timer of any kind.
                 dropped += self._admission.cancel(
                     f"{campaign_id}{BatchJobRunner._PROBE_OWNER_SUFFIX}")
+                # Asked BEFORE abandoning, which is what clears the record of who was still
+                # being measured. Only when the batch is ending normally: during a stop or a
+                # failure an outstanding probe is expected, and raising here would replace
+                # the reason the campaign is unwinding with a consequence of it.
+                unmeasured = [] if batch_error else runner.unmeasured_nodes()
                 runner.abandon_outstanding_probes()
+                if unmeasured:
+                    raise CampaignConfigError(
+                        f"{', '.join(unmeasured)} could not be measured: their probes never "
+                        f"ran, so those machines took no work and the campaign would have "
+                        f"finished on the rest of the cluster without saying so. A node held "
+                        f"for measuring is re-probed on the next batch, meets whatever "
+                        f"stopped it before, and is held again -- so this does not resolve "
+                        f"itself. The usual cause is a probe larger than what the node can "
+                        f"spare: the bootstrap pod is the three roles summed "
+                        f"(ROBOVAST_BOOTSTRAP_CPU / _MEMORY), and a campaign that declares "
+                        f"execution.containers.<name>.resources sizes its probe from those "
+                        f"instead.")
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)

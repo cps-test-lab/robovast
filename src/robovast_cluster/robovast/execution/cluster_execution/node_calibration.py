@@ -108,6 +108,18 @@ class NodeCalibration:
     #: but what it MEANS for a campaign is not this store's business.
     _refused: dict = field(default_factory=dict)
     enabled: bool = True
+    #: Whether calibration applies to this CAMPAIGN, decided once and kept.
+    #:
+    #: **The decision is campaign-scoped and the numbers that answer it are not.** It compares
+    #: the work there is against the nodes there are, and a batch is only part of the work --
+    #: so asking it per batch judges a 150-run search by whichever batch happened to be
+    #: smallest. A search that ramps its repetitions then flips from "applies" to "does not"
+    #: mid-campaign while its nodes stay measured, and everything reading the answer is told
+    #: the campaign is running on the bootstrap when it is not.
+    #:
+    #: ``None`` until the first batch decides. Kept here rather than on the runner because a
+    #: runner is per batch and this is not.
+    applies: "bool | None" = None
 
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
