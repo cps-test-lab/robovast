@@ -420,6 +420,10 @@ Two things are refused rather than left to go wrong quietly:
 * a source declared on the ``simulation`` or ``scenario`` container — their configuration is
   addressed by ``sim:`` and ``scenario:``, and two channels addressing one surface is how
   they come to disagree;
+* a destination on the ``env`` carrier naming a variable RoboVAST sets for itself
+  (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
+  reaches the same environment by a different route, so it is guarded against the same set
+  rather than becoming a way around the rule;
 * a source that is **also** listed in ``execution.run_files``. That would put an
   un-rewritten copy in the container beside the rewritten one, and if the stack read it then
   every configuration would run identical settings — a campaign that is green and whose

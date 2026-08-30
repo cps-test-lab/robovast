@@ -33,7 +33,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from .config import SCENARIO_CONTAINER, SIMULATION_CONTAINER
+from .config import RESERVED_ENV_NAMES, SCENARIO_CONTAINER, SIMULATION_CONTAINER
 from .sut_formats import CannotAnswer, resolve_format
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,15 @@ def resolve_sut_path(sources: dict, destination: str):
     """
     name, path = split_destination(destination)
     if name == ENV_SOURCE:
+        # The same names `execution.env` refuses. This carrier reaches the run's
+        # environment by a different route, so the guard has to be applied here too --
+        # otherwise the channel would be a way around a rule the other route enforces, and
+        # a campaign could quietly repoint something RoboVAST sets for itself.
+        if path in RESERVED_ENV_NAMES:
+            raise SutChannelError(
+                f"'{destination}' writes '{path}', which RoboVAST sets itself and a "
+                "campaign may not override. Reserved names: "
+                + ", ".join(sorted(RESERVED_ENV_NAMES)))
         return None, path
     if name not in sources:
         known = ", ".join(sorted(sources)) or "(none declared)"

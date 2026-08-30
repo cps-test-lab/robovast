@@ -401,6 +401,17 @@ class ContainerConfig(BaseModel):
 DEFAULT_SHM_SIZE = "512Mi"
 
 
+#: Environment variable names RoboVAST sets itself, which a campaign may not write.
+#:
+#: Module level rather than inline in the validator below, because ``execution.env`` is no
+#: longer the only way into a run's environment: the ``sut:`` channel's ``env`` carrier
+#: reaches the same place by a different route, and a guard that lived in one field's
+#: validator would protect one route and silently not the other.
+RESERVED_ENV_NAMES = frozenset({
+    'CAMPAIGN_ID', 'ROS_LOG_DIR', 'PRE_COMMAND', 'POST_COMMAND',
+})
+
+
 class ExecutionConfig(BaseModel):
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
     #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
@@ -569,11 +580,7 @@ class ExecutionConfig(BaseModel):
         if v is None:
             return v
 
-        # Reserved keys that are set automatically during execution
-        reserved_keys = {
-            'CAMPAIGN_ID', 'ROS_LOG_DIR',
-            'PRE_COMMAND', 'POST_COMMAND',
-        }
+        reserved_keys = RESERVED_ENV_NAMES
 
         found_reserved = []
         for env_item in v:

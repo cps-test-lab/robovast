@@ -15,6 +15,7 @@ import os
 
 import pytest
 
+from robovast.common.config import RESERVED_ENV_NAMES
 from robovast.common.sut_channel import (ABSENT, SutChannelError, check_destinations,
                                          declared_sources, is_absent, materialize,
                                          merge_sut_block, refuse_run_files_overlap,
@@ -85,6 +86,23 @@ def test_env_resolves_without_being_declared(campaign):
 
 
 # --- who may declare a source -----------------------------------------------------------
+
+@pytest.mark.parametrize("reserved", sorted(RESERVED_ENV_NAMES))
+def test_the_env_carrier_cannot_overwrite_what_robovast_sets(reserved):
+    """``execution.env`` refuses these, and this carrier reaches the same environment by a
+    different route -- so without the guard here the channel would be a way around a rule
+    the other route enforces."""
+    with pytest.raises(SutChannelError, match="may not override"):
+        resolve_sut_path({}, f"env.{reserved}")
+
+
+def test_the_two_routes_into_the_environment_share_one_reserved_set():
+    """Two lists would drift, and the drift is silent: a name guarded on one route and not
+    the other reads as guarded everywhere."""
+    from robovast.common.config import ExecutionConfig
+    with pytest.raises(ValueError, match="reserved"):
+        ExecutionConfig(containers={}, runs=1, env=[{"CAMPAIGN_ID": "x"}])
+
 
 @pytest.mark.parametrize("container,owner", [("simulation", "sim:"), ("scenario", "scenario:")])
 def test_a_source_on_a_container_another_channel_owns_is_refused(tmp_path, container, owner):
