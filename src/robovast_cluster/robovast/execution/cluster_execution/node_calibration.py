@@ -66,16 +66,24 @@ CALIBRATION_HEADROOM = 1.25
 #: cannot tell "this container genuinely idles" from "this run stopped before it started".
 MIN_CPU = 0.25
 
-#: Ticks a probe must have produced before its measurement is believed. The monitor samples
-#: about once a second, so this is roughly half a minute of the trial actually running.
+#: Fewest ticks a percentile may be read from. **A statistical floor, and only that.**
 #:
-#: **This is a correctness gate, not a refinement.** The monitor writes its CSV whether or not
-#: the scenario succeeds, so a probe that died ten seconds in still produces a file -- one
-#: whose peak is near nothing. Believed, it would floor the whole node to :data:`MIN_CPU` and
-#: then *every* campaign run placed there would be starved by an allocation derived from a
-#: run that never happened. A measurement failure would have become silently degraded results
-#: on one node, which is the failure class this whole area exists to remove.
-MIN_PROBE_SAMPLES = 30
+#: It was 30 -- half a minute at the monitor's ~1 Hz -- and carried a second job it should
+#: never have had: catching a probe that died partway through. That made it a duration
+#: assertion, so a campaign whose trials run under 30 s could never calibrate; every probe
+#: was rejected as thin and every node silently kept what it started on. Once a refused probe
+#: FAILS the campaign, that stops being a quiet mis-sizing and becomes a campaign that always
+#: fails.
+#:
+#: **The other job now has an exact answer of its own**: :func:`probe_completed` reads the
+#: scenario's ``test.xml``, which exists only once a run reaches a verdict. "Did the probe
+#: run to the end" is therefore not this constant's question, and scaling it with the trial
+#: would answer a question already answered -- with the trial's *timeout*, which is an outer
+#: backstop rather than an expected duration, and is routinely fifty times the real one.
+#:
+#: What is left is the honest question: how many samples a percentile needs to mean anything.
+#: That does not grow with the trial.
+MIN_PROBE_SAMPLES = 10
 
 
 @dataclass
@@ -95,11 +103,31 @@ class NodeCalibration:
     _by_node: dict = field(default_factory=dict)
     #: node_id -> the probe key currently measuring that node
     _probes: dict = field(default_factory=dict)
+    #: node_id -> why that node's probe was refused. Kept as data rather than only logged so
+    #: the caller can name the reason in the failure it raises: the refusal is decided here,
+    #: but what it MEANS for a campaign is not this store's business.
+    _refused: dict = field(default_factory=dict)
     enabled: bool = True
+    #: Whether calibration applies to this CAMPAIGN, decided once and kept.
+    #:
+    #: **The decision is campaign-scoped and the numbers that answer it are not.** It compares
+    #: the work there is against the nodes there are, and a batch is only part of the work --
+    #: so asking it per batch judges a 150-run search by whichever batch happened to be
+    #: smallest. A search that ramps its repetitions then flips from "applies" to "does not"
+    #: mid-campaign while its nodes stay measured, and everything reading the answer is told
+    #: the campaign is running on the bootstrap when it is not.
+    #:
+    #: ``None`` until the first batch decides. Kept here rather than on the runner because a
+    #: runner is per batch and this is not.
+    applies: "bool | None" = None
 
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
         return self._by_node.get(node_id)
+
+    def outcome(self) -> dict:
+        """``{"calibrated": [node_id, ...], "refused": {node_id: reason}}``."""
+        return {"calibrated": sorted(self._by_node), "refused": dict(self._refused)}
 
     def claim_probe(self, node_id, probe_key) -> bool:
         """Start measuring *node_id*, unless it is measured or being measured already.
@@ -130,7 +158,7 @@ class NodeCalibration:
         return node_id not in self._probes
 
     def record(self, node_id, job_key, measured: dict, *, completed: bool = True,
-               peak_sized=None) -> bool:
+               percentiles=None, min_samples: int = None, tick_ratio=None) -> bool:
         """Take a finished probe's per-container measurement as that node's figures.
 
         *measured* is ``{container: {"sustained": cores, "peak": cores}}`` -- both, because
@@ -143,13 +171,18 @@ class NodeCalibration:
         node uncalibrated, so the next job there becomes the probe instead. Silence is not a
         measurement of zero.
 
-        *peak_sized* names the containers whose figure the caller will take from the peak.
-        Passed in for the same reason *measured* carries both statistics: this module must not
-        decide what a container is for, and the throttling a probe may survive depends on
-        which statistic is read from it -- see :func:`probe_refuse_ratio`. ``None`` means the
-        caller does not know, and every container is then judged strictly: an unnamed
-        container might be the one read from its peak, and accepting a distorted peak writes a
-        wrong figure in silently, where refusing merely leaves the node unmeasured.
+        *percentiles* is ``{container: percentile}`` -- what each container's figure was read
+        at, resolved by the caller from the campaign and the role rules. Passed in rather
+        than decided here for the reason this store keeps generally: it must not know what a
+        container is *for*. It is needed because the throttling a probe may survive follows
+        the percentile its figure comes from (see :func:`probe_refuse_ratio`). A container
+        absent from the map is judged strictly, since an unnamed one might be the one read at
+        its maximum, and accepting a distorted maximum writes a wrong figure in silently
+        where refusing merely leaves the node unmeasured.
+
+        *min_samples* is the floor a measurement must clear, derived by the caller from the
+        trial's own length; :data:`MIN_PROBE_SAMPLES` is the absolute lower bound it may not
+        go below.
 
         Five things are refused, and each leaves the node on its declared sizing rather than
         on a figure that would be wrong: a probe whose scenario reached no verdict, one drawn
@@ -177,13 +210,16 @@ class NodeCalibration:
             # than a figure derived from a run that did not happen.
             logger.warning("calibration probe %s did not complete; node %s keeps its current "
                            "sizing (declared, or the bootstrap)", job_key, node_id)
+            self._refused[node_id] = "its probe reached no verdict"
             return False
+        floor = max(MIN_PROBE_SAMPLES, int(min_samples or 0))
         thin = [name for name, stats in (measured or {}).items()
-                if (stats or {}).get("samples", 0) < MIN_PROBE_SAMPLES]
+                if (stats or {}).get("samples", 0) < floor]
         if thin:
             logger.warning("calibration probe %s produced too few samples for %s "
                            "(< %d ticks); node %s keeps its current sizing",
-                           job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
+                           job_key, ", ".join(sorted(thin)), floor, node_id)
+            self._refused[node_id] = f"its probe produced fewer than {floor} samples"
             return False
         # A probe that hit its own ceiling measured the ceiling. Refused rather than stored,
         # because the figure would be a limit dressed as a demand and every later run on this
@@ -200,11 +236,13 @@ class NodeCalibration:
                 "sizing. The memory it was given is too small for this campaign -- see "
                 "ROBOVAST_BOOTSTRAP_MEMORY, or declare it with execution.sizing: fixed",
                 job_key, ", ".join(killed), node_id)
+            self._refused[node_id] = (
+                "its probe was OOM-killed (" + ", ".join(killed) + ")")
             return False
         capped = {name: stats["throttled_ratio"]
                   for name, stats in (measured or {}).items()
                   if (stats or {}).get("throttled_ratio", 0)
-                  > probe_refuse_ratio(peak_sized is None or name in peak_sized)}
+                  > probe_refuse_ratio((percentiles or {}).get(name, 100.0))}
         if capped:
             logger.warning(
                 "calibration probe %s was throttled past what its own statistic can absorb "
@@ -213,27 +251,51 @@ class NodeCalibration:
                 job_key,
                 ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())),
                 node_id)
+            self._refused[node_id] = (
+                "its probe was throttled past what its statistic absorbs ("
+                + ", ".join(f"{k}={v:.1%}" for k, v in sorted(capped.items())) + ")")
+            return False
+        # **Stored raw.** Headroom and the floor are applied where the allocation is built,
+        # because both are per-container settings now and this store deliberately does not
+        # know what a container is for. It records what was measured; the caller decides what
+        # to do with it.
+        # The scenario runner's own report on itself, and the only guard that container has.
+        # It is sized on a percentile with a ceiling it may burst into, so it can be starved
+        # for a whole run without ever hitting its quota -- invisible to the throttle counter
+        # that catches this for everything else. `None` is "not measured" and never refuses.
+        if tick_ratio is not None and tick_ratio > PROBE_TICK_REFUSE_RATIO:
+            logger.warning(
+                "calibration probe %s ticked at %.1fx its configured period; node %s keeps "
+                "its current sizing. The scenario runner could not hold its rate while being "
+                "measured, so the figures would be a starved container's",
+                job_key, tick_ratio, node_id)
+            self._refused[node_id] = (
+                f"its scenario runner ticked at {tick_ratio:.1f}x its configured period")
             return False
         figures = {}
         for name, stats in (measured or {}).items():
-            kept = {k: max(MIN_CPU, round(v * CALIBRATION_HEADROOM, 3))
-                    for k, v in (stats or {}).items()
+            kept = {k: v for k, v in (stats or {}).items()
                     if v and k not in ("samples", "throttled_ratio", "oom_kills")}
             if kept:
                 figures[name] = kept
         if not figures:
             logger.warning("calibration probe %s produced no usable measurement; node %s "
                            "keeps its current sizing", job_key, node_id)
+            self._refused[node_id] = "its probe produced no usable measurement"
             return False
+        # A node that succeeds is not a refused node, whatever an earlier probe said: the
+        # ledger reports the END state.
+        self._refused.pop(node_id, None)
         self._by_node[node_id] = figures
         # INFO on a `robovast.*` logger, so it reaches the campaign log as well as the
         # service's: what a node's jobs were sized to is part of what the campaign did, and
         # a reader asking why two nodes behaved differently should find it there.
         logger.info(
-            "node %s calibrated from %s -- its jobs are sized from these (headroom applied; "
-            "the system under test takes peak, everything else sustained): %s",
+            "node %s calibrated from %s -- measured, before headroom: %s",
             node_id, job_key,
-            ", ".join(f"{k}={v.get('peak', 0):g}peak/{v.get('sustained', 0):g}sust"
+            ", ".join(f"{k}={v.get('cores', 0):g}cores"
+                      + (f"/{v['memory_peak'] / (1024 ** 3):.2f}GiB"
+                         if v.get("memory_peak") else "")
                       for k, v in sorted(figures.items())))
         return True
 
@@ -315,7 +377,23 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: To re-derive them, read a probe's own ``system_usage_<container>.csv`` and take the max,
 #: not the campaign log -- what that prints has ``advice.CPU_HEADROOM`` already applied and
 #: overstates the measurement by that factor.
-DEFAULT_BOOTSTRAP_CPU = {"sut": 8, "simulation": 3, "scenario": 2}
+#: **The pod these sum to has to fit the SMALLEST node**, because the probe is pinned to the
+#: node it measures and a probe no node can hold is a campaign that cannot calibrate. At
+#: sut=8 the three summed to 13 against a 12-core node, so that node's probe was unplaceable
+#: -- and the failure did not look like a placement problem, which is why the sum is stated
+#: here rather than left to be discovered per role.
+#:
+#: **Fitting is not the same as leaving room.** At sut=6 the pod summed to exactly the
+#: spendable cores of the smallest node -- allocatable less the cluster headroom -- which
+#: passes the "could an empty node hold it" check and then places only while that node is
+#: entirely empty. Observed: its probe never ran, so the node accepted no work for the whole
+#: batch and the campaign quietly used three machines out of four. A default should leave
+#: slack rather than land on the boundary.
+#:
+#: 5 keeps roughly a 3x margin over the largest `sut` figure measured across four unlike
+#: machines, which is what this figure needs: enough that the probe never throttles while
+#: measuring, since a throttled probe measures its own ceiling rather than its demand.
+DEFAULT_BOOTSTRAP_CPU = {"sut": 5, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
 
@@ -326,6 +404,80 @@ DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
 #: campaign, and the symptom appears nowhere near the cause.
 BOOTSTRAP_CPU_ENV = "ROBOVAST_BOOTSTRAP_CPU"
 BOOTSTRAP_MEMORY_ENV = "ROBOVAST_BOOTSTRAP_MEMORY"
+
+
+#: JSON, ``{role: {field: value}}``, the same block a ``.vast`` container may carry under
+#: ``calibration``. Keyed by role like the bootstrap above rather than inventing a second
+#: shape, and a whole block rather than one variable per field, so an option added to
+#: :class:`~robovast.common.config.CalibrationConfig` later is settable here with no new
+#: variable and no change to this module.
+CALIBRATION_ENV = "ROBOVAST_CALIBRATION"
+
+#: The percentile each role's figure is taken at when nothing states one, and whether its
+#: limit equals its request. **The rule is which guard would report that a squeeze cost
+#: something**, not whether the container is under test:
+#:
+#: * the system under test is read at its max and never throttles, because a run clipped
+#:   mid-plan is a failure that looks like the stack's rather than the allocation's;
+#: * the simulator is read at a percentile and keeps its ceiling -- its peak-to-mean is about
+#:   18, so reserving the max would cost more than not calibrating, and the realtime factor
+#:   reports if the squeeze cost anything;
+#: * the scenario runner is read the same way, but nothing grades how well it ran, so its
+#:   *ceiling* is what must not be tight. On a probe its own tick ratio fills that gap.
+DEFAULT_SIZE_ON = {"sut": 100.0}
+DEFAULT_SIZE_ON_OTHER = 95.0
+DEFAULT_LIMIT = {"sut": "request"}
+DEFAULT_LIMIT_OTHER = "declared"
+
+
+def _mem_headroom() -> float:
+    """``advice.MEM_HEADROOM``, imported where it is used rather than copied.
+
+    ``advice`` is already the authority for memory sizing and reads the very counter this
+    module now reads; a second constant here would be one to keep in step by hand.
+    """
+    from robovast.results_processing.advice import MEM_HEADROOM  # noqa: PLC0415
+
+    return MEM_HEADROOM
+
+
+def calibration_defaults(role: str) -> dict:
+    """The ``.env`` entry for *role* over the built-in rule, as a plain dict.
+
+    The ``.vast``'s own block is applied over this by the caller, which is why this returns
+    data rather than a model: three layers merge per field, and only the outermost is a
+    validated model.
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    out = {
+        "size_on": DEFAULT_SIZE_ON.get(role, DEFAULT_SIZE_ON_OTHER),
+        "limit": DEFAULT_LIMIT.get(role, DEFAULT_LIMIT_OTHER),
+        "headroom": {"cpu": CALIBRATION_HEADROOM, "memory": _mem_headroom()},
+    }
+    raw = (os.environ.get(CALIBRATION_ENV) or "").strip()
+    if not raw:
+        return out
+    try:
+        override = json.loads(raw)
+        if not isinstance(override, dict):
+            raise ValueError("not an object")
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"{CALIBRATION_ENV}={raw!r}: expected JSON like "
+            '\'{"sut": {"size_on": 100, "limit": "request"}}\'') from exc
+    entry = override.get(role) or {}
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"{CALIBRATION_ENV}: the entry for {role!r} must be an object, got {entry!r}")
+    for key, value in entry.items():
+        if key == "headroom" and isinstance(value, dict):
+            out["headroom"] = {**out["headroom"],
+                               **{k: v for k, v in value.items() if v is not None}}
+        elif value is not None:
+            out[key] = value
+    return out
 
 
 def _bootstrap_override(env_name: str, defaults: dict) -> dict:
@@ -343,7 +495,7 @@ def _bootstrap_override(env_name: str, defaults: dict) -> dict:
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"{env_name}={raw!r}: expected JSON like "
-            '\'{"sut": 8, "simulation": 3, "scenario": 2}\'') from exc
+            '\'{"sut": 5, "simulation": 3, "scenario": 2}\'') from exc
     merged = dict(defaults)
     merged.update({str(k): v for k, v in override.items()})
     return merged
@@ -411,31 +563,27 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
 PROBE_THROTTLE_REFUSE_RATIO = 0.005
 
-#: The percentile the *sustained* figure is taken at. Named rather than written twice inline,
-#: because the probe's tolerance for throttling is derived from it below and the two must move
-#: together.
-SUSTAINED_PERCENTILE = 0.95
-
-
-def probe_refuse_ratio(peak_sized: bool) -> float:
+def probe_refuse_ratio(percentile: float) -> float:
     """How much throttling invalidates a probe's measurement of ONE container.
 
-    **A container's tolerance is the complement of the percentile its figure comes from**,
-    which is why one threshold for all of them was wrong. Clipping removes the top of the
-    distribution: a figure taken from the MAX is destroyed by the first clipped tick, while
-    one taken at the p95 is untouched as long as the clipped ticks stay inside the top 5% it
-    already discards.
+    **A container's tolerance is the complement of the percentile its figure comes from.**
+    Clipping removes the top of the distribution, so what it destroys depends on where the
+    figure is read: one taken at the maximum is spoiled by the first clipped tick, while one
+    taken at the 95th percentile is untouched as long as the clipped ticks stay inside the
+    top 5% it already discards.
 
-    So a container sized on its peak keeps the strict threshold, and one sized on its
-    sustained figure tolerates clipping up to what that percentile throws away regardless. A
-    single strict ratio refuses probes whose sustained figure is perfectly good, and the node
-    then stays uncalibrated -- the outcome calibration exists to avoid, over a distortion
-    that by construction cannot reach the number being read.
+    So the tolerance is *derived* from the percentile rather than being a second number
+    beside it -- 5% at 95, 1% at 99 -- and a container read at the maximum falls back to the
+    strict floor. That floor is not zero for the reason
+    :data:`PROBE_THROTTLE_REFUSE_RATIO` gives: bring-up briefly throttles a container on any
+    machine, and refusing every probe for that would leave a cluster permanently
+    uncalibrated.
 
-    The strict threshold is not zero for the reason :data:`PROBE_THROTTLE_REFUSE_RATIO`
-    gives: bring-up briefly throttles a container on any machine.
+    A single strict ratio for all of them refuses probes whose figure is perfectly good and
+    leaves those nodes unmeasured -- a distortion that by construction cannot reach the
+    number being read.
     """
-    return PROBE_THROTTLE_REFUSE_RATIO if peak_sized else (1.0 - SUSTAINED_PERCENTILE)
+    return max(PROBE_THROTTLE_REFUSE_RATIO, 1.0 - (percentile / 100.0))
 
 
 #: The two file names the resource monitor writes per container, as a naming contract rather
@@ -446,8 +594,26 @@ _RESOURCE_PREFIX = "resource_usage_"
 _SYSTEM_PREFIX = "system_usage_"
 
 
-def container_cpu_profile_from_billing(rows) -> dict:
-    """``{"sustained": cores, "peak": cores}`` from one ``system_usage_<container>.csv``.
+def percentile_of(sorted_or_not, percentile: float) -> float:
+    """The value at *percentile* of *sorted_or_not*, where ``100`` is the maximum.
+
+    One implementation for both readers and for every role, because the percentile is now a
+    per-container setting rather than a constant: the 100th percentile of a finite sample is
+    its largest value, so "the peak" is not a separate code path.
+    """
+    values = sorted(sorted_or_not)
+    if not values:
+        return 0.0
+    idx = max(0, min(len(values) - 1,
+                     int(round((percentile / 100.0) * (len(values) - 1)))))
+    return values[idx]
+
+
+def container_cpu_profile_from_billing(rows, percentile: float = 95.0) -> dict:
+    """``{"cores": ..., "memory_peak": ...}`` from one ``system_usage_<container>.csv``.
+
+    *percentile* is the container's own, resolved before this is called, so the choice of
+    statistic lives with the role rules rather than here -- this reads what it is told to.
 
     **Preferred over :func:`container_cpu_profile` wherever the file exists**, because it is
     the kernel's own billing for the cgroup rather than a sum over what psutil could see.
@@ -466,7 +632,7 @@ def container_cpu_profile_from_billing(rows) -> dict:
     "not measured", exactly as it treats a missing file, and never as zero.
     """
     samples = []
-    periods, throttled, oom_kills = [], [], []
+    periods, throttled, oom_kills, memory = [], [], [], []
     for row in rows or []:
         try:
             ts = float(row["timestamp"])
@@ -485,6 +651,13 @@ def container_cpu_profile_from_billing(rows) -> dict:
             throttled.append(float(row["nr_throttled"]))
         except (KeyError, TypeError, ValueError):
             pass
+        # Same file, same tick. `memory_peak` is the kernel's own high-water mark for the
+        # cgroup, which is what a memory limit has to clear -- not `memory_current`, a
+        # sample that misses whatever happened between two ticks.
+        try:
+            memory.append(float(row["memory_peak"]))
+        except (KeyError, TypeError, ValueError):
+            pass
     if len(samples) < 2:
         return {}
     samples.sort()
@@ -496,10 +669,11 @@ def container_cpu_profile_from_billing(rows) -> dict:
         totals.append((du / 1e6) / dt)
     if not totals:
         return {}
-    totals.sort()
-    idx = max(0, min(len(totals) - 1,
-                    int(round(SUSTAINED_PERCENTILE * (len(totals) - 1)))))
-    out = {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+    out = {"cores": percentile_of(totals, percentile), "samples": len(totals)}
+    if memory:
+        # The MAX, for every role alike: a CPU limit that binds slows a container, a memory
+        # limit that binds kills it, so no role may be sized on a percentile here.
+        out["memory_peak"] = max(memory)
     span = (periods[-1] - periods[0]) if len(periods) >= 2 else 0
     if span > 0:
         # Absent when the node cannot report it, and absent is NOT zero -- see `record`.
@@ -509,8 +683,13 @@ def container_cpu_profile_from_billing(rows) -> dict:
     return out
 
 
-def container_cpu_profile(rows, limit_cores=None) -> dict:
-    """``{"sustained": cores, "peak": cores}`` from one ``resource_usage_<container>.csv``.
+def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> dict:
+    """``{"cores": ...}`` from one ``resource_usage_<container>.csv``.
+
+    The psutil-derived fallback, used only where the kernel's own billing is unavailable. It
+    reports no memory figure: this file is per PROCESS, so its memory column double-counts
+    pages shared between a process and its forks, and a memory limit sized from it would be
+    wrong in the direction that kills.
 
     *rows* are the CSV's dict rows. Summed **per tick before aggregating**, because a row is
     one process name and a container is the whole stack of them: taking the max of the rows
@@ -556,14 +735,13 @@ def container_cpu_profile(rows, limit_cores=None) -> dict:
         totals = [t for t in totals if t <= limit_cores]
         if not totals:
             return {}
-    idx = max(0, min(len(totals) - 1,
-                    int(round(SUSTAINED_PERCENTILE * (len(totals) - 1)))))
     # ``samples`` travels with the figures so the caller can refuse a measurement drawn from
     # too little of a run -- see MIN_PROBE_SAMPLES. A short probe is not a small container.
-    return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+    return {"cores": percentile_of(totals, percentile), "samples": len(totals)}
 
 
-def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
+def read_probe_measurement(read, prefix: str, containers, limits=None,
+                           percentiles=None) -> dict:
     """``{container: profile}`` from a finished probe's own CSVs.
 
     *read* is ``(key) -> bytes | None``, so this needs no storage client and can be tested
@@ -598,13 +776,14 @@ def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
         except Exception as exc:  # noqa: BLE001 - see above
             logger.debug("probe file %s unparseable: %s", filename, exc)
             continue
-        profile = container_cpu_profile(rows, limit_cores=limit)
+        pct = (percentiles or {}).get(name, 95.0)
+        profile = container_cpu_profile(rows, limit_cores=limit, percentile=pct)
         # The kernel's own billing where the node could answer, and the per-process sum only
         # where it could not: `system_usage_` needs no ceiling to be read and no impossible
         # sample discarded, so where both exist the counter wins. Falling back rather than
         # requiring it keeps a cgroup v1 host, or a runtime that exposes no cpu.stat,
         # calibratable instead of silently uncalibrated.
-        billing = _billing_profile(read, prefix, filename)
+        billing = _billing_profile(read, prefix, filename, percentile=pct)
         if billing:
             profile = billing
         if profile:
@@ -612,7 +791,7 @@ def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
     return out
 
 
-def _billing_profile(read, prefix: str, filename: str) -> dict:
+def _billing_profile(read, prefix: str, filename: str, percentile: float = 95.0) -> dict:
     """The ``system_usage_`` sibling of *filename*, read as a profile, or ``{}``.
 
     Best-effort by construction: every failure here means "fall back to the per-process
@@ -633,7 +812,7 @@ def _billing_profile(read, prefix: str, filename: str) -> dict:
     except Exception as exc:  # noqa: BLE001 - the per-process file still answers
         logger.debug("probe billing file %s unreadable: %s", sibling, exc)
         return {}
-    return container_cpu_profile_from_billing(rows)
+    return container_cpu_profile_from_billing(rows, percentile=percentile)
 
 
 #: Where a probe's output goes, under the campaign root. Reserved (see
@@ -681,6 +860,61 @@ def probe_parameter_documents(documents, node_id: str) -> list:
 
 #: What a run writes when its scenario reaches a verdict, whatever that verdict is.
 PROBE_VERDICT_FILE = "test.xml"
+
+
+#: The file ``scenario-execution --tick-log`` writes, one row per tick of the behaviour tree.
+PROBE_TICK_FILE = "tick_timing.csv"
+
+#: How far below its configured rate the scenario runner may tick before its measurement is
+#: refused. The ratio is ``interval_s / period_s`` -- achieved against intended -- so 1.0 is
+#: perfect and larger is slower.
+#:
+#: **This is the scenario container's only guard, and it exists only on probes.** Every other
+#: role has something that reports a squeeze cost it: the system under test has its own health
+#: check, the simulator has the realtime factor. The scenario runner has neither, and it is
+#: sized on a percentile with a ceiling it can burst into -- so it can be slow throughout
+#: without ever being quota-bound, and a measurement taken while it was starved would size
+#: every later run on that node.
+#:
+#: Generous on purpose: a behaviour tree misses its period for reasons that are not
+#: starvation -- a slow action, a blocking call -- and this must refuse a probe that could not
+#: get CPU, not one whose scenario had work to do.
+PROBE_TICK_REFUSE_RATIO = 2.0
+
+
+def read_probe_tick_ratio(read, prefix: str):
+    """The probe's median achieved-against-intended tick ratio, or ``None``.
+
+    ``None`` where the file is absent or carries no usable row -- not a ratio of 1.0. A
+    scenario runner that never wrote one was not measured, and "not measured" must never
+    read as "held its rate", which is the same rule the resource counters follow.
+
+    The MEDIAN rather than the worst tick: a behaviour tree stalls for a moment on any
+    machine, and one slow tick is not a starved container. What starvation looks like is the
+    whole distribution shifting.
+    """
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    try:
+        raw = read(f"{prefix}{PROBE_TICK_FILE}")
+        if not raw:
+            return None
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8", "replace"))))
+    except Exception as exc:  # noqa: BLE001 - absent is not a verdict
+        logger.debug("probe tick log at %s unreadable: %s", prefix, exc)
+        return None
+    ratios = []
+    for row in rows:
+        try:
+            interval, period = float(row["interval_s"]), float(row["period_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if period > 0 and interval >= 0:
+            ratios.append(interval / period)
+    if not ratios:
+        return None
+    return percentile_of(ratios, 50.0)
 
 
 def probe_completed(read, prefix: str) -> bool:

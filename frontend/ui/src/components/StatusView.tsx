@@ -1,9 +1,11 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import { useTheme } from '@mui/material/styles'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
@@ -124,10 +126,16 @@ export function MiniRunMeter({
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
   return (
+    // The ring's slot is reserved whether or not there is a ring, so this whole group is a
+    // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
+    // left of every other row -- and that cell is a column readers scan down. The reserved space
+    // costs nothing visible: it lands between the time and the meter, where it reads as gap.
     <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
-      {campaignId && status.mode === 'search' ? (
-        <SearchRing campaignId={campaignId} status={status} />
-      ) : null}
+      <Box sx={{ width: RING_SIZE, flexShrink: 0 }}>
+        {campaignId && status.mode === 'search' ? (
+          <SearchRing campaignId={campaignId} status={status} />
+        ) : null}
+      </Box>
     <HoverFacts
       title="runs"
       facts={[
@@ -175,7 +183,7 @@ export function MiniRunMeter({
 function SearchRing({
   campaignId,
   status,
-  size = 26,
+  size = RING_SIZE,
 }: {
   campaignId: string
   status: Status
@@ -276,6 +284,14 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
 // *failed* job is deliberately not here: a failure is the thing the reader came to look at.
 const DONE_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'killed'])
 
+/** The card body's tabs. `jobs` and `details` are mutually exclusive by phase -- a running
+ *  campaign has no measurements yet, a finished one has no live jobs -- so only one of them is
+ *  ever offered beside `log`. */
+type CardTab = 'jobs' | 'details' | 'log'
+
+/** The rounds ring's diameter, and so the width its slot reserves on every row. */
+const RING_SIZE = 26
+
 // Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
@@ -288,7 +304,6 @@ export function StatusView({
   hideLog = false,
   liveOnly = false,
   newest = true,
-  showDetails = false,
   quotaCpu,
   postprocessed = false,
   onStopJob,
@@ -311,10 +326,6 @@ export function StatusView({
   // The top card in Monitor's newest-first campaign list — see FailureBox. Defaults to
   // true so the Launcher and other single-campaign callers keep the box open.
   newest?: boolean
-  // Offer the Details panel (what the campaign cost, how it ran). Off by default because it
-  // only means anything once the campaign has finished and been postprocessed — the caller
-  // holds the summary that says so (`hasResults`), and this view does not.
-  showDetails?: boolean
   // Lane CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
   quotaCpu?: number | null
   // Whether the metric tables exist yet -- the Details panel re-queries when this flips, since a
@@ -338,8 +349,18 @@ export function StatusView({
   // a row the instant its job completes and the `liveOnly` filter below drops it —
   // which threw away the log the reader was in the middle of. `expandedJobs` also feeds
   // that filter, so a job whose log is open survives its own completion until collapsed.
-  const [jobsOpen, setJobsOpen] = useState(false)
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(() => new Set())
+  // Which tab is showing. Local state per card, deliberately not the URL: there are as many of
+  // these as there are campaigns on the page, and the hash carries one view's selection, not a
+  // per-card one (the Explorer's tab is in the URL because there is exactly one Explorer).
+  //
+  // Seeded from whether the campaign is over AT FIRST RENDER rather than tracking `terminal`, so
+  // a campaign that finishes while it is open does not swap the tab under the reader; the effect
+  // below moves it only when the tab it is on stops existing.
+  const [tab, setTab] = useState<CardTab>(() => (isTerminalPhase(status.phase) ? 'details' : 'jobs'))
+  useEffect(() => {
+    setTab((t) => (t === 'jobs' && terminal ? 'details' : t === 'details' && !terminal ? 'jobs' : t))
+  }, [terminal])
   const toggleJob = (jobName: string) =>
     setExpandedJobs((prev) => {
       const next = new Set(prev)
@@ -479,26 +500,58 @@ export function StatusView({
           empty list, so it is only noise. The section may therefore come and go as the
           live set empties and refills between runs, which is why neither piece of its
           expansion state lives inside it — see jobsOpen / expandedJobs. */}
-      {cid && shownJobs && shownJobs.length > 0 ? (
-        <JobsSection
-          campaignId={cid}
-          jobs={shownJobs}
-          open={jobsOpen}
-          onToggleOpen={() => setJobsOpen((o) => !o)}
-          expanded={expandedJobs}
-          onToggle={toggleJob}
-          onStopJob={onStopJob}
-          stoppingJob={stoppingJob}
-        />
+      {/* Everything above is PROGRESS and stays visible whichever tab is showing. Below it, the
+          two things a reader digs into. They were three foldable boxes inside an already-folded
+          card, so what a campaign cost, and what it printed, were each two clicks deep.
+
+          Which two tabs depends on what the campaign is, because a running campaign and a
+          finished one are dug into for different reasons: one is being watched (which jobs are
+          up, what is the log saying), the other reviewed (what did it cost). Details is not
+          offered while running at all -- its numbers come from the `resource_usage` table, which
+          postprocessing writes, so there is provably nothing to show.
+
+          The panel is a ternary, not two hidden divs: an unselected Log tab that stayed mounted
+          would hold its EventSource open invisibly. The cost is that switching back re-opens the
+          stream; the jobs' expansion state survives because StatusView owns it. */}
+      {cid && !hideLog ? (
+        <Box>
+          <Tabs
+            value={tab}
+            onChange={(_e, v) => setTab(v as CardTab)}
+            sx={{ minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0 } }}
+          >
+            {terminal ? (
+              <Tab value="details" label="Details" />
+            ) : (
+              // The count is on the label because it is the one number that says whether the tab
+              // is worth opening, and a tab nobody opens should not have to be opened to say so.
+              <Tab value="jobs" label={`Jobs${shownJobs?.length ? ` (${shownJobs.length})` : ''}`} />
+            )}
+            <Tab value="log" label="Log" />
+          </Tabs>
+          <Box sx={{ borderTop: 1, borderColor: 'divider' }}>
+            {tab === 'log' ? (
+              <CampaignLog campaignId={cid} />
+            ) : tab === 'details' ? (
+              <DetailsBox
+                campaignId={cid}
+                quotaCpu={quotaCpu}
+                postprocessed={postprocessed}
+                selected
+              />
+            ) : (
+              <JobsSection
+                campaignId={cid}
+                jobs={shownJobs ?? []}
+                expanded={expandedJobs}
+                onToggle={toggleJob}
+                onStopJob={onStopJob}
+                stoppingJob={stoppingJob}
+              />
+            )}
+          </Box>
+        </Box>
       ) : null}
-      {cid && showDetails ? (
-        <DetailsBox
-          campaignId={cid}
-          quotaCpu={quotaCpu}
-          postprocessed={postprocessed}
-        />
-      ) : null}
-      {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
   )
 }
@@ -619,8 +672,6 @@ const JOBS_RENDER_CAP = 100
 function JobsSection({
   campaignId,
   jobs,
-  open,
-  onToggleOpen,
   expanded,
   onToggle,
   onStopJob,
@@ -628,20 +679,30 @@ function JobsSection({
 }: {
   campaignId: string
   jobs: JobSummary[]
-  // Both halves of the expansion state are owned by StatusView, because this section is
-  // unmounted whenever the live set empties: `open` is whether the list is unfolded,
-  // `expanded` the job names whose log is unfolded within it.
-  open: boolean
-  onToggleOpen: () => void
+  // Owned by StatusView, not here, because this section unmounts underneath the reader --
+  // whenever the tab is switched away, and formerly whenever the live set emptied. It is what
+  // makes a job's own log survive a trip to the Log tab and back, which is the whole answer to
+  // the tab bar costing the side-by-side view.
   expanded: Set<string>
   onToggle: (jobName: string) => void
   onStopJob?: (job: JobSummary) => void
   stoppingJob?: string | null
 }) {
   const shown = jobs.slice(0, JOBS_RENDER_CAP)
+  // The empty state is the reason this renders at all now. As a foldable section it simply
+  // vanished when the live set emptied -- which happens between every pair of runs on the local
+  // lane, where runs are sequential. A TAB that vanished would take the tab bar's shape with it,
+  // and the selected tab out from under the reader, so the tab stays and says why it is empty.
+  if (!shown.length) {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', p: 1 }}>
+        no job running right now
+      </Typography>
+    )
+  }
   return (
-    <CollapsibleBox title="Jobs" meta={jobs.length} open={open} onToggle={onToggleOpen}>
-      {/* Flat rows separated by hairlines rather than a bordered card each: the section is
+    <>
+      {/* Flat rows separated by hairlines rather than a bordered card each: the panel is
           already a card, and a box per job turned a 20-job batch into 20 nested frames. */}
       <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
         {shown.map((job) => (
@@ -661,7 +722,7 @@ function JobsSection({
           </Typography>
         ) : null}
       </Stack>
-    </CollapsibleBox>
+    </>
   )
 }
 
@@ -742,14 +803,14 @@ function JobRow({
 }
 
 // Live unified infrastructure log for one campaign (variation + run + postprocessing
-// phases, divider-separated), streamed over SSE. Collapsed by default.
+// phases, divider-separated), streamed over SSE.
+//
+// No frame and no open state of its own: it is a tab's content, and the tab is both. The stream
+// therefore opens when the tab is selected and closes when it is not, because the tab panel
+// unmounts -- which is why the panels are rendered as a ternary rather than hidden with CSS. A
+// hidden-but-mounted Log would hold an EventSource open for a panel nobody can see.
 export function CampaignLog({ campaignId }: { campaignId: string }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <CollapsibleBox title="Log" open={open} onToggle={() => setOpen((o) => !o)}>
-      <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
-    </CollapsibleBox>
-  )
+  return <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
 }
 
 // One backend error string, shown verbatim. These are multi-line — an exception message plus a

@@ -654,7 +654,23 @@ _SHM_BASIS = (f"Sized on the PEAK plus {round((SHM_HEADROOM - 1) * 100)}% headro
               "allocates its segments as it starts, and a SIGBUS there loses the run too.")
 
 
-def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+def _campaign_sizing(query_rows) -> "str | None":
+    """The sizing mode the campaign actually ran under, or ``None``.
+
+    Read from ``config_json``, which is the config AS RUN with the model's defaults resolved,
+    so an inferred mode is answered as well as a stated one. ``None`` for a campaign recorded
+    before the key existed -- which is the mode every campaign had then.
+    """
+    try:
+        rows = query_rows("SELECT json_extract(config_json, '$.execution.sizing') AS sizing "
+                          "FROM campaign.campaign LIMIT 1")
+    except Exception:  # noqa: BLE001 - no campaign table attached is not an error here
+        return None
+    return rows[0].get("sizing") if rows else None
+
+
+def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict],
+                    sizing: str = None) -> list[dict]:
     """Whether the system under test was held at its own CPU limit. Empty when it was not.
 
     **A screen, not a verdict, and the valuable half is the silence.** Throttling says the
@@ -707,9 +723,16 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
         reserved = declared_cpu.get(label)
         return [{
             "kind": "sut_throttled",
-            "severity": "warning",
-            "title": (f"The system under test was held at its CPU limit in "
-                      f"{ratio * 100:.1f}% of enforcement periods"),
+            # Not a warning where it is the designed steady state: a container sized AT
+            # its own measurement sits against that measurement, so this fires on every
+            # calibrated campaign. Left at `warning` it would train the reader to skip
+            # the one place the same number does mean something.
+            "severity": "suggestion" if sizing == "calibrated" else "warning",
+            "title": (("Expected under calibrated sizing: the system under test sat at "
+                       f"its measured limit in {ratio * 100:.1f}% of enforcement periods")
+                      if sizing == "calibrated" else
+                      ("The system under test was held at its CPU limit in "
+                       f"{ratio * 100:.1f}% of enforcement periods")),
             "detail": (
                 f"{runs_throttled} of {runs} run(s) had their '{label}' container held at its "
                 f"CPU limit"
@@ -719,9 +742,15 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
                 "runs, and nothing else in the results separates the two. Check the stack's "
                 "own health signals there (controller frequency, missed control loops, "
                 "planning failures); if they are clean, the throttling cost nothing and the "
-                "allocation can stay. If they are not, raise "
-                f"execution.containers.{label}.resources.cpu -- sizing on sustained use is not "
-                "enough, because the limit is a ceiling and a planner's peaks are the work. "
+                "allocation can stay. If they are not, "
+                + (f"raise execution.containers.{label}.calibration.headroom.cpu -- the figure "
+                   "IS this node's own measurement, so a bigger ceiling changes nothing and "
+                   "what has to grow is the margin above it"
+                   if sizing == "calibrated" else
+                   f"raise execution.containers.{label}.resources.cpu -- sizing on sustained "
+                   "use is not enough, because the limit is a ceiling and a planner's peaks "
+                   "are the work")
+                + ". "
                 "This is the container hitting its OWN ceiling, not other work crowding it "
                 "out: a busy neighbour causes scheduling latency rather than throttling. "
                 "Which runs: SELECT config_name, run_id FROM run_validity_view WHERE "
@@ -911,6 +940,6 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - no job table, or a campaign predating the field
         governor = []
     return {"advice": (governor_advice(governor)
-                       + throttle_advice(throttle, declared)
+                       + throttle_advice(throttle, declared, sizing=_campaign_sizing(query_rows))
                        + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}
