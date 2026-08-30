@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
@@ -32,17 +33,12 @@ const LAST_CAMPAIGN_KEY = 'eval.campaignId'
 // page reads it from props and reports changes back rather than holding it. Explorer is the default
 // view; all three are kept alive so each keeps its state across navigation.
 export function ResultsPage({
-  active,
   view,
   campaignId,
   sel,
   tab,
   onResultsChange,
 }: {
-  /** The Results topic is the one on screen. Kept-alive pages stay mounted while hidden, so `view`
-   *  alone cannot tell "the Explorer is showing" from "the Explorer is the Results topic's current
-   *  view, but the user is in the monitor". */
-  active: boolean
   view: string
   campaignId: string
   /** Which node of the campaign, shared by the Explorer and the Run view (see `Nav.sel`). */
@@ -57,14 +53,20 @@ export function ResultsPage({
     if (id !== campaignId) onResultsChange(id, CAMPAIGN_SEL, '')
   }
 
+  // Whether the Results topic is the one on screen. Kept-alive pages stay mounted while hidden, so
+  // `view` alone cannot tell "the Explorer is showing" from "the Explorer is the Results topic's
+  // current view, but the user is in the monitor".
+  const active = useActiveView()
+
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => robovast.listCampaigns(200, 0),
     // Poll so a campaign that finishes while the Results topic is open is *noticed*; what the views
-    // show only changes when the user asks (below). Paused while the tab is unfocused, so returning
-    // to the tab reads once — otherwise the "new results are available" prompt can sit 15s behind
-    // the campaign it is about. Only the *listing* is refreshed; the tree and the pickers still
-    // move only on Refresh.
+    // show only changes when the user asks (below). Paused while the tab is unfocused — and, by the
+    // gate below, while the topic is not the view on screen — so returning reads once: otherwise
+    // the "new results are available" prompt can sit 15s behind the campaign it is about. Only the
+    // *listing* is refreshed; the tree and the pickers still move only on Refresh.
+    enabled: active,
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   })
@@ -135,7 +137,11 @@ export function ResultsPage({
     // pauses while the window is unfocused, so the campaign someone just watched finish in the
     // monitor — the very one they are switching over here to look at — may not be in it yet.
     setShown(live)
-    campaigns.refetch().then((res) => {
+    // `cancelRefetch: false` because re-entering the topic has already re-enabled the query and
+    // started that read (see the gate above); this joins it rather than aborting it to issue the
+    // same request again. Without a fetch in flight it starts one, which is the case when the
+    // Explorer is entered from another Results view rather than from another topic.
+    campaigns.refetch({ cancelRefetch: false }).then((res) => {
       // Not while the user has already moved on: past the arrival, this is an unrequested update
       // again, and the frozen snapshot is what the other two views are reading.
       if (wasActive.current) adopt(res)

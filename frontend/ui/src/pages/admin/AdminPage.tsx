@@ -13,6 +13,7 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
 import { LogPanel } from '@/components/LogPanel'
+import { useActiveView } from '@/lib/activeView'
 import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
@@ -66,13 +67,29 @@ export function AdminPage() {
   // page, this is one of the three things the Admin page exists to show.
   const [logOpen, setLogOpen] = useState(true)
 
-  const version = useQuery({ queryKey: ['version'], queryFn: robovast.version, retry: false })
+  // This page is kept mounted once visited, so both readings are gated on it being the one on
+  // screen: they then stop while it is not, and are re-read on the way back in — which is the
+  // moment someone asks "did the version I just published land?". See lib/activeView.tsx.
+  const active = useActiveView()
+  const version = useQuery({
+    queryKey: ['version'],
+    queryFn: robovast.version,
+    enabled: active,
+    retry: false,
+  })
   const upgrade = useQuery({
     queryKey: ['upgradeInfo'],
     queryFn: robovast.upgradeInfo,
+    // A roll keeps this live wherever the user has navigated to: the panel below still describes
+    // a handover in progress, and describing it from the pod that is going away would be worse
+    // than saying nothing.
+    enabled: active || rolling,
     // Fast while a roll is in flight — this poll IS how the handover is detected — and
     // slow otherwise: it costs a registry round trip on the cluster lane.
     refetchInterval: rolling ? 3_000 : 60_000,
+    // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
+    // thing to do, and it must not spend a registry round trip each time.
+    staleTime: 10_000,
     retry: false,
   })
 
