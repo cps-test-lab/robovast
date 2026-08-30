@@ -46,8 +46,9 @@ import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { ShareImportDialog } from './ShareImportDialog'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
-import { formatAge, formatLocalTime } from '@/lib/time'
+import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
+import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useLiveStream } from '@/lib/liveStream'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
@@ -465,16 +466,22 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
   // otherwise metres of scroll over sections nobody opened.
   //
-  // Defaulted from `bornAtRest` — whether the campaign was ALREADY over when the card first
-  // rendered — rather than from the live phase, for the same reason that flag was frozen for the
-  // jobs query: a campaign that finishes while it is being watched must not fold itself shut under
-  // the reader. Every card can be folded by hand, running ones included; only the default differs.
-  const [collapsed, setCollapsed] = useState(bornAtRest)
+  // Every card starts folded now, running ones included — one rule, no exceptions, nothing that
+  // opens itself. A running campaign's folded row carries its live meter, its failure counts and
+  // its finishing estimate, which is the glance; opening it is the deliberate step to investigate.
+  //
+  // The cost of that rule, recorded because it is real: the campaign a reader came to watch is
+  // shut when they arrive, and costs a click every visit. It buys little height (the usual page
+  // is one running campaign above many finished ones); what it buys is predictability.
+  const [collapsed, setCollapsed] = useState(true)
   const toggle = () => setCollapsed((c) => !c)
   // What the compact meter draws before this card's own `getStatus` answers. The listing arrives
   // for the whole page in one stream while the statuses are one request each, so without it every
   // meter paints empty and fills in one by one — a page that looks like it is still loading long
   // after it is readable. Superseded the moment the real status lands; see runsFromSummary.
+  // The finishing estimate for the row, campaign-level or absent — see campaignEtaSeconds. Read
+  // off the live status and the live job counts, both of which this card already holds.
+  const eta = status.data ? campaignEtaSeconds(status.data, jobs.data?.counts, !running) : null
   const meterStatus =
     status.data ??
     // `mode` comes from the listing too, so a search campaign's ring is offered from the first
@@ -634,19 +641,32 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           ) : (
             <Box flexGrow={1} />
           )}
-          {/* How long ago, not at what o'clock. A campaign id already ends in a
-              `-YYYY-MM-DD-HHMMSS` stamp, so an absolute start time beside it printed the same
-              fact twice and spent 150px of the row doing it — while the two questions a list is
-              actually scanned for, "which of these is recent" and "how long did it take", went
-              unanswered by both. Those are the age here and the duration on the hover; the exact
-              local time is there too, because it is NOT quite what the id says (see formatAge). */}
+          {/* One column, two questions, decided by whether the campaign is still going.
+        
+              A campaign that is OVER is asked "which of these is recent": the age, not a wall
+              clock — the id already ends in a `-YYYY-MM-DD-HHMMSS` stamp, so an absolute start
+              time beside it printed the same fact twice and spent 150px doing it. The duration,
+              which neither the id nor a start time gives, is on the hover.
+        
+              A campaign that is RUNNING is asked "how much longer": the estimate. It is empty
+              rather than dashed when none can be had — nothing has finished yet, or it is a
+              search whose rounds nothing bounds (see campaignEtaSeconds) — because an empty cell
+              reads as "not known" while a dash reads as a value. */}
           {summary.started_at ? (
             <HoverFacts
-              facts={[
-                { label: 'started', value: formatLocalTime(summary.started_at) },
-                { label: 'finished', value: formatLocalTime(summary.finished_at) },
-                { label: 'took', value: campaignDuration(summary) },
-              ]}
+              facts={
+                running
+                  ? [
+                      { label: 'started', value: formatLocalTime(summary.started_at) },
+                      { label: 'running for', value: formatAge(summary.started_at) },
+                      { label: 'expected finish', value: eta != null ? formatLocalClock(eta) : null },
+                    ]
+                  : [
+                      { label: 'started', value: formatLocalTime(summary.started_at) },
+                      { label: 'finished', value: formatLocalTime(summary.finished_at) },
+                      { label: 'took', value: campaignDuration(summary) },
+                    ]
+              }
             >
               <Typography
                 variant="caption"
@@ -654,9 +674,30 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 noWrap
                 sx={{ flexShrink: 0, width: AGE_COLUMN, textAlign: 'right', cursor: 'help' }}
               >
-                {formatAge(summary.started_at)}
+                {running
+                  ? eta != null
+                    ? `~${formatDuration(eta)} left`
+                    : ''
+                  : formatAge(summary.started_at)}
               </Typography>
             </HoverFacts>
+          ) : null}
+          {stage && !collapsed ? (
+            // Inside the flexible span and BEFORE the time cell, not after it. The marker's text
+            // changes every few seconds, so its width does too; out here it pushed everything to
+            // its left, and what sits to its left now is a live estimate that must not jitter.
+            // In this position the description/spacer absorbs the change instead. `noWrap` and
+            // capped so a long step line truncates rather than shoving the buttons off; the full
+            // text is on hover and the Log tab has the rest.
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              title={stage}
+              sx={{ minWidth: 0, maxWidth: '40%', flexShrink: 1, fontFamily: 'monospace' }}
+            >
+              {stage}
+            </Typography>
           ) : null}
           {collapsed ? (
             <MiniRunMeter
@@ -668,21 +709,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             />
           ) : null}
         </Stack>
-        {stage && !collapsed ? (
-          // After the spacer on purpose: the marker changes every few seconds, and ahead of it
-          // every re-render would shift the campaign id and the start time sideways. Capped and
-          // `noWrap` so a long step line truncates here instead of pushing the buttons off —
-          // the full text is on hover, and the log panel below has the rest.
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            noWrap
-            title={stage}
-            sx={{ minWidth: 0, maxWidth: '40%', fontFamily: 'monospace' }}
-          >
-            {stage}
-          </Typography>
-        ) : null}
         {/* The controls, as a right-aligned column of their own. A fixed minimum, because which
             of them exist varies per campaign — a stopped one has no Explorer or Run-view
             shortcut — and without a column those two rows pushed their timestamp and meter
@@ -886,7 +912,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             jobs={jobs.data}
             liveOnly
             newest={newest}
-            showDetails={canExplore}
             quotaCpu={usage.data?.cpu_capacity ?? null}
             postprocessed={!!summary.postprocessed}
             onStopJob={onStopJob}

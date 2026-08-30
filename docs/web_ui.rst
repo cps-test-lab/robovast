@@ -14,15 +14,32 @@ It provides four views:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel. A campaign that is **over** is listed **folded**: one row carrying
-  its phase, id, description, start time and a **compact run meter**, with the jobs list,
-  the Details panel and the log not rendered at all — so a page of finished campaigns is a
-  page of rows rather than metres of scroll. Clicking the row (or its chevron) unfolds the
-  full card, unchanged. A **running** campaign starts unfolded, and can be folded by hand
-  like any other; a campaign that finishes while you are watching it stays open. The
-  compact meter is the same bar the open card draws full width — same segments, same
+  **live log** panel. **Every** campaign is listed **folded**: one row carrying its phase,
+  id, description, a time, and a **compact run meter**, with the jobs list, the Details
+  panel and the log not rendered at all — so a page of campaigns is a page of rows rather
+  than metres of scroll. Clicking the row (or its chevron) unfolds the full card. Nothing
+  opens itself, including the newest campaign and one that ended badly: the row says which
+  it is, and opening it is always the reader's choice.
+
+  The **time** column asks a different question of each state. A campaign that is over shows
+  **how long ago it started**; a campaign that is still going shows **how much longer it has**,
+  and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
+  duration or the expected finish.
+
+  For a **search** that estimate is never its current round: a search runs an unknown number of
+  rounds, so the round it is on says nothing about the whole, and one starting its sixth of six
+  would otherwise claim the same remaining time as one starting its first. It is projected from
+  what *bounds* the search instead — a ``batches`` criterion (the rounds still to come) or a
+  ``runs`` one (the runs still to come), at the rate the current batch is achieving, and the
+  **smaller** of the two when both are declared, since the campaign stops at whichever fires
+  first. A search bounded only by an objective, a metric or ``no_improvement`` shows nothing:
+  those fire on a value nothing can project. Like the batches estimate it answers when the *work*
+  runs out, not when the search stops — another criterion may end it earlier.
+
+  The compact meter is the same bar the open card draws full width — same segments, same
   ``done/total`` — with the counts inside the track and the rest (passed, failed, no
-  result, start and finish times) on hover. A **search** campaign's folded row adds a
+  result, start and finish times) on hover; on a running campaign its striped segment is
+  the runs in flight, so the folded row is live. A **search** campaign's folded row adds a
   small **rounds ring** with its round count in the hole, because a search's run counters
   describe its *current batch* rather than the campaign; hovering the ring gives the round
   bound, the best objective and the **objective-over-rounds chart**. A search whose rounds
@@ -50,7 +67,13 @@ It provides four views:
   exact ``running N · pending M`` counts beside it. While a fixed-size campaign runs,
   an **ETA** (``~12m left (≈ 14:35)``, the estimated finish time in your locale)
   appears next to that count once at least one run has
-  finished, extrapolating from the average time per completed run. A collapsible **Jobs** list shows
+  finished, extrapolating from the average time per completed run. Below that progress, the open
+  card carries **two tabs**, and which two depends on what the campaign is: a running one gets
+  **Jobs** and **Log**, a finished one **Details** and **Log**. Details is not offered while a
+  campaign runs because its numbers come from a table postprocessing writes, and Jobs is not
+  offered once it is over because there are no live jobs left. Only the selected tab is rendered,
+  so an unwatched Log holds no stream open; a job whose log you expanded is still expanded when
+  you come back to the Jobs tab. The **Jobs** tab lists
   each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
   cluster — with its status; expanding a running one streams that **job's own live log**:
   every container it runs, merged into one stream, each line tagged ``[<container>]``
@@ -402,12 +425,15 @@ image and code provenance it already reports. It is deliberately **not** on
 The Details panel
 -----------------
 
-A finished campaign's card carries a collapsed **Details** box: what the campaign cost, how
+A finished campaign's card opens onto its **Details** tab: what the campaign cost, how
 it behaved, and — the reason it exists — what the next one should reserve. It answers "did
 this run well, and what did it cost?"; the Results explorer keeps answering "what did it
-find?", which is why there is no per-configuration breakdown here.
+find?", which is why there is no per-configuration breakdown here. A campaign that has
+finished but not yet been postprocessed has no such measurements, and the tab says so rather
+than drawing an empty grid that would read as "this cost nothing".
 
-It is **closed by default and queries nothing until opened**. Its four SQL statements include
+It has no frame of its own — the tab is its title and its open state — and it **queries
+nothing until that tab is showing**. Its four SQL statements include
 one that scans every 1 Hz resource sample of every run, so a page of twenty campaigns would
 otherwise pay for twenty campaigns nobody asked about. Opening it reads once; the answer is
 re-read when the campaign's metric tables appear, since a campaign is *finished* some minutes
