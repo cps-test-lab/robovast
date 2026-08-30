@@ -202,6 +202,11 @@
       "Union[dict, NoneType]"
     ],
     [
+      "sut",
+      false,
+      "Union[dict[str, Any], NoneType]"
+    ],
+    [
       "variations",
       false,
       "Union[list[VariationConfig], NoneType]"
@@ -227,6 +232,11 @@
       "command",
       false,
       "Union[list[str], NoneType]"
+    ],
+    [
+      "config_files",
+      false,
+      "Union[dict[str, Union[str, dict[str, str]]], NoneType]"
     ],
     [
       "image",

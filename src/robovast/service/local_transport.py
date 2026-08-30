@@ -4199,6 +4199,7 @@ class LocalTransport(RobovastInterface):
                     name=c["name"],
                     parameters=convert_dataclasses_to_dict(c.get("config", {})),
                     sim=convert_dataclasses_to_dict(c.get("sim", {})),
+                    sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
                          if k.startswith("_") and k != "_config_block"}),

@@ -1907,6 +1907,11 @@
             "additionalProperties": true,
             "title": "Sim",
             "type": "object"
+          },
+          "sut": {
+            "additionalProperties": true,
+            "title": "Sut",
+            "type": "object"
           }
         },
         "required": [
@@ -1915,7 +1920,8 @@
           "name",
           "parameters",
           "previews",
-          "sim"
+          "sim",
+          "sut"
         ],
         "title": "PreviewConfiguration",
         "type": "object"
