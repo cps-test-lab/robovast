@@ -196,6 +196,10 @@ def info(namespace, context):
 
     click.echo(f"  version   {version.package_version or '(unavailable — no package metadata)'}")
     click.echo(f"  revision  {version.code_revision or '(unavailable — cannot compare with your tree)'}")
+    # Only when known. A source checkout has no build to date, and an absent line says that
+    # more honestly than a placeholder that would have to be read as one.
+    if version.built_at:
+        click.echo(f"  built     {version.built_at}")
     click.echo(f"  api       {version.api_version}")
     if version.backend:
         click.echo(f"  lane      {version.backend}")

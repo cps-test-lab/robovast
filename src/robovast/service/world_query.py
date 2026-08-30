@@ -48,6 +48,7 @@ Two lane facts it reconciles, and both are the whole substance of the class:
 
 import logging
 import os
+import re
 import shlex
 import tempfile
 
@@ -94,6 +95,10 @@ class ExecSlotContainerRunner:
         self.workspace = tempfile.mkdtemp(prefix="robovast_worldq_")
         self._documents: dict = {}
         self._rewrites: dict = {}
+        #: The DIRECTORY exposures only, which is what a staged document's *contents* may
+        #: be rewritten against. A file exposure maps one exact path, so applying it as a
+        #: substring would corrupt any text that happened to contain it.
+        self._dir_rewrites: dict = {}
         #: True once the command RAN and exited non-zero — i.e. the simulator reached a
         #: verdict about the world. It is the only thing that separates "your world is
         #: broken" from "I could not ask", and ``describe_world_payload`` raises the same
@@ -124,10 +129,12 @@ class ExecSlotContainerRunner:
         if os.path.isdir(host_path):
             self._rewrites[container_path.rstrip("/")] = (
                 f"/sources/{self._workspace_id}")
+            self._dir_rewrites[container_path.rstrip("/")] = (
+                f"/sources/{self._workspace_id}")
             return
         staged = f"{_STAGE_DIR}/{os.path.basename(container_path)}"
         with open(host_path, "r", encoding="utf-8") as handle:
-            self._documents[staged] = handle.read()
+            self._documents[staged] = self._rewrite_text(handle.read())
         # Same mechanism as a directory: the file IS reachable, just spelled differently,
         # so argv is rewritten instead of the container being asked for a mount it cannot
         # have. Registered as a rewrite and not only written, or the command would still
@@ -188,6 +195,23 @@ class ExecSlotContainerRunner:
         parts.append(" ".join(shlex.quote(self._rewrite(arg))
                               for arg in (command or [])))
         return "\n".join(parts)
+
+    def _rewrite_text(self, text: str) -> str:
+        """*text* with every exposed directory's container path swapped for this lane's.
+
+        A staged document carries paths the same way argv does, and they need the same
+        rewrite -- the override tree is exactly where a campaign names a file that argv
+        cannot carry, which is why the document exists at all. Without this the check
+        reported a mesh the campaign really does mount as missing, on every configuration
+        whose ``sim:`` block names one: the path was correct, and this lane simply spells
+        its directory differently.
+
+        Rewritten on a path boundary rather than as a bare substring, so ``/config`` does
+        not match inside ``/configuration``.
+        """
+        for mount, actual in self._dir_rewrites.items():
+            text = re.sub(re.escape(mount) + r"""(?=[/\s"'\],}]|$)""", actual, text)
+        return text
 
     def _rewrite(self, arg: str) -> str:
         """*arg* with an exposed directory's container path swapped for this lane's."""

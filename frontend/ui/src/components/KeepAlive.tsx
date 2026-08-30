@@ -1,11 +1,15 @@
 import { useRef } from 'react'
 import type { ReactNode } from 'react'
 import Box from '@mui/material/Box'
+import { ActiveViewProvider } from '@/lib/activeView'
 
 // Preserves a view's state across navigation. The view is mounted lazily on its first activation and
 // thereafter kept mounted but hidden while inactive — so local state (selected workspace/file, editor
 // buffers, scroll, preview) survives switching away and back, instead of being discarded on unmount.
-// Inactive views don't render visibly but their queries stay live.
+// Keeping a view mounted would also freeze its data, because React Query reads and stops reading
+// on mount and unmount. So the flag is published to the subtree (`ActiveViewProvider`), and the
+// queries that should follow the view rather than the component take `enabled` from it: state is
+// what survives being hidden, data is not. See lib/activeView.tsx.
 //
 // Hidden with `visibility` and taken out of flow, **not** `display: none`. A display-none subtree has
 // no boxes at all, so every child measures itself as 0×0 — which is a lie for a component that sizes
@@ -42,7 +46,7 @@ export function KeepAlive({ active, children }: { active: boolean; children: Rea
             }),
       }}
     >
-      {children}
+      <ActiveViewProvider active={active}>{children}</ActiveViewProvider>
     </Box>
   )
 }

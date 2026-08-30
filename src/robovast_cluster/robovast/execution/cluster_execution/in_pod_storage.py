@@ -816,6 +816,13 @@ def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, st
 #: Key prefix holding one marker per campaign.
 CAMPAIGN_INDEX_PREFIX = "campaign-index"
 
+#: Prefix for the companion marker written when a campaign ENDS. A second marker rather than a
+#: rewrite of the first: the start marker is published before anything that can fail and must
+#: keep saying when the campaign began, and two zero-byte keys are read by two listings of the
+#: same cached pass -- which is the whole point. Ordering a listing by finish time otherwise
+#: means fetching a record per campaign, exactly what the start marker exists to avoid.
+CAMPAIGN_FINISHED_PREFIX = "campaign-finished"
+
 #: Bucket for the markers when the deployment has no shared bucket of its own. Same
 #: situation, and the same resolution, as an image build's staged context — see
 #: :func:`~robovast.execution.cluster_execution.cluster_image_build.build_context_bucket`.
@@ -870,6 +877,43 @@ def mark_campaign_indexed(storage: StorageClient, cluster_config,
         storage.upload_file(empty.name, bucket, _index_key(campaign_id, created_at))
 
 
+def mark_campaign_finished(storage: StorageClient, cluster_config,
+                           campaign_id: str, finished_at: str) -> None:
+    """Publish *campaign_id*'s finish marker, so a listing can order by it.
+
+    The time rides in the key exactly as ``created_at`` does in the start marker, so reading
+    it back costs a listing rather than an object read. Written when the campaign reaches a
+    terminal phase; a campaign that ends again (a re-triggered postprocessing, a re-export)
+    overwrites it, which is correct -- it ended again, later.
+    """
+    bucket = campaign_index_bucket(cluster_config)
+    # An empty temp file, not a write-bytes primitive: `StorageClient` has none, and
+    # `upload_file` carries the bucket creation and the S3 reconnect-and-retry that a
+    # hand-rolled put would have to repeat. Same reasoning as `mark_campaign_indexed`.
+    with tempfile.NamedTemporaryFile(prefix="robovast-finished-") as empty:
+        storage.upload_file(empty.name, bucket, _finished_key(campaign_id, finished_at))
+
+
+def list_finished_campaigns(storage: StorageClient,
+                            cluster_config) -> list[tuple[str, str]]:
+    """Every finished campaign as ``(campaign_id, finished_at)``, from one listing.
+
+    The counterpart of :func:`list_indexed_campaigns`, and parsed the same way. A campaign
+    with no marker is absent rather than present-and-null: it has not ended, or it ended
+    before this marker existed, and the caller orders it by its start time instead.
+    """
+    bucket = campaign_index_bucket(cluster_config)
+    out = []
+    for key in storage.list_keys(bucket, CAMPAIGN_FINISHED_PREFIX):
+        rest = key[len(CAMPAIGN_FINISHED_PREFIX) + 1:]
+        campaign_id, sep, finished_at = rest.partition("/")
+        if not sep or not campaign_id:
+            logger.warning("Skipping malformed campaign-finished key %r", key)
+            continue
+        out.append((campaign_id, finished_at))
+    return out
+
+
 def list_indexed_campaigns(storage: StorageClient,
                            cluster_config) -> list[tuple[str, str]]:
     """Every indexed campaign as ``(campaign_id, created_at)``, from one listing.
@@ -891,6 +935,20 @@ def list_indexed_campaigns(storage: StorageClient,
     return out
 
 
+def unmark_campaign_finished(storage: StorageClient, cluster_config,
+                             campaign_id: str) -> None:
+    """Drop *campaign_id*'s finish marker, alongside its index marker on delete.
+
+    A prefix delete for the same reason as :func:`unmark_campaign_indexed`: the id leads the
+    key, so the remover needs no timestamp it does not have, and a marker left by an earlier
+    ending of the same id goes with it.
+    """
+    if not campaign_id:
+        raise ValueError("campaign_id is required to unmark a campaign")
+    bucket = campaign_index_bucket(cluster_config)
+    storage.delete_prefix(bucket, f"{CAMPAIGN_FINISHED_PREFIX}/{campaign_id}")
+
+
 def unmark_campaign_indexed(storage: StorageClient, cluster_config,
                             campaign_id: str) -> None:
     """Drop *campaign_id*'s marker, so a deleted campaign stops being listed.
@@ -907,6 +965,10 @@ def unmark_campaign_indexed(storage: StorageClient, cluster_config,
 
 def _index_key(campaign_id: str, created_at: str) -> str:
     return f"{CAMPAIGN_INDEX_PREFIX}/{campaign_id}/{created_at}"
+
+
+def _finished_key(campaign_id: str, finished_at: str) -> str:
+    return f"{CAMPAIGN_FINISHED_PREFIX}/{campaign_id}/{finished_at}"
 
 
 def storage_client_for(cluster_config, *, interactive: bool = False) -> StorageClient:

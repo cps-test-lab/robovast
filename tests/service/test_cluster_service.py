@@ -36,7 +36,7 @@ def cs():
     # _campaign_index), and off-cluster that opens a kubectl port-forward — which no test
     # has, and which *blocks* rather than failing. Tests that exercise discovery use the
     # ``indexed`` fixture below, which installs a fake store and clears this.
-    svc._index_cache = (time.monotonic(), {})
+    svc._index_cache = (time.monotonic(), {}, {})
     return svc
 
 
@@ -500,7 +500,7 @@ def test_an_unreachable_store_keeps_the_last_known_index(indexed, monkeypatch):
 
     # Expire the TTL while keeping the value, which is exactly the state a poll after a
     # brief outage is in.
-    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])
+    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
         lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))
@@ -537,7 +537,7 @@ def test_only_one_caller_lists_the_index_at_a_time(indexed, monkeypatch):
     from robovast.execution.cluster_execution import in_pod_storage
     in_pod_storage.mark_campaign_indexed(storage, object(), "c-2026-07-17-120000", "t")
     cs._campaign_index()                      # warm, so there is a stale value to serve
-    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])   # expire the TTL
+    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]   # expire the TTL
 
     in_listing, release = threading.Event(), threading.Event()
     calls = []
@@ -557,7 +557,7 @@ def test_only_one_caller_lists_the_index_at_a_time(indexed, monkeypatch):
     assert in_listing.wait(5), "the first caller should be out listing"
 
     # A second poll arriving mid-listing must return immediately with the stale value.
-    assert cs._campaign_index() == {"c-2026-07-17-120000": "t"}
+    assert cs._campaign_index() == ({"c-2026-07-17-120000": "t"}, {})
     assert len(calls) == 1, "the second caller must not start its own listing"
 
     release.set()
@@ -569,7 +569,7 @@ def test_a_failed_listing_releases_the_single_flight_flag(indexed, monkeypatch):
     """Otherwise one error would wedge the index on its stale value forever."""
     cs, _storage = indexed
     cs._campaign_index()
-    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])
+    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
         lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))

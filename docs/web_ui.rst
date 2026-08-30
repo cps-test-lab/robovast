@@ -22,7 +22,11 @@ It provides four views:
   it is, and opening it is always the reader's choice.
 
   The **time** column asks a different question of each state. A campaign that is over shows
-  **how long ago it started**; a campaign that is still going shows **how much longer it has**,
+  **how long ago it finished** — the freshness of its results, which its start time answers
+  badly: a campaign that ran for eight hours and ended a minute ago is the newest thing on the
+  page and started three days back. The listing orders the terminal group by the same figure,
+  so the column and the order agree; a campaign whose record carries no terminal outcome falls
+  back to its start time in both. A campaign that is still going shows **how much longer it has**,
   and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
   duration or the expected finish.
 
@@ -191,10 +195,24 @@ against today's size.
 
 **What version is running, and is there a newer one.** The page reports the version, the
 git revision where the deployment can tell (blank means it cannot, which is not a
-mismatch), and the image digest the kubelet actually resolved — the only thing that
-distinguishes two builds of a floating tag. Against that it reports what the tag points at
-in the registry now. A registry that does not answer is reported as *unknown*, never as "up
-to date": that would tell you a fix you have just published is not there.
+mismatch), **when the running image was built**, and the image digest the kubelet actually
+resolved — the only thing that distinguishes two builds of a floating tag. Against that it
+reports what the tag points at in the registry now. A registry that does not answer is
+reported as *unknown*, never as "up to date": that would tell you a fix you have just
+published is not there.
+
+The build date is the one line that reads without a second thing to compare it against: a
+revision needs a checkout and a semver needs a changelog, while "built 18 days ago" answers
+"is this deployment old?" on its own. It comes from the image itself, baked in at build time
+(see :doc:`images`) rather than read from a label — a container cannot read its own labels —
+so it is **absent** on a source checkout or a hand-built image rather than guessed at.
+
+Note the asymmetry, which is deliberate: the *available* image is shown as a digest only. A
+version and a date can be asked of the image this service is executing and not of one it is
+not, and the answer would cost a walk through the registry's manifests and config blob on
+every poll. It would also decide nothing — Upgrade is not a choice between versions, it rolls
+onto whatever the tag points at — so the digest and the verdict beside it are the whole answer
+this page needs.
 
 **Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
 annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the
@@ -255,6 +273,28 @@ in a background tab costs the service nothing. That is what makes coming back th
 must be re-read: without it a card would show the phase from before you switched away for as
 long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
 therefore fetch once on return.
+
+**Switching pages counts as coming back**, and for a while it did not. Every page is kept
+mounted once visited so its state survives navigation — an editor buffer, a scroll position,
+an upgrade in progress — and a page that never unmounts is one whose data is never re-read
+either. So a page's readings are also gated on that page being the one on screen: they stop
+while it is not, and they are read again on the way back in. That is one rule with two
+halves, and the second is what answers "did the version I just published land?" on arriving
+at Admin, or shows a ``.vast`` that was added from the CLI without a browser reload.
+
+Which readings take the gate is a judgement about each one, not a blanket policy. It applies
+to what is **cheap and can change while you are elsewhere**: workspaces and file listings, the
+campaign phases and job lists, the service version and upgrade check, the campaign listing,
+a run view's panel layout. It deliberately does **not** apply to a finished campaign's
+results — the SQL behind the Explorer, the Data browser and every run-view panel, and the
+notebook render. That data cannot change, because the campaign that produced it is over, and
+re-reading it is the most expensive thing this UI does; making every visit pay for it would
+buy nothing. Re-running postprocessing is what invalidates those, and it already does.
+
+The gate is also what stops a hidden page from spending on the service's behalf: before it,
+the Admin page cost a container-registry round trip every minute for as long as the tab was
+open, whichever page you were actually looking at, and each running campaign cost a
+Kubernetes API call every two seconds from a card nobody could see.
 
 **The app itself** can go stale too, and it is the one thing here that no amount of
 polling helps with. Each view is a separate chunk fetched on first visit, named by a

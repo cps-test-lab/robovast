@@ -96,6 +96,42 @@ def test_an_override_document_travels_with_the_command(tmp_path):
     assert "mkdir -p" in script
 
 
+def test_a_documents_paths_are_rewritten_the_way_argv_is(tmp_path):
+    """A path inside the staged document needs the same rewrite the command gets.
+
+    The override tree is exactly where a campaign names a file argv cannot carry -- a
+    floorplan mesh, say -- so the paths that most need rewriting travel in the document
+    rather than on argv. Rewriting only argv reported such a mesh as missing on every
+    configuration whose ``sim:`` block named one, while the campaign mounted it and ran.
+    """
+    document = tmp_path / "sim.overrides.yaml"
+    document.write_text(
+        "plugins:\n  floorplan:\n    mesh: /config/environments/hexagon/hexagon.stl\n")
+    exec_call = _Exec()
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    runner.expose(str(tmp_path), "/config")
+    runner.expose(str(document), "/aux/sim.overrides.yaml")
+    runner.run(["roqsim", "scenes", "describe", "w.yaml",
+                "--override", "/aux/sim.overrides.yaml"])
+    script = exec_call.requests[-1].command
+    assert "/sources/ws-1/environments/hexagon/hexagon.stl" in script
+    assert "/config/environments" not in script
+
+
+def test_a_rewrite_does_not_reach_inside_a_longer_name(tmp_path):
+    """``/config`` is a path, not a prefix: ``/configuration`` is a different directory."""
+    document = tmp_path / "sim.overrides.yaml"
+    document.write_text("plugins:\n  a:\n    path: /configuration/keep-me\n")
+    exec_call = _Exec()
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    runner.expose(str(tmp_path), "/config")
+    runner.expose(str(document), "/aux/sim.overrides.yaml")
+    runner.run(["roqsim", "scenes", "describe", "w.yaml"])
+    assert "/configuration/keep-me" in exec_call.requests[-1].command
+
+
 def test_a_document_is_staged_where_this_container_may_actually_write(tmp_path):
     """The path a backend names on argv is an aux Pod's ``emptyDir``, and this is not that Pod.
 
