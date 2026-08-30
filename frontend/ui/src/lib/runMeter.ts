@@ -49,6 +49,15 @@ export function runMeterText(status: Status, counts?: JobCounts): string {
   return `${Math.round((finishedRuns(status, counts) / total) * 100)}%`
 }
 
+/** Runs the meter paints red: a failing verdict and a run that delivered nothing, together.
+ *
+ *  The label needs one number, and both reds are the same answer to "is there something to look
+ *  at here" — the hover keeps the two axes apart. Without it a finished campaign reads `100%`
+ *  over a part-red bar, where the percent means done and only the color means passed. */
+export function runMeterFailed(status: Status, counts?: JobCounts): number {
+  return status.runs.failed + noResultRuns(status, counts)
+}
+
 /** A `RunProgress` from a campaign LISTING, for the moment before the live status arrives.
  *
  * The collapsed row is drawn from the campaign stream, which arrives for the whole page at once,

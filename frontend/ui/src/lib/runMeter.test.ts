@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runMeterSegments, runMeterText, runsFromSummary } from './runMeter'
+import { runMeterFailed, runMeterSegments, runMeterText, runsFromSummary } from './runMeter'
 import type { CampaignSummary, JobCounts, Status } from './robovastClient'
 
 const status = (runs: Partial<Status['runs']>): Status =>
@@ -58,6 +58,20 @@ describe('runMeterText', () => {
 
   it('says nothing with no denominator rather than claiming 0%', () => {
     expect(runMeterText(status({ total: 0 }))).toBe('')
+  })
+})
+
+describe('runMeterFailed', () => {
+  it('sums both reds, so the label matches what the bar paints', () => {
+    expect(runMeterFailed(status({ total: 10, completed: 6, failed: 2, no_result: 4 }))).toBe(6)
+  })
+
+  it('is zero on a clean campaign, which is how the label stays off', () => {
+    expect(runMeterFailed(status({ total: 10, completed: 10 }))).toBe(0)
+  })
+
+  it('prefers the live job counts for the no-result axis', () => {
+    expect(runMeterFailed(status({ total: 10, completed: 5, failed: 1, no_result: 9 }), counts({ failed: 2 }))).toBe(3)
   })
 })
 
