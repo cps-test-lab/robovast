@@ -415,9 +415,32 @@ four are shown at once, and the oldest give way — a batch of campaigns ending 
 not bury the list they are about. Repeating an action refreshes its own notice rather than
 stacking a second copy of it, so leaning on a menu entry does not build a tower.
 
-**A failure stays put.** A refusal or an error keeps its place in the card or panel that
-raised it, with the service's own message under it, because that text is worth reading twice
-and often worth copying. Nothing that carries a reason is put somewhere it will erase itself.
+**A failure is given weight, not permanence.** A refusal or an error from something *you* did
+appears in the same bottom-right stack, with the service's own message under it in monospace. It
+is held **three times as long** as a passing notice — ten seconds is enough to notice a sentence
+and not enough to read one — counted separately so a burst of campaigns ending cannot evict it,
+and drawn nearest the corner so an arriving notice pushes the stack up above it rather than
+shifting it out from under the pointer. Hovering the stack holds it for as long as you are
+reading. It still clears itself: a notice that must be clicked away turns every failure into a
+chore.
+
+They are no longer kept on the card that raised them, because nothing there ever cleared one.
+The card does not unmount and the action's state was never reset, so a refusal stayed visible
+until the tab was reloaded — long after the campaign it was about had moved on, and sometimes
+next to a later attempt that had succeeded.
+
+**What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
+announcing it offers **Open campaign**, which unfolds that card and scrolls to it. The known gap
+is a refused *action* — a retrigger the service would not accept — whose reason exists nowhere
+but its notice; a durable event log is what will close that, and until then the longer duration
+is the whole of the answer. (A refusal the service *expects* — stopping a job that finished a
+moment earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
+
+**A campaign is addressable.** ``#/execution?campaign=<id>`` opens the campaign view with that
+campaign's card unfolded and scrolled to; **Copy link to this campaign** in the card's menu
+hands you that URL. It is an instruction for arrival rather than a description of the page —
+cards fold and unfold freely afterwards, and several can be open at once, so the link says where
+to start and not what the page must look like.
 
 **Campaigns announce themselves.** Starting and ending is reported wherever you are in the
 app, not only on the Campaigns page — a campaign that ends while you are reading results says

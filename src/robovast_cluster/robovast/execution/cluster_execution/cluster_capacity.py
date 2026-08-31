@@ -95,10 +95,16 @@ class ClusterBudgetProvider:
         the truth, rather than a negative that would read as room.
         """
         head_cpu, head_mem = _headroom()
+        ids = self._node_ids()
+        # Carrying the node id, so a PINNED item can be asked whether the one node it may use
+        # could ever hold it. Without it the only answerable question is the cluster-wide one,
+        # and a probe pinned to the smallest machine of a mixed cluster is judged against the
+        # biggest.
         return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
                          memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
-                         gpu=int(parse_resource(a.get("nvidia.com/gpu"))))
-                for a in self._allocatables().values()]
+                         gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
+                         node_id=ids.get(name))
+                for name, a in self._allocatables().items()]
 
     def _declared_total(self):
         """The cluster's own idea of how big it can get, or ``None``.

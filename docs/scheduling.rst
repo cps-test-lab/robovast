@@ -82,7 +82,9 @@ headroom off: a reserve that is never spendable is not part of either answer.
        **campaign's** start, not the batch's.
    * - ``drain(*, limit=None) -> int``
      - Create as many globally-highest-priority items as currently fit. Returns how many.
-       ``0`` means "nothing fits now" — normal, never an error.
+       ``0`` means "nothing fits now" — normal, never an error. An item that does not fit is
+       **skipped**, so a large one cannot idle the cluster — except a **pinned** one, which
+       holds its node open until it drains (see below).
    * - ``finished(key)``
      - Release that job's reservation.
    * - ``cancel(owner) -> int``
@@ -94,7 +96,8 @@ headroom off: a reserve that is never spendable is not part of either answer.
    * - ``states(owner) -> dict``
      - ``key -> PLANNED | CREATED``, for progress reporting.
    * - ``refusal(owner) -> str``
-     - One line saying what this owner is waiting for.
+     - One line saying what this owner is waiting for — **its own** item count and the sizing
+       the fit test actually used, not the queue's total and not the declared figure.
    * - ``calibration(owner, factory=None)``
      - The campaign's :class:`NodeCalibration`, created once and kept for its life.
    * - ``node_ids()`` / ``growable()``
@@ -146,9 +149,58 @@ Probes queue under a **second owner** (``<campaign>#probes``) so they stay out o
 campaign's progress counts — which means the batch's ``finally`` must cancel both, or a probe
 still ``PLANNED`` holds its node out of the campaign for good.
 
-A probe that dies without a verdict is abandoned: the node stays uncalibrated and its runs use
-the declared sizing, which is what a cluster with calibration switched off does anyway — a
-worse allocation, never a wrong result.
+**A probe that does not deliver a figure has two very different fates**, and the difference is
+whether it ever ran:
+
+* **It ran and its measurement was refused** — no verdict, too few samples, throttled or
+  OOM-killed against its own ceiling. That *ends the campaign*, at the moment of refusal: the
+  node's runs would use the starting allocation while every measured node's used a figure, so
+  the campaign would mix two allocations and nothing in the results would say which run got
+  which. The message names the reason and the remedy for it.
+* **It never ran at all** — pinned to a node that had no room to spare for it, so it was never
+  created. That is *counted*, not fatal: the node takes no work for that batch, is re-probed on
+  the next one, and the campaign is refused only if the same node goes unmeasured
+  ``UNMEASURED_BATCH_LIMIT`` batches running. A probe too large for any node's *capacity* is a
+  separate case and never reaches here — ``preflight`` in ``_start_probes`` refuses it before a
+  single job exists.
+
+**A pinned item holds its node open.** Skipping a non-fitting item is right when it can be
+served from anywhere later; a pinned one has a single candidate, so "later" only arrives if that
+node is left room. A probe is also the largest pod a calibrated campaign asks for — the declared
+sizing, while the calibrated jobs behind it run at a measured fraction of it — so skipping it
+handed its node to the smaller work it outranked, every pass. Priority ordered the queue and
+reserved nothing.
+
+So a pinned item that does not fit claims its node for the rest of the pass: nothing further is
+placed there, the node drains as its work finishes, and the item goes on the pass where it fits.
+The claim is taken in priority order, so it only shuts out work ranking *below* the item holding
+the node, and it is per node — work that can go elsewhere still does.
+
+It is taken **only where the wait can end**: if the node could not hold the item even empty, the
+node keeps working. Holding it would drain the machine and keep it drained, which is worse than
+not reserving at all. That question needs the node's identity, which is why ``Capacity`` now
+carries an optional ``node_id`` — ``preflight`` asks only whether *some* node is large enough,
+and a probe pinned to the smallest machine of a mixed cluster was being judged against the
+biggest. An unknowable answer reserves, because a wrong reserve costs one batch and a wrong skip
+cost the whole campaign.
+
+The count exists for what is left. At the end of one batch the two are indistinguishable,
+and failing on first sight made a busy minute at campaign start terminal — discarding a batch of
+finished, correct runs to do it. The probe is the largest pod a calibrated campaign asks for (the
+declared sizing summed over its containers) and, being pinned, it cannot spread, so ``n``
+calibrated campaigns starting together need ``nodes × n`` of them placed at once. On a cluster of
+unlike machines that lands on the **smallest** node first, where one probe can be half the machine
+— ``preflight`` asks only whether the probe fits a node when empty, never whether it fits there
+alongside anything else. That contention drains; a node still unmeasured a batch later is not
+waiting on it.
+
+Both cases leave the node on the declared sizing meanwhile, which is what a cluster with
+calibration switched off does anyway — a worse allocation, never a wrong result.
+
+Because probes queue under their own owner, **the batch loop reads the refusal for both keys**.
+Reading only the campaign's own key left a pinned probe's wait with no line anywhere: the
+queue computed why it could not be placed on every drain and printed none of it, and the campaign then
+ended on a node it could not measure while naming a cause nobody had checked.
 
 **Sizing is per role**, and this is a validity rule rather than a tuning one:
 
@@ -188,6 +240,15 @@ Failure modes worth knowing
    * - A create retried forever
      - An RBAC change, a webhook or a quota looks identical to an API blip from here.
        Bounded, then dropped with its cause.
+   * - A finished batch discarded over one unmeasured node
+     - A pinned probe that lost a race for free capacity read as a configuration fault.
+       Counted now, and terminal only if it repeats — ``UNMEASURED_BATCH_LIMIT``.
+   * - A probe waits with nothing said
+     - Refusals key on the item's owner, and probes have their own; only the campaign's key
+       was read. Both are read now.
+   * - A pinned probe never placed at all
+     - Priority gave it first pick but no reservation, so the smaller work it outranked took
+       its node every pass. A pinned item now holds its node open until it drains.
 
 
 Where the numbers come from
