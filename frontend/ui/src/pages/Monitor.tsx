@@ -50,7 +50,6 @@ import { preferredArchive } from '@/lib/shareArchives'
 import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
-import { stallVerdict } from '@/lib/stall'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
@@ -456,18 +455,21 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // Once running, the *phase* age is noise, and so is the bare progress age: a duration
   // next to the campaign id says nothing a reader can act on. The **verdict** is what
   // matters — this run is wedged, not merely slow — so the clock is kept only to assert
-  // it. A project that declares no budget gets no verdict, and is told so once by
-  // `validate_project`, where the missing budget is still fixable.
+  // it.
   //
-  // Derived in `lib/stall.ts`, which mirrors `stall_report` in the status contract gate for
-  // gate and carries a test per gate. It used to be derived inline here, and drifted from
-  // the contract three times: a phase that executes no runs judged against a per-run budget,
-  // then that rule half-applied to only the pre-run phases, then a batch queued for cluster
-  // capacity called stalled while the MCP and CLI both refused to.
+  // The verdict is the service's, from `stall_report` in the status contract, and this card
+  // only renders it. Deriving it here instead would mean keeping a second copy of its gates
+  // in step, and a gate missing from that copy shows a stall the contract refuses to assert.
   //
-  // Tri-state, so only `true` may render: showing `null` as "not stalled" would put a
-  // reassuring label on a run that may already be dead.
-  const { stalled, ageS: progressAgeS } = stallVerdict(status.data)
+  // It is tri-state, so only `true` may render: `null` means no verdict was possible (no
+  // declared budget, a phase that executes no runs, or a batch queued for capacity), and
+  // drawing that as "not stalled" would assert health for a run that may already be dead.
+  //
+  // `progress_age_s` comes from the service too, so the label needs no clock of its own —
+  // the age is measured against the service's clock rather than this browser's, and refreshes
+  // with the 1.5 s poll.
+  const stalled = status.data?.stalled === true
+  const progressAgeS = status.data?.progress_age_s ?? null
   const progressDeadline = status.data?.progress_deadline_s
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
   // is the one that needed it: the run counters are frozen and `progress` is pinned, so a

@@ -51,7 +51,8 @@ from robovast.client import file_address
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
-from robovast.client.status import Phase, Status  # noqa: F401
+from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401  # pylint: disable=unused-import
+                                    status_response)
 
 # ---------------------------------------------------------------------------
 # Request / response models

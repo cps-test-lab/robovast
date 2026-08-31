@@ -133,7 +133,10 @@ export type RunProgress = Schemas['RunProgress']
 
 export type BudgetItem = Schemas['BudgetItem']
 
-export type Status = Schemas['Status']
+// The SERVED status: the controller's state plus the stall verdict the service derived
+// for it (see StatusResponse). The bare `Status` schema is the persisted state and
+// carries no verdict, so reading it here would put the gates back on this side.
+export type Status = Schemas['StatusResponse']
 
 // What an upload-to-share is doing right now, published by the controller/service into
 // `Status.extra.upload` while the phase is `sharing` (see controller.UploadProgress).
