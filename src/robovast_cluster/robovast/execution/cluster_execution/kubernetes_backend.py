@@ -3188,15 +3188,35 @@ class KubernetesBackend(ExecutionBackend):
         yield a truncated ``data.db`` and a canonical publish missing runs that really ran --
         so a failure propagates.
         """
+        from robovast.common.progress import fmt_size  # pylint: disable=import-outside-toplevel
+
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)
         os.makedirs(campaign_root, exist_ok=True)
+
+        # Narrated on the campaign's own stage marker, not only in the pod log. This step has
+        # no run counter -- the same reason `_run_batch_mode` gives for narrating its steps --
+        # so without a line here a multi-GB transfer is indistinguishable from a wedged
+        # service to anyone watching the campaign, which is exactly how it read the first time
+        # it ran in anger.
+        def on_change(done, total, done_bytes, total_bytes):
+            if self._state is None:
+                return
+            self._state.update(stage=(
+                f"restoring campaign root — {done}/{total} file(s), "
+                f"{fmt_size(done_bytes)} of {fmt_size(total_bytes)}"))
+
+        # `on_progress` costs one extra metadata listing to learn the denominator
+        # (`count_pending`), which `download_prefix` otherwise skips. Worth it here and
+        # nowhere else in this class: this transfer runs once per resumed campaign, takes
+        # minutes, and a bare running count cannot say whether it is near done.
         n = storage.download_prefix(
             bucket, prefix, campaign_root,
             on_file=in_pod_storage.download_progress_logger(
-                f"Campaign {campaign_id} (completing root)"))
+                f"Campaign {campaign_id} (completing root)"),
+            on_progress=in_pod_storage.download_progress_reporter(on_change))
         if n:
             logger.info("Completed campaign root for %s with %d file(s) from %s/%s "
                         "that a service restart had left in the object store",
