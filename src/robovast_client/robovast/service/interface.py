@@ -459,6 +459,16 @@ class CampaignSummary(BaseModel):
     # The web UI already tries to read these off a summary and falls back to nothing.
     postprocessing_error: str = ""
     share_error: str = ""
+    # Why a FAILED campaign failed -- the first line of ``Status.error``, and only that.
+    #
+    # It rides the listing for the reason the two above do: without it, "Campaign failed" is
+    # all any reader outside the campaign's own card can say, and the reason is a request away
+    # per campaign. The listing is a hot payload (re-sent once a second for as long as any tab
+    # is open, times every campaign in it), so what travels is bounded on purpose: ``Status``
+    # carries the message *and a traceback tail*, and a multi-line trace per row is exactly the
+    # growth this payload must not take on. The first line is the sentence a notice needs; the
+    # card fetches the whole thing from ``get_status`` when someone opens it.
+    error: str = ""
 
 
 class ListCampaignsRequest(BaseModel):

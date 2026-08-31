@@ -1852,6 +1852,11 @@ export interface components {
              * @default
              */
             description: string;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
             /** Finished At */
             finished_at: string | null;
             /**
