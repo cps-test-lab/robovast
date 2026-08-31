@@ -41,6 +41,8 @@ a stranger cannot fetch would refuse most real research; refusing only the ones 
 import logging
 from pathlib import Path
 
+from robovast.common.campaign_data import image_is_pullable
+
 logger = logging.getLogger(__name__)
 
 PUBLIC = "public"
@@ -72,6 +74,7 @@ def classify_campaign_inputs(campaign_dir) -> list:
     from robovast.common.campaign_data import (read_execution_metadata, read_plugins_record,
                                                read_providers_record)
 
+
     campaign_dir = Path(campaign_dir)
     try:
         execution = read_execution_metadata(campaign_dir)
@@ -80,8 +83,10 @@ def classify_campaign_inputs(campaign_dir) -> list:
                        "the campaign recorded no execution metadata at all, so nothing about "
                        "what ran can be identified")]
 
+    from robovast.common.campaign_data import campaign_image_record  # noqa: PLC0415
+
     return [*_classify_robovast(execution),
-            *_classify_images(execution),
+            *_classify_images(campaign_image_record(campaign_dir)),
             *_classify_plugins(read_plugins_record(campaign_dir)),
             *_classify_providers(read_providers_record(campaign_dir))]
 
@@ -105,47 +110,94 @@ def _classify_robovast(execution: dict) -> list:
                    revision=revision)]
 
 
-def _classify_images(execution: dict) -> list:
-    """Each container image: a digest is identity, a local id is not."""
-    revisions = execution.get("image_revisions") or {}
-    images = execution.get("images") or {}
-    roles = sorted(set(revisions) | set(images))
+def _classify_images(record) -> list:
+    """Each container image: could somebody else obtain these bytes, or rebuild them?
+
+    One policy over :func:`~robovast.common.campaign_data.campaign_image_record`, so this and
+    the retrigger pre-flight can no longer disagree about one file on one disk -- which they
+    did, and visibly: a campaign the pre-flight called pinnable this called opaque, because the
+    two re-derived the same fields with their own precedence.
+
+    Two ways to be reproducible, and the second one was missing:
+
+    * **a digest** identifies bytes exactly. Whether they are *fetchable* is an access question,
+      which is what ``private`` is for.
+    * **a recipe** -- the base it was built FROM and the dated archives it installed from --
+      rebuilds them. It outlives the digest: a registry keeps a manifest for as long as it keeps
+      it, and the recipe is what still answers afterwards. Reading only the digest fields
+      classified a campaign carrying a complete recipe *and* its build lock as opaque and
+      refused to publish it, which is the opposite of the truth.
+    """
+    roles = sorted(record.roles)
     if not roles:
         return [_entry("images", OPAQUE, "no container image recorded")]
 
     out = []
-    for role in roles:
-        recorded = str(revisions.get(role) or "")
-        declared = str(images.get(role) or "")
-        name = f"image[{role}]"
+    for name in roles:
+        role = record.roles[name]
+        label = f"image[{name}]"
         # Either field may hold the digest. The two lanes fill them differently -- the local one
         # records a plan-resolved ref under `images` and a local id under `image_revisions`, the
-        # cluster one the reverse -- so reading only `image_revisions` reported a campaign whose
-        # `images` entry was already `repo@sha256:...` as having no digest at all, while quoting
-        # that very digest back in the message.
-        if "@sha256:" not in recorded and "@sha256:" in declared:
-            recorded = declared
-        if "@sha256:" in recorded:
-            # A digest identifies bytes. Whether they are *fetchable* depends on the registry,
-            # which is an access question -- the same one `private` exists for.
-            kind = PUBLIC if _looks_public(recorded) or recorded.startswith("ghcr.io") else PRIVATE
-            out.append(_entry(name, kind,
+        # cluster one the reverse -- so reading only one reported a campaign whose other field
+        # was already `repo@sha256:...` as having no digest at all, while quoting that very
+        # digest back in the message.
+        digest = next((ref for ref in (role.recorded, role.declared)
+                       if image_is_pullable(ref)), "")
+        if digest:
+            kind = PUBLIC if _looks_public(digest) or digest.startswith("ghcr.io") else PRIVATE
+            out.append(_entry(label, kind,
                               "pinned by registry digest"
                               + ("" if kind == PUBLIC else
                                  " in a registry that needs access; the digest identifies the "
                                  "exact bytes, so anyone with access can reproduce it"),
-                              digest=recorded))
-        elif recorded.startswith("sha256:"):
-            out.append(_entry(name, OPAQUE,
+                              digest=digest))
+            continue
+
+        rebuildable = _recipe_entry(label, role)
+        if rebuildable is not None:
+            out.append(rebuildable)
+        elif role.recorded.startswith("sha256:"):
+            out.append(_entry(label, OPAQUE,
                               "recorded only as a LOCAL image id, which cannot be pulled "
                               "anywhere -- only the machine that ran it ever had these bytes",
-                              recorded=recorded))
+                              recorded=role.recorded))
         else:
-            out.append(_entry(name, OPAQUE,
-                              f"no digest recorded; {declared or recorded or 'nothing'!r} is a "
-                              f"mutable reference and will not name the same bytes later",
-                              recorded=recorded or declared))
+            shown = role.declared or role.recorded or "nothing"
+            out.append(_entry(label, OPAQUE,
+                              f"no digest recorded; {shown!r} is a mutable reference and will "
+                              f"not name the same bytes later",
+                              recorded=role.recorded or role.declared))
     return out
+
+
+#: What a recipe has to name before a rebuild would reproduce rather than approximate: where it
+#: started, and the dated archives that keep `apt-get install` resolving the same versions.
+#: Two of the three is not a partial answer -- it is a rebuild that installs whatever is current.
+_RECIPE_KEYS = ("base_image", "ubuntu_snapshot", "ros_snapshot")
+
+
+def _recipe_entry(label: str, role):
+    """The role classified by its build recipe, or ``None`` when it has no usable one."""
+    missing = [key for key in _RECIPE_KEYS if not role.build_refs.get(key)]
+    if missing:
+        return None
+    if not role.has_lock:
+        # The recipe says where to start; the lock says which versions. Without it a rebuild
+        # re-resolves the author's loose specs and gets whatever is current -- a different
+        # experiment wearing the same name -- so this is not yet an identity.
+        return _entry(label, OPAQUE,
+                      "no digest, and its build recipe has no build lock beside it, so a "
+                      "rebuild would re-resolve package versions rather than reproduce them",
+                      recipe={key: role.build_refs.get(key) for key in _RECIPE_KEYS})
+    source = str(role.build_refs.get("source") or "")
+    kind = PUBLIC if _looks_public(source) else PRIVATE
+    return _entry(label, kind,
+                  "no digest, but recorded a complete build recipe and lock -- the base it was "
+                  "built from, the dated archives it installed from, and the resolved versions "
+                  "-- so it can be rebuilt"
+                  + ("" if kind == PUBLIC else
+                     ", by anyone who can reach the sources it names"),
+                  recipe={key: role.build_refs.get(key) for key in _RECIPE_KEYS})
 
 
 def _classify_plugins(record) -> list:

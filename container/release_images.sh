@@ -15,7 +15,8 @@
 # ROBOVAST_PROJECT moves all four, so there is no longer a per-image knob to forget.
 #
 # Usage:
-#   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--ros-distro <distro>] \
+#   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--config-write] \
+#                                  [--ros-distro <distro>] \
 #                                  [--roqsim-ref <ref> | --roqsim-src <path>] \
 #                                  [-- <extra docker build args>]
 #
@@ -45,6 +46,11 @@ ROQSIM_SRC=""
 # `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
 # immutable set, which is how a deployment is pinned: ROBOVAST_PROJECT_TAG=<stamp>.
 TAG="latest"
+# Updating ~/.config/robovast/env is a convenience, not part of the release, and it changes
+# which images every `vast` on this machine runs -- so it happens only when asked for:
+# --config-write, or ROBOVAST_RELEASE_CONFIG_WRITE=1 for a shell that always wants it.
+# Without it the two lines are printed and nothing on disk is touched.
+CONFIG_WRITE="${ROBOVAST_RELEASE_CONFIG_WRITE:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -62,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ask-push)
       ASK_PUSH=1
+      shift
+      ;;
+    --config-write)
+      CONFIG_WRITE=1
       shift
       ;;
     --ros-distro)
@@ -90,7 +100,7 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--config-write] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project ghcr.io/cps-test-lab --push" >&2
   echo "Pinned:  $0 --project ghcr.io/cps-test-lab --tag 2026-08-17 --push" >&2
 }
@@ -333,13 +343,11 @@ fi
 echo "Note: a container's own 'image:' in a .vast is used verbatim and is NOT affected by"
 echo "these -- that field is for your own images. Delete it to run a family image."
 
-# Offer to write the two lines into the *user* config -- ~/.config/robovast/env, which
+# Write the two lines into the *user* config -- ~/.config/robovast/env, which
 # `vast` loads whatever directory it runs in (see src/robovast/common/env_file.py). The
 # per-project ./.env is the wrong home for a released image set: it is one directory's
 # setting, and running `vast` one level up silently loses it. Only ever touches these two
 # keys in place; any other line (registry credentials, share config) is left untouched.
-# Skipped outside an interactive terminal (e.g. CI) rather than hanging on a read that will
-# never come.
 USER_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/robovast/env"
 
 set_env_var() {
@@ -353,15 +361,12 @@ set_env_var() {
   fi
 }
 
-if [[ -t 0 ]]; then
+if [[ -n "$CONFIG_WRITE" ]]; then
+  set_env_var ROBOVAST_PROJECT "${PROJECT%/}" "$USER_ENV_FILE"
+  set_env_var ROBOVAST_PROJECT_TAG "$TAG" "$USER_ENV_FILE"
   echo
-  read -r -p "Write these 2 lines to ${USER_ENV_FILE} now? [y/N] " REPLY || REPLY=""
-  if [[ "$REPLY" =~ ^[Yy] ]]; then
-    set_env_var ROBOVAST_PROJECT "${PROJECT%/}" "$USER_ENV_FILE"
-    set_env_var ROBOVAST_PROJECT_TAG "$TAG" "$USER_ENV_FILE"
-    echo "Updated ${USER_ENV_FILE}."
-  fi
+  echo "Updated ${USER_ENV_FILE}."
 else
   echo
-  echo "(non-interactive -- run this script directly in a terminal to be offered an automatic update)"
+  echo "(nothing written -- re-run with --config-write to put these two lines in ${USER_ENV_FILE})"
 fi

@@ -67,6 +67,14 @@ jobs:
       # Beside its sibling above, and for the same reason: the answer is only knowable in the
       # change itself. Unlike that one this is a prompt rather than a proof -- it cannot tell a
       # contract change from a comment edit -- so it takes a commit trailer for an answer.
+      # No image required: it reads the pins the Dockerfile declares, which is what a rebuild
+      # would use. Cheap enough for every PR, and it is where a snapshot archive going away
+      # first becomes visible -- otherwise that surfaces inside a rebuild nobody runs until the
+      # year-old campaign someone actually needs.
+      - name: Check the build recipe is complete and its archives still serve
+        run: |
+          . venv/bin/activate && make check-recipe
+
       - name: Check the container protocol bump matches the contract change
         run: |
           . venv/bin/activate && make check-compat-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}
