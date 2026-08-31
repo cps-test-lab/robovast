@@ -1669,6 +1669,24 @@ class BatchJobRunner:
         return sorted(n for n in (self._probes.values() if self._probes else ())
                       if n not in measured)
 
+    def weigh_unmeasured_nodes(self) -> dict:
+        """``{node_id: consecutive batches it has now gone unmeasured}``. Empty is the norm.
+
+        **Call once per batch, at its end**: unlike :meth:`unmeasured_nodes` this RECORDS as
+        well as reports, and calling it twice would charge one batch twice. Kept separate for
+        exactly that reason -- the pure question has several callers and this one has one.
+
+        Why a count at all: at the end of a single batch the two causes of an unmeasured node
+        are indistinguishable, and they want opposite responses. See
+        :data:`~.node_calibration.UNMEASURED_BATCH_LIMIT`, which is where the number a caller
+        weighs this against is argued.
+        """
+        nodes = self.unmeasured_nodes()
+        calibration = self._calibration
+        if not nodes or calibration is None:
+            return {}
+        return {node_id: calibration.unmeasured_batch(node_id) for node_id in nodes}
+
     def _probe_container_limits(self) -> dict:
         """``{container: declared cpu ceiling}`` -- what each container could at most use.
 
@@ -2770,7 +2788,10 @@ class BatchJobRunner:
         # timer answered for all of them and so had to pick the shortest.
         blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
-        last_refusal_log = 0.0
+        # Per owner, so the campaign's own refusal and its probes' cannot starve each other
+        # out of the rate limit: they are refused for different reasons at different moments,
+        # and one shared timer prints whichever came first and hides the other.
+        last_refusal_log: "dict[str, float]" = {}
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
@@ -2934,17 +2955,34 @@ class BatchJobRunner:
             # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
-            if admission is not None and planned_count:
+            if admission is not None and (planned_count or self._probes):
                 # WHY nothing was created, not just that nothing was. The queue computes this
                 # on every drain; without logging it an operator can see that a campaign is
                 # waiting at "queued for capacity" and never what for. Rate-limited to
                 # the blocked-log interval, because at 2s per iteration it would otherwise
                 # repeat 450 times in a fifteen-minute wait.
-                reason = admission.refusal(self.campaign)
-                if reason and time.monotonic() - last_refusal_log >= \
-                        self._BLOCKED_LOG_INTERVAL_SECONDS:
-                    last_refusal_log = time.monotonic()
-                    logger.info("Batch %s: %s", self._batch_tag, reason)
+                #
+                # **Both owners, because a campaign queues its work and its probes
+                # separately** and either can be the one that cannot be placed. The probes
+                # are the case that was silent: refusals key on the item's owner, a probe's
+                # owner is `<campaign>#probes`, and only the campaign's own key was ever
+                # read -- so the queue recorded why a pinned probe could not be placed, on
+                # every drain, and no one printed it. A campaign then ended on
+                # `unmeasured_nodes` naming a cause it had never observed, six minutes after
+                # the queue knew the real one. The `self._probes` half of the guard matters
+                # for the same reason: once the campaign's own jobs are all created
+                # `planned_count` is 0, which is exactly when an outstanding probe is the
+                # only thing left waiting.
+                for owner, what in ((self.campaign, "jobs"),
+                                    (self._probe_owner(), "calibration probes")):
+                    reason = admission.refusal(owner)
+                    if not reason:
+                        continue
+                    if time.monotonic() - last_refusal_log.get(owner, 0.0) < \
+                            self._BLOCKED_LOG_INTERVAL_SECONDS:
+                        continue
+                    last_refusal_log[owner] = time.monotonic()
+                    logger.info("Batch %s: %s: %s", self._batch_tag, what, reason)
             time.sleep(2)
         # A stop that landed while the last jobs were being torn down leaves the loop
         # via the empty-remaining path; catch it here too before the result download.
@@ -3215,20 +3253,52 @@ class KubernetesBackend(ExecutionBackend):
                 # being measured. Only when the batch is ending normally: during a stop or a
                 # failure an outstanding probe is expected, and raising here would replace
                 # the reason the campaign is unwinding with a consequence of it.
-                unmeasured = [] if batch_error else runner.unmeasured_nodes()
+                from .node_calibration import UNMEASURED_BATCH_LIMIT  # noqa: PLC0415
+
+                unmeasured = {} if batch_error else runner.weigh_unmeasured_nodes()
                 runner.abandon_outstanding_probes()
-                if unmeasured:
+                # **Only once it has happened twice running.** A probe that could never be
+                # placed on any node is already refused before a single job exists, by the
+                # preflight in `_start_probes`; what reaches the end of a batch unmeasured is
+                # therefore the other case, a pinned probe that lost a race for FREE
+                # capacity, and that drains. Failing on first sight made a busy minute at
+                # campaign start terminal -- and because the batch's own runs had finished by
+                # then, it discarded work that was complete and correct. See
+                # UNMEASURED_BATCH_LIMIT for why two batches is the line.
+                persistent = sorted(node_id for node_id, batches in unmeasured.items()
+                                    if batches >= UNMEASURED_BATCH_LIMIT)
+                if persistent:
                     raise CampaignConfigError(
-                        f"{', '.join(unmeasured)} could not be measured: their probes never "
+                        f"{', '.join(persistent)} could not be measured in "
+                        f"{UNMEASURED_BATCH_LIMIT} consecutive batches: their probes never "
                         f"ran, so those machines took no work and the campaign would have "
-                        f"finished on the rest of the cluster without saying so. A node held "
-                        f"for measuring is re-probed on the next batch, meets whatever "
-                        f"stopped it before, and is held again -- so this does not resolve "
-                        f"itself. The usual cause is a probe larger than what the node can "
-                        f"spare: the bootstrap pod is the three roles summed "
-                        f"(ROBOVAST_BOOTSTRAP_CPU / _MEMORY), and a campaign that declares "
-                        f"execution.containers.<name>.resources sizes its probe from those "
-                        f"instead.")
+                        f"finished on the rest of the cluster without saying so. Held for "
+                        f"measuring, re-probed on the next batch, stopped by the same thing "
+                        f"and held again -- repeated, that is no longer a busy cluster. "
+                        f"What does NOT reach here is a probe too large for any node at all: "
+                        f"preflight refuses that before a single job exists. So the probe "
+                        f"does not fit alongside what else is running. It is the largest pod "
+                        f"the campaign asks for -- the DECLARED sizing summed over its "
+                        f"containers, or the bootstrap (ROBOVAST_BOOTSTRAP_CPU / _MEMORY) "
+                        f"where nothing is declared -- and, being pinned, it cannot spread, "
+                        f"so N calibrated campaigns starting together need one probe per node "
+                        f"EACH placed at once. On a cluster of unlike machines this lands on "
+                        f"the SMALLEST node first, where one probe can be half the machine: "
+                        f"preflight only asks whether it fits there empty, not whether it "
+                        f"fits there alongside anything else. The 'calibration probes' line "
+                        f"in this log has the queue's own reason. Stagger the campaigns, "
+                        f"lower the declared sizing, or set execution.sizing: fixed.")
+                if unmeasured:
+                    # Loud, and on a `robovast.*` logger so it reaches the CAMPAIGN log: a
+                    # machine sitting out a batch is part of what the campaign did, and the
+                    # complaint that started all this was that nothing in the results said so.
+                    logger.warning(
+                        "Batch %s: %s took no work -- held for measuring and never measured. "
+                        "Re-probed on the next batch; the campaign is refused if the same "
+                        "node goes unmeasured %d batches running.", batch_tag,
+                        ", ".join(f"{node_id} ({batches} batch(es) now)"
+                                  for node_id, batches in sorted(unmeasured.items())),
+                        UNMEASURED_BATCH_LIMIT)
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)

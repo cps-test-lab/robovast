@@ -298,6 +298,17 @@
           "limit": {
             "title": "Limit",
             "type": "number"
+          },
+          "op": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Op"
           }
         },
         "required": [
@@ -305,7 +316,8 @@
           "done",
           "kind",
           "label",
-          "limit"
+          "limit",
+          "op"
         ],
         "title": "BudgetItem",
         "type": "object"

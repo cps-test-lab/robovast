@@ -267,3 +267,31 @@ export function ringBudget(
   }
   return best
 }
+
+/** The comparison that makes a criterion fire, as a symbol to print.
+ *
+ * `>=` for a row written before `op` existed (a status from an older controller, or a finished
+ * campaign replaying the `outcome.json` its controller wrote at the time). That is the correct
+ * comparison for five of the seven kinds and is what every reader assumed before the field
+ * shipped, so the fallback is the old behaviour rather than a guess. */
+export function criterionOp(b: BudgetItem): string {
+  return b.op ?? '>='
+}
+
+/** Whether a criterion's progress toward FIRING can be drawn as a share of something.
+ *
+ * A superset of `isFractionableBudget`: the four resource caps, plus `no_improvement`. That one
+ * is the only `stopping` kind with a real floor -- `stale_batches` counts up from zero to
+ * `patience`, so "2 of 3" is a genuine fraction and a bar is honest.
+ *
+ * Still false for the other two, and `op` does not change that. Knowing a `metric` fires at
+ * `<= 0.8` says nothing about where it STARTED, so there is no denominator; the same is true of
+ * an objective, whose initial value is whatever the first batch happened to measure. A bar needs
+ * an origin, and those two have none -- so they get the comparison in words instead.
+ *
+ * `no_improvement` is deliberately absent from the RING's allowlist even though it is here: it
+ * resets to zero on an improvement, and a ring that runs backwards reads as a bug. A static row
+ * in the open card is a different claim -- "2 of 3 strikes" -- and survives the reset. */
+export function hasDrawableFloor(b: BudgetItem): boolean {
+  return isFractionableBudget(b) || b.kind === 'no_improvement'
+}

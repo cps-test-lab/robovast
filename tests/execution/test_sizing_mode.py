@@ -790,3 +790,80 @@ def test_a_campaign_calibration_never_applied_to_reports_nothing():
     r._probes = {"probe-a": "n1"}
     r._calibration = types.SimpleNamespace(outcome=lambda: {"calibrated": [], "refused": {}})
     assert r.unmeasured_nodes() == []
+
+
+def test_a_node_unmeasured_once_is_counted_not_condemned():
+    """The fix for a campaign that dies on a busy moment at its own start.
+
+    At the end of ONE batch, a probe that could never be placed and a probe that lost a race
+    for free capacity look identical -- and the first is already refused before any job exists,
+    by the preflight in `_start_probes`. So what arrives here is the second, and it drains.
+    Counting it lets the next batch settle the question; failing on it does not.
+    """
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+
+    # Batch 0: a fresh runner, as a search builds one per round. n2's probe never ran.
+    r0 = kb.BatchJobRunner()
+    r0._calibration_applies = True
+    r0._calibration = calibration
+    r0._probes = {"probe-a": "n1", "probe-b": "n2"}
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+    assert r0.weigh_unmeasured_nodes() == {"n2": 1}, "counted once, not condemned"
+
+    # Batch 1: a NEW runner and the same calibration -- which is the point of the tally
+    # living on the calibration. n2 is stopped by the same thing again.
+    r1 = kb.BatchJobRunner()
+    r1._calibration_applies = True
+    r1._calibration = calibration
+    r1._probes = {"probe-c": "n2"}
+    assert r1.weigh_unmeasured_nodes() == {"n2": 2}, \
+        "a per-batch runner would have read 1 forever"
+
+    # The link between the tally and the verdict, pinned here so the two cannot drift: one
+    # batch is below the line and two reach it, which is the whole behaviour change.
+    from robovast.execution.cluster_execution.node_calibration import UNMEASURED_BATCH_LIMIT
+    assert 1 < UNMEASURED_BATCH_LIMIT <= 2, \
+        "one unmeasured batch must warn and not condemn; two must be enough to decide"
+
+
+def test_weighing_is_what_records_so_the_pure_question_stays_askable():
+    """`unmeasured_nodes` has several callers and must not charge a batch as a side effect;
+    `weigh_unmeasured_nodes` has one and does. Asking the pure one twice changes nothing."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-a": "n1"}
+
+    assert r.unmeasured_nodes() == ["n1"]
+    assert r.unmeasured_nodes() == ["n1"]
+    assert r.weigh_unmeasured_nodes() == {"n1": 1}, "two pure reads charged nothing"
+
+
+def test_a_measured_node_never_returns_to_the_tally():
+    """Why there is no reset: `claim_probe` refuses a calibrated node, so a node that gets
+    measured is never probed or held again and the question cannot come back for it."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    assert calibration.unmeasured_batch("n1") == 1
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+    assert calibration.claim_probe("n1", "probe-z") is False, \
+        "a measured node is not probed again, so its tally is never read again"
+
+
+def test_a_campaign_calibration_never_applied_to_weighs_nothing():
+    """A pilot holds no node and measures none by design; there is nothing to charge."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    r = kb.BatchJobRunner()
+    r._calibration_applies = False
+    r._calibration = calibration
+    r._probes = {"probe-a": "n1"}
+    assert r.weigh_unmeasured_nodes() == {}
