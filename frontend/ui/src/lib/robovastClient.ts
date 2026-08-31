@@ -29,6 +29,8 @@ export type VersionInfo = Schemas['VersionInfo']
 export type ResourceUsage = Schemas['ResourceUsage']
 export type UsageHistory = Schemas['UsageHistory']
 export type UsageSample = Schemas['UsageSample']
+export type ServiceEvents = Schemas['ServiceEvents']
+export type ServiceEvent = Schemas['ServiceEvent']
 export type UpgradeInfo = Schemas['UpgradeInfo']
 export type ServiceConfig = Schemas['ServiceConfig']
 export type ServiceSetting = Schemas['ServiceSetting']
@@ -388,6 +390,12 @@ export const robovast = {
   // empty first hour is the start of the record rather than an idle cluster.
   usageHistory: (window: '1h' | '24h') =>
     request<UsageHistory>('GET', `/usage/history?window=${window}`),
+
+  // What the service DID, from a cursor. Durable, unlike the log and the usage samples: it
+  // outlives the process, which is the whole reason it is a separate route rather than a
+  // section of either. Oldest-first from `since`, so a caller resumes rather than re-reads.
+  serviceEvents: (since = 0, limit = 200) =>
+    request<ServiceEvents>('GET', `/admin/events?since=${since}&limit=${limit}`),
 
   upgradeInfo: () => request<UpgradeInfo>('GET', '/admin/upgrade'),
 
