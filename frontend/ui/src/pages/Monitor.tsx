@@ -50,6 +50,7 @@ import { preferredArchive } from '@/lib/shareArchives'
 import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
+import { stallVerdict } from '@/lib/stall'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
@@ -453,29 +454,19 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // Once running, the *phase* age is noise, and so is the bare progress age: a duration
   // next to the campaign id says nothing a reader can act on. The **verdict** is what
   // matters — this run is wedged, not merely slow — so the clock is kept only to assert
-  // it. `stalled` is asserted against the declared per-run budget alone; a project that
-  // declares none gets no verdict here and is told so once, by `validate_project`,
-  // where the missing budget is still fixable.
+  // it. A project that declares no budget gets no verdict, and is told so once by
+  // `validate_project`, where the missing budget is still fixable.
   //
-  // Only in `running`, matching `stall_report` in the status contract — the budget is
-  // per-*run*, and `progress_since` can only advance while runs complete. Every other live
-  // phase restarts that clock when it begins and then has nothing to move it, so measuring
-  // one against the per-run budget says only that it outlasted a single run: postprocessing
-  // a large campaign's rosbags always does, and this painted a red "stalled" on it for the
-  // half-hour it spent working correctly. Excluding just the pre-run phases was the same
-  // rule half-applied.
-  const progressSince = status.data?.progress_since
+  // Derived in `lib/stall.ts`, which mirrors `stall_report` in the status contract gate for
+  // gate and carries a test per gate. It used to be derived inline here, and drifted from
+  // the contract three times: a phase that executes no runs judged against a per-run budget,
+  // then that rule half-applied to only the pre-run phases, then a batch queued for cluster
+  // capacity called stalled while the MCP and CLI both refused to.
+  //
+  // Tri-state, so only `true` may render: showing `null` as "not stalled" would put a
+  // reassuring label on a run that may already be dead.
+  const { stalled, ageS: progressAgeS } = stallVerdict(status.data)
   const progressDeadline = status.data?.progress_deadline_s
-  const progressAgeS =
-    progressSince && phase === 'running'
-      ? Math.max(0, Date.now() / 1000 - progressSince)
-      : null
-  // Tri-state, matching the status contract: true / false / null ("no declared
-  // execution.timeout, or no runs in this phase, so no verdict"). Only `true` renders —
-  // rendering null as "not stalled" would put a reassuring label on a run that may already
-  // be dead.
-  const stalled =
-    progressAgeS === null || !progressDeadline ? null : progressAgeS > progressDeadline
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
   // is the one that needed it: the run counters are frozen and `progress` is pinned, so a
   // campaign converting a large run's rosbags for half an hour looked exactly like a stuck one.

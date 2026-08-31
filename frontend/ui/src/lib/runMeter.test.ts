@@ -54,7 +54,16 @@ describe('runMeterText', () => {
   })
 
   it('states the share done to a tenth, so a long campaign visibly moves', () => {
-    expect(runMeterText(status({ total: 400, completed: 41 }))).toBe('10.2%')
+    // 31/300 = 10.333%. Deliberately not a value that lands on a rounding boundary: with a
+    // total of 400 every share is a whole quarter-percent, so such an example asserts the
+    // rounding MODE rather than the one-decimal format this test is about.
+    expect(runMeterText(status({ total: 300, completed: 31 }))).toBe('10.3%')
+  })
+
+  it('rounds a half up, like every other percentage in the app', () => {
+    // 41/400 = 10.25% exactly, and `toFixed` rounds half away from zero. Pinned because the
+    // boundary is easy to land on by accident and easy to guess wrong about.
+    expect(runMeterText(status({ total: 400, completed: 41 }))).toBe('10.3%')
   })
 
   it('says nothing with no denominator rather than claiming 0%', () => {
@@ -96,6 +105,6 @@ describe('runsFromSummary', () => {
     // runs that happened. The live status carries the planned total and supersedes this.
     const runs = runsFromSummary(summary({ num_runs: 41, num_passed: 41 }))
     expect(runs.total).toBe(41)
-    expect(runMeterText({ runs } as Status)).toBe('100%')
+    expect(runMeterText({ runs } as Status)).toBe('100.0%')
   })
 })

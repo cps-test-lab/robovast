@@ -5134,7 +5134,9 @@ class LocalTransport(RobovastInterface):
             # From the same snapshot as the phase, so a listing cannot show a campaign as
             # finished-and-fine while its Status says postprocessing failed.
             postprocessing_error=snap.postprocessing_error or "",
-            share_error=snap.share_error or "")
+            share_error=snap.share_error or "",
+            # First line only -- see the field's note. Free here: `snap` is already in hand.
+            error=(snap.error or "").strip().splitlines()[0] if snap.error else "")
         if key is not None:
             self._summary_cache[cid] = (key, summary)
         return summary
