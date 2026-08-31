@@ -32,7 +32,7 @@ import time
 from fastmcp import FastMCP
 
 from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
-                                    error_findings, stall_report)
+                                    error_findings, stall_report, stopping_soon_report)
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
@@ -182,6 +182,13 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # Progress age and the stall verdict, derived once in the status contract so the
     # CLI monitor and this tool cannot disagree about whether a run is wedged.
     result.update(stall_report(st))
+    # The early-stop verdict, from the same contract and for the same reason: an agent weighing
+    # `progress: 0.67` against a flat objective has to know whether the search will actually
+    # spend the rest of its budget. `_attach_objective_history` reports
+    # `batches_since_improvement` as a FACT and declines to judge it -- correctly, since the
+    # judgement is only RoboVAST's to make when the campaign declared a criterion. When it did,
+    # this is that judgement.
+    result.update(stopping_soon_report(st))
     # Only when a running job's simulator reported one, but then always: an error-level finding
     # is what stops `vast campaign wait` (exit 5), so a reader of this tool has to be shown the same thing
     # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that

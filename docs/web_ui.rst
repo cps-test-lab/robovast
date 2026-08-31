@@ -30,6 +30,21 @@ It provides four views:
   and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
   duration or the expected finish.
 
+  A search may also stop **early**, and the estimate cannot see that coming: it measures the
+  declared work, and a ``no_improvement`` criterion one flat round from firing means that work
+  will not be done. So when the service says a stopping criterion is about to fire, the cell reads
+  **may stop early** instead of a duration — the more useful fact, and the one the duration would
+  otherwise misstate — and the ring's arc turns amber beside it. Hovering gives the criterion's own
+  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence, which had an
+  empty cell before, now reads **stops on convergence**: no duration is projected, but the
+  mechanism that will end it is named.
+
+  Only ``no_improvement`` can be "about to fire". It counts rounds, so its distance is real;
+  ``target_objective`` and ``metric`` fire on a value that can move any distance in a single round,
+  so a proximity warning for them would claim a rate nothing supports. The verdict is
+  **tri-state** like the stall verdict, and for the same reason: a search with nothing measurable
+  declared says nothing rather than promising it will spend its whole budget.
+
   For a **search** that estimate is never its current round: a search runs an unknown number of
   rounds, so the round it is on says nothing about the whole, and one starting its sixth of six
   would otherwise claim the same remaining time as one starting its first. It is projected from

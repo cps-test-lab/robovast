@@ -568,6 +568,9 @@ class StatusResponse(Status):
     stalled: Optional[bool] = None
     stall_reason: Optional[str] = None
     stall_verdict: Optional[str] = None
+    stopping_soon: Optional[bool] = None
+    stopping_reason: Optional[str] = None
+    stopping_verdict: Optional[str] = None
 
 
 def status_response(status: Status) -> StatusResponse:
@@ -580,7 +583,86 @@ def status_response(status: Status) -> StatusResponse:
     # stall_report re-reports progress_deadline_s, so merge rather than splat both: the
     # duplicate keyword would be a TypeError.
     served.update(stall_report(status))
+    served.update(stopping_soon_report(status))
     return StatusResponse(**served)
+
+
+NO_STOP_VERDICT_NO_CRITERION = (
+    "cannot judge: the .vast declares no search.stopping criterion whose distance from firing "
+    "can be measured, so how close this search is to converging is not RoboVAST's to assert. "
+    "Add a `no_improvement` criterion if the search should end on convergence.")
+
+NO_STOP_VERDICT_UNMEASURABLE = (
+    "cannot judge: `target_objective` and `metric` fire on a value that can move any distance "
+    "in one round, so there is no rate to project a firing from. Only `no_improvement`, which "
+    "counts rounds, has a distance.")
+
+
+def stopping_soon_report(status: "Status") -> dict:
+    """Is a stopping criterion about to end this search, and may we say so?
+
+    The single derivation of the early-stop verdict, shared by every renderer, for the reason
+    :func:`stall_report` is shared: the campaign card derived that one inline and drifted from
+    the contract three times.
+
+    It exists because the budget ring is *honestly* misleading on its own. A ring reading 67%
+    says a third of the declared budget is left, and that is true — but a `no_improvement`
+    criterion one flat round from firing means the third will not be spent. The ETA already
+    concedes this in prose ("it answers when the WORK runs out, not when the search stops"),
+    and until now nothing surfaced it.
+
+    Tri-state, by the same argument as ``stalled`` and with the same failure mode if collapsed:
+    a two-valued answer cannot tell "not close" apart from "nothing to be close to", and
+    reporting ``False`` for a search with no convergence criterion asserts it will run its
+    budget out when nothing was ever checked.
+
+    - ``True``  — a criterion is one unit from firing. ``stopping_reason`` says which.
+    - ``False`` — a measurable criterion exists and the search is not near it.
+    - ``None``  — no verdict is possible; ``stopping_verdict`` says why.
+
+    **Only** ``no_improvement`` **can be near.** It counts rounds, so "2 of 3" is a real
+    distance. ``target_objective`` and ``metric`` fire on a value that can move any distance in
+    a single round, so "within 10% of the target" would claim a rate nothing supports — the
+    same reason :func:`campaignEtaSeconds` refuses to convert them into a time. Inventing a
+    threshold for them would make this a tuning knob instead of a verdict.
+
+    A terminal campaign gets nothing: it has already stopped, and why is in ``stop``.
+
+    Returns:
+        ``{}`` for a terminal or non-search campaign; otherwise ``{stopping_soon}`` plus
+        ``stopping_reason`` when it is firing soon, or ``stopping_verdict`` when no verdict is
+        possible.
+    """
+    if is_terminal(status.phase) or (status.mode or "").lower() != "search":
+        return {}
+    rows = [b for b in status.budget if b.kind == "no_improvement"]
+    if not rows:
+        # Distinguish "declared nothing measurable" from "declared nothing at all": a search
+        # bounded by target_objective or metric HAS a convergence criterion, and being told to
+        # add one would be wrong. The two messages are the difference between a fixable
+        # omission and an inherent limit.
+        unmeasurable = any(b.kind in ("target_objective", "metric") for b in status.budget)
+        return {"stopping_soon": None,
+                "stopping_verdict": (NO_STOP_VERDICT_UNMEASURABLE if unmeasurable
+                                     else NO_STOP_VERDICT_NO_CRITERION)}
+    # The closest of them, if somebody declared several: the search stops at whichever fires
+    # first, the same rule the ring applies to budgets.
+    row, remaining = None, None
+    for b in rows:
+        if b.current is None or b.limit <= 0:
+            continue
+        left = b.limit - b.current
+        if remaining is None or left < remaining:
+            row, remaining = b, left
+    if row is None:
+        return {"stopping_soon": None, "stopping_verdict": NO_STOP_VERDICT_NO_CRITERION}
+    report = {"stopping_soon": remaining <= 1}
+    if report["stopping_soon"]:
+        rounds = "round" if remaining == 1 else "rounds"
+        report["stopping_reason"] = (
+            f"the objective has not improved for {row.current:.0f} of {row.limit:.0f} rounds; "
+            f"{remaining:.0f} more {rounds} without an improvement ends the search")
+    return report
 
 
 def error_findings(status: "Status") -> list["HealthFinding"]:
