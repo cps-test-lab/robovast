@@ -43,7 +43,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from robovast.common import index_db
-from robovast.results_processing import index_functions, index_schema
+from robovast.results_processing import index_dialect, index_functions, index_schema
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and linters only
     import psycopg
@@ -160,6 +160,9 @@ def query_index(sql: str, *, max_rows: int = 500, max_bytes: int | None = None,
 
     max_rows = max(1, min(int(max_rows), 5000))
     max_bytes = _MAX_RESULT_BYTES if max_bytes is None else max(1024, int(max_bytes))
+
+    # Two SQLite spellings Postgres reads differently and silently -- see index_dialect.
+    sql = index_dialect.translate(sql)
 
     conn = open_index(readonly=True)
     try:
