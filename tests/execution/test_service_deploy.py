@@ -497,7 +497,7 @@ def test_results_volume_follows_the_workspaces_backing():
     # was emitted nowhere, so a storage class produced a Deployment mounting a PVC nothing
     # created and a pod that sat Pending without saying why.
     claims = {m["metadata"]["name"]: m for m in ms if m["kind"] == "PersistentVolumeClaim"}
-    assert set(claims) == {sd.WORKSPACES_VOLUME_NAME, sd.RESULTS_VOLUME_NAME}
+    assert set(claims) == {sd.WORKSPACES_VOLUME_NAME, sd.RESULTS_VOLUME_NAME, "index-data"}
     assert all(c["spec"]["storageClassName"] == "fast-rwo" for c in claims.values())
 
 

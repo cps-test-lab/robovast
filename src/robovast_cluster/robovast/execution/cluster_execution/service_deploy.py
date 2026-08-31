@@ -41,6 +41,10 @@ import logging
 import pathlib
 
 from robovast.common.config_plugins import GIT_TOKEN_ENVS
+# Re-exported rather than spelled again: the env var is the service's contract with
+# common.index_db, and two spellings of it would drift into a service that cannot find its
+# own index while both halves look correct.
+from robovast.common.index_db import DSN_ENV as INDEX_DSN_ENV
 from robovast.service.interface import DEFAULT_PORT
 
 from .cluster_execution import BLOCKED_GRACE_SECONDS
@@ -183,6 +187,18 @@ def _results_host_path(workspaces_storage_path=""):
     if not workspaces_storage_path:
         return DEFAULT_RESULTS_HOST_PATH
     return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-results")
+
+
+def _index_host_path(workspaces_storage_path=""):
+    """Where the index hostPath goes: beside the workspaces one, for the same reason.
+
+    A deployer who moved the workspaces store moved the service's node-local data, and the
+    index is now part of it. See :func:`_results_host_path`.
+    """
+    from . import index_deploy  # pylint: disable=import-outside-toplevel
+    if not workspaces_storage_path:
+        return index_deploy.DEFAULT_INDEX_HOST_PATH
+    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-index")
 
 
 def results_volume(storage_path="", storage_class=""):
@@ -368,7 +384,7 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                          env_secret_names=(), pull_secret="", restarted_at=None,
                          registry_storage_path="", registry_storage_class="",
                          workspaces_storage_path="", workspaces_storage_class="",
-                         node_selector=None):
+                         node_selector=None, index_storage_path=""):
     """The robovast-service Deployment (1 replica).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -401,7 +417,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     than its own Deployment, so that one restart covers both and the Ingress can reach it
     on the same Service.
     """
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import (index_deploy,  # pylint: disable=import-outside-toplevel
+                   registry_deploy)
 
     if restarted_at is None:
         restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -443,13 +460,19 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                                   "mountPath": RESULTS_DATA_DIR}]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
-        "containers": [container, registry_deploy.registry_container()],
+        "containers": [container, registry_deploy.registry_container(),
+                       index_deploy.index_container()],
         "volumes": [registry_deploy.registry_volume(
             registry_storage_path, registry_storage_class),
             workspaces_volume(workspaces_storage_path, workspaces_storage_class),
             # Backed like the workspaces store, deliberately -- see results_volume().
             results_volume(_results_host_path(workspaces_storage_path),
-                           workspaces_storage_class)],
+                           workspaces_storage_class),
+            # The central index, in this pod so the service reaches it on localhost with
+            # no Service, no network policy and no credential crossing a node boundary.
+            index_deploy.index_volume(
+                index_storage_path or _index_host_path(workspaces_storage_path),
+                workspaces_storage_class)],
     }
     if node_selector:
         pod_spec["nodeSelector"] = dict(node_selector)
@@ -1376,6 +1399,39 @@ def existing_auth_token(namespace, kube_context=None):
     return base64.b64decode(encoded).decode() if encoded else ""
 
 
+def existing_index_password(namespace, kube_context=None):
+    """The index password already deployed in *namespace*, or ``""``.
+
+    Read back rather than regenerated, and the reason is harsher than the auth token's. A
+    Postgres ``POSTGRES_PASSWORD`` is applied by ``initdb`` and then ignored: on any restart
+    with an existing data directory the role keeps whatever password it was created with. So
+    minting a new one on upgrade would leave a Secret and a database that disagree -- the
+    deploy would report success, the sidecar would come up healthy, and every query would
+    fail authentication against data that is perfectly intact.
+
+    Worse, it would look like a first-deploy success: a fresh volume initialises with
+    whatever password it is handed, so the fault appears only on the *second* deploy, which
+    is where nobody is looking for it.
+    """
+    import base64  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    from . import index_deploy  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    try:
+        secret = client.CoreV1Api().read_namespaced_secret(
+            index_deploy.INDEX_SECRET_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    encoded = (secret.data or {}).get(index_deploy.INDEX_PASSWORD_KEY, "")
+    return base64.b64decode(encoded).decode() if encoded else ""
+
+
 def published_url(namespace="default", kube_context=None):
     """The URL the Ingress publishes, or ``""`` when the service is not published.
 
@@ -1622,7 +1678,8 @@ def service_manifests(namespace="default", image=None, env=None,
                       tls_secret="", issuer="", insecure_http=False,
                       public_origin=None, registry_host="", registry_storage_path="",
                       workspaces_storage_path="", workspaces_storage_class="",
-                      registry_storage_class="", node_selector=None):
+                      registry_storage_class="", node_selector=None,
+                      index_password=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -1758,7 +1815,8 @@ def service_manifests(namespace="default", image=None, env=None,
     if registry_ca:
         extra.append(registry_ca)
 
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import (index_deploy,  # pylint: disable=import-outside-toplevel
+                   registry_deploy)
     registry_pvc = registry_deploy.registry_pvc_manifest(namespace, registry_storage_class)
     if registry_pvc:
         extra.append(registry_pvc)
@@ -1767,9 +1825,20 @@ def service_manifests(namespace="default", image=None, env=None,
     # referencing a PVC nothing created and a pod that stayed Pending with no explanation.
     # `results_volume` is backed by that same class, so it would have inherited the fault.
     for pvc in (workspaces_pvc_manifest(namespace, workspaces_storage_class),
-                results_pvc_manifest(namespace, workspaces_storage_class)):
+                results_pvc_manifest(namespace, workspaces_storage_class),
+                index_deploy.index_pvc_manifest(namespace, workspaces_storage_class)):
         if pvc:
             extra.append(pvc)
+
+    # The index credential, and the DSN that reaches it. Generated once and then read back
+    # by `deploy_service` -- see `existing_index_password` on why regenerating it would
+    # break only the second deploy.
+    if index_password:
+        extra.append(index_deploy.index_secret_manifest(namespace, index_password))
+    env = list(env or [])
+    if not any(e.get("name") == INDEX_DSN_ENV for e in env):
+        env.append({"name": INDEX_DSN_ENV,
+                    "value": index_deploy.index_dsn(index_password)})
 
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
@@ -1982,11 +2051,19 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     auth_token = "" if rotate_token else existing_auth_token(namespace, kube_context)
     auth_token = auth_token or generate_token()
 
+    # The index password is ALWAYS reused when one is deployed -- never rotated, not even by
+    # --rotate-token. `initdb` applied it once to a data directory that still exists, so a
+    # new one would leave the Secret and the database disagreeing while every surface
+    # reported success. Rotating it would mean re-initialising the volume, i.e. discarding
+    # the index; that is a deliberate operation, not a side effect of a token rotation.
+    index_password = existing_index_password(namespace, kube_context) or generate_token()
+
     manifests = service_manifests(
         namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
         config_name=config_name, config_kwargs=config_kwargs,
         kube_context=kube_context, pull_secret=pull_secret,
-        auth_token=auth_token, ingress_host=ingress_host,
+        auth_token=auth_token, index_password=index_password,
+        ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
         insecure_http=insecure_http, public_origin=public_origin,
         registry_host=registry_host,

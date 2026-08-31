@@ -27,7 +27,8 @@ def test_the_registry_runs_beside_the_service_in_one_pod():
     """One pod, so one restart covers both and one Service fronts both."""
     pod = _pod()
     names = [c["name"] for c in pod["containers"]]
-    assert names == [sd.SERVICE_NAME, rd.REGISTRY_CONTAINER_NAME]
+    # Exhaustive on purpose: a sidecar appearing here unnoticed is a pod nobody sized.
+    assert names == [sd.SERVICE_NAME, rd.REGISTRY_CONTAINER_NAME, "index"]
 
 
 def test_the_registry_has_somewhere_durable_to_keep_blobs():
