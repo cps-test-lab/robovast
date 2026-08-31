@@ -5,6 +5,11 @@ deliberately simple ([files/quadrotor_sim.py](files/quadrotor_sim.py),
 single file, numpy only) but **stochastic** — wind gusts and sensor noise mean a
 given parameter set can land on one run and fail on the next.
 
+> **This example is about the search machinery, not about drones.** Its SUT is a numpy point mass:
+> no physics engine, no ROS, no flight stack, which is exactly why it runs in milliseconds and why
+> RoboVAST's own integration tests use it. For an actual drone — a Crazyflie 2 in MuJoCo, flown over
+> ROS 2 — see [`../drone_flight_envelope/`](../drone_flight_envelope/).
+
 All variants share one scenario, sim and `extract` module; only the `search`
 `strategy` (and its `strategy_parameters`) differ:
 

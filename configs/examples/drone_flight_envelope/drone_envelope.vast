@@ -1,0 +1,177 @@
+version: 3
+
+metadata:
+  name: drone_flight_envelope
+  description: >
+    A Crazyflie 2 flies a square course in a 6 x 6 m room while the campaign eats its thrust
+    margin. The airframe carries 0.35 N against 27 g -- a thrust-to-weight ratio of 1.32 -- so
+    payload, air density and wind are not decoration: together they decide whether the drone holds
+    its commanded altitude, sags below it, or never leaves the pad. The grid brackets that boundary
+    between two cells.
+
+# --------------------------------------------------------------------------------------------
+# Factors. A full 3 x 2 x 2 grid = 12 configurations.
+#
+# Every destination here is a `sim:` path into the roqsim world, resolved against the addresses
+# `world/drone_envelope.yaml` publishes:
+#   sim.<key>                      -> a pre-compile global (density is one)
+#   components.<entity>.<plugin>.<key>  -> a plugin nested under an entity (the drone's payload)
+#   components.<plugin>.<key>      -> a top-level plugin (the wind field)
+# --------------------------------------------------------------------------------------------
+configuration:
+- name: envelope
+  variations:
+
+  # The headline factor. 27 g airframe, so 8 g is nearly a third of the aircraft: T/W falls
+  # 1.32 -> 1.15 -> 1.02, and the top level sits just above the boundary rather than comfortably
+  # inside it. Measured in a dry run, 0/3/6 g all held the commanded altitude easily, which makes a
+  # tidy grid and a useless one -- a factor whose every level passes has not been varied over a
+  # range where it does anything.
+  - ParameterVariationList:
+      sim: components.drone.payload.mass
+      values: [0.0, 0.004, 0.008]
+
+  # Density altitude. 1.225 is sea level, 0.905 is roughly 3000 m. Worth knowing what this factor
+  # does and does not do here: MuJoCo's density drives the drag terms, so at this airframe's speeds
+  # it barely changes a calm flight (measured: 1 mm of altitude error) but it scales the force the
+  # wind applies, so it shows up as an *interaction* with the wind factor rather than as a main
+  # effect. It does not change thrust, which a real density altitude would -- the airframe's
+  # ctrlrange is fixed, so payload is the thrust-margin factor and this is not.
+  - ParameterVariationList:
+      sim: sim.density
+      values: [1.225, 0.905]
+
+  # Calm against a 2.5 m/s cross-wind from the east. Written as a whole vector because a list
+  # destination is replaced wholesale -- there is no index addressing in the override path.
+  - ParameterVariationList:
+      sim: components.wind_field.steady
+      values:
+      - [0.0, 0.0, 0.0]
+      - [2.5, 0.0, 0.0]
+
+execution:
+  containers:
+    simulation:
+      backend: roqsim
+      config: world/drone_envelope.yaml
+      # Needs a simulator image carrying `roqsim_aerial` (the Crazyflie, `quadrotor_controller`
+      # and `wind_field`; `payload` is core roqsim). It is part of the standard robovast-roqsim
+      # image; an image
+      # built before that package existed fails at world load with "model 'crazyflie_2' not found",
+      # which names the cause precisely enough to act on.
+      resources: {cpu: 0.5, cpu_limit: 4, memory: 1536Mi}
+    scenario:
+      resources: {cpu: 0.5, cpu_limit: 2, memory: 768Mi}
+
+  # The simulator runs standalone and publishes /clock; the scenario commands it over ROS 2.
+  mode: ros2
+  # Three per cell. The turbulence in a run is a function of the run's seed, so repetitions sample
+  # the weather rather than repeat it -- which is what makes averaging over them mean anything.
+  runs: 3
+  # The trial schedule is ~55 s of sim time. This is a backstop for a run that wedges, not a bound
+  # on the flight: without it a hung run is indistinguishable from a slow one.
+  timeout: 240
+  scenario_file: scenario.osc
+  run_files:
+  # Per-extension rather than "world/*": a bare glob crosses '/' and would sweep __pycache__ into
+  # the config identity hash.
+  - "world/*.yaml"
+  - "world/*.xml"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+results_processing:
+  postprocessing:
+  # The bag -> CSV step must come first: EnvelopeMetrics reads what it writes.
+  - rosbags_to_csv: {topics: [/drone/odom]}
+  - files/metrics.py:EnvelopeMetrics
+
+# --------------------------------------------------------------------------------------------
+# Visualisation. The roqsim `scene3d` panel is added automatically for a roqsim backend and is the
+# centrepiece -- the drone flying the course, tracked by the world's own camera. Everything below
+# exists so that the *numbers driving that picture* are on screen beside it: without them a windy
+# run and a heavy one look equally like "the drone wobbled".
+# --------------------------------------------------------------------------------------------
+visualization:
+  config:
+    panels:
+    # Before any run: which cell of the grid this is.
+    - parameters: {title: Flight envelope, height: "40%"}
+    - scene3d: {title: Room}
+
+  results:
+    run_view:
+      panels:
+      # The 3D scene is the picture; everything else floats over it. Declared rather than left to
+      # the backend's automatic one so it can claim `fill` -- without it the scene takes only what
+      # the docks leave, and a `bottom` bar of 300px was cutting it down to a strip.
+      - scene3d: {title: Room, fill: true}
+
+      # trajectory is written at the simulator's rate: ~500 rows/s, so a 50 s flight is ~24k rows
+      # against a 5000-row reply cap that truncates at the HEAD. Undecimated, every panel below
+      # showed the first ten seconds of the run and nothing after it -- a ground track that is one
+      # dot on the pad, because that is where the drone is for the first six. 50 Hz keeps the tilt
+      # and speed transients (the controller's step response is ~1 s) and lands well under the cap.
+      - scene:
+          title: Ground track
+          position: {anchor: top-left, width: 360, height: 360}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
+          x: x
+          y: y
+          trail: true
+
+      # `fields` are objects, not bare column names: the panel reads `column` off each entry, so a
+      # plain string renders as a dash -- a row with no name and no value.
+      - state:
+          title: Flight state
+          position: {anchor: top-right, width: 320, height: 200}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
+          fields:
+          - {column: z, label: altitude, unit: m}
+          - {column: tilt_deg, label: tilt, unit: deg}
+          - {column: speed, label: speed, unit: m/s}
+          - {column: x, label: x, unit: m}
+          - {column: y, label: y, unit: m}
+
+      - timeseries:
+          title: Altitude, tilt and speed
+          position: {anchor: bottom-right, width: 460, height: 240}
+          minimizable: true
+          source: {table: trajectory, time_column: t, decimate_hz: 50}
+          series:
+          - {column: z, label: "altitude [m]"}
+          - {column: tilt_deg, label: "tilt [deg]"}
+          - {column: speed, label: "speed [m/s]"}
+
+      # Every container's output merged with /rosout on the playback clock. The declared width is
+      # what makes `bottom-center` float above the playback bar instead of docking into it.
+      - log:
+          title: Run log
+          position: {anchor: bottom-center, width: "calc(100% - 860px)", height: 200}
+          minimizable: true
+          minimized: true
+
+      timeline: {table: trajectory, time_column: t}
+
+    data_browser:
+      # The only built-in cross-run visual, and the one that shows the envelope as a surface rather
+      # than as twelve separate flights. `runs` carries every scenario parameter as `param_*`.
+      plots:
+      - title: Altitude held vs payload and wind
+        query: >
+          SELECT r.config_name AS config,
+                 m.cruise_hold_fraction AS held,
+                 m.mean_altitude_error AS altitude_error,
+                 m.max_tilt_deg AS max_tilt,
+                 m.outcome AS outcome
+          FROM runs r
+          JOIN metrics m ON (m.config_name = r.config_name AND m.run_id = r.run_id)
+        vega_lite:
+          mark: point
+          encoding:
+            x: {field: altitude_error, type: quantitative, title: "mean altitude error [m]"}
+            y: {field: max_tilt, type: quantitative, title: "max tilt [deg]"}
+            color: {field: outcome, type: nominal}
+            shape: {field: outcome, type: nominal}

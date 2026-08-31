@@ -34,6 +34,10 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
+# The default must be able to build this file on its own, or it is not a default: the install list
+# below names `roqsim_aerial`, so a pin from before that package existed fails on a path the clone
+# does not contain. This one also carries the `payload` and `wind_field` plugins the drone example
+# configures.
 ARG ROQSIM_REF=4612b5ee09f85a78dcab66b83d18bb914cd7918d
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
@@ -196,6 +200,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_manipulation \
         /opt/roqsim/roqsim_manipulation_assets \
         /opt/roqsim/roqsim_mobile_manipulation \
+        /opt/roqsim/roqsim_aerial \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_walker \
         /opt/roqsim/roqsim_webctrl \
