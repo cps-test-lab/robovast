@@ -1163,11 +1163,17 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
     # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
     # start to finish in this process.
+    # The phase moves BEFORE the root is completed, because completing it is postprocessing's
+    # own first step and can take minutes on a resumed campaign. Left until after, the campaign
+    # sat in `running` for the whole transfer -- where `status.stall_report` measures silence
+    # against the per-run budget and calls it "no progress ... the run is not merely slow",
+    # sending a reader to diagnose a run that had already finished. That verdict is suppressed
+    # off the running phase, and this is what makes the suppression apply.
+    if state is not None:
+        state.set_phase(Phase.POSTPROCESSING)
     backend.ensure_campaign_root_complete(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
-        if state is not None:
-            state.set_phase(Phase.POSTPROCESSING)
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
