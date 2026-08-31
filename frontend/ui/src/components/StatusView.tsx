@@ -25,8 +25,9 @@ import {
   estimateBatchesEtaSeconds,
   isBatchesBudget,
   estimateEtaSeconds,
+  criterionOp,
   finishedRuns,
-  isFractionableBudget,
+  hasDrawableFloor,
   noResultRuns,
   ringBudget,
 } from '@/lib/eta'
@@ -542,23 +543,26 @@ export function StatusView({
         // after the objective), and keying on the label drops one of the rows.
         <Box key={`${b.label}-${i}`}>
           <Stack direction="row" justifyContent="space-between">
+            {/* The criterion as a SENTENCE -- `coverage >= 0.8` -- not a bare `0.1 / 0.8` pair.
+                A pair silently implies the comparison is `>=`, so a `metric` written `<=` read
+                as 12% of the way to firing when it had already fired. The threshold belongs
+                beside the name it is a threshold ON. */}
             <Typography variant="caption" color="text.secondary">
-              {b.label}
+              {b.label} {criterionOp(b)} {b.limit}
               {b.done ? ' ✓' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {b.current == null ? '—' : b.current} / {b.limit}
+              now {b.current == null ? '—' : b.current}
             </Typography>
           </Stack>
-          {/* A bar only where `current / limit` IS a share of something -- the `budget` kinds, which
-              are monotone resource caps (see FRACTIONABLE_KINDS in lib/eta.ts). The `stopping`
-              kinds got one too and it was wrong in both directions: a `metric` carries an `op`
-              that decides which side satisfies it and `op` is not on the wire, so a `<=` metric at
-              0.1/0.8 is already SATISFIED and drew as 12% -- "barely started" for a campaign about
-              to stop. A `minimize` target_objective on a negative objective produced a quotient
-              that could be negative or above 1. The pair above is the honest rendering until the
-              comparison sense is published; a bar cannot be drawn correctly without it. */}
-          {isFractionableBudget(b) ? (
+          {/* A bar only where the criterion has a FLOOR to measure from -- see hasDrawableFloor.
+              The resource caps do, and so does `no_improvement`, counting up from zero to its
+              patience. A `metric` and a `target_objective` do not: knowing a metric fires at
+              `<= 0.8` says nothing about where it started, and an objective's initial value is
+              whatever the first batch measured. Those two carry the comparison in the label
+              instead, which is the honest rendering -- publishing `op` made the row readable,
+              not the fraction computable. */}
+          {hasDrawableFloor(b) ? (
             <MeterBar
               height={10}
               fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
