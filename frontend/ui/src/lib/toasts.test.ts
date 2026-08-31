@@ -4,7 +4,8 @@ import {
   dismissToast,
   expireToasts,
   extendDeadlines,
-  isSticky,
+  isFailure,
+  ERROR_DURATION_MS,
   MAX_VISIBLE,
   MAX_VISIBLE_ERRORS,
   DEFAULT_DURATION_MS,
@@ -120,31 +121,41 @@ describe('extendDeadlines', () => {
   })
 })
 
-// A failure is the one thing that must not erase itself. These pin the three ways that could
-// break: the sweep taking it, the hover clock taking it, or an unrelated success evicting it.
-describe('a failure waits for the reader', () => {
+// A failure clears itself like everything else, but it is given weight: longer on screen,
+// counted apart so a burst cannot evict it, drawn nearest the corner.
+describe('a failure is given weight, not permanence', () => {
   const boom = (over: Partial<ToastSpec> = {}): ToastSpec =>
     ({ severity: 'error', message: 'Retrigger failed.', ...over })
 
-  it('is stamped with no deadline at all', () => {
+  it('gets longer on screen than a passing notice', () => {
+    // Ten seconds is enough to notice a sentence and not enough to read one, so the shared
+    // clock would hide the very text a failure exists to deliver.
     const [t] = addToast([], boom(), 1_000, 1)
-    expect(t.deadline).toBe(Infinity)
-    expect(isSticky(t)).toBe(true)
+    expect(t.deadline).toBe(1_000 + ERROR_DURATION_MS)
+    expect(ERROR_DURATION_MS).toBeGreaterThan(DEFAULT_DURATION_MS)
+    expect(isFailure(t)).toBe(true)
   })
 
-  it('survives a sweep arbitrarily far in the future', () => {
+  it('still clears itself, so nothing has to be clicked away', () => {
     const list = addToast([], boom(), 0, 1)
-    expect(expireToasts(list, Number.MAX_SAFE_INTEGER)).toHaveLength(1)
+    expect(expireToasts(list, ERROR_DURATION_MS + 1)).toHaveLength(0)
   })
 
-  it('goes when dismissed, and only then', () => {
+  it('outlives a passing notice raised at the same moment', () => {
+    let list = addToast([], spec(), 0, 1)
+    list = addToast(list, boom(), 0, 2)
+    const later = expireToasts(list, DEFAULT_DURATION_MS + 1)
+    expect(later.map((t) => t.id)).toEqual([2])
+  })
+
+  it('goes early when dismissed', () => {
     const list = addToast([], boom(), 0, 1)
     expect(dismissToast(list, 1)).toHaveLength(0)
   })
 
-  it('is unaffected by the hover pause', () => {
+  it('is held by the hover pause like everything else', () => {
     const list = extendDeadlines(addToast([], boom(), 0, 1), 250)
-    expect(list[0].deadline).toBe(Infinity)
+    expect(list[0].deadline).toBe(ERROR_DURATION_MS + 250)
   })
 
   it('is not evicted by a burst of transient notices', () => {
@@ -154,11 +165,11 @@ describe('a failure waits for the reader', () => {
     for (let i = 0; i < MAX_VISIBLE * 3; i++) {
       list = addToast(list, spec({ message: `m${i}` }), 0, 100 + i)
     }
-    expect(list.filter(isSticky)).toHaveLength(1)
-    expect(list.filter((t) => !isSticky(t))).toHaveLength(MAX_VISIBLE)
+    expect(list.filter(isFailure)).toHaveLength(1)
+    expect(list.filter((t) => !isFailure(t))).toHaveLength(MAX_VISIBLE)
   })
 
-  it('does not crowd out transient notices either, having its own cap', () => {
+  it('does not crowd out passing notices either, having its own cap', () => {
     let list: Toast[] = []
     for (let i = 0; i < MAX_VISIBLE_ERRORS + 2; i++) {
       list = addToast(list, boom({ message: `e${i}` }), 0, i + 1)
@@ -172,10 +183,10 @@ describe('a failure waits for the reader', () => {
     const again = addToast(first, boom({ key: 'retrigger:c1', message: 'again' }), 5_000, 2)
     expect(again).toHaveLength(1)
     expect(again[0].message).toBe('again')
-    expect(again[0].deadline).toBe(Infinity)
+    expect(again[0].deadline).toBe(5_000 + ERROR_DURATION_MS)
   })
 
-  it('re-caps when a key changes a toast from transient to sticky', () => {
+  it('re-caps when a key moves a toast between the two groups', () => {
     // A retry reuses the key its success used, so a replacement can move a toast between the
     // two groups — and the group it lands in can then be over its cap.
     let list: Toast[] = []
@@ -184,7 +195,7 @@ describe('a failure waits for the reader', () => {
     }
     list = addToast(list, spec({ key: 'k', message: 'ok' }), 0, 90)
     list = addToast(list, boom({ key: 'k', message: 'now failed' }), 0, 91)
-    expect(list.filter(isSticky)).toHaveLength(MAX_VISIBLE_ERRORS)
+    expect(list.filter(isFailure)).toHaveLength(MAX_VISIBLE_ERRORS)
     expect(list.some((t) => t.message === 'now failed')).toBe(true)
   })
 })

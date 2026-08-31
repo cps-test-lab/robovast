@@ -12,6 +12,7 @@
 //   #/results/explorer/<campaign>/…?tab=<name>    ...and which of its notebook tabs
 //   #/config/campaign/<campaign>                  the deep link into one campaign's frozen config
 //   #/execution?import=<search>                   the campaign view, share-import dialog on <search>
+//   #/execution?campaign=<campaign>               the campaign view, that campaign's card opened
 //
 // The node's address is *positional*, and deliberately the same spelling RoboVAST uses for a run
 // everywhere else -- `<campaign>/<config>/<run>` is the on-disk layout and the `/results` REST
@@ -88,6 +89,16 @@ export interface Nav {
    *  open a dialog over a page nobody is looking at. A tab a view ignores is inert; this is
    *  not. */
   shareImport: string
+  /** A campaign whose card the campaign view should open, and scroll to, on arrival.
+   *
+   *  An *arrival instruction*, not live state, which is the whole of its contract: cards fold and
+   *  unfold freely and several can be open at once, so a field naming one of them could not stay
+   *  true and is not asked to. It says where a link points; what the reader does next is theirs.
+   *
+   *  Parsed for the campaign view alone, for `shareImport`'s reason -- every page stays mounted
+   *  under KeepAlive, so a request addressed to one page must not be readable by another. Dropped
+   *  by `nextNav`, because clicking Campaigns in the sidebar means "the list". */
+  openCampaign: string
 }
 
 /** Marks the third segment as a campaign id rather than a view, for a leaf topic.
@@ -158,6 +169,10 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
         topic.id === EXECUTION_TOPIC
           ? (new URLSearchParams(rawQuery).get('import') ?? '')
           : '',
+      openCampaign:
+        topic.id === EXECUTION_TOPIC
+          ? (new URLSearchParams(rawQuery).get('campaign') ?? '')
+          : '',
     }
   }
   const view = topic.views.find((v) => v.id === rawView)?.id ?? topic.views[0]?.id ?? ''
@@ -175,6 +190,7 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
     configCampaignId: '',
     // A topic with views is never the campaign view, which is a leaf.
     shareImport: '',
+    openCampaign: '',
   }
 }
 
@@ -211,9 +227,13 @@ export function hashFor(nav: Nav): string {
     }
     // Spelled for the campaign view only, the same shape as `tab` being spelled by the
     // Explorer alone: a view's address may not carry a request another view would act on.
-    return topicId === EXECUTION_TOPIC && nav.shareImport
-      ? `/${topicId}?import=${encodeURIComponent(nav.shareImport)}`
-      : `/${topicId}`
+    if (topicId === EXECUTION_TOPIC) {
+      // One at a time, and `import` first: both are requests to the same page, and a link
+      // carrying two of them would be asking it to do two unrelated things at once.
+      if (nav.shareImport) return `/${topicId}?import=${encodeURIComponent(nav.shareImport)}`
+      if (nav.openCampaign) return `/${topicId}?campaign=${encodeURIComponent(nav.openCampaign)}`
+    }
+    return `/${topicId}`
   }
   if (!campaignId) return `/${topicId}/${viewId}`
   const sel = selFor(viewId, nav.sel)
@@ -254,5 +274,6 @@ export function nextNav(
     // Dropped for the same reason: an import request belongs to the link it arrived on, and
     // carrying it would re-open the share dialog every time somebody clicked Campaigns.
     shareImport: '',
+    openCampaign: '',
   }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
@@ -45,7 +45,7 @@ import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { useCampaignStream } from '@/components/CampaignStreamProvider'
 import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
-import { openCampaignConfig, openResultsView } from '@/lib/nav'
+import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
 import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
@@ -182,7 +182,9 @@ function StepFailure({
 // there is one and the newest finished one otherwise. It is the only card whose post-run failures
 // open by themselves, and those render only when the campaign is at rest (see StepFailure), so a
 // live campaign at the top simply means nothing auto-expands.
-function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: boolean }) {
+function CampaignCard({ summary, newest, openedByLink }: {
+  summary: CampaignSummary; newest: boolean; openedByLink?: boolean
+}) {
   const qc = useQueryClient()
   const id = summary.campaign_id
   const active = useActiveView()
@@ -545,7 +547,16 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // The cost of that rule, recorded because it is real: the campaign a reader came to watch is
   // shut when they arrive, and costs a click every visit. It buys little height (the usual page
   // is one running campaign above many finished ones); what it buys is predictability.
-  const [collapsed, setCollapsed] = useState(true)
+  const [collapsed, setCollapsed] = useState(!openedByLink)
+  // A link that names this campaign opens it and brings it into view. Keyed on the flag rather
+  // than run once, so following a second link while the page is already open works too — the
+  // page stays mounted under KeepAlive, so "on arrival" is not a mount.
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!openedByLink) return
+    setCollapsed(false)
+    cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [openedByLink])
   // A click that ends a drag-selection in the header row was a copy, not a fold. The id and the
   // folded description are selectable (see below) and folding the card as the text is lifted
   // takes it back — worse here than in a CollapsibleBox, because shutting the card also moves
@@ -573,6 +584,22 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // has anything to offer. A `Divider` between groups only where the group before it is present —
   // a menu opening on a rule, or carrying two in a row, reads as a rendering fault.
   const openItems = [
+    // Unconditional: every campaign in this list has a card, which is what the link addresses.
+    // Nothing about it depends on the campaign having got far enough to freeze a config or
+    // produce results.
+    <MenuItem
+      key="cardlink"
+      onClick={() => {
+        void navigator.clipboard?.writeText(campaignLink(id))
+        closeMenu()
+        notify({
+          severity: 'success', key: 'campaign-link', message: 'Link to this campaign copied',
+        })
+      }}
+    >
+      <ListItemIcon><LinkRoundedIcon fontSize="small" /></ListItemIcon>
+      <ListItemText>Copy link to this campaign</ListItemText>
+    </MenuItem>,
     hasConfig ? (
       <MenuItem key="config" onClick={() => { closeMenu(); openCampaignConfig(id) }}>
         <ListItemIcon><ConfigIcon fontSize="small" /></ListItemIcon>
@@ -657,7 +684,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     .flatMap((group, i) => (i ? [<Divider key={`sep-${i}`} />, ...group] : group))
 
   return (
-    <Paper sx={{ px: 2, py: collapsed ? 0.75 : 2 }}>
+    <Paper ref={cardRef} sx={{ px: 2, py: collapsed ? 0.75 : 2 }}>
       {/* The fold's click target is the WHOLE header, chevron row included: a folded card is
           opened by clicking the line it occupies, not by aiming at one of the two spans that
           happen to hold text. It bleeds into the Paper's own padding (negative margin, the same
@@ -1019,11 +1046,15 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 }
 
 export function Monitor({
+  openCampaign,
   shareImport,
   onShareImportConsumed,
 }: {
   /** A search string from a `#/execution?import=` link: open the share dialog on it. */
   shareImport?: string
+  /** A campaign to open and scroll to on arrival — `#/execution?campaign=<id>`. An instruction,
+   *  not state: the reader folds and unfolds freely afterwards and the link does not argue. */
+  openCampaign?: string
   /** Called once that request has been taken, so the URL stops carrying a spent one. */
   onShareImportConsumed?: () => void
 }) {
@@ -1174,7 +1205,12 @@ export function Monitor({
         </Alert>
       ) : (
         data.campaigns.map((c, i) => (
-          <CampaignCard key={c.campaign_id} summary={c} newest={i === 0} />
+          <CampaignCard
+            key={c.campaign_id}
+            summary={c}
+            newest={i === 0}
+            openedByLink={c.campaign_id === openCampaign}
+          />
         ))
       )}
       {/* Mounted only while open, so its search box and its list start fresh each visit. Not

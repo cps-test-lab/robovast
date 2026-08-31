@@ -3,17 +3,21 @@
 // A toast says that something short-lived happened -- a retrigger was accepted, a link was
 // copied, a campaign ended.
 //
-// Failures are here too, and they are the exception that proves the rule: an error carries
-// backend text worth reading twice, so it must not erase itself. An error toast has NO deadline
-// -- only the reader dismisses it. That is what let failures leave the campaign card, where they
-// used to sit until the tab was reloaded because nothing ever reset the mutation that raised
-// them. A notice that cannot be gotten rid of and one that vanishes mid-sentence are both wrong;
-// this is the third option.
+// Failures are here too, and they get weight without getting permanence. A failure carries the
+// service's own text, so it is given LONGER than a passing notice, counted apart so a burst of
+// endings cannot evict one, and drawn nearest the corner. It still clears itself: a notice that
+// has to be clicked away turns every failure into a chore, and the ones worth keeping have a
+// home of their own -- a campaign's failure reason is on its card, one click from the toast that
+// announced it.
+//
+// The gap this leaves, named because it is real: a REFUSED ACTION ("retrigger refused: ...")
+// exists nowhere but its toast, so when that expires the reason is gone. A durable event log is
+// what closes it; until then, the duration below is the whole of the answer.
 //
 // Nothing here knows what a campaign is. Callers pass a message; the campaign lifecycle watcher
 // is an ordinary caller with no privileges.
 
-/** How a toast reads. `error` is the sticky one -- see the note on `deadline`. */
+/** How a toast reads. `error` is the emphasised one -- see `isFailure`. */
 export type Severity = 'success' | 'info' | 'warning' | 'error'
 
 /** One button on a toast, for the case where the notice has an obvious next step. */
@@ -40,18 +44,22 @@ export interface ToastSpec {
 
 export interface Toast extends ToastSpec {
   id: number
-  /**
-   * Wall-clock ms after which this toast is gone, or `Infinity` for one that never expires.
-   *
-   * `Infinity` rather than a nullable field on purpose: every comparison in this module already
-   * reads `deadline > now`, which is true forever, so sticky toasts need no branch in
-   * `expireToasts` and none in the hover pause. The one place that does care is `trim`.
-   */
+  /** Wall-clock ms after which this toast is gone. */
   deadline: number
 }
 
 /** Long enough to read a campaign id in, short enough not to become furniture. */
 export const DEFAULT_DURATION_MS = 10_000
+
+/**
+ * Longer, for a failure.
+ *
+ * A passing notice is a few words and a glance; a failure is the service's own sentence, and
+ * sometimes a path or a ref inside it. Ten seconds is enough to notice one and not enough to
+ * read it, so the same clock would effectively hide the text it exists to deliver. Hovering
+ * still holds it indefinitely.
+ */
+export const ERROR_DURATION_MS = 30_000
 
 /**
  * How many are on screen at once.
@@ -64,17 +72,16 @@ export const DEFAULT_DURATION_MS = 10_000
 export const MAX_VISIBLE = 4
 
 /**
- * How many *sticky* toasts are on screen at once, counted separately.
+ * How many *failures* are on screen at once, counted separately from the rest.
  *
- * One shared cap would be wrong in both directions: sticky toasts never leave on their own, so
- * a few of them would permanently crowd out arriving notices -- and a burst of successes would
- * evict an unread failure, which is the one thing that must not happen silently. Two caps, each
- * dropping its own oldest.
+ * One shared cap lets a burst of campaigns ending together evict an unread failure, which is
+ * the one eviction that loses something. Two caps, each dropping its own oldest, so the two
+ * kinds cannot crowd each other out in either direction.
  */
 export const MAX_VISIBLE_ERRORS = 3
 
-/** Whether this toast waits for the reader rather than for the clock. */
-export function isSticky(toast: Pick<Toast, 'severity'>): boolean {
+/** Whether this toast reports something that went wrong: longer-lived, capped apart, drawn last. */
+export function isFailure(toast: Pick<Toast, 'severity'>): boolean {
   return toast.severity === 'error'
 }
 
@@ -86,7 +93,7 @@ export function isSticky(toast: Pick<Toast, 'severity'>): boolean {
  * mid-sentence is the thing to avoid, even though its deadline does get extended.
  */
 export function addToast(list: Toast[], spec: ToastSpec, now: number, id: number): Toast[] {
-  const deadline = isSticky(spec) ? Infinity : now + DEFAULT_DURATION_MS
+  const deadline = now + (isFailure(spec) ? ERROR_DURATION_MS : DEFAULT_DURATION_MS)
   if (spec.key !== undefined) {
     const at = list.findIndex((t) => t.key === spec.key)
     if (at !== -1) {
@@ -101,17 +108,17 @@ export function addToast(list: Toast[], spec: ToastSpec, now: number, id: number
   return trim([...list, { ...spec, id, deadline }])
 }
 
-/** Drop the oldest beyond each group's cap, sticky and transient counted apart. */
+/** Drop the oldest beyond each group's cap, failures and passing notices counted apart. */
 function trim(list: Toast[]): Toast[] {
   const dropped = new Set<number>()
-  for (const [sticky, cap] of [[true, MAX_VISIBLE_ERRORS], [false, MAX_VISIBLE]] as const) {
-    const group = list.filter((t) => isSticky(t) === sticky)
+  for (const [failure, cap] of [[true, MAX_VISIBLE_ERRORS], [false, MAX_VISIBLE]] as const) {
+    const group = list.filter((t) => isFailure(t) === failure)
     for (const t of group.slice(0, Math.max(0, group.length - cap))) dropped.add(t.id)
   }
   return dropped.size === 0 ? list : list.filter((t) => !dropped.has(t.id))
 }
 
-/** Drop everything whose deadline has passed. Sticky toasts never have one. */
+/** Drop everything whose deadline has passed. */
 export function expireToasts(list: Toast[], now: number): Toast[] {
   const kept = list.filter((t) => t.deadline > now)
   // Same array when nothing expired, so a caller can skip a re-render on the common tick.

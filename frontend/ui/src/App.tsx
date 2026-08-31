@@ -80,6 +80,7 @@ const DEFAULT_NAV: Nav = {
   tab: '',
   configCampaignId: '',
   shareImport: '',
+  openCampaign: '',
 }
 
 const readNav = () => navFromHash(window.location.hash, TOPICS, DEFAULT_NAV)
@@ -157,7 +158,11 @@ export function App() {
           <ConfigPage campaignId={nav.configCampaignId} onExit={() => select('config')} />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'execution'}>
-          <Monitor shareImport={nav.shareImport} onShareImportConsumed={clearShareImport} />
+          <Monitor
+            shareImport={nav.shareImport}
+            onShareImportConsumed={clearShareImport}
+            openCampaign={nav.openCampaign}
+          />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>
           <ResultsPage
