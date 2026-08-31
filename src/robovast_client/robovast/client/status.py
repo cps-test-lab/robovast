@@ -280,6 +280,24 @@ class Status(BaseModel):
     # (``status_recovery``), which has no current batch to be relative to -- the same
     # caveat ``RunProgress`` carries.
     batch_since: Optional[float] = None
+    # Wall-clock start of the **search**, offset for a campaign re-entered after a service
+    # restart (see controller._rehydrate_search: a search that got a fresh clock on every
+    # restart would have no wall-clock bound at all).
+    #
+    # An ORIGIN, published once, rather than the elapsed value republished on a timer -- and
+    # that distinction is the reason this field exists. A ``time`` budget's ``current`` is
+    # computed from ``stop.progress()``, which runs once per batch, so on the wire it steps
+    # per round instead of ticking. The fix is not to refresh it more often: elapsed time is a
+    # pure function of wall-clock plus one origin, and every reader already has a clock. It is
+    # also the only fix that is SAFE here -- ``_progress_signal`` includes each budget row's
+    # ``current``, so a row rewritten from wall-clock would advance the progress signal on
+    # every poll forever, and no time-budgeted search could ever be reported stalled again.
+    # That is the failure the same class of mistake already caused with ``updated_at``.
+    #
+    # Readers derive elapsed through ``budget_positions`` below rather than each doing the
+    # subtraction. ``None`` for a batch campaign (no search, no budget), and on a status
+    # reconstructed from disk -- the same caveat ``batch_since`` carries.
+    search_since: Optional[float] = None
     stage: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
@@ -329,6 +347,51 @@ class Status(BaseModel):
     # that case: nothing is wrong, and nothing looked.
     health_skipped: list[str] = Field(default_factory=list)
     updated_at: float = Field(default_factory=time.time)
+
+
+#: Budget kinds whose ``current`` is a monotone count against a cap, and so a share of work
+#: spent. Exactly ``search.budget``'s vocabulary (see ``common.config.BudgetCriterion``); the
+#: ``stopping`` kinds are result-dependent early exits and are not a share of anything -- see
+#: the frontend's ``FRACTIONABLE_KINDS`` in ``lib/eta.ts``, which mirrors this list and carries
+#: the per-kind reasoning. A change to either must be made looking at the other.
+FRACTIONABLE_BUDGET_KINDS = frozenset({"runs", "batches", "evaluations", "time"})
+
+
+def budget_positions(status: "Status", now: Optional[float] = None) -> list[BudgetItem]:
+    """*status*'s budget rows, with any ``time`` row's ``current`` brought up to date.
+
+    The one place every Python reader shares, so the MCP's progress figure, the MCP status
+    dict and the CLI's budget line cannot disagree about how far along a time-budgeted
+    search is.
+
+    Only the ``time`` row is derived, because it is the only criterion whose value is a pure
+    function of wall-clock: it is published from ``stop.progress()``, which runs once per
+    batch, so on the wire it steps per round. Everything else is a count the controller
+    writes when it actually changes and is already current.
+
+    Clamped to the row's ``limit``: a search stops when the criterion fires, so a derived
+    elapsed past the cap describes time the campaign did not spend. Returns the rows
+    unchanged when ``search_since`` is absent (a batch campaign, or a status recovered from
+    disk), rather than deriving from an origin nobody published -- the published ``current``
+    is stale by at most one round, and inventing an origin would be worse than stale.
+
+    Non-mutating: the rows are copies, so a reader cannot write a derived value back into the
+    controller's state. That matters more than it looks -- see ``search_since`` on the model
+    for why a derived value must never reach ``_progress_signal``.
+    """
+    if status.search_since is None:
+        return list(status.budget)
+    elapsed = (time.time() if now is None else now) - status.search_since
+    if elapsed < 0:
+        # Clocks are not guaranteed monotone across a service restart; a negative elapsed
+        # would render as a negative share.
+        return list(status.budget)
+    out = []
+    for item in status.budget:
+        if item.kind == "time" and item.limit > 0:
+            item = item.model_copy(update={"current": min(elapsed, item.limit)})
+        out.append(item)
+    return out
 
 
 #: What a caller should do once a run is known to be stalled. Part of the verdict
