@@ -607,6 +607,11 @@ predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
 executions directly. This is also what makes two strategies comparable: a fair contest
 gives both the same number of runs, not the same number of batches.
 
+Each cell's allocation is recorded as ``unit.n_reps`` — what it was **given**, as opposed
+to ``n_samples``, what came back. That is what a resumed search recounts its spend from: a
+service restart that re-derived it would recount an unevenly spent campaign as an evenly
+spent one, and stop a ``runs`` budget in the wrong place.
+
 Pairing, and what it does not buy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

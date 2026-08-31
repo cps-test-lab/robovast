@@ -43,8 +43,8 @@ from typing import Optional
 
 from robovast.common.build_context import BUILD_CONTEXT_IGNORE
 from robovast.common.config_plugins import canonical_name
+from robovast.common.containers import plan_containers, ros_repo_name
 from robovast.common.execution import GIT_TOKEN_SECRET_ID as _GIT_TOKEN_SECRET_ID
-from robovast.common.containers import plan_containers
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
                                        FAMILY_IMAGE_PREFIX)
 from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
@@ -144,6 +144,10 @@ class BuildSpec:
     #: Read it through :attr:`install_groups` (what to install, and in how many
     #: passes) or :attr:`python_specs` (every spec, flat).
     python_packages: list = field(default_factory=list)
+    #: Git repos colcon-built into the image's ROS overlay, each a mapping with ``git``,
+    #: ``ref`` and an optional ``packages`` list (see ``RosPackageConfig``). Normalized to
+    #: plain dicts here, because a BuildSpec crosses the service boundary.
+    ros_packages: list = field(default_factory=list)
 
     @property
     def install_groups(self) -> list:
@@ -173,7 +177,8 @@ def extract_build_specs(campaign_config, base_dir=None, image_project=None,
     A campaign may build several images -- a system under test, and a scenario or
     simulation container carrying the experiment's own plugins -- so this returns a map
     rather than the single spec the removed ``build:`` section produced. A container
-    with no ``system_packages``/``python_packages`` is absent: it runs its image as-is.
+    with no ``system_packages``/``python_packages``/``ros_packages`` is absent: it runs its
+    image as-is.
 
     The tag is the container's **name**, not something the author chose. There is one
     image per container per campaign, so the name already identifies it uniquely, and a
@@ -226,8 +231,36 @@ def extract_build_specs(campaign_config, base_dir=None, image_project=None,
             base_image=container.image,
             system_packages=list(container.system_packages),
             python_packages=list(container.python_packages),
+            ros_packages=[_ros_entry(entry) for entry in container.ros_packages],
         )
     return specs
+
+
+# ---------------------------------------------------------------------------
+# ros_packages: source-built ROS overlay
+# ---------------------------------------------------------------------------
+
+#: The colcon workspace the framework image already builds into, and the one its entrypoint
+#: sources (``ROS_SETUP_BLOCK`` sources ``/ws/install/setup.bash`` after the ROS distro's own
+#: setup). Building INTO it rather than stacking a second overlay beside it is the whole
+#: reason nothing else has to change: the packages are on the environment of every process a
+#: run starts, by the mechanism that was already there.
+ROS_WORKSPACE = "/ws"
+
+
+def _ros_entry(entry) -> dict:
+    """One ``ros_packages`` entry as a plain dict, whatever form it arrived in.
+
+    A spec is built from a validated config on one path and from a raw mapping on another
+    (the pre-flight reads an unvalidated document on purpose), so both are normalized here
+    rather than at each of the four sites that read one.
+    """
+    if not isinstance(entry, dict):
+        entry = entry.model_dump() if hasattr(entry, "model_dump") else dict(entry)
+    packages = entry.get("packages") or []
+    return {"git": str(entry.get("git") or "").strip(),
+            "ref": str(entry.get("ref") or "").strip(),
+            "packages": [str(name).strip() for name in packages]}
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +549,12 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_identity: str,
     # per install group instead of one per entry). The Dockerfile text is not itself an input --
     # only the epoch makes a robovast upgrade rebuild rather than serve the image the old renderer
     # produced, which would silently keep the old install semantics.
-    h.update(b"v5")
+    #
+    # v6: ``ros_packages`` renders a clone + colcon layer. A campaign that adds one must
+    # rebuild, and -- the reason the epoch and not just the new hash inputs -- an existing
+    # project's image must not keep being served by the old renderer, which would produce an
+    # image silently missing packages the .vast now declares.
+    h.update(b"v6")
     h.update(base_identity.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
@@ -537,6 +575,16 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_identity: str,
                 _hash_dir(h, (project_dir / entry).resolve())
             elif _is_context_wheel(entry, project_dir):
                 _hash_wheel(h, (project_dir / entry).resolve())
+    # Order-independent: the entries land in one workspace and one colcon invocation, which
+    # derives its own build order from the packages' dependencies, so reordering the YAML
+    # builds the same image and must not cost a rebuild. The ref is hashed as authored and
+    # needs no resolution step -- unlike a pip git spec it is required to be a pin already.
+    for repo in sorted(spec.ros_packages, key=lambda r: (r["git"], r["ref"])):
+        h.update(b"|ros|")
+        h.update(f"{repo['git']}@{repo['ref']}".encode())
+        for name in sorted(repo.get("packages") or []):
+            h.update(b"|pkg|")
+            h.update(name.encode())
     return h.hexdigest()[:12]
 
 
@@ -599,6 +647,12 @@ def cache_scope(spec: BuildSpec, base_identity: str) -> str:
         for entry in group:
             h.update(b"|py|")
             h.update(_cache_scope_entry(entry).encode())
+    # The repos, without their refs -- for the same reason ``resolved_vcs`` is left out: a
+    # moved pin changes what a layer contains, not which layers exist, and retiring the
+    # namespace on it would throw away every layer below the one that actually changed.
+    for repo in sorted(spec.ros_packages, key=lambda r: r["git"]):
+        h.update(b"|ros|")
+        h.update(repo["git"].encode())
     return h.hexdigest()[:10]
 
 
@@ -657,6 +711,7 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
             "RUN apt-get update "
             f"&& apt-get install -y --no-install-recommends {pkgs} "
             "&& rm -rf /var/lib/apt/lists/*")
+    lines.extend(_ros_workspace_lines(spec))
     for group in spec.install_groups:
         # Install the RESOLVED commit, not the branch. The cache key already accounts for the
         # resolution, but the build must too: a branch that moves between resolution and
@@ -696,6 +751,80 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
     lines.extend(_manifest_lines(spec, resolved_vcs or {}))
     lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"
+
+
+def _ros_workspace_lines(spec: BuildSpec) -> list:
+    """The clone layers and the single ``colcon build`` that turn ``ros_packages`` into an overlay.
+
+    **One workspace, one build.** Every repo is cloned into ``/ws/src/<name>`` and built in a
+    single colcon invocation, so a package's dependency on a sibling -- in the same repo or in
+    another entry -- resolves against the sibling being built rather than against a released
+    Debian, which for a source-only package does not exist. Building each repo separately would
+    give up exactly that, and it is the reason the key takes a workspace's worth of repos rather
+    than one repo at a time.
+
+    Built into ``/ws``, the workspace the framework image already uses, rather than a second
+    overlay of our own: the entrypoint sources ``/ws/install/setup.bash`` (``ROS_SETUP_BLOCK``),
+    so this is on the environment of every process a run starts without a line of new plumbing.
+    A separate prefix would have needed its own sourcing in the entrypoint, in ``in_run_env``,
+    and in the results-processing exec wrapper -- three copies of a mechanism that exists.
+
+    ``--packages-up-to`` over the built set, not a bare ``colcon build``: /ws already holds
+    scenario-execution and the framework's own packages, and rebuilding those on every derived
+    image would cost minutes to install nothing new. ``up-to`` rather than ``select`` so a
+    dependency in the workspace still comes along.
+
+    The set is computed **in the shell**, by ``colcon list`` over the repos that named no
+    packages. That keeps the Dockerfile text fixed for a given spec -- the layer cache keys on
+    the command text -- while still meaning "everything these repos contain", which is what makes
+    ``packages:`` optional: colcon discovers the packages, so a repo with one and a repo with
+    forty are the same declaration. What colcon counts as a package is colcon's business and
+    deliberately not restated here: a plain CMake project with no ``package.xml`` is discovered
+    by ``colcon-cmake`` just as an ament package is, and both build in this one pass.
+    """
+    if not spec.ros_packages:
+        return []
+    lines = []
+    src = f"{ROS_WORKSPACE}/src"
+    restricted = [name for repo in spec.ros_packages for name in (repo.get("packages") or [])]
+    discover = [f"{src}/{ros_repo_name(repo['git'])}"
+                for repo in spec.ros_packages if not repo.get("packages")]
+    for repo in spec.ros_packages:
+        path = f"{src}/{ros_repo_name(repo['git'])}"
+        # Clone then checkout, and no ``--depth``: a shallow clone of a branch tip resolves the
+        # sha only until the branch moves, so a rebuild of this very campaign would later fail
+        # with "reference is not a tree" -- a pin that only works today is not a pin. The
+        # ``test -d`` turns a clone that produced nothing into a failed build naming the repo,
+        # rather than a colcon pass that quietly has less to build.
+        lines.append(
+            f"RUN git clone {repo['git']} {path} "
+            f"&& git -C {path} checkout {repo['ref']} "
+            f"&& test -d {path} || "
+            f"{{ echo \"ros_packages: could not clone {repo['git']} at {repo['ref']}\" >&2; "
+            f"exit 1; }}")
+    # Names are collected first and the build refuses an empty set. A colcon build with no
+    # packages selected succeeds and installs nothing, which is the one failure mode of this
+    # feature that a campaign would not notice until a node was missing at run time.
+    collect = " ".join(restricted)
+    if discover:
+        listed = " ".join(discover)
+        collect = (f"{collect} $(colcon list --names-only --base-paths {listed})").strip()
+    lines.append(
+        f"RUN . \"/opt/ros/${{ROS_DISTRO}}/setup.bash\" "
+        f"&& cd {ROS_WORKSPACE} "
+        # `echo` collapses the whitespace, so an empty `colcon list` leaves PKGS empty
+        # rather than blank -- the difference between the guard below firing and a
+        # `colcon build` that selects nothing and succeeds.
+        f"&& PKGS=\"$(echo {collect})\" "
+        f"&& [ -n \"$PKGS\" ] || "
+        f"{{ echo 'ros_packages: colcon found no packages to build' >&2; exit 1; }} "
+        f"&& colcon build --packages-up-to $PKGS "
+        f"&& for pkg in $PKGS; do "
+        f"test -e \"{ROS_WORKSPACE}/install/$pkg\" "
+        f"|| test -e \"{ROS_WORKSPACE}/install/share/$pkg\" "
+        f"|| {{ echo \"ros_packages: $pkg was not installed by the colcon build\" >&2; "
+        f"exit 1; }}; done")
+    return lines
 
 
 def read_image_build_manifest(image: str) -> dict:
@@ -857,12 +986,18 @@ def _manifest_lines(spec: BuildSpec, resolved_vcs: dict) -> list:
     lines.append(
         f"RUN (pip list --format=freeze 2>/dev/null || true) | sort "
         f"> {BUILD_MANIFEST_DIR}/pip.txt")
-    if resolved_vcs:
+    # A source-built ROS package's git sha is exactly what this file exists to record: it is
+    # the only statement anywhere of what code the overlay holds, since there is no apt version
+    # and no pip distribution for it to turn up in the two files above.
+    records = dict(resolved_vcs)
+    for repo in spec.ros_packages:
+        records[repo["git"]] = repo["ref"]
+    if records:
         # Rendered from what the generator already resolved, not observed in the image: pip
         # records a direct URL per distribution, but not which *requested* ref it came from --
         # and "@main resolved to this commit" is the fact a reader needs to judge a re-run.
         body = "\\n".join(f"{requested} -> {sha}"
-                            for requested, sha in sorted(resolved_vcs.items()))
+                            for requested, sha in sorted(records.items()))
         lines.append(f"RUN printf '{body}\\n' > {BUILD_MANIFEST_DIR}/vcs.txt")
     return lines
 # ---------------------------------------------------------------------------
@@ -1071,6 +1206,13 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
                 f"build.python_packages: '{entry}' looks like a workspace path but "
                 "no such directory/wheel exists in the project")
         # otherwise treat as a pip spec (index pin / git URL) — not resolvable offline
+    # The same rules the .vast is validated by, applied again here: a spec also reaches a build
+    # from paths that never saw the config validator (a retriggered campaign, a build requested
+    # for one container), and a malformed entry must be refused before a builder is started
+    # rather than surfacing as a git error inside a BuildKit log.
+    from robovast.common.config_validation import \
+        ros_packages_problems  # pylint: disable=import-outside-toplevel
+    problems.extend(ros_packages_problems(spec.ros_packages, "build.ros_packages"))
     return problems
 
 

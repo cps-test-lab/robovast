@@ -259,6 +259,11 @@
       "Union[ResourcesConfig, NoneType]"
     ],
     [
+      "ros_packages",
+      false,
+      "Union[list[RosPackageConfig], NoneType]"
+    ],
+    [
       "system_packages",
       false,
       "Union[list[str], NoneType]"
@@ -708,6 +713,28 @@
       "run_view",
       false,
       "Union[RunViewConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RosPackageConfig": [
+    [
+      "git",
+      true,
+      "str"
+    ],
+    [
+      "packages",
+      false,
+      "Union[list[str], NoneType]"
+    ],
+    [
+      "ref",
+      true,
+      "str"
     ],
     [
       "<extra>",

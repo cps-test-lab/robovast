@@ -649,3 +649,102 @@ def test_the_walk_survives_a_symlink_loop(tmp_path):
     _campaign_dir(tmp_path, "campaign-a")
     (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
     assert [str(p) for p in campaign_outputs_in(tmp_path)] == ["campaign-a"]
+
+
+# ---------------------------------------------------------------------------
+# ros_packages — source-built ROS overlay
+# ---------------------------------------------------------------------------
+
+PX4_MSGS = {"git": "https://github.com/PX4/px4_msgs.git",
+            "ref": "598c7aad7b2386f9406ebd2a2f841619fddc3c78"}
+MONOREPO = {"git": "https://github.com/example/some_repo.git", "ref": "v2.1.0",
+            "packages": ["only_this_one", "and_this_one"]}
+
+
+def test_a_repo_is_cloned_at_its_pin_into_the_sourced_workspace(tmp_path):
+    """Into ``/ws``, which the entrypoint already sources — not a second overlay."""
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[PX4_MSGS]), tmp_path, BASE)
+    assert f"git clone {PX4_MSGS['git']} /ws/src/px4_msgs" in df
+    assert f"git -C /ws/src/px4_msgs checkout {PX4_MSGS['ref']}" in df
+    assert "colcon build" in df
+
+
+def test_every_repo_is_built_in_one_colcon_pass(tmp_path):
+    """The load-bearing rule: one workspace, one build.
+
+    Two repos built separately could not resolve a dependency on each other, which is the
+    whole reason the key takes a workspace's worth of repos rather than one at a time.
+    """
+    df = generate_dockerfile(
+        BuildSpec(tag="t", ros_packages=[PX4_MSGS, MONOREPO]), tmp_path, BASE)
+    assert df.count("colcon build --packages-up-to") == 1
+    assert "/ws/src/px4_msgs" in df and "/ws/src/some_repo" in df
+
+
+def test_naming_no_packages_discovers_them_at_build_time(tmp_path):
+    """``packages:`` is optional, so the *text* must ask colcon rather than list names.
+
+    Resolved in the shell and not by the renderer, so a repo with one package and a repo
+    with forty are the same fixed, cache-stable Dockerfile.
+    """
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[PX4_MSGS]), tmp_path, BASE)
+    assert "colcon list --names-only --base-paths /ws/src/px4_msgs" in df
+    assert "--packages-up-to" in df
+
+
+def test_naming_packages_restricts_the_build_to_them_and_their_dependencies(tmp_path):
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[MONOREPO]), tmp_path, BASE)
+    assert "--packages-up-to" in df
+    assert "only_this_one and_this_one" in df
+    # Nothing to discover: every entry named its packages.
+    assert "colcon list" not in df
+
+
+def test_a_restricted_and_an_unrestricted_repo_are_unioned(tmp_path):
+    df = generate_dockerfile(
+        BuildSpec(tag="t", ros_packages=[PX4_MSGS, MONOREPO]), tmp_path, BASE)
+    assert "only_this_one and_this_one $(colcon list --names-only " \
+           "--base-paths /ws/src/px4_msgs)" in df
+
+
+def test_a_build_that_installs_nothing_fails_the_image(tmp_path):
+    """The silent miss this feature's ``command -v`` equivalent exists to catch."""
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[PX4_MSGS]), tmp_path, BASE)
+    assert "colcon found no packages to build" in df
+    assert "was not installed by the colcon build" in df
+    assert f"could not clone {PX4_MSGS['git']}" in df
+
+
+def test_the_built_refs_are_recorded_in_the_image_manifest(tmp_path):
+    """A source-built package's sha is the only record anywhere of what the overlay holds."""
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[PX4_MSGS]), tmp_path, BASE)
+    assert f"{PX4_MSGS['git']} -> {PX4_MSGS['ref']}" in df
+    assert "/etc/robovast/build-manifest/vcs.txt" in df
+
+
+def test_ros_packages_affect_the_hash(tmp_path):
+    plain = BuildSpec(tag="t")
+    one = BuildSpec(tag="t", ros_packages=[PX4_MSGS])
+    moved = BuildSpec(tag="t", ros_packages=[{**PX4_MSGS, "ref": "v1.15.0"}])
+    assert build_hash(plain, tmp_path, BASE) != build_hash(one, tmp_path, BASE)
+    assert build_hash(one, tmp_path, BASE) != build_hash(moved, tmp_path, BASE)
+    assert build_hash(one, tmp_path, BASE) == build_hash(
+        BuildSpec(tag="t", ros_packages=[dict(PX4_MSGS)]), tmp_path, BASE)
+
+
+def test_ros_package_order_does_not_affect_the_hash(tmp_path):
+    """One colcon pass derives its own order, so reordering the YAML builds the same image."""
+    assert build_hash(BuildSpec(tag="t", ros_packages=[PX4_MSGS, MONOREPO]), tmp_path, BASE) \
+        == build_hash(BuildSpec(tag="t", ros_packages=[MONOREPO, PX4_MSGS]), tmp_path, BASE)
+
+
+def test_restricting_the_packages_affects_the_hash(tmp_path):
+    everything = BuildSpec(tag="t", ros_packages=[{k: v for k, v in MONOREPO.items()
+                                                   if k != "packages"}])
+    assert build_hash(everything, tmp_path, BASE) != build_hash(
+        BuildSpec(tag="t", ros_packages=[MONOREPO]), tmp_path, BASE)
+
+
+def test_no_ros_packages_renders_no_workspace_lines(tmp_path):
+    df = generate_dockerfile(BuildSpec(tag="t", system_packages=["git"]), tmp_path, BASE)
+    assert "colcon" not in df and "/ws/src" not in df

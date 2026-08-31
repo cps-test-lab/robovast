@@ -47,6 +47,9 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from robovast.common.config import PINNED_REF
+from robovast.common.containers import ros_repo_name
+
 logger = logging.getLogger(__name__)
 
 #: Logger whose WARNING records are surfaced in the validation result. Config
@@ -1097,6 +1100,87 @@ def _build_problems(raw, vast_dir):
     return problems
 
 
+def ros_packages_problems(entries, where: str) -> list:
+    """What can be said about a container's ``ros_packages`` **without the network**.
+
+    Every check here is a statement about the declaration, never about the repository: nothing
+    is fetched or resolved, for the same reason a pip spec is not (see
+    :func:`_missing_workspace_path`) -- a check that needs the network fails a campaign because
+    of where it was validated from, and validation runs on machines a private clone URL is not
+    reachable from.
+
+    *where* is the field path the problems are reported under, so the same rules serve the
+    config-file pass and the service-side pre-build check with one message each.
+
+    Deliberately absent: any check that an entry is a *ROS* package. A repo is cloned into the
+    workspace and colcon decides what it contains -- a plain CMake project with a ``colcon.pkg``
+    and no ``package.xml`` is as buildable there as an ament package -- so a rosdistro or
+    ``package.xml`` rule would refuse builds that work.
+    """
+    problems = []
+    seen = {}
+    for i, entry in enumerate(entries or []):
+        if hasattr(entry, "model_dump"):
+            entry = entry.model_dump()
+        if not isinstance(entry, dict):
+            problems.append(f"{where}[{i}]: expected a mapping with 'git' and 'ref'")
+            continue
+        url = str(entry.get("git") or "").strip()
+        ref = str(entry.get("ref") or "").strip()
+        if not url:
+            problems.append(f"{where}[{i}]: no 'git'; every entry names the repository to clone")
+        if not ref:
+            problems.append(
+                f"{where}[{i}]: no 'ref'. It is required and must pin -- a layer's cache key is "
+                f"its command text, so a branch would be read once and served forever")
+        elif not PINNED_REF.match(ref):
+            problems.append(
+                f"{where}[{i}]: ref '{ref}' looks like a branch, not a pin; give a commit sha "
+                f"or a release tag")
+        packages = entry.get("packages")
+        if packages is not None:
+            if not isinstance(packages, list) or not packages:
+                problems.append(
+                    f"{where}[{i}]: 'packages' must be a non-empty list of package names; omit "
+                    f"it to build every package the repository contains")
+            else:
+                for name in packages:
+                    if not isinstance(name, str) or not name.strip():
+                        problems.append(
+                            f"{where}[{i}]: a 'packages' entry is blank; expected a package name")
+        if url:
+            # Two repos with the same basename would be cloned into one `src/` directory: the
+            # second clone fails on a non-empty path, deep in a build log, saying nothing about
+            # the two lines of YAML that caused it.
+            name = ros_repo_name(url)
+            if name in seen and seen[name] != url:
+                problems.append(
+                    f"{where}[{i}]: '{url}' and '{seen[name]}' both clone into src/{name}; "
+                    f"they cannot share one workspace directory")
+            elif name in seen:
+                problems.append(f"{where}[{i}]: '{url}' is declared twice")
+            seen[name] = url
+    return problems
+
+
+def _ros_packages_problems(raw):
+    """``ros_packages`` on every container of ``execution.containers``."""
+    problems = []
+    execution = raw.get("execution")
+    if not isinstance(execution, dict):
+        return problems
+    containers = execution.get("containers")
+    if not isinstance(containers, dict):
+        return problems
+    for name, block in containers.items():
+        if not isinstance(block, dict) or not block.get("ros_packages"):
+            continue
+        field = f"execution.containers.{name}.ros_packages"
+        for message in ros_packages_problems(block.get("ros_packages"), field):
+            problems.append(_problem("build", message, field=field))
+    return problems
+
+
 def _missing_workspace_path(entry: str, vast_dir: str) -> bool:
     """Whether *entry* reads as a workspace path that is not in the project.
 
@@ -1213,6 +1297,9 @@ def validate_project_file(config_path):
     # execution.image <-> build.tag consistency) are already covered by the config
     # model in _schema_problems.
     problems.extend(_build_problems(raw, vast_dir))
+    # ...and a container's source-built ROS packages must be declared in a form a build could
+    # act on: a repository, a ref that pins, and no two repos landing in one src/ directory.
+    problems.extend(_ros_packages_problems(raw))
     problems.extend(_plugins_problems(raw, vast_dir))
 
     if problems:

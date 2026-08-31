@@ -929,7 +929,7 @@ def _validated_cfg(backend: SimulatorBackend, block: dict, name: str):
 #: made it a *simulator* key, which is worse than untidy -- a backend CONFIG_CLASS forbids
 #: extras, so every roqsim campaign was rejected the moment the field existed.
 _CONTAINER_KEYS = ("image", "command", "resources", "system_packages", "python_packages",
-                   "provenance")
+                   "ros_packages", "provenance")
 
 #: Keys of the ``simulation`` block that belong to RoboVAST, not to the backend. A
 #: backend's CONFIG_CLASS forbids extras, so offering it these would reject every

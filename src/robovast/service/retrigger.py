@@ -553,7 +553,8 @@ def _builds_an_image(campaign_config) -> bool:
                   else getattr(execution, "containers", None)) or {}
     for block in containers.values():
         block = block if isinstance(block, dict) else block.model_dump()
-        if block.get("system_packages") or block.get("python_packages"):
+        if (block.get("system_packages") or block.get("python_packages")
+                or block.get("ros_packages")):
             return True
     return False
 
