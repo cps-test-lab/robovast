@@ -57,14 +57,34 @@ _TIMEOUT = 10
 
 
 def split_image_ref(image_ref: str) -> "tuple[str, str, str]":
-    """``host[:port]/path/name:tag`` → ``(host, repository, tag)``.
+    """``host[:port]/path/name:tag`` or ``…@sha256:…`` → ``(host, repository, reference)``.
 
-    The tag is split off the *last* colon after the final ``/`` so a registry port is not
+    The third element is the **reference** the v2 API takes after ``/manifests/``, which is
+    a tag or a digest -- the registry treats the two the same way, and so does every caller
+    here.
+
+    A digest is split on ``@`` and never on a colon: the colon inside ``sha256:…`` is part
+    of the digest, so splitting there yields a repository ending in ``@sha256`` and a
+    reference that is a bare hex string. Nothing about that fails loudly. The request goes
+    out against a repository name no registry has, which answers 401 with an empty
+    ``WWW-Authenticate`` -- so it reads as "these credentials were refused" rather than as a
+    malformed path, and every read of a digest-pinned image comes back as "the registry
+    would not say". That is the shape a caller which fails closed on an unreadable image
+    refuses a whole campaign on, while pointing at the image.
+
+    A tag is split off the *last* colon after the final ``/`` so a registry port is not
     mistaken for a tag (``registry.local:5000/x/y`` has no tag).
     """
     if "/" not in image_ref:
         raise ValueError(f"not a registry-qualified image ref: {image_ref!r}")
     host, remainder = image_ref.split("/", 1)
+    if "@" in remainder:
+        repository, _, digest = remainder.partition("@")
+        # ``name:tag@digest`` is a legal ref and both halves name the same image, so the
+        # tag is dropped rather than left on the repository: the digest is the half that
+        # names bytes, and the registry takes one reference.
+        repository = repository.rsplit(":", 1)[0] if ":" in repository else repository
+        return host, repository, digest
     if ":" in remainder:
         repository, tag = remainder.rsplit(":", 1)
     else:
@@ -306,11 +326,11 @@ def _head_manifest(image_ref: str, *, dockerconfigjson: str = "",
     of the same response they read.
     """
     try:
-        host, repository, tag = split_image_ref(image_ref)
+        host, repository, reference = split_image_ref(image_ref)
     except ValueError as e:
         logger.warning("registry check: %s", e)
         return None
-    return _registry_request(host, f"{repository}/manifests/{tag}", method="HEAD",
+    return _registry_request(host, f"{repository}/manifests/{reference}", method="HEAD",
                              dockerconfigjson=dockerconfigjson, insecure=insecure,
                              ca_path=ca_path)
 
@@ -487,12 +507,12 @@ def _image_config(image_ref: str, *, dockerconfigjson: str = "",
 
 def _manifest_json(image_ref: str, *, digest: str = "", dockerconfigjson: str = "",
                    insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
-    """The parsed manifest for *image_ref*'s tag, or for *digest* when given."""
+    """The parsed manifest for *image_ref*'s own reference, or for *digest* when given."""
     try:
-        host, repository, tag = split_image_ref(image_ref)
+        host, repository, reference = split_image_ref(image_ref)
     except ValueError:
         return None
-    resp = _registry_request(host, f"{repository}/manifests/{digest or tag}", method="GET",
+    resp = _registry_request(host, f"{repository}/manifests/{digest or reference}", method="GET",
                              dockerconfigjson=dockerconfigjson, insecure=insecure,
                              ca_path=ca_path)
     if resp is None or resp.status_code != 200:
