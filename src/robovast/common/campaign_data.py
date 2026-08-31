@@ -23,6 +23,7 @@ used by both MCP plugins and the FAIR metadata generator.
 import json
 import os
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -254,8 +255,36 @@ class CampaignImageUnpinnable(ValueError):
     """A campaign's built image cannot be named as something a new run could start."""
 
 
-def campaign_pinned_images(campaign_dir) -> dict[str, str]:
-    """``{container: image}`` a new run of this campaign can start from.
+@dataclass(frozen=True)
+class CampaignImages:
+    """What a campaign recorded about the images it ran -- data, not a verdict.
+
+    Deliberately not a yes/no: the two callers ask different questions of the same record and
+    are both right. A **resume** needs every container pinned, because its second half must run
+    the bytes its first half did or it is two experiments wearing one name. A **retrigger** is
+    starting over, so a container whose image the campaign never built can legitimately be
+    re-resolved at launch -- which is exactly what relaunching from the workspace would do.
+    Folding that policy in here would force one of them to be wrong.
+
+    Attributes:
+        pins: ``{container: image}`` that a new run can start from.
+        unpinnable: ``{container: why}`` for each recorded container that has no such image.
+            The value is a full diagnostic naming every source tried, because the reader has to
+            be able to tell "recorded nothing" from "recorded a tag that cannot be started
+            elsewhere".
+        built: whether this campaign built any of its own images -- ``True`` when the launch
+            record named built refs, ``False`` when a launch record exists and named none, and
+            ``None`` when there is no launch record at all (a campaign predating it), where the
+            caller has to fall back to reading the frozen ``.vast``.
+    """
+
+    pins: dict[str, str]
+    unpinnable: dict[str, str]
+    built: Optional[bool]
+
+
+def campaign_images(campaign_dir) -> CampaignImages:
+    """What ``campaign_dir`` recorded about the images its containers ran.
 
     A third image resolver beside the two above, because it answers a third question and the
     other two give the wrong answer to it:
@@ -265,7 +294,7 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
       ``name:tag`` and tries to pull ``docker.io/library/sha256``.
     * :func:`~robovast.execution.cluster_execution.postprocess_job.campaign_execution_image`
       resolves an image to **run**, but only the scenario container's, and it is right to fall
-      back to a mutable tag — postprocessing wants *a* working image, where a re-run wants the
+      back to a mutable tag -- postprocessing wants *a* working image, where a re-run wants the
       bytes the campaign was built from.
 
     The two lanes record different things under the same keys, so this discriminates on
@@ -275,15 +304,17 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
       statuses via ``pullable_digest``) but a bare local id **locally** (``docker inspect
       .Id``). So a digest is taken only when it names bytes something can pull.
     * ``images`` is the plan-resolved built ref **locally** (the plan was built *with*
-      ``built_images``), but on the cluster it is whatever the ``.vast`` *declared* — the base
+      ``built_images``), but on the cluster it is whatever the ``.vast`` *declared* -- the base
       image, or for a ``build:`` project the symbolic ``build:<tag>`` ref itself. Pinning that
-      would run the base image without the campaign's own code, so it is local-only.
+      would run the base image without the campaign's own code, so a tag is taken only on the
+      lane that built it. A **digest** is taken on either lane: it names the same bytes
+      everywhere, which is the whole property a tag lacks.
     * the cluster's per-container keys are **pod** container names, where the main one is
-      ``robovast`` rather than ``scenario`` — hence the remap.
+      ``robovast`` rather than ``scenario`` -- hence the remap.
 
     **Which containers to pin comes from the record, not from the ``.vast``.** ``images`` is
     written from the execution mapping *after* ``apply_backend``, so its keys are the containers
-    that actually ran — the fold already applied. Re-deriving that from the declaration would
+    that actually ran -- the fold already applied. Re-deriving that from the declaration would
     need the campaign's ``plugins:`` installed only to learn that a stepped simulator's
     ``simulation`` block is really the scenario container, and getting it wrong either refuses a
     campaign that recorded everything (harmless but wrong) or pins a separate container to the
@@ -298,43 +329,50 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     campaign that died *before* its first batch re-runnable at all, on the lane where that is
     the usual shape of a failure.
 
+    **And its absence answers a second question.** ``launch.yaml`` is re-recorded with ``images``
+    only once the campaign has built something (see ``local_transport``'s second
+    ``_record_launch``), so a launch record carrying none is a campaign that built none -- which
+    is what :attr:`CampaignImages.built` reports. Reading it here costs nothing: this function
+    opens the file anyway.
+
     Args:
         campaign_dir: the campaign directory (``_execution/launch.yaml`` first, then
             ``_execution/execution.yaml``).
 
     Returns:
-        A pin per recorded container. Empty when the campaign recorded no containers at all,
-        which the caller has to interpret: harmless if nothing was built, fatal if something was
-        (see ``retrigger.prepare``), because only the caller can read the ``.vast``.
-
-    Raises:
-        CampaignImageUnpinnable: a recorded container has no ref a new run could start. The
-            message names it and every source tried, because a campaign's build context is not
-            archived in its results, so this is unrecoverable rather than a retry.
+        A :class:`CampaignImages`. ``pins`` is empty when the campaign recorded no containers at
+        all, and ``unpinnable`` is empty when every recorded container has an image -- the two
+        are independent, and only the caller can say whether a gap matters.
     """
     # Inline, like every other import in this module: it stays dependency-light so it loads
     # cleanly in the pod, the driver and the service alike.
     from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
 
-    launched = (read_launch_record(Path(campaign_dir)) or {}).get("images") or {}
+    record = read_launch_record(Path(campaign_dir))
+    launched = (record or {}).get("images") or {}
     if launched:
         # Already concrete and already per-container: the launch resolved these itself. No
         # pullability screen either -- these are what the campaign's own jobs were created
         # with, so "can a new run start from them?" was answered when they ran.
-        return {str(k): str(v) for k, v in launched.items()}
+        return CampaignImages(pins={str(k): str(v) for k, v in launched.items()},
+                              unpinnable={}, built=True)
+    # A launch record with no images is a campaign that built none; no record at all predates
+    # the question and cannot answer it.
+    built = None if record is None else False
 
     try:
         meta = read_execution_metadata(Path(campaign_dir))
     except FileNotFoundError:
         # No execution.yaml at all -- a campaign that failed before its first batch, which on
         # the cluster lane is the *usual* shape of a failed one. "Recorded nothing" is one of
-        # the answers this function is for, so it belongs in the refusal below with every
+        # the answers this function is for, so it belongs in the report below with every
         # source named, not as a bare FileNotFoundError from a reader.
         meta = {}
     is_local = meta.get("execution_type") == "local"
     revisions = meta.get("image_revisions") or {}
     declared = meta.get("images") or {}
-    pins, unpinnable = {}, []
+    pins: dict[str, str] = {}
+    unpinnable: dict[str, str] = {}
     # The containers that ran, post-fold, as the campaign itself recorded them.
     container_names = sorted(k for k, v in declared.items() if v)
 
@@ -344,32 +382,56 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
         # Nothing else falls back to the campaign-level image: handing it to a container that
         # owns its own is the substitution this function exists to prevent, and it would run the
         # wrong bytes rather than fail. A container that merely FOLDS onto the scenario one is
-        # the caller's business to name as `scenario` (see retrigger._declared_build_containers).
+        # the caller's business to name as `scenario` (see retrigger._builds_an_image).
         keys = [name, "robovast"] if name == SCENARIO_CONTAINER else [name]
         candidates = [revisions.get(k) for k in keys]
         if name == SCENARIO_CONTAINER:
             candidates.append(meta.get("image_revision"))
         pin = next((str(c) for c in candidates if c and _is_pullable(str(c))), None)
-        # Local `images` only: on the cluster this field is what was declared, not what ran.
-        if pin is None and is_local and declared.get(name):
-            pin = str(declared[name])
+        # `images` holds a DIGEST once the lane records what ran rather than what was declared,
+        # and a digest is startable anywhere -- so it is taken on either lane. A bare tag still
+        # is not: on the cluster it is the declaration, which would run the base image without
+        # the campaign's own code.
+        if pin is None and declared.get(name):
+            ref = str(declared[name])
+            if _is_pullable(ref) or is_local:
+                pin = ref
         if pin is not None:
             pins[name] = pin
             continue
         # Name every source and what was in it: the reader has to be able to tell "recorded
         # nothing" from "recorded a tag/local id that cannot be started elsewhere".
         tried = ", ".join(f"image_revisions[{k!r}]={revisions.get(k)!r}" for k in keys)
-        unpinnable.append(
+        unpinnable[name] = (
             f"{name!r} (execution.yaml {tried}, image_revision="
             f"{meta.get('image_revision')!r}, images[{name!r}]={declared.get(name)!r}, "
             f"execution_type={meta.get('execution_type')!r})")
 
-    if unpinnable:
+    return CampaignImages(pins=pins, unpinnable=unpinnable, built=built)
+
+
+def campaign_pinned_images(campaign_dir) -> dict[str, str]:
+    """``{container: image}`` a new run can start from, refusing on any gap.
+
+    The strict reading of :func:`campaign_images`, for the caller whose question really is
+    all-or-nothing: a **resume** continues one campaign, so a container it cannot pin means its
+    second half might not run the bytes its first half did. A retrigger is starting over and
+    asks :func:`campaign_images` directly, because for it a container the campaign never built
+    is not a gap at all.
+
+    Raises:
+        CampaignImageUnpinnable: a recorded container has no ref a new run could start. The
+            message names it and every source tried, because a campaign's build context is not
+            archived in its results, so this is unrecoverable rather than a retry.
+    """
+    images = campaign_images(campaign_dir)
+    if images.unpinnable:
         raise CampaignImageUnpinnable(
-            "this campaign never recorded a usable image for " + "; ".join(unpinnable) +
+            "this campaign never recorded a usable image for "
+            + "; ".join(images.unpinnable[k] for k in sorted(images.unpinnable)) +
             ". A campaign's build context (wheels, sources) is not archived in its results, "
             "so the image cannot be rebuilt from them either.")
-    return pins
+    return images.pins
 
 
 def _is_pullable(image: str) -> bool:

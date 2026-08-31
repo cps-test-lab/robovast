@@ -2239,6 +2239,58 @@ def _get_image_revision(image: str) -> str:
     return 'unknown'
 
 
+#: Fields of ``execution.yaml`` that describe the CAMPAIGN's images rather than one execution
+#: of it, and are therefore carried forward when a rewrite has nothing to put in them.
+#:
+#: The distinction is the whole point, so it is a list and not "everything missing": a digest is
+#: a fact about the campaign and stays true, while ``execution_time``, ``runs``, ``cluster_info``
+#: and the ``robovast_*`` provenance describe the run that is writing right now and MUST be
+#: overwritten -- carrying those forward would mix two executions into one record and misreport
+#: which code, and which cluster, produced the campaign.
+_CARRIED_PROVENANCE_FIELDS = ('image', 'images', 'image_revision', 'image_revisions',
+                              'image_build_refs')
+
+
+def _records_nothing(value) -> bool:
+    """Whether a provenance field holds no actual fact.
+
+    ``'unknown'`` counts as nothing, and has to: :func:`_get_image_revision` returns that
+    literal string when it cannot read an image, so a resume writes a *truthy* placeholder over
+    a perfectly good digest. Treating it as a value is exactly the erasure this guards against.
+    """
+    return not value or value == 'unknown'
+
+
+def _carry_forward_provenance(path, execution_data: dict) -> None:
+    """Keep image provenance a rewrite cannot re-derive, instead of blanking it.
+
+    ``execution.yaml`` is rewritten, not appended to, and a rewrite can know strictly less than
+    the one before it: a RESUME starts after its campaign's pods have been reaped, so the
+    per-container digests it would read are simply gone. Emitting those keys only when there is
+    something to put in them then means the rewrite *deletes* what the first run recorded --
+    which is how real campaigns ended up with ``image_revision`` present and ``image_revisions``
+    absent, and therefore not re-runnable.
+
+    Best-effort and never fatal: an unreadable previous record leaves the new one exactly as
+    composed. Only *missing or empty* fields are filled, so a rewrite that does know better
+    always wins.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            previous = yaml.safe_load(handle) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return
+    if not isinstance(previous, dict):
+        return
+    for field in _CARRIED_PROVENANCE_FIELDS:
+        if _records_nothing(execution_data.get(field)) and not _records_nothing(
+                previous.get(field)):
+            execution_data[field] = previous[field]
+            logger.info("Kept %s from the previous execution record: this write had none, "
+                        "and it is a fact about the campaign rather than about this run.",
+                        field)
+
+
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
                           image_digest=None, image_digests=None):
     """Create execution.yaml file with ISO formatted timestamp.
@@ -2321,6 +2373,8 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     cluster_info = _get_cluster_info(context=context)
     if cluster_info is not None:
         execution_data['cluster_info'] = cluster_info
+
+    _carry_forward_provenance(execution_yaml_path, execution_data)
 
     with open(execution_yaml_path, 'w') as f:
         yaml.dump(execution_data, f, default_flow_style=False, sort_keys=False)
