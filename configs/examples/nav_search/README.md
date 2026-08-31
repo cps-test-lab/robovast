@@ -15,13 +15,13 @@ strategy rather than to the experiment.
 |---|---|---|---|
 | `nav_grid.vast` | *(batch, no search)* | what does exhaustive coverage cost, and still miss? | the reference map, and the run count the others are judged against |
 | `nav_search_random.vast` | `random` | what fraction of situations fail? | the honest denominator, with an interval |
-| `nav_search_halton.vast` | `halton` | the same estimate, for the same budget? | a visibly tighter interval — read against `random`, nothing else |
+| `nav_search_halton.vast` | `halton` | the same estimate, for the same budget? | **measured: no.** A marginally tighter spread, and a *different* estimate — see below |
 | `nav_search_tpe.vast` | `optuna` (tpe) | what is the single worst crossing? | that combination, and how few evaluations found it |
-| `nav_search_cmaes.vast` | `optuna` (cmaes) | does an evolution strategy beat a model here? | convergence against `tpe` at equal budget |
+| `nav_search_cmaes.vast` | `optuna` (cmaes) | does an evolution strategy beat a model here? | convergence against `tpe` — but **not at equal budget as shipped**, see below |
 | `nav_search_qd.vast` | `qd` | how many *kinds* of trouble are there? | an archive keyed on failure mode × clearance |
 | `nav_search_boundary.vast` | `boundary` | where does it *start* failing? | the contour where robustness crosses zero |
-| `nav_search_adaptive_reps.vast` | `optuna` + `repetitions` | the same answer for fewer runs? | runs spent, against `tpe` |
-| `nav_search_minimax.vast` | `./search/minimax.py` | which tuning survives the worst? | the robust setting, and what it costs |
+| `nav_search_adaptive_reps.vast` | `optuna` + `repetitions` | the same answer for fewer runs? | **measured: more runs, not fewer** — mean 4.0 reps against a fixed 3 |
+| `nav_search_minimax.vast` | `./search/minimax.py` | which tuning survives the worst? | the robust setting, and what it costs. The only campaign here using the `sut:` channel |
 
 ## What to compare with what
 
@@ -37,6 +37,25 @@ These pairings carry the findings, and none of them is visible from a single cam
 Each pair must share the same budget. Two strategies given equal *batches* are not given
 equal simulator once repetitions stop being constant, which is why the coverage pair is
 bounded by `runs:`.
+
+**That rule is not kept by the files in this directory, and the first three findings above
+did not survive contact with it.** Measured, at the committed budgets:
+
+- **`random` vs `halton` is not a variance story.** Across 4 and 5 seeds at 180 runs each,
+  halton's spread is 18% lower (sd 0.039 against 0.043) — a difference n=5 cannot separate
+  from zero. What *is* separable is that the two disagree about the answer: 70.0% of the
+  space failing against 61.7%, a gap larger than either strategy's own seed-to-seed noise
+  (t = 3.0). Read that before reading any interval. And note the question needs SEEDS: an
+  interval is a property of an estimator across resamples, and one campaign is one point.
+- **`tpe` vs `cmaes` is not at equal budget.** Both are bounded by `batches: 6` *and* a
+  `no_improvement` stop, so each stops when its own convergence rule fires — measured, 144
+  runs against 96. To race them, bound both by `runs:` and drop the stopping rule, or the
+  comparison measures the rule rather than the sampler.
+- **`adaptive_reps` spends more, not less.** `min: 1, max: 6` averaged 4.0 repetitions over
+  48 cells — 192 runs against `tpe`'s 144 for the same cell count. The allocation does
+  discriminate (8 cells took one repetition, 17 took six), but a policy whose mean exceeds
+  the fixed baseline cannot save budget against it. Compare at equal `runs:`, or narrow the
+  range.
 
 ## The objective is a margin, not a verdict
 
@@ -81,6 +100,28 @@ The sign agrees on 48 of 48 cells: re-normalising does not move the verdict, onl
 resolution. The tightest cell sits at −0.007, and one cell of the earlier 16-cell grid
 passed with **a millimetre** of clearance — a verdict scores that identically to one that
 passed with 0.4 m.
+
+**What the scale normalisation did not fix: the ORDER.** It removed the plateau, and that
+part holds — every campaign since has produced one distinct value per cell with nothing on
+a floor. But it left the two margins with wildly different *reach*, and an adversarial
+search optimises reach. A refusal leaves the robot ~5 m short, so its goal margin is
+(0.6 − 5.0)/5.0 = −0.88; a collision penetrates ~0.05 m, so its clearance margin is
+(−0.05 − 0.05)/0.62 = −0.16. Clearance saturates near zero because contact is contact,
+while the goal term ranges over the whole traverse.
+
+Measured across four campaigns, the ranges do not overlap: **every collision cell scores
+better than every refusal cell.** So the objective ranks "the robot safely declined to
+squeeze through a narrow door" as several times worse than "the robot hit the person", and
+`tpe` spends its budget descending into the refusal corner — where its worst cells sit
+pinned against the `gap_width` lower bound, with *positive* clearance.
+
+The consequence is not cosmetic: at the committed `clearance_scale`, `tpe`'s best score is
+its batch-0 random draw and six batches of modelling never beat it. The adversarial
+searches do not beat chance on this objective. Lowering `clearance_scale` to 0.10 (a
+`search.extract.params` key — no code change) inverts the order, redirects the search to
+collisions, costs nothing in resolution, and makes `tpe` descend for its whole budget.
+Which rebalance is right is a question about what the directory is for; it is tracked in
+cps-test-lab/robovast#199.
 
 There is no floor, and that is deliberate. Once each margin is a fraction of its own scale
 nothing reaches −1 unaided, so a clamp would only discard order it no longer needs to bound.
@@ -132,8 +173,21 @@ go through the batch-mode file.
 
 ## Notes for anyone extending this
 
-- **`set_yaml_value` needs `import osc.dataops`.** The parser's complaint is
-  "BehaviorInvocation uses unknown behavior", which reads like a typo in the action name.
+- **These files are templates, so the three variation channels should all appear in them,
+  and today they do not.** `sim:` (the compiled world) is used by all nine campaigns.
+  `sut:` (the system under test's own config files) is used only by
+  `nav_search_minimax.vast`. `scenario:` (scenario parameters) is used by **none** of them —
+  #171 moved minimax's `inflation_radius` and `max_speed` off that channel onto `sut:` and
+  left nothing behind. Anyone copying this directory therefore has no worked example of one
+  channel and a single example of another; see the next note, which is the same gap seen
+  from the failure it causes.
+- **The `sut:` channel needs a scenario parameter to land on.** Staging gives each cell a
+  rewritten copy at `/config/<config-name>/<path>` and drops the original from `run_files`,
+  so exactly one copy exists; what connects the trial to it is the rewrite of *a scenario
+  parameter whose value is the source's declared path* (`docs/configuration.rst`). A
+  parameter left at its `.osc` default is not one the campaign set, so nothing is rewritten
+  and the trial launches the path staging removed — surfacing 120 s later as a localizer
+  that never activates. Declare the path on the `scenario:` channel to arm it.
 - **`rosbags_to_csv` writes `rosbag2_<topic>.csv`**, not `<topic>.csv`.
 - **The ground-truth arrival radius is not nav2's `xy_goal_tolerance`.** nav2 declares
   success against its estimated pose at the instant it stops; the metric measures ground
