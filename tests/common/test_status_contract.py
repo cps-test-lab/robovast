@@ -188,3 +188,38 @@ def test_the_durable_outcome_round_trips_the_stall_fields(tmp_path):
     reloaded = read_execution_outcome(tmp_path)
     assert reloaded.progress_deadline_s == 900
     assert reloaded.progress_since == pytest.approx(stamp)
+
+
+# -- budget_positions: the one derivation every Python reader shares ----------
+
+
+def test_budget_positions_derives_only_the_time_row():
+    """A ``time`` criterion is the only one whose value is a pure function of wall-clock, so it
+    is the only one derived. Every other row is a count the controller writes when it actually
+    changes and is already current."""
+    import time
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(search_since=time.time() - 1800,
+                budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time"),
+                        BudgetItem(label="runs", current=120.0, limit=180.0, kind="runs")])
+    out = budget_positions(st)
+    assert 1790 < out[0].current < 1810   # derived, not the stale 600
+    assert out[1].current == 120.0        # untouched
+
+
+def test_budget_positions_clamps_and_does_not_mutate():
+    """Clamped because a search stops when the criterion fires, so elapsed past the cap is time
+    it never spent. Non-mutating because a derived value must never be written back into the
+    controller's state -- see ``_progress_signal``."""
+    import time
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(search_since=time.time() - 99_999,
+                budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time")])
+    assert budget_positions(st)[0].current == 3600.0
+    assert st.budget[0].current == 600.0
+
+
+def test_budget_positions_without_an_origin_returns_the_published_rows():
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time")])
+    assert budget_positions(st)[0].current == 600.0

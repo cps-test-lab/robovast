@@ -573,6 +573,21 @@ class CampaignController:
         # `self._batches_done` -- it was written that way so an abort mid-loop still counted
         # the batches behind it -- so seeding these IS the resume.
         start -= self._rehydrate_search(campaign_id)
+        # The search's time ORIGIN, published once, so every reader can derive elapsed itself
+        # instead of waiting for the next batch to republish it.
+        #
+        # `start` is a time.monotonic() reading and cannot cross a process boundary, so it is
+        # converted to the time.time() epoch the other `*_since` fields use. The subtraction
+        # above is carried across with it, which is what makes a resumed search report the
+        # wall-clock age its `time` budget is actually capped against rather than a fresh clock.
+        #
+        # Published here and never again. Refreshing a `time` budget's `current` on a timer was
+        # the obvious alternative and would have broken stall detection outright:
+        # `_progress_signal` includes each budget row's `current`, so a row rewritten from
+        # wall-clock advances the progress signal on every poll forever and no time-budgeted
+        # search could be called stalled again. An origin cannot do that.
+        if self.state is not None:
+            self.state.update(search_since=time.time() - (time.monotonic() - start))
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
