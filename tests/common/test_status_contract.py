@@ -223,3 +223,60 @@ def test_budget_positions_without_an_origin_returns_the_published_rows():
     from robovast.client.status import BudgetItem, Status, budget_positions
     st = Status(budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time")])
     assert budget_positions(st)[0].current == 600.0
+
+
+# The verdict reaches HTTP callers on the wire, so no client re-derives the gates. What
+# follows pins that shape: the served status carries the verdict, the persisted one does not.
+
+
+def test_the_served_status_carries_the_verdict():
+    """A client of the status route must not need `stall_report` to know it is wedged."""
+    import time
+
+    from robovast.client.status import STALL_NEXT_STEP, status_response
+    served = status_response(_live(progress_since=time.time() - 700,
+                                   progress_deadline_s=600))
+    assert served.stalled is True
+    assert STALL_NEXT_STEP in (served.stall_reason or "")
+    assert served.progress_age_s >= 699
+
+
+def test_the_served_status_withholds_a_verdict_for_a_queued_batch():
+    """A batch queued for capacity has no run to judge, so the route must serve the
+    refusal rather than the arithmetic: the age passes the per-run budget while nothing
+    is running, and a client reading the age alone would call that a stall."""
+    import time
+
+    from robovast.client.status import NO_STALL_VERDICT_QUEUED, status_response
+    served = status_response(_live(progress_since=time.time() - 900,
+                                   progress_deadline_s=600,
+                                   waiting_for_capacity=True))
+    assert served.stalled is None
+    assert served.stall_verdict == NO_STALL_VERDICT_QUEUED
+    # Withholding the verdict must not withhold the wait: that is the number an operator acts on.
+    assert served.progress_age_s >= 899
+
+
+def test_a_terminal_campaign_is_served_no_verdict_at_all():
+    """Absent rather than null, matching the MCP: a field present on every campaign is one
+    readers learn to skip."""
+    import time
+
+    from robovast.client.status import Status, status_response
+    served = status_response(Status(phase="finished", progress_since=time.time() - 9000,
+                                    progress_deadline_s=600))
+    assert served.stalled is None
+    assert served.progress_age_s is None
+    assert served.stall_reason is None and served.stall_verdict is None
+
+
+def test_the_persisted_status_cannot_carry_a_verdict():
+    """`Status` is the controller's state and is stored verbatim, so a verdict on it would
+    be read back later as a live accusation against a campaign that has since moved on. The
+    derived fields exist only on the served shape."""
+    from robovast.client.status import Status, StatusResponse
+    derived = {"stalled", "stall_reason", "stall_verdict", "progress_age_s"}
+    assert derived & set(Status.model_fields) == set()
+    assert derived <= set(StatusResponse.model_fields)
+    # The served shape stays a superset of the state, so nothing a client read before is gone.
+    assert set(Status.model_fields) <= set(StatusResponse.model_fields)

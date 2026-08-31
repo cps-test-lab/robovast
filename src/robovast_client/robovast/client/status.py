@@ -473,15 +473,10 @@ NO_STALL_VERDICT_OFF_RUN = (
 def stall_report(status: "Status") -> dict:
     """Has this campaign's progress stopped advancing, and may we say so?
 
-    The single derivation of the stall verdict for every renderer that can call it: the
-    MCP and the CLI. **The web UI cannot** — the REST status endpoint serves the raw
-    :class:`Status`, so the verdict is not on the wire and the card re-derives it in
-    ``frontend/ui/src/lib/stall.ts``. That copy must gate identically and in this order.
-    It has drifted three times, most recently by omitting ``waiting_for_capacity`` and
-    painting a red "stalled" on a queued batch this function correctly refused to judge.
-    A gate added here needs one added there; ``stall.test.ts`` is what makes the omission
-    visible. This docstring previously claimed the UI shared the derivation "via the same
-    fields", which is how the drift went unnoticed.
+    The single derivation of the stall verdict, for every renderer. The MCP and the CLI
+    call it directly; the web UI receives what it returns, because :class:`StatusResponse`
+    puts it on the wire. No renderer re-derives these gates, and none may: a second
+    implementation is a second set of gates to keep in step.
 
     Two kinds of answer, kept apart:
 
@@ -551,6 +546,41 @@ def stall_report(status: "Status") -> dict:
             f"no progress for {age:.0f}s, past the {deadline}s expected per run — "
             f"the run is not merely slow. Next: {STALL_NEXT_STEP}")
     return report
+
+
+class StatusResponse(Status):
+    """:class:`Status` as the HTTP API serves it: the state, plus the stall verdict.
+
+    The verdict is derived per read (as ``health`` is) and exists only on the wire. It is
+    deliberately NOT a field on :class:`Status`, which is the controller's mutable state and
+    is persisted verbatim as the campaign's durable outcome
+    (``campaign_data.write_execution_outcome`` / ``read_execution_outcome``): a stored verdict
+    would be read back later as a live accusation against a campaign that has long since
+    finished, which is the one error mode the tri-state exists to prevent.
+
+    Every added field is optional and absent unless :func:`stall_report` produced it, so a
+    terminal campaign carries no verdict rather than a null one — the same shape the MCP
+    returns, for the same reason: a field present on every campaign is one readers learn to
+    skip.
+    """
+
+    progress_age_s: Optional[float] = None
+    stalled: Optional[bool] = None
+    stall_reason: Optional[str] = None
+    stall_verdict: Optional[str] = None
+
+
+def status_response(status: Status) -> StatusResponse:
+    """The status as served: state, plus whatever verdict :func:`stall_report` reaches.
+
+    The one place the two are joined, so every HTTP caller sees the same verdict the MCP and
+    the CLI compute for themselves.
+    """
+    served = status.model_dump()
+    # stall_report re-reports progress_deadline_s, so merge rather than splat both: the
+    # duplicate keyword would be a TypeError.
+    served.update(stall_report(status))
+    return StatusResponse(**served)
 
 
 def error_findings(status: "Status") -> list["HealthFinding"]:
