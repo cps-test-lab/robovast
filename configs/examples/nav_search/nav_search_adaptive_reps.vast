@@ -19,8 +19,12 @@ search:
   # 160 runs each bought a bit that one run had already established.
   repetitions:
     policy: adaptive
-    min: 1
-    max: 6
+    # Straddles the fixed 8 the campaigns this is read against use. `min: 1` was below the
+    # point where a bimodal cell can be resolved at all -- one repeat catches a cell that
+    # fails a fifth of the time only a fifth of the time -- so the policy could not have
+    # been right to stop there, whatever its neighbours said.
+    min: 2
+    max: 12
     neighbours: 5
   search_space:
     gap_width:    {type: float, low: 0.4, high: 1.6}
@@ -61,7 +65,7 @@ search:
   # cells that were never in doubt. Given an equal budget there is nothing to demonstrate --
   # and given `min: 1, max: 6`, whose mean allocation sits above the fixed 3 it is compared
   # against, an equal budget cannot even be spent the same way.
-  - runs: 120
+  - runs: 160
   seed: 1
 
 visualization:
