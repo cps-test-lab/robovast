@@ -170,6 +170,10 @@ check-config-version: ## Fail if a config version bump is missing, or unnecessar
 check-compat-version: ## Fail if the host<->container contract changed without a version bump
 	@python3 tools/check_compat_version.py $(if $(BASE),--base $(BASE),)
 
+.PHONY: check-recipe
+check-recipe: ## Fail if the build recipe is incomplete, or its apt snapshots stopped serving
+	@python3 tools/check_recipe.py --dockerfile container/robovast/Dockerfile
+
 # The lock is what the controller image installs from -- it COPYs pyproject.toml and
 # poetry.lock together and runs `poetry install`, which refuses the pair outright when the
 # hash disagrees. So an unrelocked pyproject fails minutes into an image build instead of
