@@ -12,15 +12,15 @@ ARG ROS_DISTRO=jazzy
 # guard right after the FROM makes forgetting that loud instead of silent.
 #
 # This must be the digest of a multi-arch INDEX, never of one platform's manifest. `ros` publishes
-# an index; `osrf/ros`, which this used to name, does not -- see the FROM below.
+# an index; `osrf/ros` does not, which is why the FROM below names `ros`.
 ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4
 
 # Where scenario-execution comes from, defaulted HERE so this Dockerfile builds on its own.
 #
-# The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a commit
-# that only ever existed on a feature branch; once that branch was merged and deleted the
-# commit became unreachable, and every build from a clean clone failed with "fatal: reference
-# is not a tree". A pin whose commit can disappear is not a pin.
+# The pin must be a commit on a **durable** ref -- main, or a tag. A commit that exists only on
+# a feature branch becomes unreachable once that branch is merged and deleted, and every build
+# from a clean clone then fails with "fatal: reference is not a tree". A pin whose commit can
+# disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
 ARG SCENARIO_EXECUTION_REF=ac1759c7b3b80df5db5e82c42df957164adb7202
 
@@ -144,12 +144,12 @@ RUN . /etc/os-release \
     fi
 
 ##############################################################
-####          What the base no longer brings              ####
+####          What the base does not bring                ####
 ##############################################################
-# The desktop-full package set, which used to arrive baked into osrf/ros:*-desktop-full. That tag
-# has no arm64 build (see the FROM above), so the content is installed here instead -- from the
-# snapshot pinned just above, which means these versions are now fixed by a dated archive rather
-# than by whenever the base image was last rebuilt.
+# The desktop-full package set. `osrf/ros:*-desktop-full` carries it but has no arm64 build (see
+# the FROM above), so the content is installed here instead -- from the snapshot pinned just
+# above, which fixes these versions to a dated archive rather than to whenever the base image
+# was last rebuilt.
 #
 # `ros-${ROS_DISTRO}-desktop-full` is the same metapackage the old base installed, so this is the
 # same set rather than a guess at it. Both architectures resolve it from the pinned ROS snapshot;
@@ -253,11 +253,10 @@ RUN mkdir -p /ws/src
 # From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
 # working tree when a build overrides it (see the stage definition at the top of this file).
 #
-# This used to be ``COPY scenario-execution-src ...`` of a directory build.sh created, empty,
-# in a temp context. Git cannot track an empty directory, so the COPY had nothing to resolve
-# against in a plain checkout -- and CI builds with ``context: .``, which means this image's own
-# workflow could never have produced it. A Dockerfile that only builds through one particular
-# wrapper is a Dockerfile whose CI job is decorative.
+# Not a ``COPY`` of a directory a build script creates in a temp context: git cannot track an
+# empty directory, so such a COPY resolves against nothing in a plain checkout -- and CI builds
+# with ``context: .``, so this image's own workflow could not produce it. A Dockerfile that only
+# builds through one particular wrapper is a Dockerfile whose CI job is decorative.
 COPY --from=scenario-execution-src / /ws/src/scenario-execution
 
 # Declared in the global scope above, like scenario-execution's, so the bare re-declaration at the
@@ -265,9 +264,9 @@ COPY --from=scenario-execution-src / /ws/src/scenario-execution
 # in-stage default.
 ARG SCENARIO_EXECUTION_SERVER_REPO
 ARG SCENARIO_EXECUTION_SERVER_REF
-# No --depth: it used to be `--depth=1` followed by a checkout of a sha, which works only while
-# that sha is still the branch tip. The moment main moves, a rebuild of THIS commit fails with
-# "reference is not a tree" -- a pin that only resolves today is not a pin.
+# No --depth: `--depth=1` followed by a checkout of a sha resolves only while that sha is still
+# the branch tip. The moment main moves, a rebuild of THIS commit fails with "reference is not a
+# tree" -- a pin that only resolves today is not a pin.
 # hadolint ignore=DL3003
 RUN  cd /ws && \
      git clone "$SCENARIO_EXECUTION_SERVER_REPO" /ws/src/scenario-execution-server && \
@@ -313,9 +312,8 @@ RUN mkdir -p /out && chmod 777 /out
 # ONE marker, and it is a label: `docker inspect` reads it without starting a container, and
 # the registry serves it for a *remote* image without pulling — which is what a pre-flight on a
 # year-old campaign needs, since the whole question is whether this host can still drive bytes
-# it does not have. The same value used to be written to a file inside the image as well, read
-# by starting a container to `cat` one integer; that could not be read remotely at all, and a
-# workload inspecting its own image is not how admission is decided anywhere else here.
+# it does not have. A file inside the image cannot answer that: reading one costs a container
+# start, and cannot be done at all for an image this machine does not hold.
 # Passed in rather than written here, like ROBOVAST_GIT_REVISION below: a constant copied by
 # hand into each Dockerfile drifts, which is why it needed a CI gate comparing the copies.
 # container/image_stamp.sh derives it from COMPAT_VERSION and refuses to build without it.

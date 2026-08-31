@@ -291,7 +291,7 @@ export function campaignItem(c: CampaignSummary): ResultsTreeItem {
   const skipped = c.num_composition_failed ?? 0
   // Appended rather than folded into the denominator: those draws produced no runs, so
   // counting them there would understate the pass rate of the runs that did happen —
-  // while dropping them entirely is what made a half-uncomposable search look complete.
+  // while dropping them entirely makes a half-uncomposable search look complete.
   const runs = c.num_runs > 0 ? `${c.num_passed}/${c.num_runs}` : undefined
   const count = skipped > 0 ? [runs, `${skipped} skipped`].filter(Boolean).join(' · ') : runs
   return {
