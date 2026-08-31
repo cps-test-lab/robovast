@@ -12,12 +12,14 @@ Publication is where this is checked because it is the last cheap moment. Afterw
 has a DOI, is cited, and every gap in it is permanent.
 """
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
 from robovast.results_processing.reproducibility import (OPAQUE, PRIVATE, PUBLIC,
+                                                        classify_campaign_inputs,
                                                         reproducibility_manifest)
 
 
@@ -247,3 +249,86 @@ def test_a_campaign_predating_the_records_is_still_opaque(tmp_path):
     manifest = reproducibility_manifest(_campaign(tmp_path, _CLEAN))
     assert manifest["publishable"] is False
     assert sorted(manifest["opaque"]) == ["plugins", "providers"]
+
+
+# -- the recipe: reproducible after the digest is gone ------------------------------
+
+_RECIPE = {
+    "base_image": "ros:jazzy-ros-base@sha256:" + "1" * 64,
+    "ubuntu_snapshot": "20260819T003043Z",
+    "ros_snapshot": "2026-06-18",
+    "source": "https://github.com/cps-test-lab/robovast",
+}
+
+
+def _with_lock(root, role="sut"):
+    lock = root / "_execution" / "build_manifest"
+    lock.mkdir(parents=True, exist_ok=True)
+    (lock / f"{role}.json").write_text(json.dumps({"apt": {"tree": "2.1.1-2"}, "pip": {}}))
+    return root
+
+
+def _image_class(root, role="sut"):
+    return next(e["class"] for e in classify_campaign_inputs(root)
+                if e["input"] == f"image[{role}]")
+
+
+def test_a_complete_recipe_and_lock_is_reproducible_without_a_digest(tmp_path):
+    """The case this gate used to refuse, and the reason the recipe is recorded at all.
+
+    A digest is reproducible for exactly as long as the registry keeps the manifest. After that
+    the recipe is what still answers -- the base it was built from, the dated archives it
+    installed from, and the resolved versions beside them. Reading only the digest fields called
+    such a campaign opaque and refused to publish it, which is the opposite of the truth.
+    """
+    root = _with_lock(_campaign(tmp_path, {
+        "images": {"sut": "reg.example/sut:latest"},
+        "image_build_refs": {"sut": dict(_RECIPE)},
+    }))
+    assert _image_class(root) == "public"
+
+
+def test_a_recipe_without_its_lock_is_still_opaque(tmp_path):
+    """Where to start is not which versions.
+
+    Without the lock a rebuild re-resolves the author's loose specs and installs whatever is
+    current -- a different experiment wearing the same name. That is not an identity, and
+    saying so is the whole point of recording the lock separately.
+    """
+    root = _campaign(tmp_path, {
+        "images": {"sut": "reg.example/sut:latest"},
+        "image_build_refs": {"sut": dict(_RECIPE)},
+    })
+    assert _image_class(root) == "opaque"
+
+
+def test_a_partial_recipe_does_not_count(tmp_path):
+    """Two pins of three is not a partial answer -- it is a rebuild that installs today's."""
+    partial = {k: v for k, v in _RECIPE.items() if k != "ubuntu_snapshot"}
+    root = _with_lock(_campaign(tmp_path, {
+        "images": {"sut": "reg.example/sut:latest"},
+        "image_build_refs": {"sut": partial},
+    }))
+    assert _image_class(root) == "opaque"
+
+
+def test_a_recipe_naming_sources_nobody_can_reach_is_private_not_public(tmp_path):
+    """Rebuildable is not the same as rebuildable *by you*."""
+    private = dict(_RECIPE, source="https://git.example.internal/theirs")
+    root = _with_lock(_campaign(tmp_path, {
+        "images": {"sut": "reg.example/sut:latest"},
+        "image_build_refs": {"sut": private},
+    }))
+    assert _image_class(root) == "private"
+
+
+def test_a_digest_still_wins_over_a_recipe(tmp_path):
+    """Unchanged, and the order matters: the digest names the bytes that actually ran."""
+    digest = "ghcr.io/cps-test-lab/robovast@sha256:" + "9" * 64
+    root = _with_lock(_campaign(tmp_path, {
+        "images": {"sut": digest},
+        "image_build_refs": {"sut": dict(_RECIPE)},
+    }))
+    entry = next(e for e in classify_campaign_inputs(root) if e["input"] == "image[sut]")
+    assert entry["class"] == "public"
+    assert entry.get("digest") == digest

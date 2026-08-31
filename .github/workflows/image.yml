@@ -210,6 +210,18 @@ jobs:
             ROS_DISTRO=jazzy
             ROBOVAST_COMPAT_VERSION=${{ steps.compat.outputs.version }}
 
+      # The other half of the recipe check, and the half only a real build can answer: the
+      # Dockerfile declaring a pin is not the same as the image carrying it. A forgotten
+      # --build-arg produces a label that is present and EMPTY, which looks fine to anything
+      # checking for the key -- so this asserts against the bytes that were just pushed.
+      #
+      # --skip-network: whether the archives still serve is asked once, on the pull-request
+      # job, not once per architecture here.
+      - name: Assert the pushed image carries its build recipe
+        run: |
+          python3 tools/check_recipe.py --skip-network \
+            --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+
       - name: Record the digest for merge-base
         run: |
           mkdir -p /tmp/digests
