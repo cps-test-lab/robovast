@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { hasResults, robovast, type ListCampaignsResponse } from '@/lib/robovastClient'
 import { useLiveStream } from '@/lib/liveStream'
 import { describeCampaignEvent, diffCampaignPhases, seedPhases } from '@/lib/campaignEvents'
-import { openResultsView } from '@/lib/nav'
+import { openCampaignCard, openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
 import { useToasts } from './ToastProvider'
 
@@ -100,9 +100,15 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
         note,
         // Offered only once the results actually exist: `finished` is reached before
         // postprocessing, and a campaign without it never grows the data these views read.
-        action: evt.kind === 'finished' && hasResults(evt.summary)
-          ? { label: 'View results', onClick: () => openResultsView('explorer', evt.campaignId) }
-          : undefined,
+        //
+        // A failure gets somewhere to go instead. The notice states the first line of the
+        // reason and then clears itself, so the card -- which has the whole of it, and the
+        // logs beside it -- has to be one click away rather than a search through the list.
+        action: evt.kind === 'failed'
+          ? { label: 'Open campaign', onClick: () => openCampaignCard(evt.campaignId) }
+          : evt.kind === 'finished' && hasResults(evt.summary)
+            ? { label: 'View results', onClick: () => openResultsView('explorer', evt.campaignId) }
+            : undefined,
       })
       if (evt.kind !== 'started') {
         browserNotify.post({ title: message, body: note, tag: evt.campaignId })
