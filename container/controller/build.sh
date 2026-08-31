@@ -101,6 +101,7 @@ docker buildx build \
   "${BUILDCACHE_ARGS[@]}" \
   "${GIT_REVISION_ARGS[@]}" \
   "${BUILD_DATE_ARGS[@]}" \
+  "${COMPAT_VERSION_ARGS[@]}" \
   $EXTRA_ARGS \
   -t "$TAG" \
   -f "$BASEDIR/Dockerfile" \

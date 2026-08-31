@@ -146,7 +146,7 @@ class RoqsimBackend(SimulatorBackend):
 
     def containers(self, cfg, execution: dict) -> dict:
         # Both shapes name the SAME family member, symbolically: only that image carries
-        # roqsim *and* the RoboVAST contract (/etc/robovast_compat_version,
+        # roqsim *and* the RoboVAST contract (the org.robovast.compat-version label,
         # scenario-execution, the /out mount). Not roqsim's own published image: that one
         # has the simulator but not the contract, so the runner rejects it -- and nothing
         # publishes that tag anyway.

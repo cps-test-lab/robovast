@@ -12,7 +12,7 @@
 # That second line is the part worth knowing, because it used to be otherwise. Neither
 # other image can do the job:
 #
-#   robovast    carries the RoboVAST contract (/etc/robovast_compat_version,
+#   robovast    carries the RoboVAST contract (the org.robovast.compat-version label,
 #               scenario-execution, the /out mount) but no simulator.
 #   roqsim-ros  roqsim's own image: carries roqsim but not that contract, so the runner
 #               rejects it before a scenario starts -- and no workflow has ever published

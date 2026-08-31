@@ -35,8 +35,11 @@ for the state.
 """
 
 import base64
+import hashlib
 import json
 import logging
+import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -96,26 +99,39 @@ def credentials_for(dockerconfigjson: str, host: str) -> "Optional[tuple[str, st
     return None
 
 
-def _bearer_token(session, challenge: str, creds) -> Optional[str]:
-    """Satisfy a ``WWW-Authenticate: Bearer …`` challenge and return the token."""
+def _bearer_token(session, challenge: str, creds) -> "tuple[Optional[str], float]":
+    """Satisfy a ``WWW-Authenticate: Bearer …`` challenge: ``(token, lifetime_seconds)``.
+
+    The lifetime comes back with the token because only the response knows it, and the caller
+    caches on it. ``(None, 0)`` when the challenge cannot be satisfied.
+    """
     if not challenge.lower().startswith("bearer "):
-        return None
+        return None, 0.0
     params = {}
     for part in challenge[len("bearer "):].split(","):
         key, _, value = part.strip().partition("=")
         params[key.strip()] = value.strip().strip('"')
     realm = params.pop("realm", "")
     if not realm:
-        return None
+        return None, 0.0
     try:
         resp = session.get(realm, params=params,
                            auth=creds if creds else None, timeout=_TIMEOUT)
         if resp.status_code != 200:
-            return None
-        return resp.json().get("token") or resp.json().get("access_token")
+            return None, 0.0
+        payload = resp.json()
+        token = payload.get("token") or payload.get("access_token")
+        if not token:
+            return None, 0.0
+        expires_in = payload.get("expires_in")
+        try:
+            ttl = float(expires_in) if expires_in is not None else _TOKEN_DEFAULT_TTL_S
+        except (TypeError, ValueError):
+            ttl = _TOKEN_DEFAULT_TTL_S
+        return token, ttl
     except Exception as e:  # noqa: BLE001 - any failure here means "cannot confirm"
         logger.warning("registry check: token request to %s failed: %s", realm, e)
-        return None
+        return None, 0.0
 
 
 #: :func:`manifest_state` verdicts. ``UNKNOWN`` is not a synonym for ``ABSENT``: it means the
@@ -138,6 +154,76 @@ def manifest_exists(image_ref: str, *, dockerconfigjson: str = "",
     """
     return manifest_state(image_ref, dockerconfigjson=dockerconfigjson,
                           insecure=insecure, ca_path=ca_path) == PRESENT
+
+
+#: Bearer tokens already obtained, keyed by what they are valid FOR, with the epoch each
+#: stops being usable. See :func:`_token_key` for why the key is shaped as it is.
+_TOKENS: "dict[tuple, tuple[str, float]]" = {}
+_TOKENS_LOCK = threading.Lock()
+
+#: Trimmed off every token's advertised lifetime, so one is never presented in the second it
+#: expires. Registries commonly issue 60-second tokens, so this stays small.
+_TOKEN_SAFETY_S = 5
+
+#: Assumed lifetime when the token response does not carry ``expires_in``. The registry v2
+#: spec's own default, and short enough that guessing it wrong costs one extra dance.
+_TOKEN_DEFAULT_TTL_S = 60
+
+
+def _token_key(host: str, path: str, creds) -> tuple:
+    """What a cached token is valid for: the host, the repository, and whose credential got it.
+
+    The repository is in the key because a registry token is scoped to one: reusing repo A's
+    token on repo B earns a 401, which is survivable (the dance simply reruns) but pointless.
+    It is derived from *path* rather than passed in, because this module builds only two path
+    shapes -- ``<repo>/manifests/<ref>`` and ``<repo>/blobs/<digest>`` -- and splitting on
+    those is exact. A third shape must extend this.
+
+    The credential is in the key as a DIGEST, never the password itself: one controller drives
+    campaigns whose namespaces may hold different pull secrets, and a token fetched with one
+    must not be handed to another. Hashing it keeps a credential out of a process-lifetime dict
+    that nothing redacts.
+    """
+    repository = path.split("/manifests/")[0].split("/blobs/")[0]
+    if creds:
+        who = hashlib.sha256(f"{creds[0]}:{creds[1]}".encode()).hexdigest()[:16]
+    else:
+        who = "anonymous"
+    return (host, repository, who)
+
+
+def _cached_token(key: tuple) -> "Optional[str]":
+    """A token for *key* that is still good, or ``None``."""
+    with _TOKENS_LOCK:
+        entry = _TOKENS.get(key)
+        if entry is None:
+            return None
+        token, expires_at = entry
+        if time.time() >= expires_at:
+            del _TOKENS[key]
+            return None
+        return token
+
+
+def _store_token(key: tuple, token: str, ttl: float) -> None:
+    """Remember *token* for *key*, unless it has no usable life left.
+
+    A lifetime at or inside the safety margin is not stored at all. The caller still uses the
+    token it holds for the retry it is about to make, but a registry saying ``expires_in`` is
+    seconds means the token is not reusable, and keeping it anyway only guarantees the next
+    request presents something stale.
+    """
+    usable = ttl - _TOKEN_SAFETY_S
+    if usable <= 0:
+        return
+    with _TOKENS_LOCK:
+        _TOKENS[key] = (token, time.time() + usable)
+
+
+def _forget_token(key: tuple) -> None:
+    """Drop *key*'s token: it was presented and refused, so it is not usable any more."""
+    with _TOKENS_LOCK:
+        _TOKENS.pop(key, None)
 
 
 def _registry_request(host: str, path: str, *, method: str = "HEAD",
@@ -166,6 +252,7 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
 
     creds = credentials_for(dockerconfigjson, host) if dockerconfigjson else None
     headers = {"Accept": accept}
+    key = _token_key(host, path, creds)
 
     try:
         with requests.Session() as session:
@@ -173,16 +260,34 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
             # literal at every call site, and the named methods are what a Session is
             # substituted for in tests.
             call = getattr(session, method.lower())
+            # A token already held for this repository is presented up front, so a walk of
+            # several requests costs one challenge instead of one per request. Reading an
+            # image's labels is three requests through an index, and pinning a campaign's
+            # refs is one per ref -- which was a dozen round trips and half a dozen separate
+            # token requests within a second or two, against a token endpoint that is
+            # entitled to rate-limit exactly that.
+            token = _cached_token(key)
+            if token:
+                resp = call(url, verify=verify, timeout=_TIMEOUT,
+                            headers={**headers, "Authorization": f"Bearer {token}"})
+                if resp.status_code != 401:
+                    return resp
+                # Presented and refused: revoked, or expiring inside our safety margin.
+                # Drop it and fall through to earn a fresh one rather than failing, so a
+                # stale cache is never worse than no cache.
+                _forget_token(key)
+                token = None
             resp = call(url, headers=headers, verify=verify,
                         auth=creds if creds else None, timeout=_TIMEOUT)
             if resp.status_code == 401:
-                token = _bearer_token(session, resp.headers.get("WWW-Authenticate", ""),
-                                      creds)
+                token, ttl = _bearer_token(session,
+                                           resp.headers.get("WWW-Authenticate", ""), creds)
                 if token is None:
                     logger.warning(
                         "registry check: %s needs authentication that could not be "
                         "satisfied", host)
                     return None
+                _store_token(key, token, ttl)
                 resp = call(url, verify=verify, timeout=_TIMEOUT,
                             headers={**headers, "Authorization": f"Bearer {token}"})
             return resp
@@ -290,45 +395,94 @@ def manifest_created(image_ref: str, *, dockerconfigjson: str = "",
     This is an addition to what a caller already shows, never a new way for the rest of it
     to come back empty -- so it must not raise and must not manufacture a date.
     """
-    try:
-        host, repository, _ = split_image_ref(image_ref)
-    except ValueError as e:
-        logger.warning("registry check: %s", e)
-        return ""
-    manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
-                              insecure=insecure, ca_path=ca_path)
-    if manifest is None:
-        return ""
-    if "manifests" in manifest:
-        # An index: the tag names a set of per-platform images, none of which is the
-        # config. Any of them dates the build -- they are pushed together -- so this takes
-        # the first real entry rather than matching a platform the caller has not named.
-        child = _index_child(manifest)
-        if not child:
-            return ""
-        manifest = _manifest_json(image_ref, digest=child,
-                                  dockerconfigjson=dockerconfigjson,
-                                  insecure=insecure, ca_path=ca_path)
-        if manifest is None:
-            return ""
-    config_digest = (manifest.get("config") or {}).get("digest") or ""
-    if not config_digest.startswith("sha256:"):
-        return ""
-    resp = _registry_request(host, f"{repository}/blobs/{config_digest}", method="GET",
-                             dockerconfigjson=dockerconfigjson, insecure=insecure,
-                             ca_path=ca_path, accept="application/json")
-    if resp is None or resp.status_code != 200:
-        return ""
-    try:
-        config = resp.json()
-    except ValueError:
-        logger.warning("registry check: image config for %s is not JSON", image_ref)
-        return ""
+    # `or {}` collapses the two cases deliberately: this reader's own contract is that `""`
+    # covers an unreachable registry and an unstamped image alike, because a date is an
+    # addition to what the caller already shows rather than a verdict about the image.
+    config = _image_config(image_ref, dockerconfigjson=dockerconfigjson,
+                           insecure=insecure, ca_path=ca_path) or {}
     labels = ((config.get("config") or {}).get("Labels") or {})
     created = (labels.get(_CREATED_LABEL) or config.get("created") or "").strip()
     if created.startswith(_EPOCH_ZERO_PREFIXES):
         return ""
     return created
+
+
+def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
+                    insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
+    """Every label *image_ref* carries per the registry, or ``None`` if it could not be read.
+
+    The same walk :func:`manifest_created` does -- manifest, index child if there is one, then
+    the image config blob -- returning the whole label map rather than one date out of it. Both
+    answer "what does this image say about itself", and asking the registry twice for the same
+    config blob to read two labels out of it would be silly.
+
+    Costs the same two small GETs (three through an index), and fetches no layer.
+
+    Three states in two return values, unlike :func:`manifest_created` above: ``None`` is "the
+    registry could not be asked" -- unreachable, a ref this deployment holds no credential for,
+    a config that will not parse -- and ``{}`` is "asked, and it carries no labels". A caller
+    deciding whether an image may be RUN needs those apart, because only the second is a fact
+    about the image. See :func:`manifest_state` for the same rule spelled as three values.
+    """
+    config = _image_config(image_ref, dockerconfigjson=dockerconfigjson,
+                           insecure=insecure, ca_path=ca_path)
+    if config is None:
+        return None
+    labels = (config.get("config") or {}).get("Labels") or {}
+    return {str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else {}
+
+
+def _image_config(image_ref: str, *, dockerconfigjson: str = "",
+                  insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
+    """*image_ref*'s image config blob, parsed, or ``None`` when it could not be read.
+
+    Shared by the two readers above so the manifest -> index child -> config blob walk exists
+    once.
+
+    ``None`` rather than ``{}`` on uncertainty, and the distinction is the point: a config that
+    was fetched and parsed lets a caller say the image carries no such label, while one that was
+    never fetched lets it say only that nothing was established. Collapsing the two is what had
+    an unauthenticated registry read reported as "this image has no compat label, rebuild it" --
+    advice that cannot work, because the image was never the problem. The module docstring
+    states the rule for :func:`manifest_state`; this applies it one level down.
+
+    Never raises.
+    """
+    try:
+        host, repository, _ = split_image_ref(image_ref)
+    except ValueError as e:
+        logger.warning("registry check: %s", e)
+        return None
+    manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
+                              insecure=insecure, ca_path=ca_path)
+    if manifest is None:
+        return None
+    if "manifests" in manifest:
+        # An index: the tag names a set of per-platform images, none of which is the
+        # config. Any of them answers -- they are pushed together -- so this takes the
+        # first real entry rather than matching a platform the caller has not named.
+        child = _index_child(manifest)
+        if not child:
+            return None
+        manifest = _manifest_json(image_ref, digest=child,
+                                  dockerconfigjson=dockerconfigjson,
+                                  insecure=insecure, ca_path=ca_path)
+        if manifest is None:
+            return None
+    config_digest = (manifest.get("config") or {}).get("digest") or ""
+    if not config_digest.startswith("sha256:"):
+        return None
+    resp = _registry_request(host, f"{repository}/blobs/{config_digest}", method="GET",
+                             dockerconfigjson=dockerconfigjson, insecure=insecure,
+                             ca_path=ca_path, accept="application/json")
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        parsed = resp.json()
+    except ValueError:
+        logger.warning("registry check: image config for %s is not JSON", image_ref)
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _manifest_json(image_ref: str, *, digest: str = "", dockerconfigjson: str = "",

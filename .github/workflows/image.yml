@@ -105,23 +105,45 @@ jobs:
       # Cheap greps over the checkout, so running it in each architecture's job costs nothing
       # measurable and keeps it a gate: as its own job it would either serialise ahead of the
       # builds or, run beside them, let a mismatched image publish anyway.
-      - name: Validate compat version consistency
+      # The one place the protocol version is defined, read once and handed to the build.
+      - name: Read the container protocol version
+        id: compat
         run: |
-          # Three places now state the protocol version, and a reader may consult any of
-          # them: the host's max, the legacy file, and the label a remote inspect can read
-          # without pulling. Two agreeing while the third drifts is the failure that would
-          # make a pre-flight answer differently depending on which it happened to read.
-          PYTHON_VER=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
-          PYTHON_MIN=$(grep -oP '^MIN_IMAGE_COMPAT\s*=\s*\K\d+' src/robovast/common/execution.py)
-          DOCKER_FILE=$(grep -oP 'echo "\K\d+(?=" > /etc/robovast_compat_version)' container/robovast/Dockerfile)
-          DOCKER_LABEL=$(grep -oP 'org\.robovast\.compat-version="\K\d+' container/robovast/Dockerfile)
-          echo "Python COMPAT_VERSION: $PYTHON_VER  (min supported: $PYTHON_MIN)"
-          echo "Dockerfile /etc file:  $DOCKER_FILE"
-          echo "Dockerfile label:      $DOCKER_LABEL"
-          if [ "$PYTHON_VER" != "$DOCKER_FILE" ] || [ "$PYTHON_VER" != "$DOCKER_LABEL" ]; then
-            echo "::error::Compat version mismatch! Python=$PYTHON_VER, File=$DOCKER_FILE, Label=$DOCKER_LABEL"
+          version=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          if [ -z "$version" ]; then
+            echo "::error::COMPAT_VERSION not found in src/robovast/common/execution.py"
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate compat version consistency
+        run: |
+          # The protocol version is DERIVED -- container/image_stamp.sh reads COMPAT_VERSION and
+          # passes it as a build arg -- so there is one copy and nothing to compare. What is
+          # left to guard is that it stays that way: a Dockerfile writing a literal back into
+          # the label would drift again, silently, and this is where that gets caught.
+          PYTHON_VER=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          PYTHON_MIN=$(grep -oP '^MIN_IMAGE_COMPAT\s*=\s*\K\d+' src/robovast/common/execution.py)
+          echo "COMPAT_VERSION: $PYTHON_VER  (min supported: $PYTHON_MIN)"
+          if [ -z "$PYTHON_VER" ]; then
+            echo "::error::COMPAT_VERSION not found in src/robovast/common/execution.py"
+            exit 1
+          fi
+          for file in container/robovast/Dockerfile container/controller/Dockerfile; do
+            if ! grep -q '^ARG ROBOVAST_COMPAT_VERSION$' "$file"; then
+              echo "::error::$file does not declare ARG ROBOVAST_COMPAT_VERSION, so the"
+              echo "::error::protocol label cannot be passed in and the image would carry none."
+              exit 1
+            fi
+            # -F, and the literal is meant: this looks for the ARG reference as written in the
+            # Dockerfile, not for its value.
+            # shellcheck disable=SC2016
+            if ! grep -qF 'org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"' "$file"; then
+              echo "::error::$file must label org.robovast.compat-version from the build arg,"
+              echo "::error::not from a literal -- a hand-copied constant is what drifts."
+              exit 1
+            fi
+          done
           # The window has to be a real range, and the right way round.
           if [ -z "$PYTHON_MIN" ] || [ "$PYTHON_MIN" -gt "$PYTHON_VER" ]; then
             echo "::error::MIN_IMAGE_COMPAT ($PYTHON_MIN) must be set and <= COMPAT_VERSION ($PYTHON_VER)"
@@ -186,6 +208,19 @@ jobs:
           cache-to: ${{ steps.cache.outputs.to }}
           build-args: |
             ROS_DISTRO=jazzy
+            ROBOVAST_COMPAT_VERSION=${{ steps.compat.outputs.version }}
+
+      # The other half of the recipe check, and the half only a real build can answer: the
+      # Dockerfile declaring a pin is not the same as the image carrying it. A forgotten
+      # --build-arg produces a label that is present and EMPTY, which looks fine to anything
+      # checking for the key -- so this asserts against the bytes that were just pushed.
+      #
+      # --skip-network: whether the archives still serve is asked once, on the pull-request
+      # job, not once per architecture here.
+      - name: Assert the pushed image carries its build recipe
+        run: |
+          python3 tools/check_recipe.py --skip-network \
+            --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
 
       - name: Record the digest for merge-base
         run: |
@@ -286,8 +321,8 @@ jobs:
   # can be built FROM the tag that job just pushed -- built against a floating :latest the
   # two could describe different framework code while looking like a matched pair.
   #
-  # No compat-version check of its own: it inherits /etc/robovast_compat_version from the
-  # base, so a second check could only ever disagree with the first. The integration test
+  # No compat-version check of its own: it inherits the org.robovast.compat-version label from
+  # the base, so a second check could only ever disagree with the first. The integration test
   # asserts the inheritance instead.
   # The stepped-simulator image: the base plus roqsim. Same per-architecture shape as the base
   # above and for the same reason -- see build-base. It could not be built for arm64 while its
@@ -735,6 +770,17 @@ jobs:
             echo "to=" >> "$GITHUB_OUTPUT"
           fi
 
+      # The one place the protocol version is defined, read once and handed to the build.
+      - name: Read the container protocol version
+        id: compat
+        run: |
+          version=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          if [ -z "$version" ]; then
+            echo "::error::COMPAT_VERSION not found in src/robovast/common/execution.py"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
@@ -748,6 +794,7 @@ jobs:
           build-args: |
             ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
             ROBOVAST_BUILD_DATE=${{ steps.built.outputs.date }}
+            ROBOVAST_COMPAT_VERSION=${{ steps.compat.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: ${{ steps.cache.outputs.from }}

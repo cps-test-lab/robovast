@@ -2,8 +2,8 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { hasResults, robovast, type ListCampaignsResponse } from '@/lib/robovastClient'
 import { useLiveStream } from '@/lib/liveStream'
-import { diffCampaignPhases, seedPhases, type CampaignEvent } from '@/lib/campaignEvents'
-import { openResultsView } from '@/lib/nav'
+import { describeCampaignEvent, diffCampaignPhases, seedPhases } from '@/lib/campaignEvents'
+import { openCampaignCard, openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
 import { useToasts } from './ToastProvider'
 
@@ -64,24 +64,6 @@ export function CampaignStreamProvider({ children }: { children: ReactNode }) {
   )
 }
 
-/** What to say about each kind of transition. */
-function describe(evt: CampaignEvent): { message: string; note?: string } {
-  const runs = evt.summary.num_runs
-    ? `${evt.summary.num_runs} runs` +
-      (evt.summary.num_failed ? ` · ${evt.summary.num_failed} failed` : '')
-    : undefined
-  switch (evt.kind) {
-    case 'started':
-      return { message: `Campaign started`, note: evt.campaignId }
-    case 'finished':
-      return { message: `Campaign finished`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
-    case 'stopped':
-      return { message: `Campaign stopped`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
-    case 'failed':
-      return { message: `Campaign failed`, note: evt.campaignId }
-  }
-}
-
 /**
  * Announce campaigns starting and ending.
  *
@@ -111,16 +93,22 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
     phases.current = seedPhases(campaigns)
 
     for (const evt of events) {
-      const { message, note } = describe(evt)
+      const { message, note } = describeCampaignEvent(evt)
       notify({
         severity: evt.kind === 'failed' ? 'warning' : evt.kind === 'started' ? 'info' : 'success',
         message,
         note,
         // Offered only once the results actually exist: `finished` is reached before
         // postprocessing, and a campaign without it never grows the data these views read.
-        action: evt.kind === 'finished' && hasResults(evt.summary)
-          ? { label: 'View results', onClick: () => openResultsView('explorer', evt.campaignId) }
-          : undefined,
+        //
+        // A failure gets somewhere to go instead. The notice states the first line of the
+        // reason and then clears itself, so the card -- which has the whole of it, and the
+        // logs beside it -- has to be one click away rather than a search through the list.
+        action: evt.kind === 'failed'
+          ? { label: 'Open campaign', onClick: () => openCampaignCard(evt.campaignId) }
+          : evt.kind === 'finished' && hasResults(evt.summary)
+            ? { label: 'View results', onClick: () => openResultsView('explorer', evt.campaignId) }
+            : undefined,
       })
       if (evt.kind !== 'started') {
         browserNotify.post({ title: message, body: note, tag: evt.campaignId })

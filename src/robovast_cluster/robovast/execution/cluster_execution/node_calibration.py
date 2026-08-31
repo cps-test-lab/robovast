@@ -85,6 +85,27 @@ MIN_CPU = 0.25
 #: That does not grow with the trial.
 MIN_PROBE_SAMPLES = 10
 
+#: How many consecutive batches may end with a node held for measuring and never measured
+#: before that ends the campaign.
+#:
+#: **The point of it being more than one is that the two causes are opposites and look
+#: identical at the end of a single batch.** A probe that could never be placed -- larger than
+#: the smallest node -- is a configuration fault, and it is already caught before any job
+#: exists, by the ``preflight`` in ``_start_probes``. What reaches the end of a batch
+#: unmeasured is therefore the other case: a pinned probe that lost a race for *free*
+#: capacity. That drains. Failing on first sight turned a busy moment at campaign start into
+#: a terminal error, and because the batch's own runs have already finished by then it
+#: discarded work that was complete and correct -- with a diagnosis naming a cause that had
+#: never been observed, since the probe's own wait was recorded under a key nobody read.
+#:
+#: Two is enough to tell them apart. A node that sat out one batch and is measured on the
+#: next was contended; one that sits out twice running is not resolving itself, which is the
+#: assumption the terminal error rests on -- so the error is kept, and now made on evidence
+#: rather than on the first opportunity. A single-batch campaign never reaches the limit and
+#: ends with a warning, which is the right outcome for it: the node took no work, so nothing
+#: in its results was sized two different ways.
+UNMEASURED_BATCH_LIMIT = 2
+
 
 @dataclass
 class NodeCalibration:
@@ -107,6 +128,10 @@ class NodeCalibration:
     #: the caller can name the reason in the failure it raises: the refusal is decided here,
     #: but what it MEANS for a campaign is not this store's business.
     _refused: dict = field(default_factory=dict)
+    #: node_id -> consecutive batches that ended with it held and unmeasured. Lives here
+    #: rather than on the runner because a runner is per batch and this counts batches: a
+    #: search builds a fresh one every round, so a tally kept there would read 1 forever.
+    _unmeasured_batches: dict = field(default_factory=dict)
     enabled: bool = True
     #: Whether calibration applies to this CAMPAIGN, decided once and kept.
     #:
@@ -308,6 +333,20 @@ class NodeCalibration:
         """
         if self._probes.get(node_id) == probe_key:
             self._probes.pop(node_id, None)
+
+    def unmeasured_batch(self, node_id) -> int:
+        """Count one more batch that ended with *node_id* held and unmeasured. Returns the
+        running total, for the caller to weigh against :data:`UNMEASURED_BATCH_LIMIT`.
+
+        Counted here and judged there, on this store's usual division: it knows how many
+        times a node has gone unmeasured, and not what that should cost a campaign.
+
+        There is no reset, because a node that gets measured leaves this question for good --
+        :meth:`claim_probe` refuses a calibrated node, so it is never probed or held again.
+        """
+        total = self._unmeasured_batches.get(node_id, 0) + 1
+        self._unmeasured_batches[node_id] = total
+        return total
 
 
 def calibration_applies(total_jobs: int, node_count: int, growable: bool = False) -> bool:

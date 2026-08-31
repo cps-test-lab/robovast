@@ -10,6 +10,7 @@ idempotent campaign row, ``WorkspaceTarget.campaign_id``). What is left is findi
 campaigns owed work, and deciding which of them can be picked up at all.
 """
 
+import logging
 import types
 
 import pytest
@@ -27,16 +28,24 @@ class _FakeService:
         self._endings = set(endings)
         self.launched = []
         self.fetched = []
+        self.includes = []
 
     # -- what campaign_resume reads
     def _campaign_index(self):
-        return self._index
+        # The pair ClusterService._campaign_index returns, not the bare map: a stub that
+        # answers a shape the real collaborator never returns tests nothing. This one
+        # returned a plain dict, so every test here passed while the deployed service
+        # raised TypeError on its first candidate and resumed nothing.
+        return dict(self._index), {cid: "ended" for cid in self._endings}
 
     def _campaign_dir(self, campaign_id):
         return self.root / campaign_id
 
-    def fetch_campaign(self, campaign_id, force=False, dest=None):
+    def fetch_campaign(self, campaign_id, force=False, dest=None, include=None):
+        # The predicate is recorded, not just accepted: what resume declines to fetch is the
+        # difference between a restart that takes seconds and one the liveness probe kills.
         self.fetched.append((campaign_id, str(dest)))
+        self.includes.append(include)
         return dest
 
     def _launch_campaign(self, request, target):
@@ -102,11 +111,38 @@ def test_one_unreadable_campaign_does_not_hide_the_others(tmp_path, monkeypatch)
     assert campaign_resume.owed_work(svc) == ["good"]
 
 
-def test_an_unreachable_store_does_not_block_startup(tmp_path, monkeypatch):
+def test_a_fault_in_discovery_does_not_block_startup(tmp_path, monkeypatch):
     svc = _FakeService(tmp_path, {})
     monkeypatch.setattr(campaign_resume, "owed_work",
                         lambda s: (_ for _ in ()).throw(RuntimeError("no store")))
     assert campaign_resume.resume_all(svc) == {}
+
+
+def test_a_fault_in_discovery_is_reported_as_an_error(tmp_path, monkeypatch, caplog):
+    """Starting anyway is right; starting *quietly* is what cost a campaign.
+
+    A bug in discovery resumed nothing and said so once, at warning level, in the voice of
+    a routine store outage -- so a service that had picked up no campaign at all looked
+    like a service that had come back clean.
+    """
+    svc = _FakeService(tmp_path, {})
+    monkeypatch.setattr(campaign_resume, "owed_work",
+                        lambda s: (_ for _ in ()).throw(TypeError("wrong shape")))
+    with caplog.at_level(logging.ERROR, logger=campaign_resume.__name__):
+        assert campaign_resume.resume_all(svc) == {}
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR and r.exc_info]
+
+
+def test_discovery_reads_the_index_pair_the_service_returns(tmp_path, no_store):
+    """Pins ``owed_work`` to ClusterService._campaign_index's real ``(created, finished)``.
+
+    The regression this file missed: iterating that pair as if it were one map raises
+    TypeError on the first candidate, and resume_all swallowed it into a start that picked
+    up nothing.
+    """
+    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
+    assert isinstance(svc._campaign_index(), tuple)
+    assert campaign_resume.owed_work(svc) == ["camp-a"]
 
 
 # -- the decision -----------------------------------------------------------------------
@@ -227,3 +263,37 @@ def test_a_config_this_service_cannot_read_is_a_refusal_not_a_crash(tmp_path):
     _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
 
     assert refusal is not None and "different experiment" in refusal
+
+
+# --- what a restore actually takes -----------------------------------------------------
+
+
+def test_only_the_control_plane_is_restored(tmp_path, no_store):
+    """Resume fetches what it needs to RE-ENTER a campaign, not what it needs to analyse one.
+
+    This runs inside ``ClusterService.__init__``, before ``vast serve`` binds its port, so
+    every object fetched here is time the service spends unreachable. Taking the whole prefix
+    made a restart with live campaigns impossible: a campaign's artifacts are gigabytes, the
+    liveness probe allows ~75 s, and each killed attempt began again from an empty directory.
+
+    The rest arrives at ``ExecutionBackend.ensure_campaign_root_complete``, which runs where
+    it is first read.
+    """
+    _campaign(tmp_path, "camp-a", launch={"runs": 1})
+    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
+
+    campaign_resume.resume_all(svc)
+
+    include = svc.includes[0]
+    assert include is not None, "a whole-prefix restore is what made restarts unsurvivable"
+    # Everything plan_for reads, the store a resumed search replays out of, and the verdict
+    # the batch runner adopts finished jobs on.
+    assert include("launch.yaml")
+    assert include("campaign.db")
+    assert include("_config/campaign.vast")
+    assert include("_execution/outcome.json")
+    assert include("cfg-abc/0/test.xml")
+    # ...and none of the bulk it does not read until postprocessing.
+    assert not include("cfg-abc/0/run.npz")
+    assert not include("cfg-abc/0/poses.csv")
+    assert not include("cfg-abc/0/rosbag2_0.mcap")

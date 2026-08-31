@@ -51,7 +51,8 @@ from robovast.client import file_address
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
-from robovast.client.status import Phase, Status  # noqa: F401
+from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401  # pylint: disable=unused-import
+                                    status_response)
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -459,6 +460,16 @@ class CampaignSummary(BaseModel):
     # The web UI already tries to read these off a summary and falls back to nothing.
     postprocessing_error: str = ""
     share_error: str = ""
+    # Why a FAILED campaign failed -- the first line of ``Status.error``, and only that.
+    #
+    # It rides the listing for the reason the two above do: without it, "Campaign failed" is
+    # all any reader outside the campaign's own card can say, and the reason is a request away
+    # per campaign. The listing is a hot payload (re-sent once a second for as long as any tab
+    # is open, times every campaign in it), so what travels is bounded on purpose: ``Status``
+    # carries the message *and a traceback tail*, and a multi-line trace per row is exactly the
+    # growth this payload must not take on. The first line is the sentence a notice needs; the
+    # card fetches the whole thing from ``get_status`` when someone opens it.
+    error: str = ""
 
 
 class ListCampaignsRequest(BaseModel):
@@ -1147,6 +1158,37 @@ class UsageSample(BaseModel):
     memory_reserved_bytes: Optional[int] = None
     cpu_measured: Optional[float] = None
     memory_measured_bytes: Optional[int] = None
+
+
+class ServiceEvent(BaseModel):
+    """One thing the service did, as recorded.
+
+    ``kind`` is an open string and ``subject_type``/``subject_id`` are a typed pair rather than
+    a bare campaign id: a workspace, an image build or the service itself are all things worth
+    an event later, and widening this model is a change where adding a ``kind`` is not.
+    """
+
+    seq: int
+    at: float
+    kind: str
+    severity: str = "info"
+    actor: str = ""
+    subject_type: str = ""
+    subject_id: str = ""
+    message: str = ""
+    payload: dict = Field(default_factory=dict)
+
+
+class ServiceEvents(BaseModel):
+    """A page of the event log, oldest first, with the cursor to resume from.
+
+    Oldest first because a caller is resuming a position rather than browsing: it holds
+    :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+    """
+
+    events: list[ServiceEvent] = Field(default_factory=list)
+    #: Pass as ``since`` to continue. Unchanged when nothing new arrived.
+    next_seq: int = 0
 
 
 class UsageHistory(BaseModel):
@@ -1938,6 +1980,9 @@ class Routes:
     ADMIN_UPGRADE = "/admin/upgrade"
     #: What this service is configured with, read back out of its own environment.
     ADMIN_CONFIG = "/admin/config"
+    #: What this service DID -- durable, unlike the log above it. Cursor-keyed, and its own
+    #: route rather than a field on a polled payload, per the tiers in docs/http_api.rst.
+    ADMIN_EVENTS = "/admin/events"
     ADMIN_LOG = "/admin/log"
     ADMIN_LOG_STREAM = "/admin/log/stream"
     CAMPAIGNS = "/campaigns"

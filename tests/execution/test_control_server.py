@@ -206,3 +206,41 @@ def test_without_a_state_it_is_just_the_logger():
     from robovast.execution.control_server import stage_output_callback
     log = [].append          # bound in a name: each attribute access makes a *new* method object
     assert stage_output_callback(None, log) is log
+
+
+def test_a_time_budget_does_not_count_as_progress():
+    """Wall clock advancing is not evidence the campaign advanced.
+
+    The regression this exists for: the obvious way to make a ``time`` budget tick live is to
+    have the progress poller rewrite its ``current`` every few seconds. ``_progress_signal``
+    includes each budget row's ``current``, so that would advance the signal on every poll
+    forever -- ``progress_since`` would never age and no time-budgeted search could be
+    reported stalled again, which is exactly the failure the signal exists to prevent (and
+    the reason it is not ``updated_at``).
+
+    The shipped design publishes the search's ORIGIN once and lets readers derive elapsed, so
+    nothing rewrites the row. This asserts the *signal* is immune regardless, because the
+    cheap fix will look tempting again.
+    """
+    from robovast.client.status import BudgetItem
+    state = ControllerState()
+    state.update(budget=[BudgetItem(label="time", current=0.0, limit=3600.0, kind="time")])
+    started = state.snapshot().progress_since
+
+    # A whole hour of "progress" on the clock alone, and nothing else moved.
+    state.update(budget=[BudgetItem(label="time", current=3599.0, limit=3600.0, kind="time")])
+
+    assert state.snapshot().progress_since == started
+
+
+def test_a_counted_budget_does_count_as_progress():
+    """The other half of the rule: a row whose change IS evidence of progress must stamp it,
+    or a search advancing only its run count would be called stalled."""
+    from robovast.client.status import BudgetItem
+    state = ControllerState()
+    state.update(budget=[BudgetItem(label="runs", current=8.0, limit=180.0, kind="runs")])
+    started = state.snapshot().progress_since
+
+    state.update(budget=[BudgetItem(label="runs", current=16.0, limit=180.0, kind="runs")])
+
+    assert state.snapshot().progress_since > started

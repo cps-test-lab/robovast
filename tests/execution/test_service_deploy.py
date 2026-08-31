@@ -192,8 +192,11 @@ def test_workspace_store_is_mounted_so_an_upgrade_does_not_discard_it():
 
     Regression: it was on the writable layer, and since every upgrade restarts the pod
     (see ``RESTART_ANNOTATION``), one ``vast service upgrade`` deleted every pushed
-    project while reporting success. Campaign results live in the object store and were
-    untouched, which is what made it easy to miss.
+    project while reporting success.
+
+    The results root had the same defect for longer, because it was believed to be a cache
+    of the object store rather than a driven campaign's working directory -- see
+    ``test_results_root_is_mounted_so_a_restart_does_not_refetch_it``.
 
     The env var is asserted alongside the mount because the mount alone fixes nothing:
     the store's default location comes from ``HOME`` inside the container, so the two
@@ -235,7 +238,8 @@ def test_deployment_runs_vast_serve_on_service_port():
     container = dep["spec"]["template"]["spec"]["containers"][0]
     assert container["image"] == "example/robovast:test"
     assert container["command"] == ["vast", "serve", "--host", "0.0.0.0",
-                                    "--port", str(sd.SERVICE_PORT)]
+                                    "--port", str(sd.SERVICE_PORT),
+                                    "--results-dir", sd.RESULTS_DATA_DIR]
     assert container["ports"][0]["containerPort"] == sd.SERVICE_PORT
     assert container["readinessProbe"]["httpGet"]["path"] == "/healthz"
     # binds to the service account that can launch controllers
@@ -436,3 +440,103 @@ def test_an_explicit_env_still_wins(monkeypatch):
            _pod_spec(sd.service_manifests(namespace="default", image="x",
                                           env=given))["containers"][0]["env"]}
     assert env["ROBOVAST_PROJECT"] == "from-the-caller"
+
+
+def test_results_root_is_mounted_so_a_restart_does_not_refetch_it():
+    """The campaign results root must be on a volume, not the container's writable layer.
+
+    Regression, and an expensive one. ``local_results_root`` resolves to
+    ``<workspaces_root>/../results``, so the results root was the *sibling* of the only
+    directory this pod mounted -- one level outside it, on the writable layer. Every restart
+    threw it away. Because ``ClusterService`` restores its interrupted campaigns *before*
+    ``vast serve`` binds the port, a service with live campaigns then re-downloaded gigabytes
+    on every attempt, was killed by the liveness probe partway through, and started again from
+    an empty directory: a loop that could not converge.
+
+    The command argument is asserted with the mount because neither fixes anything alone --
+    the same argument ``test_workspace_store_is_mounted_...`` makes about its env var. A mount
+    at a path the service does not write to is decoration, and a ``--results-dir`` naming a
+    path nothing mounts is the bug itself.
+    """
+    ms = sd.service_manifests(namespace="default", image="x")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+
+    volume = next(v for v in pod["volumes"] if v["name"] == sd.RESULTS_VOLUME_NAME)
+    assert "emptyDir" not in volume
+    assert volume["hostPath"]["path"] == sd.DEFAULT_RESULTS_HOST_PATH
+
+    mount = next(m for m in container["volumeMounts"]
+                 if m["name"] == sd.RESULTS_VOLUME_NAME)
+    assert mount["mountPath"] == sd.RESULTS_DATA_DIR
+    assert container["command"][-2:] == ["--results-dir", sd.RESULTS_DATA_DIR]
+
+
+def test_results_volume_follows_the_workspaces_backing():
+    """Results claims a PVC exactly where workspaces does, and sits beside it otherwise.
+
+    It takes no storage configuration of its own (see ``results_volume``): a stock RKE2
+    cluster provisions nothing and both land on hostPath, while a cluster with a StorageClass
+    gets claims for both. Tying them is also what keeps ``_resolve_data_node`` honest without
+    naming this volume -- results cannot become node-local behind the back of a test that only
+    asks about the other two.
+    """
+    ms = sd.service_manifests(namespace="default", image="x")
+    pod = next(m for m in ms if m["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert "hostPath" in next(v for v in pod["volumes"] if v["name"] == sd.RESULTS_VOLUME_NAME)
+    assert not [m for m in ms if m["kind"] == "PersistentVolumeClaim"]
+
+    ms = sd.service_manifests(namespace="default", image="x",
+                              workspaces_storage_class="fast-rwo")
+    pod = next(m for m in ms if m["kind"] == "Deployment")["spec"]["template"]["spec"]
+    volume = next(v for v in pod["volumes"] if v["name"] == sd.RESULTS_VOLUME_NAME)
+    assert volume["persistentVolumeClaim"]["claimName"] == sd.RESULTS_VOLUME_NAME
+
+    # Both claims must be MADE, not merely referenced. `workspaces_pvc_manifest` existed but
+    # was emitted nowhere, so a storage class produced a Deployment mounting a PVC nothing
+    # created and a pod that sat Pending without saying why.
+    claims = {m["metadata"]["name"]: m for m in ms if m["kind"] == "PersistentVolumeClaim"}
+    assert set(claims) == {sd.WORKSPACES_VOLUME_NAME, sd.RESULTS_VOLUME_NAME}
+    assert all(c["spec"]["storageClassName"] == "fast-rwo" for c in claims.values())
+
+
+def test_results_hostpath_follows_a_moved_workspaces_store():
+    """A deployer who moved the workspaces store meant to move the node-local data.
+
+    Results is the larger half of it, so pinning it to the default path would leave it on the
+    disk they were moving off -- silently, since nothing fails.
+    """
+    ms = sd.service_manifests(namespace="default", image="x",
+                              workspaces_storage_path="/data/robovast-workspaces")
+    pod = next(m for m in ms if m["kind"] == "Deployment")["spec"]["template"]["spec"]
+    volume = next(v for v in pod["volumes"] if v["name"] == sd.RESULTS_VOLUME_NAME)
+    assert volume["hostPath"]["path"] == "/data/robovast-results"
+
+
+def test_startup_probe_gives_a_resume_room_before_liveness_kills_it():
+    """A slow start must not read as a hung one.
+
+    ``ClusterService.__init__`` restores every interrupted campaign before the port is bound,
+    so ``/healthz`` refuses connections for as long as that takes. Liveness alone gave it
+    15 s plus three 20 s strikes and SIGKILLed the pod at ~75 s, every time. A startupProbe is
+    the mechanism that fits: Kubernetes holds liveness *and* readiness off until it passes, so
+    the steady-state checks keep their tight cadence.
+    """
+    ms = sd.service_manifests(namespace="default", image="x")
+    container = next(m for m in ms if m["kind"] == "Deployment")[
+        "spec"]["template"]["spec"]["containers"][0]
+    startup = container["startupProbe"]
+    assert startup["httpGet"]["path"] == "/healthz"
+    assert startup["httpGet"]["port"] == sd.SERVICE_PORT
+
+    liveness = container["livenessProbe"]
+    liveness_budget = (liveness["initialDelaySeconds"]
+                       + 3 * liveness["periodSeconds"])
+    assert startup["periodSeconds"] * startup["failureThreshold"] > 10 * liveness_budget
+
+    # The tight steady-state cadence is the point of using a startupProbe at all; widening
+    # these instead would have bought the same startup grace by making a genuinely wedged
+    # service take minutes to be noticed.
+    assert liveness["periodSeconds"] == 20
+    assert container["readinessProbe"]["periodSeconds"] == 10

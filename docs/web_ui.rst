@@ -30,6 +30,21 @@ It provides four views:
   and shows *nothing* when no honest estimate exists. Hovering gives the exact times, and the
   duration or the expected finish.
 
+  A search may also stop **early**, and the estimate cannot see that coming: it measures the
+  declared work, and a ``no_improvement`` criterion one flat round from firing means that work
+  will not be done. So when the service says a stopping criterion is about to fire, the cell reads
+  **may stop early** instead of a duration — the more useful fact, and the one the duration would
+  otherwise misstate — and the ring's arc turns amber beside it. Hovering gives the criterion's own
+  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence, which had an
+  empty cell before, now reads **stops on convergence**: no duration is projected, but the
+  mechanism that will end it is named.
+
+  Only ``no_improvement`` can be "about to fire". It counts rounds, so its distance is real;
+  ``target_objective`` and ``metric`` fire on a value that can move any distance in a single round,
+  so a proximity warning for them would claim a rate nothing supports. The verdict is
+  **tri-state** like the stall verdict, and for the same reason: a search with nothing measurable
+  declared says nothing rather than promising it will spend its whole budget.
+
   For a **search** that estimate is never its current round: a search runs an unknown number of
   rounds, so the round it is on says nothing about the whole, and one starting its sixth of six
   would otherwise claim the same remaining time as one starting its first. It is projected from
@@ -44,10 +59,38 @@ It provides four views:
   ``done/total`` — with the counts inside the track and the rest (passed, failed, no
   result, start and finish times) on hover; on a running campaign its striped segment is
   the runs in flight, so the folded row is live. A **search** campaign's folded row adds a
-  small **rounds ring** with its round count in the hole, because a search's run counters
-  describe its *current batch* rather than the campaign; hovering the ring gives the round
-  bound, the best objective and the **objective-over-rounds chart**. A search whose rounds
-  nothing bounds draws the bare ring: there is no denominator, and none is invented. The campaign list itself is **streamed** over Server-Sent Events
+  small **budget ring**, because a search's run counters describe its *current batch* rather
+  than the campaign. The ring measures whichever declared ``budget`` criterion is **closest to
+  exhausting** — the one that will fire first, so the one that says when the campaign actually
+  ends — and its hole carries that share as a **percent**: the unit varies (runs, rounds,
+  evaluations, seconds), and a percent is short whatever the criterion is. Hovering gives the
+  rounds, the binding criterion with its unit and its **scope**, every other declared criterion
+  including the ``stopping`` ones, the best objective, and the **objective-over-rounds chart**.
+
+  The scope matters on the hover because a ``runs`` budget counts the *campaign's* runs while the
+  meter beside the ring counts the *current batch's*: two run figures that otherwise look like they
+  disagree.
+
+  Only the four ``budget`` kinds can fill the ring. They are monotone resource caps, so a share of
+  them means something; the three ``stopping`` kinds are result-dependent early exits and are not a
+  share of the same thing — ``no_improvement`` resets to zero on an improvement, so a ring driven
+  by it would run backwards — and they appear on the hover as figures rather than as an arc. A
+  search bounded **only** by those draws the bare ring with its round count inside: there is no
+  denominator, and none is invented.
+
+  In the **open** card every criterion is a sentence rather than a pair: ``coverage >= 0.8`` beside
+  ``now 0.1``, with a ``✓`` once it has fired. The comparison is published (``BudgetItem.op``)
+  because a bare ``0.1 / 0.8`` silently implies ``>=``, so a ``metric`` written ``<=`` read as
+  "12% of the way there" when it had in fact already stopped the campaign.
+
+  A **bar** is drawn only where the criterion has a floor to measure from: the four caps, and
+  ``no_improvement`` counting up from zero to its patience (a static row claiming "2 of 3 strikes"
+  survives the reset that rules it out of the ring). A ``metric`` and a ``target_objective`` get
+  none — knowing a metric fires at ``<= 0.8`` says nothing about where it *started*, and an
+  objective's initial value is whatever the first batch happened to measure. Publishing the
+  comparison made those rows readable, not their fraction computable.
+
+  The campaign list itself is **streamed** over Server-Sent Events
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list
   immediately — with its true live phase and **how long ago it started** — and every phase
   change is pushed within a second. That age is deliberately relative rather than a wall
@@ -129,9 +172,13 @@ It provides four views:
   it ended in, and the new campaign appears at the top of the list with a description
   naming the one it came from. It replays the recorded launch
   (``_execution/launch.yaml``), so re-running a one-config pilot stays a one-config
-  pilot. A campaign that never recorded a usable image is refused rather than rebuilt
-  from a guess: a campaign's build context is not archived in its results, so the
-  refusal names the container and points back at the workspace.
+  pilot. A campaign that built its own image and never recorded a usable ref for it is
+  refused rather than rebuilt from a guess: a campaign's build context is not archived
+  in its results, so the refusal names the container and points back at the workspace.
+  A container the campaign did *not* build is not refused — its declared ref is
+  resolved again at launch, exactly as a fresh launch from the workspace would, and the
+  new campaign says which containers that applied to, because it will not be running
+  the same bytes.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
@@ -383,9 +430,32 @@ four are shown at once, and the oldest give way — a batch of campaigns ending 
 not bury the list they are about. Repeating an action refreshes its own notice rather than
 stacking a second copy of it, so leaning on a menu entry does not build a tower.
 
-**A failure stays put.** A refusal or an error keeps its place in the card or panel that
-raised it, with the service's own message under it, because that text is worth reading twice
-and often worth copying. Nothing that carries a reason is put somewhere it will erase itself.
+**A failure is given weight, not permanence.** A refusal or an error from something *you* did
+appears in the same bottom-right stack, with the service's own message under it in monospace. It
+is held **three times as long** as a passing notice — ten seconds is enough to notice a sentence
+and not enough to read one — counted separately so a burst of campaigns ending cannot evict it,
+and drawn nearest the corner so an arriving notice pushes the stack up above it rather than
+shifting it out from under the pointer. Hovering the stack holds it for as long as you are
+reading. It still clears itself: a notice that must be clicked away turns every failure into a
+chore.
+
+They are no longer kept on the card that raised them, because nothing there ever cleared one.
+The card does not unmount and the action's state was never reset, so a refusal stayed visible
+until the tab was reloaded — long after the campaign it was about had moved on, and sometimes
+next to a later attempt that had succeeded.
+
+**What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
+announcing it offers **Open campaign**, which unfolds that card and scrolls to it. The known gap
+is a refused *action* — a retrigger the service would not accept — whose reason exists nowhere
+but its notice; a durable event log is what will close that, and until then the longer duration
+is the whole of the answer. (A refusal the service *expects* — stopping a job that finished a
+moment earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
+
+**A campaign is addressable.** ``#/execution?campaign=<id>`` opens the campaign view with that
+campaign's card unfolded and scrolled to; **Copy link to this campaign** in the card's menu
+hands you that URL. It is an instruction for arrival rather than a description of the page —
+cards fold and unfold freely afterwards, and several can be open at once, so the link says where
+to start and not what the page must look like.
 
 **Campaigns announce themselves.** Starting and ending is reported wherever you are in the
 app, not only on the Campaigns page — a campaign that ends while you are reading results says

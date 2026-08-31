@@ -2549,3 +2549,54 @@ def test_an_unreachable_store_still_serves_what_scratch_has(cs, monkeypatch, tmp
     chunk = cs.get_campaign_logs("camp-1")
 
     assert "ran" in chunk.text
+
+
+def test_owed_work_reads_the_real_services_campaign_index(indexed, monkeypatch):
+    """``campaign_resume`` against a real ClusterService, not a hand-written stub.
+
+    Every other resume test drives a ``_FakeService``, and that stub answered
+    ``_campaign_index`` with a bare map where the real method returns a
+    ``(created_at, finished_at)`` pair. So the whole suite passed while the deployed
+    service raised ``TypeError`` on its first candidate, resumed nothing, and reported it
+    as an unreachable store. A feature whose collaborator is only ever a double is a
+    feature nothing has run.
+    """
+    from robovast.execution.cluster_execution import campaign_resume, in_pod_storage
+
+    cs, storage = indexed
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("bkt", f"{cid}/"))
+    cs._on_campaign_started("live-2026-07-18-120000", "2026-07-18T12:00:00+00:00")
+    cs._on_campaign_started("over-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
+    storage.objects["over-2026-07-17-120000/_execution/outcome.json"] = b"{}"
+
+    # Only the campaign with no recorded ending, and the newest first.
+    assert campaign_resume.owed_work(cs) == ["live-2026-07-18-120000"]
+
+
+def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
+    """``vast serve --results-dir`` has to reach the cluster lane, not just the local one.
+
+    It was accepted and dropped here on the grounds that a cluster campaign's results live in
+    the object store. They do -- *durably*. The campaign being driven has a local working root
+    all the same: each batch downloads its own results into it, per-run extraction reads it
+    through a path, and postprocessing derives ``data.db`` from it.
+
+    Dropping the flag left that root at ``local_results_root``'s
+    ``<workspaces_root>/../results``, which in the deployed pod resolved one directory outside
+    the only mount it had. Every restart discarded it, and since resume rebuilds it before the
+    port is bound, a restart with live campaigns could never finish.
+    """
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={"foo": "bar"}, store=store,
+                         reap_on_start=False, results_dir=str(tmp_path / "mounted"))
+
+    assert svc._campaigns_root() == tmp_path / "mounted"
+    assert svc._campaign_dir("camp-a") == tmp_path / "mounted" / "camp-a"
+
+
+def test_without_results_dir_the_lane_keeps_its_default(cs):
+    """No flag, no surprise: the shared ``local_results_root`` precedence still decides."""
+    from robovast.common.results_root import local_results_root
+    assert cs._campaigns_root() == local_results_root(cs.store.registry.root)
