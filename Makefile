@@ -200,12 +200,13 @@ build: ui-stage
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "CONFIG_WRITE=1 writes ROBOVAST_PROJECT/ROBOVAST_PROJECT_TAG into ~/.config/robovast/env; by default the two lines are only printed."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,--ask-push) \
 		$(if $(TAG),--tag "$(TAG)",) \
 		$(if $(ROQSIM_REF),--roqsim-ref "$(ROQSIM_REF)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
-		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
+		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",) \
+		$(if $(CONFIG_WRITE),--config-write,)
 
 # One family member at a time -- the targets the dev loop uses.
 #

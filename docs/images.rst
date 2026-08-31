@@ -159,7 +159,10 @@ publish asks first, so there is no command where a forgotten flag is the differe
 
 Either way all four members move together — a partial set is not usable, because
 ``ROBOVAST_PROJECT`` moves all four at once. The command prints the two lines that
-configure them and offers to write them to ``~/.config/robovast/env``.
+configure them; it does not change any configuration on its own. Pass ``CONFIG_WRITE=1``
+(or set ``ROBOVAST_RELEASE_CONFIG_WRITE=1`` in your shell) to have it write those two lines
+into ``~/.config/robovast/env`` — that switches every ``vast`` on the machine to this image
+set, which is why it is opt-in.
 
 To check a project before pointing a cluster at it:
 
