@@ -331,6 +331,20 @@ multi-campaign run fills the buffer quickly, since every campaign's records are 
 in it. ``vast service log [-f]`` prints the same thing from a terminal, against whichever
 service the CLI resolves.
 
+**What the service did, kept.** The **Service events** panel — collapsed until you open it,
+and fetched only then — is the durable half, and the distinction from the log above it is the
+whole reason it exists separately. That log is this process's recent output and dies with the
+pod; these survive a restart, which is when they are most worth having.
+
+What they carry is **refusals**. A campaign's failure is on its card and in its
+``outcome.json``, but an action the service would not do — a retrigger it could not accept —
+was composed in the request that refused it and shown once. The reason had no home. Each row
+carries the service's own words, the time, and the status the caller got.
+
+Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
+a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
+wants what just happened.
+
 .. _web-ui-freshness:
 
 Staying up to date

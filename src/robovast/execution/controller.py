@@ -742,17 +742,24 @@ class CampaignController:
             # that produced a sample. A draw that composes to nothing costs no run and
             # contributes none, which is why it is summed over param_sets here rather
             # than taken from self.runs * per_batch.
-            self._runs_done += sum((ps.n_reps or self.runs) for ps in param_sets)
-            evaluations = self._run_search_batch(param_sets, batch_idx, batch_id)
-            self.strategy.tell(evaluations)
+            fresh, recalled = self._split_already_evaluated(param_sets, batch_idx)
+            self._runs_done += sum((ps.n_reps or self.runs) for ps in fresh)
+            scored = self._run_search_batch(fresh, batch_idx, batch_id)
+            # The strategy is told about every cell it proposed, whether this batch
+            # measured it or an earlier one did. A recalled cell is a real answer to a
+            # real proposal -- it is what that cell measured -- so withholding it would
+            # hand back a short generation carrying less than the campaign knows.
+            self.strategy.tell(scored + recalled)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx
-            # Parameter sets actually SCORED -- a composition_failed or no_sample draw
-            # never reaches tell(), so it is not an evaluation.
-            self._evaluations_done += len(evaluations)
-            self._history.extend(evaluations)
-            best_objective = self._update_best(best_objective, evaluations, obj_name)
+            # Parameter sets newly SCORED -- a composition_failed or no_sample draw never
+            # reaches tell(), so it is not an evaluation, and neither is a recalled cell:
+            # it was counted by the batch that measured it, and counting it again would
+            # let a search exhaust an `evaluations` budget without measuring anything.
+            self._evaluations_done += len(scored)
+            self._history.extend(scored)
+            best_objective = self._update_best(best_objective, scored, obj_name)
 
             snap = StopSnapshot(batch=batch_idx,
                                 elapsed=time.monotonic() - start,
@@ -767,7 +774,9 @@ class CampaignController:
             if self.state is not None:
                 self.state.update(batches_done=batch_idx, best_objective=best_objective,
                                   budget=[self._budget_item(p) for p in progress])
-            self.notifier.batch_finished(batch_idx - 1, len(evaluations))
+            # What this batch MEASURED. A recalled cell was counted by the batch that
+            # measured it, and counting it again would report work that did not happen.
+            self.notifier.batch_finished(batch_idx - 1, len(scored))
             # The search's checkpoint. Everything the loop would need to pick up here --
             # which batches ran and what each parameter set scored -- is in the rows just
             # written, so publishing them per batch is what makes a search resumable at a
@@ -784,6 +793,45 @@ class CampaignController:
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
         return result, best_objective
+
+    def _split_already_evaluated(self, param_sets, batch_idx):
+        """Split a batch into the cells to measure and the ones already on record.
+
+        A strategy revisits: TPE re-proposes a category it likes, and on a discrete space
+        every strategy here eventually lands twice on the same cell. Across batches that is
+        not merely wasteful but unrecordable -- the result directory is addressed by
+        ``ParamSet.id``, so a second evaluation of one cell writes into the first's
+        directory, over its runs, and the campaign dies on the conflicting job link that
+        guards exactly that ("one run's artifacts cannot live in two jobs"). Measured on a
+        four-cell space: batch 0 scored three cells, batch 1 re-proposed one of them and the
+        campaign ended there, on batch 1 of 2.
+
+        So a cell is measured once per campaign. The recalled evaluation is the one that
+        cell produced -- not a substitute for it -- and re-running would spend a batch's
+        compute to answer a question the campaign has already answered.
+
+        The history this reads spans the whole campaign, including what a resumed one
+        replayed, so a restart does not make the campaign forget what it has measured.
+        """
+        by_id = {}
+        for ev in self._history:
+            by_id.setdefault(ev.params.id, ev)
+        fresh, recalled = [], []
+        for ps in param_sets:
+            previous = by_id.get(ps.id)
+            if previous is None:
+                fresh.append(ps)
+            else:
+                recalled.append(previous)
+        if recalled:
+            logger.info(
+                "Batch %d: %d of %d cell(s) were measured by an earlier batch (%s). They "
+                "are not run again -- their results are addressed per parameter set, so "
+                "there is one place to put them and it already holds the answer -- and the "
+                "strategy is told what they scored.",
+                batch_idx, len(recalled), len(param_sets),
+                ", ".join(ev.params.id for ev in recalled))
+        return fresh, recalled
 
     @staticmethod
     def _fmt(v):
@@ -863,6 +911,13 @@ class CampaignController:
         With the default strategy every set uses the default, so this is a single
         group.
         """
+        if not param_sets:
+            # Every cell this batch proposed was measured by an earlier one. There is
+            # nothing to compose, nothing to run and nothing to postprocess, and going
+            # through the motions would publish a batch's worth of run progress for a
+            # batch that executes no runs.
+            logger.info("Batch %d: nothing new to measure.", batch_idx)
+            return []
         groups: dict[int, list] = {}
         for ps in param_sets:
             groups.setdefault(ps.n_reps or self.runs, []).append(ps)

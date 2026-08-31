@@ -182,9 +182,20 @@ def main() -> int:
     distro = recipe.get("_ros_distro") or ""
     ubuntu, ros = (recipe.get("org.robovast.ubuntu-snapshot"),
                    recipe.get("org.robovast.ros-snapshot"))
+    # An unpinned build (UBUNTU_SNAPSHOT=none) records that it has no dated Ubuntu archive. It is
+    # an honest label rather than a forgotten build arg, and exactly for that reason it answers
+    # this script's question with "no": the recipe names nothing that could reinstall these
+    # versions. Reported as a problem so the difference between the two kinds of image is visible
+    # where it matters -- a campaign's provenance -- instead of only in a build log nobody kept.
+    if ubuntu == "none":
+        problems.append(
+            "built with UBUNTU_SNAPSHOT=none, from a rolling archive: there is no dated archive "
+            "to reinstall these package versions from, so every campaign recorded against this "
+            "image can be re-run only from the image itself, never rebuilt.")
+
     if not args.skip_network:
         checks = []
-        if ubuntu:
+        if ubuntu and ubuntu != "none":
             checks.append((
                 "ubuntu snapshot",
                 f"https://snapshot.ubuntu.com/ubuntu/{ubuntu}/dists/{_CODENAME}/Release"))
