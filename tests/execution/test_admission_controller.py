@@ -826,9 +826,9 @@ def test_a_second_pin_on_a_held_node_changes_nothing():
 
 
 def test_the_waiting_count_is_this_owners_not_the_whole_queues():
-    """A campaign with an 8-job batch was told "144 job(s) waiting" -- the entire cluster's
-    queue, reported into its own log. The refusal SLOT was made per owner for exactly this
-    confusion; the number inside the string was not."""
+    """A campaign with a handful of jobs queued was told the entire cluster's queue depth,
+    reported into its own log as though it were its own. The refusal SLOT was made per owner
+    for exactly this confusion; the number inside the string was not."""
     c = _controller(FakeProvider(cpu=1.0))
     _items(c, "mine", 2, cpu=99.0, memory=MIB, started_at=0.0)
     _items(c, "theirs", 40, cpu=99.0, memory=MIB, started_at=1.0)
