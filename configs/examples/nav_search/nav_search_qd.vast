@@ -20,7 +20,13 @@ search:
         # "it collided" and "it never arrived" occupy different cells instead of being
         # encoded into a number and decoded from a comment.
         failure_mode:  {values: [none, collision, timeout, goal_miss]}
-        min_clearance: {low: -0.2, high: 1.5, bins: 10}
+        # RANGE FROM MEASUREMENT. `high: 1.5` is unreachable in this world by the
+        # example's own arithmetic: the widest doorway is 1.6 m and nav2's robot_radius
+        # 0.18, so search/nav_extract.py takes clearance_scale = 1.6/2 - 0.18 = 0.62 m
+        # as the most clearance any configuration can offer. Measured over the 60 cells
+        # of a full-budget Halton run, min_clearance spanned -0.089 .. 0.433 m and
+        # touched 4 of these 10 bins.
+        min_clearance: {low: -0.15, high: 0.5, bins: 10}
     sigma: 0.15
   search_space:
     gap_width:    {type: float, low: 0.4, high: 1.6}
@@ -60,7 +66,13 @@ search:
   # meaningful "done" short of the budget running out.
   - time: 5400
   stopping:
-  - metric: {name: coverage, op: '>=', value: 0.35}
+  # 0.35 of a 4 x 10 archive is 14 cells, and fewer than that are reachable: only 3 of
+  # the 4 failure modes occur (no run of 500+ has timed out), and mode is not free of
+  # clearance -- a collision cannot land in a positive-clearance bin. Measured: a QD
+  # run under the old bounds plateaued at coverage 0.175 over 17 batches and could
+  # only ever exhaust its time budget, which reads as a search that failed to
+  # converge when it was an archive that could not be filled.
+  - metric: {name: coverage, op: '>=', value: 0.25}
   seed: 1
 
 visualization:
