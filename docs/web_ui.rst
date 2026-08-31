@@ -62,8 +62,14 @@ It provides four views:
   small **budget ring**, because a search's run counters describe its *current batch* rather
   than the campaign. The ring measures whichever declared ``budget`` criterion is **closest to
   exhausting** — the one that will fire first, so the one that says when the campaign actually
-  ends — and its hole carries that share as a **percent**: the unit varies (runs, rounds,
-  evaluations, seconds), and a percent is short whatever the criterion is. Hovering gives the
+  ends — and its hole carries that share as a **percent** — the unit varies (runs, rounds,
+  evaluations, seconds), so a share is the one figure that reads the same for all of them. An
+  exhausted budget shows a **tick** rather than ``100%``: three digits and a sign do not fit a
+  26px ring, and replacing the single value that does not fit is what lets every other value keep
+  its ``%``. The tick is only for an exact full share, so a budget with a run still left in it
+  reads ``99%`` rather than claiming to be done. The hover names the figure
+  (``budget spent 67% of runs``), which is also what tells it apart from the round count the hole
+  shows when nothing bounds the search. Hovering gives the
   rounds, the binding criterion with its unit and its **scope**, every other declared criterion
   including the ``stopping`` ones, the best objective, and the **objective-over-rounds chart**.
 
