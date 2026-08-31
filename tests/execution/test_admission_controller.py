@@ -704,3 +704,63 @@ def test_a_genuine_capacity_refusal_still_says_so():
     assert c.drain() == 0
     message = c.refusal("camp")
     assert "needs 99 cpu" in message and "usable" in message, message
+
+
+def test_a_probes_refusal_is_recorded_under_the_probe_owner_not_the_campaign():
+    """The reason a live campaign died with a diagnosis nobody had checked.
+
+    A campaign queues its calibration probes under `<campaign>#probes` -- a separate owner,
+    so a probe waiting for room does not read as the campaign's own work waiting. Refusals key
+    on the item's owner, which means the probe's reason is not on the campaign's key and a
+    reader of only that key sees nothing at all: the queue computed why a pinned probe could
+    not be placed, on every drain for six minutes, and the campaign then ended on
+    `unmeasured_nodes` naming a cause it had never observed.
+
+    So the campaign's own key staying empty is not a bug to fix here -- it is correct, and it
+    is exactly why the batch loop has to read BOTH keys.
+    """
+    p = FakeProvider(per_node=[("n1", 1.0, 512 * MIB, 0)])
+    c = _controller(p)
+    # The campaign's own work fits ...
+    c.submit("camp", [("j-0", JobSizing(0.5, MIB), lambda _n=None: None)], started_at=0.0)
+    # ... while its probe, pinned to n1 and sized at the declared figure, does not.
+    c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    c.drain()
+
+    assert "no node has that free" in c.refusal("camp#probes"), \
+        "the probe's wait must be explained on the probe owner's key"
+    assert c.refusal("camp") == "", \
+        "the campaign's own work was served, so its key is empty -- and reading only this " \
+        "key is how the probe's reason went unread"
+
+
+def test_a_pinned_probe_is_starved_by_smaller_work_it_outranks():
+    """Priority buys first pick, not a reservation, and a probe is the largest pod a
+    calibrated campaign asks for.
+
+    `drain` skips an item that does not fit rather than blocking behind it, on the reasoning
+    that a campaign's jobs are all the same shape so nothing is lost. A probe breaks that
+    premise: it runs at the DECLARED sizing while calibrated jobs run at a measured fraction
+    of it, so the probe is skipped and the smaller work it outranks takes the room. Documented
+    as the mechanism behind the unmeasured node rather than fixed here -- the fix is the batch
+    limit in `node_calibration`, which stops it being terminal on first sight.
+    """
+    p = FakeProvider(per_node=[("n1", 6.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    _items(c, "other", 3, cpu=2.0, memory=MIB, started_at=1.0)
+    # First drain: the probe fits, and being highest priority it goes first.
+    assert c.drain() >= 1
+
+    # Now the same race with the node a fraction too full for the probe alone.
+    p2 = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)])
+    c2 = _controller(p2)
+    c2.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+              started_at=0.0, priority=1, pin="n1")
+    made = _items(c2, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
+    c2.drain()
+    assert made == ["other-0", "other-1"], \
+        "the smaller jobs took the room the probe was waiting for"
+    assert "no node has that free" in c2.refusal("camp#probes")

@@ -146,9 +146,38 @@ Probes queue under a **second owner** (``<campaign>#probes``) so they stay out o
 campaign's progress counts — which means the batch's ``finally`` must cancel both, or a probe
 still ``PLANNED`` holds its node out of the campaign for good.
 
-A probe that dies without a verdict is abandoned: the node stays uncalibrated and its runs use
-the declared sizing, which is what a cluster with calibration switched off does anyway — a
-worse allocation, never a wrong result.
+**A probe that does not deliver a figure has two very different fates**, and the difference is
+whether it ever ran:
+
+* **It ran and its measurement was refused** — no verdict, too few samples, throttled or
+  OOM-killed against its own ceiling. That *ends the campaign*, at the moment of refusal: the
+  node's runs would use the starting allocation while every measured node's used a figure, so
+  the campaign would mix two allocations and nothing in the results would say which run got
+  which. The message names the reason and the remedy for it.
+* **It never ran at all** — pinned to a node that had no room to spare for it, so it was never
+  created. That is *counted*, not fatal: the node takes no work for that batch, is re-probed on
+  the next one, and the campaign is refused only if the same node goes unmeasured
+  ``UNMEASURED_BATCH_LIMIT`` batches running. A probe too large for any node's *capacity* is a
+  separate case and never reaches here — ``preflight`` in ``_start_probes`` refuses it before a
+  single job exists.
+
+The second case is why the count exists. At the end of one batch the two are indistinguishable,
+and failing on first sight made a busy minute at campaign start terminal — discarding a batch of
+finished, correct runs to do it. The probe is the largest pod a calibrated campaign asks for (the
+declared sizing summed over its containers) and, being pinned, it cannot spread, so ``n``
+calibrated campaigns starting together need ``nodes × n`` of them placed at once. On a cluster of
+unlike machines that lands on the **smallest** node first, where one probe can be half the machine
+— ``preflight`` asks only whether the probe fits a node when empty, never whether it fits there
+alongside anything else. That contention drains; a node still unmeasured a batch later is not
+waiting on it.
+
+Both cases leave the node on the declared sizing meanwhile, which is what a cluster with
+calibration switched off does anyway — a worse allocation, never a wrong result.
+
+Because probes queue under their own owner, **the batch loop reads the refusal for both keys**.
+Reading only the campaign's own key left a pinned probe's wait with no line anywhere: the
+queue computed why it could not be placed on every drain and printed none of it, and the campaign then
+ended on a node it could not measure while naming a cause nobody had checked.
 
 **Sizing is per role**, and this is a validity rule rather than a tuning one:
 
@@ -188,6 +217,12 @@ Failure modes worth knowing
    * - A create retried forever
      - An RBAC change, a webhook or a quota looks identical to an API blip from here.
        Bounded, then dropped with its cause.
+   * - A finished batch discarded over one unmeasured node
+     - A pinned probe that lost a race for free capacity read as a configuration fault.
+       Counted now, and terminal only if it repeats — ``UNMEASURED_BATCH_LIMIT``.
+   * - A probe waits with nothing said
+     - Refusals key on the item's owner, and probes have their own; only the campaign's key
+       was read. Both are read now.
 
 
 Where the numbers come from
