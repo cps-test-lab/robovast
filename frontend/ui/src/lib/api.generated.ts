@@ -33,6 +33,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Service Events
+         * @description What this service did, from cursor *since* -- durable across restarts.
+         *
+         *     Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
+         *     ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
+         *     as long as any tab is open.
+         *
+         *     Not the same thing as ``/admin/log``, which is this process's recent stderr and dies
+         *     with it. The events worth keeping are the ones a restart destroys.
+         */
+        get: operations["get_service_events_admin_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/log": {
         parameters: {
             query?: never;
@@ -3292,6 +3319,67 @@ export interface components {
             settings: components["schemas"]["ServiceSetting"][];
         };
         /**
+         * ServiceEvent
+         * @description One thing the service did, as recorded.
+         *
+         *     ``kind`` is an open string and ``subject_type``/``subject_id`` are a typed pair rather than
+         *     a bare campaign id: a workspace, an image build or the service itself are all things worth
+         *     an event later, and widening this model is a change where adding a ``kind`` is not.
+         */
+        ServiceEvent: {
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /** At */
+            at: number;
+            /** Kind */
+            kind: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Seq */
+            seq: number;
+            /**
+             * Severity
+             * @default info
+             */
+            severity: string;
+            /**
+             * Subject Id
+             * @default
+             */
+            subject_id: string;
+            /**
+             * Subject Type
+             * @default
+             */
+            subject_type: string;
+        };
+        /**
+         * ServiceEvents
+         * @description A page of the event log, oldest first, with the cursor to resume from.
+         *
+         *     Oldest first because a caller is resuming a position rather than browsing: it holds
+         *     :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+         */
+        ServiceEvents: {
+            /** Events */
+            events: components["schemas"]["ServiceEvent"][];
+            /**
+             * Next Seq
+             * @default 0
+             */
+            next_seq: number;
+        };
+        /**
          * ServiceSetting
          * @description One environment setting this service is running with, as reported to one caller.
          *
@@ -4043,6 +4131,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ServiceConfig"];
+                };
+            };
+        };
+    };
+    get_service_events_admin_events_get: {
+        parameters: {
+            query?: {
+                since?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceEvents"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

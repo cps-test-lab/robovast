@@ -112,29 +112,33 @@ def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) ->
 def campaign_execution_image(campaign_dir) -> str:
     """The image the campaign's runs actually used (its ``_execution/execution.yaml``).
 
-    This is the system-under-test's image — the only place its custom ROS2 message
-    types deserialize — and the same source the local path feeds to
-    ``docker_exec.sh --image``. Prefers the pinned ``image_revision`` when it is an
-    immutable ``repo@sha256:…`` digest (recorded at run time, see
-    ``create_execution_yaml`` / ``KubernetesBackend._capture_image_digest``) so a
-    re-postprocess deserializes bags against the *exact* image the runs recorded them
-    with, not whatever a floating ``:latest`` resolves to now. Falls back to the
-    ``image`` tag. Raises if neither is present rather than converting in the wrong image.
+    This is the system-under-test's image — the only place its custom ROS2 message types
+    deserialize — and the same source the local path feeds to ``docker_exec.sh --image``.
+
+    The most forgiving of the policies over
+    :func:`~robovast.common.campaign_data.campaign_image_record`, and rightly: it wants *a*
+    working image to postprocess in, where a re-run wants the bytes the campaign was built
+    from. So it prefers the pinned digest — a re-postprocess should deserialize bags against
+    the exact image the runs recorded them with, not whatever a floating ``:latest`` resolves
+    to now — and falls back to the tag rather than refusing. Raises only when there is neither,
+    rather than converting in the wrong image.
     """
     import os  # noqa: PLC0415
 
-    import yaml  # noqa: PLC0415
+    from robovast.common.campaign_data import (campaign_image_record,  # noqa: PLC0415
+                                               image_is_pullable)
+    from robovast.common.config import SCENARIO_CONTAINER  # noqa: PLC0415
 
     path = os.path.join(str(campaign_dir), "_execution", "execution.yaml")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError) as e:
-        raise ValueError(f"cannot read the campaign's execution image from {path}: {e}") from e
-    revision = data.get("image_revision")
-    if isinstance(revision, str) and "@sha256:" in revision:
-        return revision
-    image = data.get("image")
+    if not os.path.exists(path):
+        raise ValueError(f"cannot read the campaign's execution image from {path}: "
+                         f"no such file")
+    record = campaign_image_record(campaign_dir)
+    if image_is_pullable(record.campaign_digest):
+        return record.campaign_digest
+    scenario = record.role(SCENARIO_CONTAINER)
+    image = record.campaign_image or (scenario.declared if scenario else "") or next(
+        (r.declared for r in record.roles.values() if r.declared), "")
     if not image:
         raise ValueError(
             f"no execution image recorded in {path}; cannot pick the image whose "

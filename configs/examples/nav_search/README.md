@@ -15,7 +15,7 @@ strategy rather than to the experiment.
 |---|---|---|---|
 | `nav_grid.vast` | *(batch, no search)* | what does exhaustive coverage cost, and still miss? | the reference map, and the run count the others are judged against |
 | `nav_search_random.vast` | `random` | what fraction of situations fail? | the honest denominator, with an interval |
-| `nav_search_halton.vast` | `halton` | the same estimate, for the same budget? | a visibly tighter interval — read against `random`, nothing else |
+| `nav_search_halton.vast` | `halton` | the same estimate, for the same budget? | the fraction from an evenly-covering sample — read against `random`, nothing else |
 | `nav_search_tpe.vast` | `optuna` (tpe) | what is the single worst crossing? | that combination, and how few evaluations found it |
 | `nav_search_cmaes.vast` | `optuna` (cmaes) | does an evolution strategy beat a model here? | convergence against `tpe` at equal budget |
 | `nav_search_qd.vast` | `qd` | how many *kinds* of trouble are there? | an archive keyed on failure mode × clearance |
@@ -27,7 +27,10 @@ strategy rather than to the experiment.
 
 These pairings carry the findings, and none of them is visible from a single campaign:
 
-- **`random` vs `halton`** — the width of the interval at an identical `runs:` budget.
+- **`random` vs `halton`** — the same fraction, drawn two ways, at an identical `runs:`
+  budget. One campaign of each gives two point estimates; to compare their *spread* run
+  each over several `seed:` values, because a spread is a property of an estimator across
+  repeats and not something a single campaign can report.
 - **`tpe` vs `cmaes`** — convergence on a smooth, low-dimensional space.
 - **`tpe` vs `adaptive_reps`** — the same conclusion, and how much of the budget each spent
   confirming cells that were never in doubt.
@@ -64,29 +67,48 @@ robustness = min( (min_clearance - contact)  / clearance_scale,
                   (arrival_radius - d_goal)  / path_scale )
 ```
 
-The scales come from what this directory already declares, so they move when the world does:
-`clearance_scale` is half the widest doorway minus nav2's own `robot_radius` (1.6/2 − 0.18),
-`path_scale` is the scenario's own traverse, (−2.5, 0) → (2.5, 0). The `timeout` margin was
-always of this form, and it is the one that never needed a floor.
+**A scale is the reach of its own term**, and the three have to be comparable or the
+deepest one decides every score. `path_scale` is the scenario's traverse, (−2.5, 0) →
+(2.5, 0), because a run that never arrives can be short by the whole of it. `clearance_scale`
+is *not* the room the widest doorway offers: a run cannot be clear by that much and fail, and
+it cannot penetrate an obstacle by more than a few centimetres either, because contact ends
+the trial. The clearance term's reach is that penetration depth, ~0.1 m. The `timeout` margin
+was always of this form, and it is the one that never needed a floor.
 
-Measured over the 48 cells of one `nav_search_halton` run:
+Scaled this way a full-penetration contact reaches about −1.0 and a robot that never left the
+start reaches −0.88, so the worst of the three is whichever failure is nearest rather than
+whichever term happens to have the longest run. Scale the clearance term by the doorway
+instead and it caps near −0.16, `min()` returns the goal margin whenever the robot fails to
+arrive, and the objective ranks a robot that safely stopped short below one that hit the
+pedestrian.
 
-| objective | distinct values | cells at the floor |
+Measured over the 48 cells of one `nav_search_halton` run, `failure_rate` took 4 distinct
+values with 30 of 48 (62.5%) on an endpoint — the cliff this replaced.
+
+**Two changes are easy to confuse here, so they are separated by measurement** — 16 cells at
+15 repeats each, one thing varied at a time:
+
+| | distinct values | cells ≤ −1 |
 |---|---|---|
-| `failure_rate` | 4 | 30/48 (62.5%) |
-| `robustness`, thresholds as denominators | 17 | **32/48 (66.7%)** |
-| `robustness`, scales as denominators | **48** | **0/48** |
+| thresholds as denominators, **floor at −1** | **2/16** | 15/16 |
+| thresholds as denominators, **no floor** | **16/16** | 15/16 |
+| scales as denominators, no floor | **16/16** | **0/16** |
+
+Removing the clamp is what restores the distinct values; the denominators are unchanged
+between the first two rows. What the scales buy is different and also necessary: they put the
+margins in a range where the three can be compared, which is the paragraph above. Expect a
+clamp, not a denominator, to be what flattens this objective if it is ever changed again.
 
 The sign agrees on 48 of 48 cells: re-normalising does not move the verdict, only its
 resolution. The tightest cell sits at −0.007, and one cell of the earlier 16-cell grid
 passed with **a millimetre** of clearance — a verdict scores that identically to one that
 passed with 0.4 m.
 
-There is no floor, and that is deliberate. Once each margin is a fraction of its own scale
-nothing reaches −1 unaided, so a clamp would only discard order it no longer needs to bound.
-A margin past −1 means what it says — missed by more than the whole scale — and stays ordered
-against its neighbours, which is what lets an adversarial search keep descending after it
-finds its first failure instead of going blind.
+There is no floor, and that is deliberate. A margin past −1 means what it says — missed by
+more than the whole scale — and a clamp would replace that with a tie. Contact reaches past
+−1 routinely, which is the point: once the worst crossings stop sharing a value, an
+adversarial search can keep descending after it finds its first failure instead of going
+blind.
 
 ## How the world is put together
 
@@ -132,8 +154,17 @@ go through the batch-mode file.
 
 ## Notes for anyone extending this
 
-- **`set_yaml_value` needs `import osc.dataops`.** The parser's complaint is
-  "BehaviorInvocation uses unknown behavior", which reads like a typo in the action name.
+- **Start from the campaign that varies the channel you need.** A `.vast` reaches three
+  surfaces and they are not interchangeable: `sim:` writes into the compiled world (every
+  campaign here), `sut:` rewrites the system under test's own config files, and `scenario:`
+  sets scenario parameters. `nav_search_minimax.vast` is the one that uses all three.
+- **A `sut:` source needs a scenario parameter to land on.** Staging gives each configuration
+  its own rewritten copy at `/config/<config-name>/<path>` and drops the original from
+  `run_files`, so exactly one copy exists; the trial finds it because RoboVAST rewrites *a
+  scenario parameter whose value is the source's declared path*. A parameter left at its
+  `.osc` default is not one the campaign set, so nothing is rewritten and the trial launches
+  a path that is no longer there. Declare it on the `scenario:` channel, as
+  `nav_search_minimax.vast` does with `params_file`.
 - **`rosbags_to_csv` writes `rosbag2_<topic>.csv`**, not `<topic>.csv`.
 - **The ground-truth arrival radius is not nav2's `xy_goal_tolerance`.** nav2 declares
   success against its estimated pose at the instant it stops; the metric measures ground

@@ -39,7 +39,8 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.service import auth, service_log, settings_report
+from robovast.service import auth, event_log, service_log, settings_report
+from robovast.service.workspaces import default_workspaces_root
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
                                         CampaignVisualizationsResponse, CleanupDataRequest,
@@ -55,7 +56,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, SearchHistory,
-                                        ServiceConfig, ServiceSetting,
+                                        ServiceConfig, ServiceEvent, ServiceEvents, ServiceSetting,
                                         StagedArchive, StatusResponse,
                                         status_response,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
@@ -223,6 +224,22 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #
     # Per-app, not module-level, so two apps built in one process (which tests do) record
     # separately instead of interleaving into one deque.
+    # Durable, unlike the two rings below it: what a restart destroys is exactly what is worth
+    # keeping, and a restart is when it is most worth having. Beside the workspace registry, in
+    # a directory the cluster deployment mounts -- see the module docstring on why not a
+    # sibling of it.
+    try:
+        _events_root = Path(impl.store.registry.root)
+    except Exception:  # noqa: BLE001 - see below
+        # Broad on purpose. A transport need not have a workspace store at all, and one that
+        # does not is entitled to say so however it likes -- the login-route test hands in an
+        # impl that raises on *any* attribute access to prove the route never reaches the
+        # backend. Where it cannot be asked, the configured default is the right answer anyway:
+        # it is the same ROBOVAST_WORKSPACES_ROOT the cluster manifest names when it mounts the
+        # volume this has to live on.
+        _events_root = default_workspaces_root()
+    _events = event_log.EventLog(Path(_events_root) / event_log.EVENTS_FILENAME)
+
     _usage_sample_s = 30.0
     _usage_ring = collections.deque(maxlen=int(24 * 3600 / _usage_sample_s))
     _usage_started_at = time.time()
@@ -268,6 +285,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # this is how anything outside these closures reaches *this* app's recording rather
     # than guessing at a module global that deliberately does not exist.
     app.state.usage_ring = _usage_ring
+    app.state.events = _events
 
     # Start recording this process's log. Here and not in ``setup_logging`` because that
     # runs in every ``vast`` invocation, and a ring is only worth filling where something
@@ -299,26 +317,52 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     app.state.should_exit = lambda: False
 
     def _guard(fn):
-        """Map interface exceptions to clean HTTP errors instead of 500s."""
+        """Map interface exceptions to clean HTTP errors instead of 500s.
+
+        Also the one place every refusal passes through on its way out, which is why the
+        event log is written here rather than at the ~56 call sites: a refusal composed in a
+        request and rendered once is otherwise the only thing this service does that it keeps
+        no record of at all.
+
+        Only the refusals. A read that succeeds passes straight through, so the log stays a
+        record of what did not happen and not a request trace.
+        """
         from robovast.common.errors import \
             ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         try:
             return fn()
         except ValueError as e:            # bad input / not-initialized
+            _record_refusal(400, e)
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
             # ``str(KeyError("x"))`` is ``"'x'"``; take the message itself so the
             # detail is not delivered wrapped in stray quotes.
             detail = e.args[0] if e.args else str(e)
+            _record_refusal(404, detail)
             raise HTTPException(status_code=404, detail=str(detail)) from e
         except ObjectStoreUnreachableError as e:
             # Before the RuntimeError arm it subclasses: nothing about an unanswering
             # store is a conflict, and a 503 tells a client the call is worth retrying.
             # The message is already the whole diagnosis, so no traceback is logged.
             logger.warning("%s", e)
+            _record_refusal(503, e)
             raise HTTPException(status_code=503, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
+            _record_refusal(409, e)
             raise HTTPException(status_code=409, detail=str(e)) from e
+
+    def _record_refusal(status: int, detail) -> None:
+        """Keep the reason somewhere a reload cannot take it.
+
+        ``_guard`` sees no request and no principal -- it is a bare callable -- so the actor is
+        not recorded here. Attribution needs the seam that has the ``Request``; this records
+        *what* was refused, which is the part that existed nowhere.
+        """
+        try:
+            _events.append("request.refused", severity="error", message=str(detail),
+                           payload={"status": status})
+        except Exception:  # noqa: BLE001 - a record of work must never break the work
+            logger.debug("could not record a refusal", exc_info=True)
 
     # -- SSE log streaming --------------------------------------------------
     # The browser streams logs over Server-Sent Events; MCP/CLI keep the pull
@@ -669,6 +713,25 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             settings=[ServiceSetting(**vars(row))
                       for row in settings_report.describe(loopback=loopback)],
             how_to_change=settings_report.how_to_change())
+
+    @app.get(Routes.ADMIN_EVENTS, response_model=ServiceEvents, tags=["admin"])
+    def get_service_events(since: int = 0, limit: int = 200) -> ServiceEvents:
+        """What this service did, from cursor *since* -- durable across restarts.
+
+        Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
+        ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
+        as long as any tab is open.
+
+        Not the same thing as ``/admin/log``, which is this process's recent stderr and dies
+        with it. The events worth keeping are the ones a restart destroys.
+        """
+        rows = _events.read(since=since, limit=limit)
+        return ServiceEvents(
+            events=[ServiceEvent(seq=e.seq, at=e.at, kind=e.kind, severity=e.severity,
+                                 actor=e.actor, subject_type=e.subject_type,
+                                 subject_id=e.subject_id, message=e.message, payload=e.payload)
+                    for e in rows],
+            next_seq=rows[-1].seq if rows else int(since))
 
     @app.get(Routes.ADMIN_LOG, response_model=LogChunk, tags=["admin"])
     def get_service_log(offset: int = 0) -> LogChunk:
