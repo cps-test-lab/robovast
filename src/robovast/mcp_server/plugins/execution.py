@@ -982,6 +982,12 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     ``python_packages`` is a list of **install groups**: a flat list is one pip pass, so
     order does not matter; nest — ``[a, b]`` — to split into layers, volatile last.
 
+    ``ros_packages`` is the third one, for a ROS package that has neither an apt nor a pip
+    form (a ``source:``-only rosdistro entry such as ``px4_msgs``): each entry is a ``git``
+    repository at a pinned ``ref`` (sha or tag; a branch is refused), optionally narrowed to
+    ``packages: [...]``. All entries are colcon-built together into the container's ``/ws``
+    overlay.
+
     Args:
         workspace_id: **Required** — whose project to build (as ``start_campaign``).
         config_path: Which ``.vast``, when the workspace holds several.
@@ -1056,7 +1062,7 @@ def get_image_build_status(build_id: str) -> dict:
 
     \b
       pip / apt   the entry is one you declared -- fix that container's
-                  ``python_packages`` / ``system_packages``.
+                  ``python_packages`` / ``system_packages`` / ``ros_packages``.
       base-image  a dependency of something you install, missing from the image you
                   build on. Adding it to ``python_packages`` papers over that --
                   re-pin ``execution.containers.<name>.image`` instead.

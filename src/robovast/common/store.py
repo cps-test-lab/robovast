@@ -140,7 +140,8 @@ CREATE TABLE IF NOT EXISTS batch (
     campaign_id INTEGER NOT NULL REFERENCES campaign(id),
     idx         INTEGER NOT NULL,
     dir         TEXT,
-    created_at  REAL
+    created_at  REAL,
+    asked       INTEGER          -- parameter sets the strategy PROPOSED for this batch
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -154,7 +155,8 @@ CREATE TABLE IF NOT EXISTS unit (
     n_samples     INTEGER,
     status        TEXT,
     result_dir    TEXT,
-    created_at    REAL
+    created_at    REAL,
+    n_reps        INTEGER          -- repetitions ALLOCATED to this cell; n_samples is what came back
 );
 CREATE TABLE IF NOT EXISTS job (
     id           INTEGER PRIMARY KEY,
@@ -445,8 +447,37 @@ ALTER TABLE job ADD COLUMN node_label TEXT;
 ALTER TABLE container_failure RENAME COLUMN node_name TO node_label;
 """
 
+# 9 -> 10: how many parameter sets a batch PROPOSED, which is not how many it recorded.
+#
+# `search.history.recorded_batches` counted the unit rows and called that the ask size,
+# because until now every draw left one. A repeated draw does not: two draws with the same
+# values are one cell (`ParamSet.id` is derived from them, and results are addressed by
+# it), so the batch composes and records it once. Derived from the rows, the replay would
+# then ask for fewer than the original did and every parameter set after it would differ.
+#
+# NULL on a store written before this, where the row count IS the ask size -- no draw was
+# ever collapsed there, because a repeated one aborted the campaign instead.
+_MIGRATION_ADD_BATCH_ASKED = """
+ALTER TABLE batch ADD COLUMN asked INTEGER;
+"""
+
+# 10 -> 11: how many repetitions a cell was ALLOCATED, which `n_samples` does not say.
+#
+# `n_samples` counts what came back -- the runs that produced a trustworthy result. What a
+# cell was GIVEN is a different number, and under `search.repetitions` it differs per cell
+# by design. The live loop counts a batch's cost from the allocation, because that is what
+# a `runs` budget caps; on a resume there was nothing to read it from, so every cell was
+# recounted at `execution.runs` and an unevenly-spent campaign was recounted as an evenly
+# spent one -- the one thing an adaptive policy exists not to be.
+#
+# NULL on a store written before this, where `execution.runs` IS what every cell got: a
+# per-cell allocation could not be recorded, so none was used.
+_MIGRATION_ADD_UNIT_N_REPS = """
+ALTER TABLE unit ADD COLUMN n_reps INTEGER;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -465,6 +496,8 @@ _MIGRATIONS = [
     _MIGRATION_ADD_ORIGIN,
     _MIGRATION_ADD_CONTAINER_FAILURE,
     _MIGRATION_ADD_NODE,
+    _MIGRATION_ADD_BATCH_ASKED,
+    _MIGRATION_ADD_UNIT_N_REPS,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -617,10 +650,19 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
-    def open_batch(self, campaign_id: int, idx: int, batch_dir: str) -> int:
+    def open_batch(self, campaign_id: int, idx: int, batch_dir: str,
+                   asked: Optional[int] = None) -> int:
+        """Open a batch row. ``asked`` is how many parameter sets the strategy PROPOSED.
+
+        Recorded because it is not always the number of ``unit`` rows that follow: two
+        draws with the same values are one cell, composed and recorded once, and a replay
+        that asked for the rows would rewind the strategy's stream (see
+        :func:`robovast.search.history.recorded_batches`).
+        """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at) VALUES (?, ?, ?, ?)",
-            (campaign_id, idx, batch_dir, time.time()),
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (campaign_id, idx, batch_dir, time.time(), asked),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -636,14 +678,23 @@ class CampaignStore:
         status: str,
         result_dir: str,
         n_samples: Optional[int] = None,
+        n_reps: Optional[int] = None,
     ) -> int:
+        """Record one parameter set's outcome.
+
+        ``n_samples`` is what came BACK -- the runs that produced a trustworthy result.
+        ``n_reps`` is what the cell was ALLOCATED, which under ``search.repetitions``
+        differs per cell and is what a ``runs`` budget counts. ``None`` means the
+        campaign's ``execution.runs``.
+        """
         # Surface the sole objective as a queryable REAL column for the common
         # single-objective case; keep the full dict in JSON regardless.
         objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
         cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
-            "objective, objectives_json, measures_json, n_samples, status, result_dir, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "objective, objectives_json, measures_json, n_samples, status, result_dir, "
+            "created_at, n_reps) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 batch_id, paramset_id, config_name,
                 json.dumps(params, default=str),
@@ -652,6 +703,7 @@ class CampaignStore:
                 json.dumps(measures, default=str),
                 n_samples,
                 status, result_dir, time.time(),
+                n_reps,
             ),
         )
         self._conn.commit()

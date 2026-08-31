@@ -183,7 +183,8 @@ def image_provenance_tier(name: str, block: dict) -> "tuple[int, str]":
     block = block or {}
     image = (block.get("image") or "").strip()
 
-    if block.get("system_packages") or block.get("python_packages"):
+    if (block.get("system_packages") or block.get("python_packages")
+            or block.get("ros_packages")):
         return IMAGE_TIER_BUILT, "robovast builds this image, so its inputs are recorded"
     if not image:
         return IMAGE_TIER_FAMILY, "no image named; the backend or the role default supplies one"
@@ -208,7 +209,8 @@ def image_provenance_tier(name: str, block: dict) -> "tuple[int, str]":
         f"        source: <repo URL or path holding the image's build definition>\n"
         f"        revision: <the commit that built it>\n"
         f"        build_recipe: <optional: how, if it is not obvious>\n"
-        f"  Or let robovast build it instead -- declare 'system_packages'/'python_packages' and "
+        f"  Or let robovast build it instead -- declare "
+        f"'system_packages'/'python_packages'/'ros_packages' and "
         f"drop the image -- which records everything automatically.")
 
 
