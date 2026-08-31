@@ -505,11 +505,18 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         phase: Read only one phase. Empty and ``"all"`` both read every phase.
 
     Returns:
-        Lines: ``{file_name, phases, total_lines, returned_lines, offset, content, dropped,
-        shutdown_dropped}``. With ``summarize``: the same minus ``content``, plus
-        ``{patterns, patterns_total, severity_counts, matched_lines}``, each pattern
-        ``{pattern, count, severity, example}``. Or ``{error}``. ``phases`` always lists every
-        section as ``{name, lines, included}``, so what a read left out is stated.
+        Lines: ``{file_name, phases, total_lines, matched_lines, returned_lines, offset,
+        content, dropped, shutdown_dropped, truncated}``. With ``summarize``: the same minus
+        ``content``/``returned_lines``/``offset``/``truncated``, plus ``{patterns,
+        patterns_total, severity_counts}``, each pattern ``{pattern, count, severity,
+        example}``. Or ``{error}``. ``phases`` always lists every section as ``{name, lines,
+        included}``, so what a read left out is stated.
+
+        ``total_lines`` is the log, ``matched_lines`` what survived the filters (what
+        ``offset``/``limit`` page through), ``returned_lines`` this page —
+        ``total_lines == matched_lines + dropped + shutdown_dropped``. ``truncated``
+        says this page is not all of what matched, whether ``tail`` or the page window cut
+        it.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
 
@@ -555,14 +562,25 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 **_shutdown_report(view)}
     all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + limit]
+    # Three counts, because they answer three different questions and collapsing any two
+    # of them hides a cut: ``total_lines`` is the log (the same figure a summary reports,
+    # so the two shapes cannot disagree about how long it is), ``matched_lines`` is what
+    # survived the filters and is therefore what ``offset``/``limit`` page through, and
+    # ``returned_lines`` is this page. They tie out:
+    # total_lines == matched_lines + dropped + shutdown_dropped.
     result = {
         "file_name": name,
         "phases": phases,
-        "total_lines": len(all_lines),
+        "total_lines": view["lines_total"],
+        "matched_lines": len(all_lines),
         "returned_lines": len(selected),
         "offset": offset,
         "content": "\n".join(selected),
         "dropped": view["dropped"],
+        # Whether this page is all of what matched. ``tail`` cuts before the page window
+        # does, so without this a read that asked for the last N lines could not tell N
+        # from "N is all there was".
+        "truncated": view["truncated"] or offset + len(selected) < len(all_lines),
         **_shutdown_report(view),
     }
     # Point at the whole thing only when this page is a sample of it. Paging a 20k-line

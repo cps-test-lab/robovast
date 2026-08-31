@@ -758,3 +758,38 @@ def test_status_names_a_killed_run_apart_from_a_lost_one(monkeypatch):
 
 def test_status_omits_the_killed_count_when_nothing_was_killed(service):
     assert "batch_runs_killed" not in execution.get_campaign_status("svc-campaign-1")
+
+
+def test_a_campaign_log_page_states_what_it_left_out(monkeypatch):
+    """Three counts, and they must tie out: the log, what matched, and this page.
+
+    Reporting the filtered count as ``total_lines`` made the same key mean the whole log
+    in a summary and the matched subset here, so the two shapes disagreed about how long
+    the log is -- and with only one count a ``tail`` read could not be told from a log
+    that was that short.
+    """
+    lines = [f"robovast  | [WARN] [1785092240.{i:03d}] [n]: warn {i}" for i in range(20)]
+    lines += [f"robovast  | [INFO] [1785092241.{i:03d}] [n]: quiet {i}" for i in range(30)]
+    _service_with_log(monkeypatch, "===== RUN =====\n" + "".join(f"{l}\n" for l in lines))
+
+    out = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="warn",
+                                     limit=5)
+    assert out["total_lines"] == 51            # the whole assembled log, divider included
+    assert out["matched_lines"] == 20          # what the severity filter kept
+    assert out["returned_lines"] == 5          # this page
+    assert out["truncated"] is True
+    assert (out["total_lines"]
+            == out["matched_lines"] + out["dropped"] + out["shutdown_dropped"])
+
+    # And a summary of the same read reports the same log length, not a different one.
+    summary = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="warn",
+                                         summarize=True)
+    assert summary["total_lines"] == out["total_lines"]
+    assert summary["matched_lines"] == out["matched_lines"]
+
+
+def test_a_tail_that_cut_nothing_is_not_reported_as_truncated(monkeypatch):
+    _service_with_log(monkeypatch, "===== RUN =====\nrobovast  | [INFO] [1.0] [n]: one\n")
+    out = execution.get_campaign_log("camp-2026-01-01-000000", tail=10)
+    assert out["truncated"] is False
+    assert out["matched_lines"] == out["returned_lines"] == 2
