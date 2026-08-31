@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { hasResults, robovast, type ListCampaignsResponse } from '@/lib/robovastClient'
 import { useLiveStream } from '@/lib/liveStream'
-import { diffCampaignPhases, seedPhases, type CampaignEvent } from '@/lib/campaignEvents'
+import { describeCampaignEvent, diffCampaignPhases, seedPhases } from '@/lib/campaignEvents'
 import { openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
 import { useToasts } from './ToastProvider'
@@ -64,24 +64,6 @@ export function CampaignStreamProvider({ children }: { children: ReactNode }) {
   )
 }
 
-/** What to say about each kind of transition. */
-function describe(evt: CampaignEvent): { message: string; note?: string } {
-  const runs = evt.summary.num_runs
-    ? `${evt.summary.num_runs} runs` +
-      (evt.summary.num_failed ? ` · ${evt.summary.num_failed} failed` : '')
-    : undefined
-  switch (evt.kind) {
-    case 'started':
-      return { message: `Campaign started`, note: evt.campaignId }
-    case 'finished':
-      return { message: `Campaign finished`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
-    case 'stopped':
-      return { message: `Campaign stopped`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
-    case 'failed':
-      return { message: `Campaign failed`, note: evt.campaignId }
-  }
-}
-
 /**
  * Announce campaigns starting and ending.
  *
@@ -111,7 +93,7 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
     phases.current = seedPhases(campaigns)
 
     for (const evt of events) {
-      const { message, note } = describe(evt)
+      const { message, note } = describeCampaignEvent(evt)
       notify({
         severity: evt.kind === 'failed' ? 'warning' : evt.kind === 'started' ? 'info' : 'success',
         message,
