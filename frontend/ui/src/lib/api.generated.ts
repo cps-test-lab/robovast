@@ -1687,8 +1687,8 @@ export interface components {
          * BuildImageRequest
          * @description Build the derived images a workspace project's containers declare.
          *
-         *     Every entry in ``execution.containers`` that adds ``system_packages`` or
-         *     ``python_packages`` is built on top of its ``image``; one that adds nothing is
+         *     Every entry in ``execution.containers`` that adds ``system_packages``,
+         *     ``python_packages`` or ``ros_packages`` is built on top of its ``image``; one that adds nothing is
          *     pulled as-is and never built. So this is zero or more images, tagged by container
          *     name — not one "experiment image", and not tied to any particular role.
          *

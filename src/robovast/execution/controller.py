@@ -644,11 +644,18 @@ class CampaignController:
             self._evaluations_done += len(batch.evaluations)
             self._history.extend(batch.evaluations)
             # What the batch COST, by the same measure the live loop uses: executions
-            # attempted, counted from what was asked for rather than from what produced a
-            # sample. A draw that composed to nothing still occupied the plan.
-            self._runs_done += sum(
-                (ev.params.n_reps or self.runs) for ev in batch.evaluations)
-            self._runs_done += (batch.asked - len(batch.evaluations)) * self.runs
+            # attempted -- every cell's ALLOCATION, not what produced a sample. A draw that
+            # composed to nothing still occupied the plan its allocation reserved, so this
+            # sums over every recorded cell rather than over the scored ones.
+            #
+            # Read from the record rather than re-derived. `search.repetitions` sizes each
+            # cell separately, so re-deriving meant recounting an unevenly-spent campaign as
+            # an evenly spent one -- under where the policy had spent above `execution.runs`,
+            # over where it had spent below -- and a `runs` budget then stopped the resumed
+            # search in the wrong place. `execution.runs` stands in only for a row that
+            # recorded no allocation, which is a store from before one could be recorded,
+            # where it is what that cell actually got.
+            self._runs_done += sum((n or self.runs) for n in batch.reps)
         logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                     "%d run(s) already spent.",
                     self._batches_done, self._evaluations_done, self._runs_done)
@@ -710,14 +717,22 @@ class CampaignController:
         The batch count lives on ``self._batches_done`` rather than being returned,
         because :meth:`_run_search` needs it on the path where this does NOT return.
         """
+        from robovast.search.compose import distinct_draws
         from robovast.search.stopping import StopResult, StopSnapshot
         batch_idx = self._batches_done
         result = None
         while True:
-            param_sets = self.strategy.ask(self.per_batch)
+            proposed = self.strategy.ask(self.per_batch)
+            # A repeated draw is one cell, not two: collapsed before composition, which
+            # can only give it one config name and one result directory.
+            param_sets = distinct_draws(proposed, f"Batch {batch_idx}")
             if self.repetition_policy is not None:
                 param_sets = self.repetition_policy.assign(param_sets, self._history)
-            batch_id = self.store.open_batch(campaign_id, batch_idx, ".")
+            # `asked` is what the STRATEGY proposed, not what survived the line above: a
+            # resume re-drives the strategy through the sequence it saw, and asking it for
+            # the collapsed count would rewind its stream by every repeat.
+            batch_id = self.store.open_batch(campaign_id, batch_idx, ".",
+                                             asked=len(proposed))
             if self.state is not None:
                 self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
@@ -891,7 +906,8 @@ class CampaignController:
                         self.store.record_unit(
                             batch_id=batch_id, paramset_id=ps.id, config_name="",
                             params=ps.values, objectives={}, measures={},
-                            n_samples=0, status="composition_failed", result_dir="")
+                            n_samples=0, status="composition_failed", result_dir="",
+                            n_reps=reps)
                         continue
                     config_dir = Path(self.campaign_root) / config_name
                     result_dir = os.path.relpath(config_dir, self.campaign_root)
@@ -915,7 +931,8 @@ class CampaignController:
                         unit_id = self.store.record_unit(
                             batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                             params=ps.values, objectives={}, measures={},
-                            n_samples=0, status="no_sample", result_dir=result_dir)
+                            n_samples=0, status="no_sample", result_dir=result_dir,
+                            n_reps=reps)
                         # Unlike composition_failed, these runs HAPPENED: record them so the
                         # cell's failures are visible and counted rather than vanishing with
                         # the evaluation that could not use them.
@@ -931,7 +948,7 @@ class CampaignController:
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=result_dir)
+                        result_dir=result_dir, n_reps=reps)
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)

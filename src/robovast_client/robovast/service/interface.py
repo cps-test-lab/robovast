@@ -135,8 +135,8 @@ class CampaignRef(BaseModel):
 class BuildImageRequest(BaseModel):
     """Build the derived images a workspace project's containers declare.
 
-    Every entry in ``execution.containers`` that adds ``system_packages`` or
-    ``python_packages`` is built on top of its ``image``; one that adds nothing is
+    Every entry in ``execution.containers`` that adds ``system_packages``,
+    ``python_packages`` or ``ros_packages`` is built on top of its ``image``; one that adds nothing is
     pulled as-is and never built. So this is zero or more images, tagged by container
     name — not one "experiment image", and not tied to any particular role.
 
@@ -2792,8 +2792,8 @@ class RobovastInterface(ABC):
     def build_image(self, request: BuildImageRequest) -> ImageBuildRef:
         """Build the derived images the project's containers declare.
 
-        A container is built when it adds ``system_packages`` or ``python_packages``,
-        whatever its role; one that adds nothing is pulled as-is.
+        A container is built when it adds ``system_packages``, ``python_packages`` or
+        ``ros_packages``, whatever its role; one that adds nothing is pulled as-is.
 
         Idempotent/content-addressed: returns immediately with ``cached=True`` when
         an image for the same inputs already exists; otherwise starts a build and

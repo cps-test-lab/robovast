@@ -577,7 +577,7 @@ Every block takes the same keys:
    ask. RoboVAST cannot derive this, which is why the author has to state it.
 
    Not needed for anything RoboVAST can identify itself: an image it builds (you declared
-   ``system_packages`` or ``python_packages``), a ``family:`` reference, a ``build:`` reference,
+   ``system_packages``, ``python_packages`` or ``ros_packages``), a ``family:`` reference, a ``build:`` reference,
    a container with no ``image`` at all, or a concrete reference to a published family member
    such as ``ghcr.io/<project>/robovast-roqsim:latest``.
 
@@ -614,6 +614,28 @@ Every block takes the same keys:
    The grouping only pays off if the cached layers are still there when the next build
    asks for them, which is what the cache *scope* protects — see
    :ref:`Caching in-cluster <build-cache-scope>`.
+``ros_packages``
+   ROS packages built from **source** — for the ones apt and pip cannot supply at all: a
+   package with a ``source:`` entry and no ``release:`` block in ``ros/rosdistro`` has no
+   Debian on any distro and no PyPI distribution (``px4_msgs`` is one).
+
+   Each entry is a repository (``git:``) at a required, pinned ``ref:`` (a commit sha or a
+   release tag — a branch is refused), with an optional ``packages:`` list to take part of a
+   monorepo. Omit ``packages:`` and every package the repo contains is built.
+
+   .. code-block:: yaml
+
+      containers:
+        scenario:
+          ros_packages:
+            - git: https://github.com/PX4/px4_msgs.git
+              ref: 598c7aad7b2386f9406ebd2a2f841619fddc3c78
+
+   Every entry is cloned into one workspace and built in **one** ``colcon build``, so an
+   inter-repo dependency resolves against the sibling being built rather than against a Debian
+   that does not exist — and colcon decides what a repo contains, plain CMake projects
+   included. Declaring this key alone is enough to make RoboVAST build the image. Full story:
+   :ref:`ROS packages built from source <ros-packages>`.
 ``command``
    What the container runs. Omitted for the roles RoboVAST drives itself — the scenario
    runner, and a sidecar's scenario-execution server (which is what makes it drivable

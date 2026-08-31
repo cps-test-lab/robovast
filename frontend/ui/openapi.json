@@ -323,7 +323,7 @@
         "type": "object"
       },
       "BuildImageRequest": {
-        "description": "Build the derived images a workspace project's containers declare.\n\nEvery entry in ``execution.containers`` that adds ``system_packages`` or\n``python_packages`` is built on top of its ``image``; one that adds nothing is\npulled as-is and never built. So this is zero or more images, tagged by container\nname \u2014 not one \"experiment image\", and not tied to any particular role.\n\nThe declarative content lives in the ``.vast``; this request only names the\nproject, so the client stays free of any registry knowledge.\nIdempotent/content-addressed: if an image for the same inputs already exists it is\nreused (no build runs).",
+        "description": "Build the derived images a workspace project's containers declare.\n\nEvery entry in ``execution.containers`` that adds ``system_packages``,\n``python_packages`` or ``ros_packages`` is built on top of its ``image``; one that adds nothing is\npulled as-is and never built. So this is zero or more images, tagged by container\nname \u2014 not one \"experiment image\", and not tied to any particular role.\n\nThe declarative content lives in the ``.vast``; this request only names the\nproject, so the client stays free of any registry knowledge.\nIdempotent/content-addressed: if an image for the same inputs already exists it is\nreused (no build runs).",
         "properties": {
           "config_path": {
             "default": "",

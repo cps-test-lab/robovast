@@ -2392,8 +2392,8 @@ class LocalTransport(RobovastInterface):
         specs, project_dir = self._build_specs_for(project, campaign_config)
         if not specs:
             raise ValueError(
-                "nothing to build: no container adds system_packages or "
-                "python_packages, so every image is used as declared")
+                "nothing to build: no container adds system_packages, "
+                "python_packages or ros_packages, so every image is used as declared")
         wanted = request.container
         if wanted:
             if wanted not in specs:

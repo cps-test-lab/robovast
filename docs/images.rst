@@ -90,6 +90,72 @@ nobody chose — so it must name one. To base it on the framework image while st
 
 A concrete ref in the same place is the right answer for a genuine third-party image.
 
+.. _ros-packages:
+
+ROS packages built from source
+``````````````````````````````
+
+``system_packages`` covers what apt has and ``python_packages`` covers what pip has. Some ROS
+packages are in neither: a package with a ``source:`` entry and no ``release:`` block in
+``ros/rosdistro`` has no Debian on **any** distro, and is not on PyPI either. ``px4_msgs`` is
+one; vendor driver and message packages routinely are. Before this key the only way in was to
+bake such a package into a shared family image, which makes every unrelated campaign pay for it.
+
+``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref and
+colcon-built into the container's ``/ws`` overlay.
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       scenario:
+         ros_packages:
+           - git: https://github.com/PX4/px4_msgs.git
+             ref: 598c7aad7b2386f9406ebd2a2f841619fddc3c78
+           - git: https://github.com/example/some_repo.git
+             ref: v2.1.0
+             packages: [only_this_one, and_this_one]   # optional
+
+**One workspace, one build.** Every entry is cloned into ``src/`` of the *same* workspace and
+built in a single ``colcon build``. That is the entire reason a workspace is involved: a
+package's dependency on a sibling — in the same repo or in another entry — resolves against the
+sibling being built beside it, rather than against a released Debian which, for a source-only
+package, does not exist. Repo order in the YAML therefore decides nothing and does not affect
+the image hash; colcon derives the build order from the packages themselves.
+
+**Not restricted to ROS packages, because colcon is not.** A repository goes into ``src/`` and
+colcon decides what it contains: ``colcon-cmake`` discovers a plain CMake project by its
+``CMakeLists.txt``, and such a project may ship a ``colcon.pkg`` giving its name, type and cmake
+arguments with no ``package.xml`` anywhere. The Micro XRCE-DDS Agent is exactly this shape and
+builds in the same pass as ``px4_msgs``. The key's name follows the ROS-workspace idiom; it is
+not a statement about what may go in it. cmake arguments are likewise not a ``.vast`` key: a
+project's ``colcon.pkg`` already states them, and a second place to state one thing is a second
+place for them to disagree.
+
+**``ref:`` is required and must pin** — a commit sha, or a release tag. A layer's cache key is
+its command text, so a branch name would be read on the first build and served from then on,
+with nothing recording which commit that was. A ref that reads like a branch is refused at
+validation.
+
+**``packages:`` is optional, and omitting it is the normal case.** Left out, every package the
+repository contains is built: colcon discovers them at build time, so a repo with one package
+and a repo with forty are the same declaration and the Dockerfile text stays identical either
+way. Name packages only to take part of a monorepo; the build is then restricted to those, plus
+their dependencies (``--packages-up-to``), plus everything found in the entries that named none.
+
+Declaring ``ros_packages`` is enough on its own to make RoboVAST build a derived image — the
+container needs no ``system_packages`` or ``python_packages`` beside it — and the ref of each
+repository is recorded in the image's build manifest (``vcs.txt``, see
+:ref:`what an image records <image-records>`), which for a source-built package is the only
+statement anywhere of what code the overlay holds. The overlay is ``/ws``, the workspace the
+framework image already builds into and the entrypoint already sources, so the packages are on
+the environment of every process a run starts, by the mechanism that was already there.
+
+A build that clones nothing, or that ends up selecting no packages, fails the image build with a
+message naming the repository, rather than producing an image that quietly lacks them. The clone
+carries no credential — the token a private ``python_packages`` git spec uses is mounted for the
+pip layer alone — so a repository that needs one fails there, at the clone, rather than later.
+
 Three uses, three layers
 ------------------------
 
@@ -235,6 +301,8 @@ install, the object store and the registry storage, and it takes its options as 
 without the original flags re-provisions with different ones.
 
 
+.. _image-records:
+
 What an image records about itself
 ----------------------------------
 
@@ -278,10 +346,16 @@ label is the failure worth naming, because a forgotten ``--build-arg`` produces 
 present to anything checking only for the key — which is why the build refuses to start without
 the value rather than publishing an image labelled ``""``.
 
-*Do its archives still serve?* One request each against the snapshots the recipe names. The
-pull-request job asks this from the Dockerfile's own pins, needing no image at all; the image
-build then asserts the pushed bytes actually carry what was declared, which is the half only a
-real build can answer.
+*Do its archives still serve?* One request each against the snapshots the recipe names, retried a
+few times before the probe gives up. What this half is looking for is an archive that is **gone**,
+and only a definitive answer is that: a pruned snapshot answers ``4xx``, while a gateway error or
+a timeout is a fact about the mirror and says nothing about the archive. Reading the second as the
+first fails pull requests during someone else's outage. So a transient answer is retried, and one
+that never clears leaves the archive reported as *unverified* — a warning rather than a failure,
+because the check has no evidence either way and the weekly rebuild below is what catches a recipe
+that has genuinely stopped being buildable. The pull-request job asks this from the Dockerfile's own
+pins, needing no image at all; the image build then asserts the pushed bytes actually carry what was
+declared, which is the half only a real build can answer.
 
 Neither of those rebuilds, and rebuilding is the only thing that proves a recipe *sufficient* --
 that the pins it names are the **complete** set of inputs. Something reaching the network

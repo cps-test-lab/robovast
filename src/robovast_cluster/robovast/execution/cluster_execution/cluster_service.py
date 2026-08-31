@@ -1541,8 +1541,8 @@ class ClusterService(LocalTransport):
                                     Path(project.config_path).parent)
         if not specs:
             raise ValueError(
-                "nothing to build: no container adds system_packages or "
-                "python_packages, so every image is used as declared")
+                "nothing to build: no container adds system_packages, "
+                "python_packages or ros_packages, so every image is used as declared")
         wanted = getattr(request, "container", None)
         if wanted:
             if wanted not in specs:

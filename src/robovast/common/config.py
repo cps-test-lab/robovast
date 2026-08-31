@@ -288,6 +288,72 @@ class ImageProvenanceConfig(BaseModel):
     build_recipe: Optional[str] = None
 
 
+#: A ref that pins: a full commit sha, or a tag-shaped ref. Deliberately permissive about the
+#: tag half (``v1.2.3``, ``release-1.18``, ``2024-05-01``) and deliberately strict about what it
+#: refuses -- a bare word that reads like a branch (``main``, ``devel``, ``humble``). We cannot
+#: tell a tag from a branch without the network, but the branch names that actually get written
+#: by mistake are exactly the ones with no version-ish character in them, so requiring a digit
+#: somewhere catches them while never rejecting a real tag anyone writes.
+PINNED_REF = re.compile(r"^(?:[0-9a-f]{40}|[^\s]*[0-9][^\s]*)$")
+
+
+class RosPackageConfig(BaseModel):
+    """One git repository colcon-built into the container's ROS overlay.
+
+    For the ROS packages that have no other way in. A package with a ``source:`` entry and no
+    ``release:`` block in ``ros/rosdistro`` has no Debian on any distro and is not on PyPI
+    either -- ``px4_msgs`` is one, and vendor driver and message packages routinely are -- so
+    ``system_packages`` and ``python_packages`` between them cannot express it, and the only
+    workaround was baking it into a shared family image where every unrelated campaign pays for
+    it.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    #: Clone URL. Anything ``git clone`` can reach **without a credential**: the clone runs in
+    #: the image build with no token mounted, unlike a ``python_packages`` git spec, whose
+    #: BuildKit secret is attached to the pip layer alone. A private repository would fail the
+    #: build at the clone -- loudly, naming the repo -- rather than build something incomplete.
+    git: str
+    #: The commit or tag to build. **Required, and must pin.** A layer's cache key is its command
+    #: text, so a branch name would serve whatever the branch pointed at on the day of the first
+    #: build, forever -- and nothing in the image would record which commit that was.
+    ref: str
+    #: Which of the repository's packages to build. Omitted -- the normal case -- means *all of
+    #: them*: colcon discovers what the repo contains, so a repo with one package and a repo with
+    #: forty are the same declaration. Name packages only to take part of a monorepo.
+    packages: Optional[list[str]] = None
+
+    @field_validator('git', 'ref')
+    @classmethod
+    def _validate_nonblank(cls, v, info):
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"'{info.field_name}' must be a non-empty string")
+        return v.strip()
+
+    @field_validator('ref')
+    @classmethod
+    def _validate_pinned(cls, v):
+        if not PINNED_REF.match(v):
+            raise ValueError(
+                f"'{v}' looks like a branch, not a pin. Give a commit sha or a release tag: "
+                "a branch is re-read only when something else invalidates the layer cache, so "
+                "the image would keep serving whatever the branch pointed at on its first build")
+        return v
+
+    @field_validator('packages')
+    @classmethod
+    def _validate_package_names(cls, v):
+        if v is None:
+            return v
+        if not v:
+            raise ValueError(
+                "'packages' is empty; omit it to build every package the repository contains")
+        for i, name in enumerate(v):
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"package {i} is blank; expected a ROS package name")
+        return v
+
+
 #: The fields whose presence means a container's sizing was declared rather than measured.
 #: ``gpu`` is not among them: a device count is a count, not a rate, so nothing measures it
 #: and it never decides the mode.
@@ -440,6 +506,14 @@ class ContainerConfig(BaseModel):
     #: does not matter at all, because pip sees every local wheel at once and resolves an
     #: inter-package dependency against it instead of against PyPI.
     python_packages: Optional[list[Union[str, list[str]]]] = None
+    #: ROS packages built from source into the container's ``/ws`` colcon overlay -- the third
+    #: way in, for the packages the other two cannot express (see :class:`RosPackageConfig`).
+    #:
+    #: Every entry is cloned into the SAME workspace and built in ONE ``colcon build``, which is
+    #: the entire reason a workspace exists here: an inter-package or inter-repo dependency then
+    #: resolves against the sibling being built beside it, rather than against a released Debian
+    #: that for a source-only package does not exist.
+    ros_packages: Optional[list[RosPackageConfig]] = None
     #: What the container runs. Omitted for the roles RoboVAST drives itself (the
     #: scenario runner, a sidecar's scenario-execution server); required for an ad-hoc
     #: container, which nothing else knows how to start.
@@ -504,7 +578,7 @@ class ContainerConfig(BaseModel):
 
     def builds_image(self) -> bool:
         """Whether this container needs an image built on top of :attr:`image`."""
-        return bool(self.system_packages or self.python_packages)
+        return bool(self.system_packages or self.python_packages or self.ros_packages)
 
 
 #: Size of the shared ``/dev/shm`` a run gets when its ``.vast`` does not say.

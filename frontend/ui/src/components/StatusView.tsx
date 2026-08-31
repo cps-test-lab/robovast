@@ -213,7 +213,8 @@ function SearchRing({
   const done = status.batches_done ?? 0
   const bound = ringBudget(status)
   const share = bound ? bound.share * 100 : 0
-  const radius = 15.9155 // circumference 100, so a dash length IS a percentage
+  const radius = RING.radius
+  const stroke = RING.stroke
   return (
     <Tooltip
       placement="top"
@@ -222,12 +223,12 @@ function SearchRing({
       title={<SearchHover campaignId={campaignId} status={status} />}
     >
       <Box sx={{ position: 'relative', width: size, height: size, flexShrink: 0, cursor: 'help' }}>
-        <Box component="svg" viewBox="0 0 40 40" sx={{ width: size, height: size, display: 'block' }}>
+        <Box component="svg" viewBox={`0 0 ${RING.viewBox} ${RING.viewBox}`} sx={{ width: size, height: size, display: 'block' }}>
           {/* Concrete theme values, not palette paths: `sx` does not resolve those for SVG
               presentation properties — see the same note on the Details panel's ring. */}
           <Box
             component="circle" cx="20" cy="20" r={radius}
-            sx={{ fill: 'none', stroke: theme.palette.action.hover, strokeWidth: 6 }}
+            sx={{ fill: 'none', stroke: theme.palette.action.hover, strokeWidth: stroke }}
           />
           {bound ? (
             <Box
@@ -247,23 +248,28 @@ function SearchRing({
                 stroke: status.stopping_soon === true
                   ? theme.palette.warning.main
                   : theme.palette.secondary.main,
-                strokeWidth: 6,
+                strokeWidth: stroke,
                 strokeDasharray: `${share} ${100 - share}`,
               }}
             />
           ) : null}
+          {/* An opaque field for the label, so it never borrows the arc's colour -- see RING. */}
+          <Box
+            component="circle" cx="20" cy="20" r={RING.labelField}
+            sx={{ fill: theme.palette.background.paper, stroke: 'none' }}
+          />
         </Box>
         <Typography
           variant="caption"
           sx={{
             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 10, fontWeight: 600,
+            justifyContent: 'center', fontSize: RING.fontSize, fontWeight: 600,
             // Tabular figures because this number changes under a fixed-width mark: proportional
             // digits make the label shift inside the hole as it climbs through 1%..100%.
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {bound ? `${Math.round(share)}%` : done}
+          {ringLabel(bound ? bound.share : null, done)}
         </Typography>
       </Box>
     </Tooltip>
@@ -322,6 +328,15 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
       <FactRows
         title="search"
         facts={[
+          // First, and it names the number in the ring's hole. The hole carries no `%` (it does
+          // not fit -- see LABEL_FIELD), so a bare `67` there could be read as a count, which is
+          // exactly what it used to be before the ring measured a budget. This row is where the
+          // unit lives. Absent when nothing bounds the search, and then the hole shows the round
+          // count that the next row names instead.
+          {
+            label: 'budget spent',
+            value: bound ? `${Math.round(bound.share * 100)}% of ${bound.item.label}` : null,
+          },
           { label: 'rounds', value: String(done) },
           // A criterion whose position is not yet known keeps its row and shows `— of N`: the
           // criterion demonstrably exists (the campaign declared it), which is a different fact
@@ -370,8 +385,83 @@ const DONE_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'killed'])
  *  ever offered beside `log`. */
 type CardTab = 'jobs' | 'details' | 'log'
 
-/** The rounds ring's diameter, and so the width its slot reserves on every row. */
-const RING_SIZE = 26
+/** The ring's geometry, in one place because these five numbers have to agree.
+ *
+ *  They did not. The label was sized independently of the band, and `67%` at 10px is about
+ *  20px against a hole of `2 * (radius - stroke/2) * size/viewBox` = under 17px -- so the digits'
+ *  outer edges sat on a saturated arc and lost their contrast against it, which is what a reader
+ *  reported as the colour being too bright. The fix is arithmetic, not palette, and
+ *  `ringLabelWidth` below is the assertion that keeps it so.
+ *
+ *  `labelField` is the opaque disc the label sits on. At these values it just fills the hole
+ *  rather than covering any of the band, so it is insurance against a translucent surface or an
+ *  antialiased edge rather than the thing that buys the contrast.
+ *
+ *  No `%` in the label, and that is a consequence of the same arithmetic rather than a
+ *  preference: `%` is the widest glyph in the string at roughly 0.85em, so `100%` wants ~24px at
+ *  9px type and does not fit a 26px ring at any legible size. The value is still a percent and
+ *  the hover names it as one. */
+const RING = {
+  size: 26,
+  viewBox: 40,
+  /** Circumference 100, so a dash length IS a percentage. */
+  radius: 15.9155,
+  stroke: 6,
+  /** Radius of the opaque disc the label sits on. Deliberately INSIDE the band rather than at
+   *  its inner edge: the disc is what defines the label's field, so widening it buys room for
+   *  the label without thinning the stroke or shrinking the type. The band still shows
+   *  `radius + stroke/2 - labelField` of itself, which at these values is 2.4px -- a normal
+   *  thin donut, and filled and track are clipped equally so the contrast between them is
+   *  untouched. */
+  labelField: 15.2,
+  fontSize: 9,
+} as const
+
+/** The ring's diameter, and so the width its slot reserves on every row. */
+const RING_SIZE = RING.size
+
+/** What the hole shows once the budget is spent.
+ *
+ *  A tick rather than `100%`, and that is what lets the rest keep its `%` sign: three digits plus
+ *  the sign wants about 24px and does not fit a 26px ring at any legible size, and it was the
+ *  reason the sign was dropped from every value. Replacing only the one value that does not fit
+ *  costs one glyph and buys the sign back for the other hundred.
+ *
+ *  It also reads better than the number it replaces: at 100% the binding budget is exhausted, so
+ *  "done" is what the reader wants, not an arithmetic identity. */
+const RING_DONE = '\u2713'
+
+/** The hole's label for a share in [0,1], or the round count when nothing bounds the search.
+ *
+ *  Only an EXACT full share earns the tick. `Math.round` would hand it to 99.6%, claiming a
+ *  budget spent while a run of it remains -- so short of exhaustion the number is capped at 99
+ *  and understates by a fraction, which is the same direction `ringBudget` clamps in. */
+export function ringLabel(share: number | null, rounds: number): string {
+  if (share == null) return String(rounds)
+  if (share >= 1) return RING_DONE
+  return `${Math.min(99, Math.round(share * 100))}%`
+}
+
+/** How wide the label's field is, in rendered pixels: the opaque disc, not the hole.
+ *
+ *  The disc is what the label may occupy, and it is wider than the hole on purpose -- see
+ *  `RING.labelField`. Measuring against the hole instead is what made the first attempt at this
+ *  shrink the type and drop the `%` sign when neither was necessary. */
+export function ringLabelField(): number {
+  return 2 * RING.labelField * (RING.size / RING.viewBox)
+}
+
+/** Roughly how wide *label* renders at the ring's type size.
+ *
+ *  An estimate, deliberately: measuring text needs a laid-out document, and the thing worth
+ *  guarding is not the exact pixel but that nobody re-sizes the label past its hole again. The
+ *  per-character ems are conservative for a semibold tabular sans -- digits are set to one
+ *  width by `tabular-nums`, and `%` is the widest glyph the string could contain. */
+export function ringLabelWidth(label: string): number {
+  const em = [...label].reduce(
+    (w, ch) => w + (ch === '%' ? 0.85 : ch === RING_DONE ? 1.0 : 0.6), 0)
+  return em * RING.fontSize
+}
 
 // Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping

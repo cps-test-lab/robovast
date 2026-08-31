@@ -990,7 +990,8 @@ def image():
 
     Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
     Registry-free: you name a project; the service builds every container in
-    ``execution.containers`` that adds ``system_packages`` or ``python_packages``,
+    ``execution.containers`` that adds ``system_packages``, ``python_packages`` or
+    ``ros_packages``,
     and each image is referenced as ``build:<container>`` in ``execution.image``.
     Every command prints the target it resolved — a service on the conventional local
     port if one answers, otherwise the one ``vast login`` stored.
