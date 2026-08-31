@@ -47,9 +47,12 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  - batches: 6
-  stopping:
-  - no_improvement: {patience: 3, min_delta: 0.02}
+  # Bounded by RUNS and identical to nav_search_tpe.vast, because the README pairs these
+  # two and a pair must share a budget. `batches:` cannot express that -- equal batches are
+  # equal simulator only while repetitions are constant -- and a `no_improvement` stop makes
+  # it worse still, since each strategy then stops when its own convergence rule fires and
+  # the comparison measures the rule rather than the sampler.
+  - runs: 180
   seed: 1
 
 visualization:

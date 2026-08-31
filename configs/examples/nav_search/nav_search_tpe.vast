@@ -47,23 +47,12 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  - batches: 6
-  stopping:
-  # `no_improvement`, not `target_objective`, and the difference is the landscape rather
-  # than the number. About half of this space collides, so "find a crossing at least this
-  # bad" is satisfied by the FIRST batch at any level above the floor -- which measures
-  # nothing about TPE, whose first batch is random startup sampling. Any threshold above the
-  # floor therefore stops in batch 1, leaving the campaign's "how few evaluations found it"
-  # claim unearned -- random sampling would have done the same.
-  #
-  # `target_objective` is not broken; it is unsuited here. It suits a space where the target
-  # is rare, and it stays the right criterion for one.
-  #
-  # Ending when the search stops LEARNING is the version of "how few evaluations" this
-  # landscape can support, and it is what makes the pairing the README promises readable:
-  # cmaes carries the identical rule, so "does an evolution strategy beat a model here"
-  # compares two searches stopped by the same standard rather than two different clocks.
-  - no_improvement: {patience: 3, min_delta: 0.02}
+  # Bounded by RUNS and identical to nav_search_cmaes.vast, because the README pairs these
+  # two and a pair must share a budget. `batches:` cannot express that -- equal batches are
+  # equal simulator only while repetitions are constant -- and a `no_improvement` stop makes
+  # it worse still, since each strategy then stops when its own convergence rule fires and
+  # the comparison measures the rule rather than the sampler.
+  - runs: 180
   seed: 1
 
 visualization:

@@ -56,9 +56,12 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  # The same RUN budget as nav_search_tpe, which is the only way the comparison means
-  # anything: equal batches would not be equal simulator once repetitions vary.
-  - runs: 144
+  # FEWER runs than the 180 tpe and cmaes spend, which is the whole claim: adaptive
+  # repetitions are meant to reach the same conclusion for less simulator by not re-running
+  # cells that were never in doubt. Given an equal budget there is nothing to demonstrate --
+  # and given `min: 1, max: 6`, whose mean allocation sits above the fixed 3 it is compared
+  # against, an equal budget cannot even be spent the same way.
+  - runs: 120
   seed: 1
 
 visualization:
