@@ -140,31 +140,61 @@ class OptunaStrategy(SearchStrategy):
         self._multi = multi
         self._objective_name = self.objectives[0].name
         self._batches_done = 0
-        self._trials: dict[str, object] = {}     # ParamSet.id -> Trial (current batch)
+        #: (ParamSet.id, Trial) for the batch currently outstanding, in ask order. A list
+        #: and not a dict keyed by id: two draws of one batch can carry the same id (the
+        #: id is derived from the values, and a discrete space repeats), and a dict would
+        #: drop one of their trials -- leaving it RUNNING forever, which is exactly what
+        #: `tell` closes below.
+        self._trials: list[tuple[str, object]] = []
         self._history: list[Evaluation] = []
 
     def ask(self, n: int) -> list[ParamSet]:
-        self._trials = {}
+        self._trials = []
         proposals = []
         for _ in range(n):
             trial = self._study.ask()
             values = {path: _suggest(trial, path, dim)
                       for path, dim in self.search_space.items()}
             ps = ParamSet(values=values)
-            self._trials[ps.id] = trial
+            self._trials.append((ps.id, trial))
             proposals.append(ps)
         logger.debug("Optuna proposed %d trial(s)", len(proposals))
         return proposals
 
     def tell(self, evaluations: list[Evaluation]) -> None:
+        from optuna.trial import TrialState  # noqa: PLC0415 - optional extra
+
+        pending: dict[str, list] = {}
         for ev in evaluations:
-            trial = self._trials.get(ev.params.id)
-            if trial is None:
+            pending.setdefault(ev.params.id, []).append(ev)
+        abandoned = []
+        for ps_id, trial in self._trials:
+            queue = pending.get(ps_id)
+            if queue:
+                ev = queue.pop(0)
+                if self._multi:
+                    self._study.tell(
+                        trial, [float(ev.objectives[o.name]) for o in self.objectives])
+                else:
+                    self._study.tell(trial, float(ev.objectives[self._objective_name]))
                 continue
-            if self._multi:
-                self._study.tell(trial, [float(ev.objectives[o.name]) for o in self.objectives])
-            else:
-                self._study.tell(trial, float(ev.objectives[self._objective_name]))
+            # This draw produced no evaluation -- the variation pipeline could not realize
+            # it, or every run of it was lost -- so the trial that proposed it must be
+            # closed, and FAIL is the only close that states that without inventing a
+            # value. Left open it stays RUNNING for the rest of the campaign, and TPE's
+            # `constant_liar` (on by default here) feeds running trials to its ABOVE
+            # estimator: every unrealizable draw would then permanently mark its own
+            # region as bad, and the sampler would steer away from it for good, more
+            # strongly with each batch. optuna excludes FAIL trials from sampling
+            # altogether, so an unmeasurable draw costs its trial and nothing else.
+            self._study.tell(trial, state=TrialState.FAIL)
+            abandoned.append(ps_id)
+        if abandoned:
+            logger.warning(
+                "Optuna batch came back short: %d of %d trial(s) produced no evaluation "
+                "(%s); each is closed as FAIL so the sampler neither waits on it nor "
+                "scores it.", len(abandoned), len(self._trials), ", ".join(abandoned))
+        self._trials = []
         self._history.extend(evaluations)
         self._batches_done += 1
 
