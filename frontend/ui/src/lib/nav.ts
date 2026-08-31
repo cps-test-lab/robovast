@@ -32,6 +32,7 @@ export function openResultsView(
     tab: '',
     configCampaignId: '',
     shareImport: '',
+    openCampaign: '',
   }
   window.location.hash = `#${hashFor(nav)}`
 }
@@ -64,6 +65,44 @@ export function shareImportLink(search: string): string {
     tab: '',
     configCampaignId: '',
     shareImport: search,
+    openCampaign: '',
   }
   return `${window.location.href.split('#')[0]}#${hashFor(nav)}`
+}
+
+/** The absolute URL that opens the campaign view with *campaignId*'s card unfolded.
+ *
+ *  The same kind of thing as `shareImportLink` and built the same way: a link to hand somebody
+ *  (or to put behind a notice), deployment-scoped because it carries this deployment's origin,
+ *  and spelled by `hashFor` so there is one grammar and not two.
+ *
+ *  What it addresses is a card in a list, because that IS the campaign view — there is no
+ *  separate page to point at. The card is opened and scrolled to; nothing about the reader's
+ *  other cards is disturbed. */
+export function campaignLink(campaignId: string): string {
+  const nav: Nav = {
+    topicId: 'execution',
+    viewId: '',
+    campaignId: '',
+    sel: { level: 'campaign' },
+    tab: '',
+    configCampaignId: '',
+    shareImport: '',
+    openCampaign: campaignId,
+  }
+  return `${window.location.href.split('#')[0]}#${hashFor(nav)}`
+}
+
+/** Navigate to *campaignId*'s card in the campaign view, opening it. */
+export function openCampaignCard(campaignId: string): void {
+  window.location.hash = `#${hashFor({
+    topicId: 'execution',
+    viewId: '',
+    campaignId: '',
+    sel: { level: 'campaign' },
+    tab: '',
+    configCampaignId: '',
+    shareImport: '',
+    openCampaign: campaignId,
+  })}`
 }

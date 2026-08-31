@@ -31,7 +31,7 @@ from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.client.status import Phase, Status, stall_report
+from robovast.client.status import Phase, Status, budget_positions, stall_report
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,12 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         for cid in ids:
             try:
                 # `Status` is a pydantic model; _campaign_lines reads it as a dict.
-                status = client.get_status(cid).model_dump()
+                st = client.get_status(cid)
+                status = st.model_dump()
+                # A `time` budget's `current` is only republished when a round closes, so
+                # derive it from the search's origin before rendering -- otherwise a monitor
+                # refreshing every second shows an elapsed figure that steps once a batch.
+                status["budget"] = [b.model_dump() for b in budget_positions(st)]
             except Exception:  # pylint: disable=broad-except
                 blocks.append([f"Campaign {cid}  [status unavailable]"])
                 continue

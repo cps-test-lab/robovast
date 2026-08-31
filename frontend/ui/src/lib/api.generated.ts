@@ -3468,6 +3468,8 @@ export interface components {
             /** Progress Since */
             progress_since: number;
             runs: components["schemas"]["RunProgress"];
+            /** Search Since */
+            search_since: number | null;
             /** Share Error */
             share_error: string | null;
             /** Stage */

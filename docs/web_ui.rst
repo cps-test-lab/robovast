@@ -44,10 +44,26 @@ It provides four views:
   ``done/total`` — with the counts inside the track and the rest (passed, failed, no
   result, start and finish times) on hover; on a running campaign its striped segment is
   the runs in flight, so the folded row is live. A **search** campaign's folded row adds a
-  small **rounds ring** with its round count in the hole, because a search's run counters
-  describe its *current batch* rather than the campaign; hovering the ring gives the round
-  bound, the best objective and the **objective-over-rounds chart**. A search whose rounds
-  nothing bounds draws the bare ring: there is no denominator, and none is invented. The campaign list itself is **streamed** over Server-Sent Events
+  small **budget ring**, because a search's run counters describe its *current batch* rather
+  than the campaign. The ring measures whichever declared ``budget`` criterion is **closest to
+  exhausting** — the one that will fire first, so the one that says when the campaign actually
+  ends — and its hole carries that share as a **percent**: the unit varies (runs, rounds,
+  evaluations, seconds), and a percent is short whatever the criterion is. Hovering gives the
+  rounds, the binding criterion with its unit and its **scope**, every other declared criterion
+  including the ``stopping`` ones, the best objective, and the **objective-over-rounds chart**.
+
+  The scope matters on the hover because a ``runs`` budget counts the *campaign's* runs while the
+  meter beside the ring counts the *current batch's*: two run figures that otherwise look like they
+  disagree.
+
+  Only the four ``budget`` kinds can fill the ring. They are monotone resource caps, so a share of
+  them means something; the three ``stopping`` kinds are result-dependent early exits and are not a
+  share of anything — ``no_improvement`` resets to zero on an improvement, and ``metric`` carries a
+  comparison direction that is not published — so they appear on the hover as figures, never as an
+  arc or a bar. A search bounded **only** by those draws the bare ring with its round count inside:
+  there is no denominator, and none is invented.
+
+  The campaign list itself is **streamed** over Server-Sent Events
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list
   immediately — with its true live phase and **how long ago it started** — and every phase
   change is pushed within a second. That age is deliberately relative rather than a wall
@@ -387,9 +403,32 @@ four are shown at once, and the oldest give way — a batch of campaigns ending 
 not bury the list they are about. Repeating an action refreshes its own notice rather than
 stacking a second copy of it, so leaning on a menu entry does not build a tower.
 
-**A failure stays put.** A refusal or an error keeps its place in the card or panel that
-raised it, with the service's own message under it, because that text is worth reading twice
-and often worth copying. Nothing that carries a reason is put somewhere it will erase itself.
+**A failure is given weight, not permanence.** A refusal or an error from something *you* did
+appears in the same bottom-right stack, with the service's own message under it in monospace. It
+is held **three times as long** as a passing notice — ten seconds is enough to notice a sentence
+and not enough to read one — counted separately so a burst of campaigns ending cannot evict it,
+and drawn nearest the corner so an arriving notice pushes the stack up above it rather than
+shifting it out from under the pointer. Hovering the stack holds it for as long as you are
+reading. It still clears itself: a notice that must be clicked away turns every failure into a
+chore.
+
+They are no longer kept on the card that raised them, because nothing there ever cleared one.
+The card does not unmount and the action's state was never reset, so a refusal stayed visible
+until the tab was reloaded — long after the campaign it was about had moved on, and sometimes
+next to a later attempt that had succeeded.
+
+**What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
+announcing it offers **Open campaign**, which unfolds that card and scrolls to it. The known gap
+is a refused *action* — a retrigger the service would not accept — whose reason exists nowhere
+but its notice; a durable event log is what will close that, and until then the longer duration
+is the whole of the answer. (A refusal the service *expects* — stopping a job that finished a
+moment earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
+
+**A campaign is addressable.** ``#/execution?campaign=<id>`` opens the campaign view with that
+campaign's card unfolded and scrolled to; **Copy link to this campaign** in the card's menu
+hands you that URL. It is an instruction for arrival rather than a description of the page —
+cards fold and unfold freely afterwards, and several can be open at once, so the link says where
+to start and not what the page must look like.
 
 **Campaigns announce themselves.** Starting and ending is reported wherever you are in the
 app, not only on the Campaigns page — a campaign that ends while you are reading results says

@@ -6,11 +6,13 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Collapse from '@mui/material/Collapse'
 import Typography from '@mui/material/Typography'
+import { ErrorText } from '@/components/StatusView'
 import {
   addToast,
   dismissToast,
   expireToasts,
   extendDeadlines,
+  isFailure,
   type Toast,
   type ToastSpec,
 } from '@/lib/toasts'
@@ -166,7 +168,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           '& > *': { pointerEvents: 'auto' },
         }}
       >
-        {toasts.map((t) => (
+        {orderedForDisplay(toasts).map((t) => (
           <Collapse
             key={t.id}
             in={!leaving.has(t.id)}
@@ -180,6 +182,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </Box>
     </ToastsContext.Provider>
   )
+}
+
+/**
+ * Passing notices first, failures last -- so failures sit nearest the corner.
+ *
+ * The column grows upward from the bottom, so the last child is closest to the corner and in the
+ * most stable position on screen. Putting failures there means an arriving notice pushes the
+ * stack up *above* them, instead of shifting the one thing worth reading out from under the
+ * cursor. A stable sort, so age still orders within each group.
+ */
+function orderedForDisplay(list: Toast[]): Toast[] {
+  return [...list].sort((a, b) => Number(isFailure(a)) - Number(isFailure(b)))
 }
 
 function ToastRow({ toast, onClose }: { toast: Toast; onClose: () => void }) {
@@ -203,9 +217,16 @@ function ToastRow({ toast, onClose }: { toast: Toast; onClose: () => void }) {
         {toast.message}
       </AlertTitle>
       {toast.note ? (
-        <Typography variant="body2" color="text.secondary">
-          {toast.note}
-        </Typography>
+        // A failure's note is the backend's own words -- often a paragraph, sometimes with a
+        // ref or a path in it -- so it gets the same monospace, wrapped, scrolling treatment the
+        // inline Alert on the campaign card gave it. Anything else is prose and reads as prose.
+        isFailure(toast) ? (
+          <ErrorText>{toast.note}</ErrorText>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            {toast.note}
+          </Typography>
+        )
       ) : null}
       {toast.action ? (
         <Button
