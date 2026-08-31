@@ -267,6 +267,7 @@ build_base() {
     "${SRC_CONTEXT[@]}" \
     "${GIT_SECRET[@]}" \
     "${GIT_REVISION_ARGS[@]}" \
+    "${COMPAT_VERSION_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
     -f $BASEDIR/Dockerfile \

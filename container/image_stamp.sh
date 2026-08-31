@@ -24,16 +24,19 @@
 
 # image_stamp_args [repo_root]
 #
-# Sets GIT_REVISION_ARGS and BUILD_DATE_ARGS to the --build-arg pairs for that checkout, or to
-# nothing. Defaults to the repository this file lives in, which is the one whose code goes into
+# Sets GIT_REVISION_ARGS, BUILD_DATE_ARGS and COMPAT_VERSION_ARGS to the --build-arg pairs for
+# that checkout. The first two may be empty; the last may not -- see below.
+#
+# Defaults to the repository this file lives in, which is the one whose code goes into
 # the image -- not the caller's working directory, which may be a superproject holding robovast
 # as a submodule.
 #
 # Two arrays and not one: a build script expands only the arrays its Dockerfile declares an ARG
 # for, and passing a --build-arg no Dockerfile declares is a warning on every build.
 image_stamp_args() {
-  local root="${1:-}" sha dirty
+  local root="${1:-}" sha dirty compat
   GIT_REVISION_ARGS=()
+  COMPAT_VERSION_ARGS=()
 
   if [[ -z "$root" ]]; then
     root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -46,6 +49,24 @@ image_stamp_args() {
   # locally built image are read the same way. Unlike the revision this changes on every build
   # rather than every commit, so its ARG belongs at the very end of a Dockerfile.
   BUILD_DATE_ARGS=(--build-arg "ROBOVAST_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+
+  # The host<->container protocol version, read from the one place that defines it instead of
+  # being written into each Dockerfile by hand. It used to be a literal in three files kept in
+  # step by a CI gate -- which is a gate precisely because a hand-copied constant drifts.
+  # Derived like the two above, it cannot.
+  #
+  # FATAL when it cannot be read, unlike an absent revision. An empty revision is a real answer
+  # ("this deployment cannot tell you"); an empty protocol version produces an image whose label
+  # is the empty string, which every host then refuses to drive. Better to fail the build.
+  compat=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' "$root/src/robovast/common/execution.py" \
+           2>/dev/null || true)
+  if [[ -z "$compat" ]]; then
+    echo "error: could not read COMPAT_VERSION from $root/src/robovast/common/execution.py." >&2
+    echo "       The image would carry an empty org.robovast.compat-version label, and every" >&2
+    echo "       host would refuse to drive it. Not building." >&2
+    return 1
+  fi
+  COMPAT_VERSION_ARGS=(--build-arg "ROBOVAST_COMPAT_VERSION=$compat")
 
   # Both reads, or neither: a sha without knowing whether the tree is clean would be baked as
   # if it described the code, and a dirty tree's sha does not.

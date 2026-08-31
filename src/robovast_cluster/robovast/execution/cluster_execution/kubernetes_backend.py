@@ -3310,11 +3310,22 @@ class KubernetesBackend(ExecutionBackend):
         # info; degrades in-pod. Idempotent across a search's repeated batches.
         from robovast.common.execution import \
             create_execution_yaml  # pylint: disable=import-outside-toplevel
+        # The labels this campaign's images carry, read from the registry when the protocol
+        # check asked -- so recording what each image was built from costs nothing more here,
+        # and works in a pod that has no docker to inspect them with.
+        image_labels = {}
+        plan = getattr(runner, "plan", None)
+        for container in getattr(plan, "containers", ()) or ():
+            if container.image:
+                found = runner._image_labels(container.image)   # noqa: SLF001 - same package
+                if found:
+                    image_labels[container.name] = found
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
-                              image_digests=getattr(runner, "_resolved_image_digests", None))
+                              image_digests=getattr(runner, "_resolved_image_digests", None),
+                              image_labels=image_labels or None)
 
     def publish_records(self, campaign_root: str) -> None:
         """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.
