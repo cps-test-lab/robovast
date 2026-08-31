@@ -199,10 +199,23 @@ def get_example(name: str = "") -> dict:
     for rel in _examples[name]["files"]:
         path = base / rel
         entry: dict = {"path": rel}
-        if is_binary(path):
+        # Absence first, and named for what it is. The catalog is the git index, which
+        # lists a file whether or not the checkout still holds it -- and ``is_binary``
+        # answers "binary" for anything it cannot open, so a file that is simply not
+        # there was reported as a binary asset the caller should fetch some other way.
+        if not path.is_file():
+            entry["note"] = ("Tracked in git but not present in this checkout — "
+                             "no content to read.")
+        elif is_binary(path):
             entry["note"] = "Binary file — content omitted."
         else:
-            all_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                entry["note"] = f"Could not be read: {e}."
+                files.append(entry)
+                continue
+            all_lines = text.splitlines()
             entry["content"] = "\n".join(all_lines[:_MAX_FILE_LINES])
             if len(all_lines) > _MAX_FILE_LINES:
                 entry["truncated"] = True

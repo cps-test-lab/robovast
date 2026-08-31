@@ -66,7 +66,22 @@ def test_get_plugin_details_omits_parameters_without_model():
     assert "parameters" not in details
 
 
-def test_get_plugin_details_unknown_plugin_reports_error():
-    details = get_plugin_details("robovast.variation_types", "NotAPlugin")
-    assert details == {
-        "error": "No plugin 'NotAPlugin' found in group 'robovast.variation_types'."}
+def test_get_plugin_details_unknown_plugin_names_what_the_group_has():
+    """A spelling is the usual cause, so the refusal carries the alternatives -- as the
+    tools that refuse an unknown container or campaign do."""
+    installed = {p["name"] for p in
+                 list_plugins(group="robovast.variation_types")["plugins"]}
+    error = get_plugin_details("robovast.variation_types", "NotAPlugin")["error"]
+    assert "NotAPlugin" in error
+    assert installed & set(error.replace(",", " ").split()), error
+
+
+def test_get_plugin_details_refuses_an_unknown_group_as_a_group():
+    """A mistyped group otherwise came back as "no such plugin in <group>", which reads
+    as a verdict about the plugin when the lookup never had a group to look in."""
+    error = get_plugin_details("robovast.variation_typos", "OneOfValues")["error"]
+    assert "unknown plugin group" in error
+    assert "robovast.variation_types" in error
+    # The verdict the listing reaches, so the two tools cannot disagree about which
+    # groups exist.
+    assert "unknown plugin group" in list_plugins(group="robovast.variation_typos")["error"]
