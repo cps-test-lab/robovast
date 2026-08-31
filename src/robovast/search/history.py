@@ -48,10 +48,15 @@ class RecordedBatch:
     Attributes:
         asked: how many parameter sets the strategy proposed for this batch.
         evaluations: those that were scored, in the order they were recorded.
+        reps: repetitions ALLOCATED to each recorded cell, in the same order -- every unit
+            row, not only the scored ones, because a draw that composed to nothing still
+            occupied the plan its allocation reserved. ``None`` for a row written before
+            the allocation was recorded, where it was the campaign's ``execution.runs``.
     """
 
     asked: int = 0
     evaluations: list = field(default_factory=list)
+    reps: list = field(default_factory=list)
 
 
 def _evaluation(row) -> Evaluation:
@@ -63,7 +68,8 @@ def _evaluation(row) -> Evaluation:
     """
     values = json.loads(row["params_json"] or "{}")
     return Evaluation(
-        params=ParamSet(values=values, id=row["paramset_id"] or ""),
+        params=ParamSet(values=values, id=row["paramset_id"] or "",
+                        n_reps=_reps(row)),
         objectives=json.loads(row["objectives_json"] or "{}"),
         measures=json.loads(row["measures_json"] or "{}"),
         n_samples=row["n_samples"] or 0,
@@ -83,8 +89,23 @@ def recorded_batches(store, campaign_row_id: int) -> list:
         rows = store.units(batch["id"])
         out.append(RecordedBatch(
             asked=_asked(batch, rows),
-            evaluations=[_evaluation(r) for r in rows if r["status"] == "evaluated"]))
+            evaluations=[_evaluation(r) for r in rows if r["status"] == "evaluated"],
+            reps=[_reps(r) for r in rows]))
     return out
+
+
+def _reps(row):
+    """Repetitions allocated to this cell, or ``None`` when the store recorded none.
+
+    ``None`` is neither zero nor a default: it means this row predates the column, where
+    every cell got the campaign's ``execution.runs`` because no per-cell allocation could
+    be recorded. The caller substitutes that; substituting it here would hide which rows
+    carry a measurement and which carry an assumption.
+    """
+    try:
+        return row["n_reps"]
+    except (IndexError, KeyError):      # a store predating the column
+        return None
 
 
 def _asked(batch, rows) -> int:

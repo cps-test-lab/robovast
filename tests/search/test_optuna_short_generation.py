@@ -26,7 +26,9 @@ from robovast.search.types import Evaluation
 
 pytest.importorskip("optuna")
 
-from optuna.trial import TrialState  # noqa: E402
+# Below the importorskip on purpose: the guard exists so this import is never
+# attempted without the 'optuna' extra, which is exactly what moving it up would do.
+from optuna.trial import TrialState  # noqa: E402  # pylint: disable=wrong-import-position
 
 
 def _cfg(space=None, objectives=None, sampler="tpe"):
