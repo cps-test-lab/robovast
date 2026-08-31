@@ -151,6 +151,17 @@ only while something is displaying it and re-requested only when ``batches_done`
 on the status) moves. A series is almost never so small that it belongs on the status; if it grows
 with batches, runs, or time, it does not.
 
+``GET /admin/events`` is the **series** row done the way that row prescribes: its own
+cursor-keyed route, requested by whatever is displaying it and resumed from ``next_seq``, rather
+than a field on a payload every open tab re-fetches once a second.
+
+It is also the one durable thing this service keeps about itself. ``/admin/log`` is this
+process's recent stderr and dies with it, and the usage samples say the same about themselves —
+both answer "what is it doing *now*". The events worth keeping are the ones a restart destroys,
+which is why they are in SQLite on a mounted volume rather than a third ring. What it records
+today is **refusals**: a campaign's failure is on its card and in its ``outcome.json``, but a
+refused *action* was composed in the request that refused it, rendered once, and then gone.
+
 The **origin** row is the cheapest tier and the one most often missed. A value that is a pure
 function of wall-clock plus one stored origin is transported as the *origin*, never as the value:
 the reader already has a clock. A ``time`` budget's elapsed seconds is the case that established

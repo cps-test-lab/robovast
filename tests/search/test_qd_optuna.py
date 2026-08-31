@@ -92,6 +92,27 @@ def test_qd_grid_archive():
     assert s.report().extra["num_elites"] > 0
 
 
+@pytest.mark.parametrize("direction,better", [("minimize", min), ("maximize", max)])
+def test_the_best_elite_is_best_by_the_campaign_direction(direction, better):
+    """The elites carry RAW objective values, so which end is best is the direction again.
+
+    The archive is always maximized internally -- a minimize objective is negated on the way
+    in and un-negated on the way out -- and picking the best with a bare ``max`` after that
+    second flip returned the archive's WORST cell for every minimizing search, labelled as
+    the answer.
+    """
+    pytest.importorskip("ribs")
+    cfg = _cfg("qd", QUAD_SPACE, [{"name": "obj", "direction": direction}],
+               strategy_parameters={"archive": {"type": "grid",
+                   "measures": {"m1": {"low": 0, "high": 1, "bins": 8}}}})
+    s = build_strategy(cfg)
+    _drive(s, 3, lambda p, r: r.random(), lambda p, r: {"m1": r.random()})
+    extra = s.report().extra
+    assert extra["elites"], "the archive must hold something for this to mean anything"
+    assert extra["best_elite"]["objective"] == better(
+        e["objective"] for e in extra["elites"])
+
+
 # ---- Optuna ----
 
 def test_optuna_tpe_improves_toward_optimum():

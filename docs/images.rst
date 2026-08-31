@@ -159,7 +159,10 @@ publish asks first, so there is no command where a forgotten flag is the differe
 
 Either way all four members move together — a partial set is not usable, because
 ``ROBOVAST_PROJECT`` moves all four at once. The command prints the two lines that
-configure them and offers to write them to ``~/.config/robovast/env``.
+configure them; it does not change any configuration on its own. Pass ``CONFIG_WRITE=1``
+(or set ``ROBOVAST_RELEASE_CONFIG_WRITE=1`` in your shell) to have it write those two lines
+into ``~/.config/robovast/env`` — that switches every ``vast`` on the machine to this image
+set, which is why it is opt-in.
 
 To check a project before pointing a cluster at it:
 
@@ -264,6 +267,25 @@ All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_re
 cluster lane that block used to be empty for every campaign: it read labels with ``docker
 inspect``, and the controller pod that writes the file has no docker CLI. It now uses the labels
 the protocol check already read from the registry.
+
+**The recipe is only worth what it still names.** A dated archive that has been pruned fails at
+``apt-get update`` inside a rebuild nobody runs until the year-old campaign someone actually
+needs — so ``make check-recipe`` asks the two questions that can be asked cheaply, and CI asks
+them on every pull request:
+
+*Is it complete?* Every pin the Dockerfile makes has to reach the image as a label. An **empty**
+label is the failure worth naming, because a forgotten ``--build-arg`` produces one and it looks
+present to anything checking only for the key — which is why the build refuses to start without
+the value rather than publishing an image labelled ``""``.
+
+*Do its archives still serve?* One request each against the snapshots the recipe names. The
+pull-request job asks this from the Dockerfile's own pins, needing no image at all; the image
+build then asserts the pushed bytes actually carry what was declared, which is the half only a
+real build can answer.
+
+Neither rebuilds. Rebuilding is the only thing that proves a recipe *sufficient*, and it costs a
+full image build — this is the cheap check that runs often, not a replacement for the expensive
+one. That remains a manual step today.
 
 **The build lock** — ``/etc/robovast/build-manifest/``, holding ``apt.txt`` (every package with
 its version), ``pip.txt`` (``pip freeze`` output) and, when a spec named a moving git ref,

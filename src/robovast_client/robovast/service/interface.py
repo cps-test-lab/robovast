@@ -1160,6 +1160,37 @@ class UsageSample(BaseModel):
     memory_measured_bytes: Optional[int] = None
 
 
+class ServiceEvent(BaseModel):
+    """One thing the service did, as recorded.
+
+    ``kind`` is an open string and ``subject_type``/``subject_id`` are a typed pair rather than
+    a bare campaign id: a workspace, an image build or the service itself are all things worth
+    an event later, and widening this model is a change where adding a ``kind`` is not.
+    """
+
+    seq: int
+    at: float
+    kind: str
+    severity: str = "info"
+    actor: str = ""
+    subject_type: str = ""
+    subject_id: str = ""
+    message: str = ""
+    payload: dict = Field(default_factory=dict)
+
+
+class ServiceEvents(BaseModel):
+    """A page of the event log, oldest first, with the cursor to resume from.
+
+    Oldest first because a caller is resuming a position rather than browsing: it holds
+    :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+    """
+
+    events: list[ServiceEvent] = Field(default_factory=list)
+    #: Pass as ``since`` to continue. Unchanged when nothing new arrived.
+    next_seq: int = 0
+
+
 class UsageHistory(BaseModel):
     """What the service can say about recent CPU/memory use.
 
@@ -1949,6 +1980,9 @@ class Routes:
     ADMIN_UPGRADE = "/admin/upgrade"
     #: What this service is configured with, read back out of its own environment.
     ADMIN_CONFIG = "/admin/config"
+    #: What this service DID -- durable, unlike the log above it. Cursor-keyed, and its own
+    #: route rather than a field on a polled payload, per the tiers in docs/http_api.rst.
+    ADMIN_EVENTS = "/admin/events"
     ADMIN_LOG = "/admin/log"
     ADMIN_LOG_STREAM = "/admin/log/stream"
     CAMPAIGNS = "/campaigns"

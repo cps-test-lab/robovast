@@ -44,6 +44,36 @@ def registered_tools(mcp: FastMCP) -> dict:
             if isinstance(c, Tool)}
 
 
+def registered_text(mcp: FastMCP) -> dict[str, str]:
+    """``{"<kind> <name>": description}`` for everything registered on *mcp*.
+
+    The whole of what this server puts in front of a model, which is not only its tools:
+    a resource's description, a template's and a prompt's are shipped to a client and
+    read the same way. They are also registered from *inside* a plugin's ``register()``,
+    so nothing that enumerates module-level functions can see them -- which is why a
+    check over "what this server says" has to be written against this rather than
+    against :func:`registered_tools`.
+
+    Reaches the same component store as :func:`registered_tools`, for the same reason:
+    one place in this package touches FastMCP's internals, so a version bump has one
+    thing to fix.
+    """
+    from fastmcp.prompts.prompt import Prompt  # pylint: disable=import-outside-toplevel
+    from fastmcp.resources.resource import Resource  # pylint: disable=import-outside-toplevel
+    from fastmcp.resources.template import ResourceTemplate  # pylint: disable=import-outside-toplevel
+    from fastmcp.tools.tool import Tool  # pylint: disable=import-outside-toplevel
+
+    kinds = ((Tool, "tool"), (ResourceTemplate, "resource template"),
+             (Resource, "resource"), (Prompt, "prompt"))
+    out: dict[str, str] = {}
+    for component in mcp._local_provider._components.values():  # pylint: disable=protected-access
+        for cls, label in kinds:
+            if isinstance(component, cls):
+                out[f"{label} {component.name}"] = getattr(component, "description", "") or ""
+                break
+    return out
+
+
 def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
     """Discover all installed plugins and register them with *mcp*.
 

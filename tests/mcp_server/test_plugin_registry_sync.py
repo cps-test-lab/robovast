@@ -17,7 +17,7 @@ from unittest import mock
 
 import pytest
 
-from robovast.mcp_server.registry import load_registered_tool_details
+from robovast.mcp_server.registry import load_registered_tool_details, registered_text
 from robovast.mcp_server.server import create_server
 
 _PLUGINS_DIR = pathlib.Path(__file__).resolve().parents[2] / \
@@ -237,7 +237,15 @@ def _llm_facing_text() -> dict[str, str]:
     methods that the tools call. Forbidding the *identifier* would forbid the code; what
     must not survive is the retired name in text an LLM is given and will try to call.
     """
-    text = {"server instructions": create_server().instructions or ""}
+    server = create_server()
+    text = {"server instructions": server.instructions or ""}
+    # Every component's own description, from the server as a client receives it. Tools
+    # are only part of that surface: a resource's or a prompt's description is shipped
+    # too, and both are registered from inside a plugin's `register()`, where nothing
+    # that enumerates module-level functions can reach them. That blind spot is how a
+    # resource kept telling clients to call a tool retired several releases earlier.
+    text.update({f"{where} description": body
+                 for where, body in registered_text(server).items()})
     for _plugin, tools in load_registered_tool_details().items():
         for tool in tools:
             text[f"tool {tool['name']}"] = tool["name"] + "\n" + (tool["summary"] or "")
