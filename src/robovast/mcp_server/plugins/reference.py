@@ -70,18 +70,29 @@ def _root_group():
 def _resolve_command(command: str):
     """Navigate the click tree to *command* (space-separated path).
 
-    Returns ``(cmd, ctx)``. Raises ``ValueError`` for an unknown path.
+    Returns ``(cmd, ctx)``. Raises ``ValueError`` for an unknown path, naming what the
+    level it failed at *does* offer -- a group is lazy about which of its verbs this
+    install provides, so "not here" and "not installed" are the same refusal and the
+    caller cannot tell them apart without the list.
     """
     import click  # pylint: disable=import-outside-toplevel
 
     cmd = _root_group()
     ctx = click.Context(cmd, info_name="vast")
+    walked = ["vast"]
     for part in command.split():
         sub = cmd.get_command(ctx, part) if isinstance(cmd, click.Group) else None
         if sub is None:
-            raise ValueError(f"Unknown command {command!r} (failed at {part!r}).")
+            if isinstance(cmd, click.Group):
+                offers = ", ".join(sorted(cmd.list_commands(ctx))) or "(none)"
+                raise ValueError(
+                    f"no {part!r} under {' '.join(walked)!r}; it has: {offers}")
+            raise ValueError(
+                f"{' '.join(walked)!r} is a command, not a group, so it has no "
+                f"{part!r} -- read it without the extra word")
         ctx = click.Context(sub, info_name=part, parent=ctx)
         cmd = sub
+        walked.append(part)
     return cmd, ctx
 
 
@@ -117,12 +128,19 @@ def get_cli_help(command: str = "") -> dict:
             command with its one-line help.
 
     Returns:
-        ``{commands, total}`` when listing, else ``{command, help}``.
+        ``{commands, total}`` when listing, else ``{command, help}``, or ``{error}``
+        naming what the level it failed at does offer.
     """
     if not command:
         commands = _command_tree()
         return {"commands": commands, "total": len(commands)}
-    cmd, ctx = _resolve_command(command)
+    # An unknown path is a caller mistake, and every other tool on this surface answers
+    # one with ``{"error": ...}``. Raised, it arrives as a protocol-level failure, which
+    # reads as a broken server rather than as a misspelled argument.
+    try:
+        cmd, ctx = _resolve_command(command)
+    except ValueError as e:
+        return {"error": str(e)}
     return {"command": command, "help": cmd.get_help(ctx)}
 
 

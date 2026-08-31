@@ -83,3 +83,35 @@ def test_an_unreadable_subdirectory_does_not_fail_the_listing(tmp_path):
         assert [n for n, _ in file_view.scan_dir(tmp_path, recursive=True)] == ["ok.txt"]
     finally:
         locked.chmod(0o755)
+
+
+#: A raw PGM the way an occupancy map is written: a text header, then one byte per cell.
+#: Open floor is ``0xfe``, so a map of an empty room holds no NUL byte anywhere.
+_PGM_OPEN_FLOOR = b"P5\n8 8\n255\n" + b"\xfe" * 64
+
+
+def test_a_raster_with_no_nul_byte_is_binary(tmp_path):
+    """Binary is what the text lane cannot decode, not only what holds a NUL.
+
+    Rendering such a file as text turns every sample into a replacement character and
+    hides the byte URL that serves it properly, so the refusal is the useful answer.
+    """
+    path = tmp_path / "map.pgm"
+    path.write_bytes(_PGM_OPEN_FLOOR)
+    assert file_view.is_binary_bytes(_PGM_OPEN_FLOOR) is True
+    assert file_view.is_binary(path) is True
+    with pytest.raises(ValueError, match="binary"):
+        file_view.read_text_page(path)
+
+
+def test_a_multibyte_character_at_the_sample_boundary_is_still_text():
+    """The sample cuts the file at a fixed offset, which lands mid-character sooner or
+    later; a truncated sequence there must not turn a UTF-8 document into a binary one."""
+    filler = "a" * (file_view._SNIFF_BYTES - 1)  # pylint: disable=protected-access
+    text = (filler + "ä" + "b" * 100).encode()
+    assert file_view.is_binary_bytes(text) is False
+
+
+@pytest.mark.parametrize("raw", [b"plain\n", "héllo\n".encode(), b"", b"\xef\xbb\xbfbom\n"])
+def test_utf8_text_stays_text(raw):
+    assert file_view.is_binary_bytes(raw) is False

@@ -269,9 +269,19 @@ def get_plugin_details(group: str, name: str, limit: int = 0) -> dict:
         ``{group, name, class, doc[, parameters]}`` where each parameter is
         ``{name, type, required, default}``; or ``{error}``.
     """
-    matches = [ep for ep in entry_points(group=group) if ep.name == name]
+    # The group is checked before the name, and by the same rule ``list_plugins`` uses: a
+    # mistyped group otherwise came back as "no such plugin in <group>", which reads as a
+    # verdict about the plugin when the lookup never had a group to look in.
+    if group not in _PLUGIN_GROUPS:
+        return {"error": f"unknown plugin group {group!r}; known groups: "
+                         f"{', '.join(sorted(_PLUGIN_GROUPS))}"}
+    installed = list(entry_points(group=group))
+    matches = [ep for ep in installed if ep.name == name]
     if not matches:
-        return {"error": f"No plugin '{name}' found in group '{group}'."}
+        # Naming what the group does hold, as the tools that refuse an unknown container
+        # or campaign do: the usual cause is a spelling, and the answer is one call away.
+        present = ", ".join(sorted(ep.name for ep in installed)) or "(none installed)"
+        return {"error": f"no plugin {name!r} in {group!r}; it has: {present}"}
     ep = matches[0]
     try:
         obj = ep.load()

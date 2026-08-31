@@ -451,7 +451,10 @@ gives both the same number of executions, not the same number of batches.
 * ``target_objective`` — stop when the best objective reaches ``value``
   (direction-aware: ``>=`` for ``maximize``, ``<=`` for ``minimize``).
 * ``no_improvement`` — stop when the best objective has not improved by more than
-  ``min_delta`` (default ``0``) for ``patience`` consecutive batches.
+  ``min_delta`` (default ``0``) over the last ``patience`` batches. The comparison is
+  against the best ``patience`` batches ago, not batch against batch: with a non-zero
+  ``min_delta``, gains each smaller than it can still add up to a real improvement across
+  the window, and a search that is still climbing has not converged.
 * ``metric`` — stop when a strategy-reported metric (anything in
   ``SearchReport.extra``, e.g. QD ``coverage`` / ``qd_score``) satisfies
   ``op value`` (``op`` ∈ ``>= <= > <``, default ``>=``); a metric the strategy does
