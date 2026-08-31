@@ -1393,7 +1393,7 @@ def _search_composition_report(config_path):
                            for item in sample["infeasible"])
         problems.append(_problem(
             "search-composition",
-            f"{len(sample['infeasible'])} of {sample['sampled']} sampled parameter "
+            f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
             f"set(s) could not be composed: {listed}. The campaign skips such draws "
             "and continues, but a high rate here means much of the search space is "
             "infeasible — check the search_space bounds against the variation's "
