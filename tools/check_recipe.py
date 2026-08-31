@@ -18,7 +18,13 @@ or a rebuild is missing a pin and reproduces the shape rather than the software.
 label is the failure mode worth naming: a forgotten `--build-arg` produces one, and an empty
 label looks present to anything only checking the key.
 
-**Are its archives still served?** One request each, against the snapshot the recipe names.
+**Are its archives still served?** One request each, against the snapshot the recipe names --
+retried, because the answer that matters is whether the archive is *gone*, and a gateway error
+is not that answer. A pruned snapshot answers definitively (4xx); a mirror having a bad minute
+answers 5xx or not at all, and calling that a prune fails a pull request over someone else's
+outage. So a transient answer is retried, and if it never resolves the probe reports the
+archive unverified rather than gone: the weekly rebuild is what catches a recipe that has
+genuinely stopped being buildable.
 
 What this does NOT do is rebuild. That is the only thing that proves the recipe *sufficient*,
 and it costs a full image build; this is the cheap check that runs often, not a replacement for
@@ -30,6 +36,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -54,6 +61,17 @@ _IMAGE_ONLY = ("org.opencontainers.image.revision",)
 _CODENAME = "noble"
 
 _TIMEOUT = 20
+
+#: A transient answer is asked again this many times, sleeping _BACKOFF_S * 2**n between tries.
+#: Bounded low on purpose: this runs on every pull request, and a blip long enough to outlast
+#: ~15s of retries is better reported as unverified than waited out.
+_ATTEMPTS = 4
+_BACKOFF_S = 2.0
+
+#: Definitive "not there": the archive answered, and the answer was no. Everything else that is
+#: not a 200 -- 5xx, 429, a timeout, a refused connection -- says nothing about the archive.
+_GONE = range(400, 500)
+_RETRY_ANYWAY = (429,)
 
 
 def _arg_default(text: str, name: str) -> str:
@@ -100,18 +118,34 @@ def _from_image(ref: str) -> dict:
     return out
 
 
-def _serves(url: str) -> str:
-    """``""`` when *url* answers, else why not."""
+def _probe(url: str) -> tuple[int, str]:
+    """One request. ``(status, detail)``, with status 0 for never got an answer at all."""
     request = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
-            if response.status != 200:
-                return f"HTTP {response.status}"
-            return ""
+            return response.status, f"HTTP {response.status}"
     except urllib.error.HTTPError as e:
-        return f"HTTP {e.code}"
-    except Exception as e:  # noqa: BLE001 - any failure to reach it is the answer
-        return str(e)
+        return e.code, f"HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001 - not reaching it is itself an answer, of a kind
+        return 0, str(e)
+
+
+def _serves(url: str) -> tuple[str, str]:
+    """``("serves"|"gone"|"unverified", why)`` -- the three answers a probe can carry.
+
+    ``gone`` is the finding this check exists for and is the only one worth failing on;
+    ``unverified`` is a transient answer that outlasted its retries and says nothing about
+    whether the archive is still there.
+    """
+    for attempt in range(_ATTEMPTS):
+        status, detail = _probe(url)
+        if status == 200:
+            return "serves", detail
+        if status in _GONE and status not in _RETRY_ANYWAY:
+            return "gone", detail
+        if attempt + 1 < _ATTEMPTS:
+            time.sleep(_BACKOFF_S * 2 ** attempt)
+    return "unverified", f"{detail} after {_ATTEMPTS} attempts"
 
 
 def main() -> int:
@@ -132,6 +166,9 @@ def main() -> int:
         where = args.image
 
     problems = []
+    # Kept apart from `problems` because it is a different finding: an archive that could
+    # not be reached is not one that is known to be gone.
+    unverified = []
     expected = tuple(_RECIPE) + (_IMAGE_ONLY if args.image else ())
     print(f"Recipe recorded by {where}:")
     for key in expected:
@@ -156,18 +193,32 @@ def main() -> int:
                 "ros snapshot",
                 f"http://snapshots.ros.org/{distro}/{ros}/ubuntu/dists/{_CODENAME}/Release"))
         for name, url in checks:
-            why = _serves(url)
-            print(f"  {name}: {'serves' if not why else 'UNREACHABLE (' + why + ')'}  {url}")
-            if why:
+            verdict, why = _serves(url)
+            shown = {"serves": "serves",
+                     "gone": f"GONE ({why})",
+                     "unverified": f"unverified ({why})"}[verdict]
+            print(f"  {name}: {shown}  {url}")
+            if verdict == "gone":
                 problems.append(
                     f"the {name} this recipe names no longer serves ({why}). Every campaign "
                     f"recorded against it can no longer be rebuilt from its recipe -- only from "
                     f"an image that still exists.")
+            elif verdict == "unverified":
+                unverified.append(
+                    f"could not establish whether the {name} this recipe names still serves "
+                    f"({why}). That is an answer about the host, not about the archive, so it "
+                    f"is not treated as a prune; the weekly rebuild is what catches a recipe "
+                    f"that has stopped being buildable.")
 
+    for note in unverified:
+        print(f"::warning::{note}")
     if problems:
         for problem in problems:
             print(f"::error::{problem}")
         return 1
+    if unverified:
+        print("Recipe is complete. Not every archive could be reached to be checked.")
+        return 0
     print("Recipe is complete and its archives still serve.")
     return 0
 

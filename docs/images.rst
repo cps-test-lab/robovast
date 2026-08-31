@@ -346,10 +346,16 @@ label is the failure worth naming, because a forgotten ``--build-arg`` produces 
 present to anything checking only for the key — which is why the build refuses to start without
 the value rather than publishing an image labelled ``""``.
 
-*Do its archives still serve?* One request each against the snapshots the recipe names. The
-pull-request job asks this from the Dockerfile's own pins, needing no image at all; the image
-build then asserts the pushed bytes actually carry what was declared, which is the half only a
-real build can answer.
+*Do its archives still serve?* One request each against the snapshots the recipe names, retried a
+few times before the probe gives up. What this half is looking for is an archive that is **gone**,
+and only a definitive answer is that: a pruned snapshot answers ``4xx``, while a gateway error or
+a timeout is a fact about the mirror and says nothing about the archive. Reading the second as the
+first fails pull requests during someone else's outage. So a transient answer is retried, and one
+that never clears leaves the archive reported as *unverified* — a warning rather than a failure,
+because the check has no evidence either way and the weekly rebuild below is what catches a recipe
+that has genuinely stopped being buildable. The pull-request job asks this from the Dockerfile's own
+pins, needing no image at all; the image build then asserts the pushed bytes actually carry what was
+declared, which is the half only a real build can answer.
 
 Neither of those rebuilds, and rebuilding is the only thing that proves a recipe *sufficient* --
 that the pins it names are the **complete** set of inputs. Something reaching the network
