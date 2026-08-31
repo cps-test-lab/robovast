@@ -43,6 +43,13 @@ would hand the same row a different id on the second pass; and an id in the inde
 matches the id in that campaign's own ``campaign.db``, which is what makes a support
 question answerable.
 
+The record lands in a Postgres schema literally named ``campaign``
+(:data:`~robovast.results_processing.index_schema.CAMPAIGN_SCHEMA`), so ``FROM
+campaign.unit`` -- the spelling every existing query uses and the one
+``describe_campaign_data`` documents -- resolves exactly as it did when ``campaign.db`` was
+ATTACHed under that alias. Moving to one index should not rewrite every provenance query
+ever written.
+
 The integer ``campaign_id`` that ``batch``/``job``/``node``/``container_failure`` carry is
 **dropped**, because it is the only column that carries no information once the string id
 is present -- a per-campaign file has exactly one campaign row, so the FK is always 1. The
@@ -121,14 +128,16 @@ def mirror_campaign_record(conn, store_path: str, campaign_id: str) -> dict:
             if not types:
                 continue
             index_schema.ensure_table(conn, table, types, source=f"campaign.db:{table}",
-                                      context=index_schema.CAMPAIGN_CONTEXT)
-            conn.execute(f'DELETE FROM "{table}" WHERE campaign_id = %s', (campaign_id,))
+                                      context=index_schema.CAMPAIGN_CONTEXT,
+                                      schema=index_schema.CAMPAIGN_SCHEMA)
+            name = index_schema.qualified(table, index_schema.CAMPAIGN_SCHEMA)
+            conn.execute(f"DELETE FROM {name} WHERE campaign_id = %s", (campaign_id,))
 
             columns = ["campaign_id"] + list(types)
             quoted = ", ".join('"' + c.replace('"', '""') + '"' for c in columns)
             rows = store.execute(f'SELECT * FROM "{table}"')
             count = 0
-            with conn.cursor().copy(f'COPY "{table}" ({quoted}) FROM STDIN') as copy:
+            with conn.cursor().copy(f"COPY {name} ({quoted}) FROM STDIN") as copy:
                 for row in rows:
                     copy.write_row(tuple([campaign_id] + [row[c] for c in types]))
                     count += 1

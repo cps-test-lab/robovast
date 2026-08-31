@@ -25,11 +25,15 @@ pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set
 def _conn():
     psycopg = pytest.importorskip("psycopg")
     with psycopg.connect(DSN, autocommit=True) as conn:
-        conn.execute("DROP SCHEMA IF EXISTS ing_test CASCADE")
-        conn.execute("CREATE SCHEMA ing_test")
-        conn.execute("SET search_path TO ing_test")
+        # ``campaign`` is a fixed top-level schema an ingest creates, so it is dropped
+        # here too -- otherwise one test's campaign record answers another test's query.
+        for statement in ("DROP SCHEMA IF EXISTS ing_test CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          "CREATE SCHEMA ing_test", "SET search_path TO ing_test"):
+            conn.execute(statement)
         yield conn
         conn.execute("DROP SCHEMA IF EXISTS ing_test CASCADE")
+        conn.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
 
 
 def _campaign(tmp_path, *, runs=(("goal-1", 0), ("goal-1", 1)), extra_file=None,
@@ -129,7 +133,7 @@ def test_the_campaign_record_is_mirrored_alongside_the_data(conn, tmp_path):
 
     assert totals["campaign"] == 1
     assert conn.execute(
-        "SELECT name FROM campaign WHERE campaign_id = 'camp-a'").fetchone()[0] == "camp"
+        "SELECT name FROM campaign.campaign WHERE campaign_id = 'camp-a'").fetchone()[0] == "camp"
 
 
 def test_a_missing_campaign_db_still_ingests_the_data(conn, tmp_path):

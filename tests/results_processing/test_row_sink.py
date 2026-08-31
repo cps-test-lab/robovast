@@ -24,11 +24,15 @@ pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set
 def _conn():
     psycopg = pytest.importorskip("psycopg")
     with psycopg.connect(DSN, autocommit=True) as conn:
-        conn.execute("DROP SCHEMA IF EXISTS sink_test CASCADE")
-        conn.execute("CREATE SCHEMA sink_test")
-        conn.execute("SET search_path TO sink_test")
+        # ``campaign`` is a fixed top-level schema an ingest creates, so it is dropped
+        # here too -- otherwise one test's campaign record answers another test's query.
+        for statement in ("DROP SCHEMA IF EXISTS sink_test CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          "CREATE SCHEMA sink_test", "SET search_path TO sink_test"):
+            conn.execute(statement)
         yield conn
         conn.execute("DROP SCHEMA IF EXISTS sink_test CASCADE")
+        conn.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
 
 
 def test_declared_types_are_written_as_numbers_not_strings(conn):

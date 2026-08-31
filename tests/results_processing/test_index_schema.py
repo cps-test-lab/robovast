@@ -32,11 +32,15 @@ def _conn():
     """
     psycopg = pytest.importorskip("psycopg")
     with psycopg.connect(DSN, autocommit=True) as conn:
-        conn.execute("DROP SCHEMA IF EXISTS idx_test CASCADE")
-        conn.execute("CREATE SCHEMA idx_test")
-        conn.execute("SET search_path TO idx_test")
+        # ``campaign`` is a fixed top-level schema an ingest creates, so it is dropped
+        # here too -- otherwise one test's campaign record answers another test's query.
+        for statement in ("DROP SCHEMA IF EXISTS idx_test CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          "CREATE SCHEMA idx_test", "SET search_path TO idx_test"):
+            conn.execute(statement)
         yield conn
         conn.execute("DROP SCHEMA IF EXISTS idx_test CASCADE")
+        conn.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
 
 
 def _column_types(conn, table):

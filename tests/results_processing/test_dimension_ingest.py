@@ -24,11 +24,15 @@ pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set
 def _conn():
     psycopg = pytest.importorskip("psycopg")
     with psycopg.connect(DSN, autocommit=True) as conn:
-        conn.execute("DROP SCHEMA IF EXISTS dim_test CASCADE")
-        conn.execute("CREATE SCHEMA dim_test")
-        conn.execute("SET search_path TO dim_test")
+        # ``campaign`` is a fixed, top-level schema name -- not nested under the test
+        # schema -- so it has to be dropped as well or one test's record leaks into the next.
+        for statement in ("DROP SCHEMA IF EXISTS dim_test CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          "CREATE SCHEMA dim_test", "SET search_path TO dim_test"):
+            conn.execute(statement)
         yield conn
         conn.execute("DROP SCHEMA IF EXISTS dim_test CASCADE")
+        conn.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
 
 
 def _store(tmp_path, *, with_node=True, extra_campaign_column=None):
@@ -78,7 +82,7 @@ def test_the_record_is_mirrored_scoped_by_the_campaigns_string_id(conn, tmp_path
     assert written["unit"] == 2
     assert written["run"] == 2
     got = conn.execute(
-        "SELECT campaign_id, name, mode FROM campaign").fetchall()
+        "SELECT campaign_id, name, mode FROM campaign.campaign").fetchall()
     assert got == [("camp-a", "funnel", "batch")]
 
 
@@ -86,7 +90,7 @@ def test_source_integer_ids_are_kept_so_they_still_match_the_file(conn, tmp_path
     """Not remapped to globals: the same id must answer a support question."""
     dimension_ingest.mirror_campaign_record(conn, _store(tmp_path), "camp-a")
 
-    got = conn.execute("SELECT id, unit_id, run_id, job_id FROM run ORDER BY id").fetchall()
+    got = conn.execute("SELECT id, unit_id, run_id, job_id FROM campaign.run ORDER BY id").fetchall()
     assert got == [(1, 1, 0, 1), (2, 2, 0, 2)]
 
 
@@ -96,7 +100,7 @@ def test_two_campaigns_coexist_with_colliding_integer_ids(conn, tmp_path):
     dimension_ingest.mirror_campaign_record(conn, _store(tmp_path / "b"), "camp-b")
 
     got = conn.execute(
-        "SELECT campaign_id, id FROM unit ORDER BY campaign_id, id").fetchall()
+        "SELECT campaign_id, id FROM campaign.unit ORDER BY campaign_id, id").fetchall()
     assert got == [("camp-a", 1), ("camp-a", 2), ("camp-b", 1), ("camp-b", 2)]
 
 
@@ -107,7 +111,7 @@ def test_re_mirroring_replaces_rather_than_duplicates(conn, tmp_path):
     second = dimension_ingest.mirror_campaign_record(conn, store, "camp-a")
 
     assert first == second
-    assert conn.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM campaign.run").fetchone()[0] == 2
 
 
 def test_re_mirroring_one_campaign_leaves_the_others_alone(conn, tmp_path):
@@ -117,7 +121,7 @@ def test_re_mirroring_one_campaign_leaves_the_others_alone(conn, tmp_path):
     dimension_ingest.mirror_campaign_record(conn, _store(tmp_path / "a2"), "camp-a")
 
     counts = dict(conn.execute(
-        "SELECT campaign_id, COUNT(*) FROM run GROUP BY 1 ORDER BY 1").fetchall())
+        "SELECT campaign_id, COUNT(*) FROM campaign.run GROUP BY 1 ORDER BY 1").fetchall())
     assert counts == {"camp-a": 2, "camp-b": 2}
 
 
@@ -127,7 +131,7 @@ def test_the_redundant_integer_campaign_fk_is_dropped(conn, tmp_path):
 
     columns = {r[0] for r in conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = 'dim_test' AND table_name = 'batch'").fetchall()}
+        "WHERE table_schema = 'campaign' AND table_name = 'batch'").fetchall()}
     assert "campaign_id" in columns
     assert columns == {"campaign_id", "id", "idx", "dir", "created_at"}
 
@@ -138,7 +142,7 @@ def test_the_opaque_strategy_blob_is_not_mirrored(conn, tmp_path):
 
     columns = {r[0] for r in conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = 'dim_test' AND table_name = 'campaign'").fetchall()}
+        "WHERE table_schema = 'campaign' AND table_name = 'campaign'").fetchall()}
     assert "strategy_state" not in columns
 
 
@@ -152,7 +156,7 @@ def test_a_column_added_upstream_arrives_without_a_code_change(conn, tmp_path):
 
     columns = {r[0] for r in conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = 'dim_test' AND table_name = 'campaign'").fetchall()}
+        "WHERE table_schema = 'campaign' AND table_name = 'campaign'").fetchall()}
     assert "brand_new_column" in columns
 
 
@@ -175,7 +179,7 @@ def test_dimension_tables_get_no_config_or_run_columns(conn, tmp_path):
 
     columns = {r[0] for r in conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = 'dim_test' AND table_name = 'node'").fetchall()}
+        "WHERE table_schema = 'campaign' AND table_name = 'node'").fetchall()}
     assert "config_name" not in columns
     assert columns == {"campaign_id", "id", "node_label", "cpu_name"}
 
@@ -186,7 +190,7 @@ def test_the_context_index_covers_the_campaign(conn, tmp_path):
 
     indexes = [r[0] for r in conn.execute(
         "SELECT indexdef FROM pg_indexes "
-        "WHERE schemaname = 'dim_test' AND tablename = 'run'").fetchall()]
+        "WHERE schemaname = 'campaign' AND tablename = 'run'").fetchall()]
     assert any("campaign_id" in d for d in indexes)
     assert not any("config_name" in d for d in indexes)
 
@@ -203,8 +207,8 @@ def test_metric_and_dimension_tables_share_the_campaign_scope(conn, tmp_path):
 
     got = conn.execute(
         "SELECT u.config_name, r.status, COUNT(p.x) "
-        "FROM run r "
-        "JOIN unit u ON u.campaign_id = r.campaign_id AND u.id = r.unit_id "
+        "FROM campaign.run r "
+        "JOIN campaign.unit u ON u.campaign_id = r.campaign_id AND u.id = r.unit_id "
         "JOIN poses p ON p.campaign_id = r.campaign_id "
         "            AND p.config_name = u.config_name AND p.run_id = r.run_id "
         "GROUP BY 1, 2").fetchall()
@@ -215,6 +219,7 @@ def test_ensure_metadata_tables_is_not_confused_by_the_campaign_table(conn, tmp_
     """``campaign`` is a mirrored table; ``_column_types`` is bookkeeping."""
     dimension_ingest.mirror_campaign_record(conn, _store(tmp_path), "camp-a")
 
-    verdicts = index_schema.read_verdicts(conn, "campaign")
+    verdicts = index_schema.read_verdicts(conn, "campaign",
+                                          index_schema.CAMPAIGN_SCHEMA)
     assert verdicts["campaign_id"] == "TEXT"
     assert verdicts["created_at"] == "REAL"

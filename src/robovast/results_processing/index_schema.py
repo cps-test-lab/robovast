@@ -67,6 +67,16 @@ logger = logging.getLogger(__name__)
 #: clause rather than an attached database.
 CONTEXT_COLUMNS = (("campaign_id", TEXT), ("config_name", TEXT), ("run_id", INTEGER))
 
+#: Where the campaign record lives. A Postgres schema literally named ``campaign`` so that
+#: ``FROM campaign.unit`` -- the spelling every existing query uses, and the one
+#: ``describe_campaign_data`` documents to agents -- resolves unchanged. It used to work
+#: because ``campaign.db`` was ATTACHed under that alias; keeping the name is what stops the
+#: move to one index rewriting every provenance query ever written.
+CAMPAIGN_SCHEMA = "campaign"
+
+#: Where measurements live: whatever the connection's ``search_path`` points at.
+METRIC_SCHEMA = ""
+
 #: What scopes a *dimension* row -- the campaign record mirrored from ``campaign.db``.
 #: Only the campaign, because a batch or a node belongs to no configuration and no run;
 #: prepending the metric context there would add two columns that are NULL forever and
@@ -107,32 +117,39 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def qualified(table: str, schema: str = METRIC_SCHEMA) -> str:
+    """``"schema"."table"`` when a schema is named, else just the table."""
+    return f"{_quote(schema)}.{_quote(table)}" if schema else _quote(table)
+
+
 def ensure_metadata_tables(conn) -> None:
     """Create the two bookkeeping tables if they are absent."""
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_TYPES_TABLE)} ("
-        "table_name text NOT NULL, column_name text NOT NULL, verdict text NOT NULL, "
-        "PRIMARY KEY (table_name, column_name))")
+        "schema_name text NOT NULL DEFAULT '', table_name text NOT NULL, "
+        "column_name text NOT NULL, verdict text NOT NULL, "
+        "PRIMARY KEY (schema_name, table_name, column_name))")
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_NOTES_TABLE)} ("
         "table_name text NOT NULL, column_name text NOT NULL, kind text NOT NULL, "
         "note text NOT NULL, PRIMARY KEY (table_name, column_name, kind))")
 
 
-def read_verdicts(conn, table: str) -> dict:
+def read_verdicts(conn, table: str, schema: str = METRIC_SCHEMA) -> dict:
     """The recorded logical type per column of *table*, empty if it is new."""
     rows = conn.execute(
-        f"SELECT column_name, verdict FROM {_quote(COLUMN_TYPES_TABLE)} WHERE table_name = %s",
-        (table,)).fetchall()
+        f"SELECT column_name, verdict FROM {_quote(COLUMN_TYPES_TABLE)} "
+        "WHERE schema_name = %s AND table_name = %s", (schema, table)).fetchall()
     return dict(rows)
 
 
-def _record_verdict(conn, table: str, column: str, verdict: str) -> None:
+def _record_verdict(conn, table: str, column: str, verdict: str,
+                    schema: str = METRIC_SCHEMA) -> None:
     conn.execute(
-        f"INSERT INTO {_quote(COLUMN_TYPES_TABLE)} (table_name, column_name, verdict) "
-        "VALUES (%s, %s, %s) ON CONFLICT (table_name, column_name) DO UPDATE "
-        "SET verdict = EXCLUDED.verdict",
-        (table, column, verdict))
+        f"INSERT INTO {_quote(COLUMN_TYPES_TABLE)} "
+        "(schema_name, table_name, column_name, verdict) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (schema_name, table_name, column_name) DO UPDATE "
+        "SET verdict = EXCLUDED.verdict", (schema, table, column, verdict))
 
 
 def record_note(conn, table: str, column: str, note: str, kind: str = NOTE_DOC) -> None:
@@ -145,10 +162,11 @@ def record_note(conn, table: str, column: str, note: str, kind: str = NOTE_DOC) 
 
 
 def known_tables(conn) -> list:
-    """Every table the index has ingested into, from the verdict registry."""
+    """Every ``(schema, table)`` the index has ingested into, from the verdict registry."""
     ensure_metadata_tables(conn)
-    return [r[0] for r in conn.execute(
-        f"SELECT DISTINCT table_name FROM {_quote(COLUMN_TYPES_TABLE)} ORDER BY 1").fetchall()]
+    return [(r[0], r[1]) for r in conn.execute(
+        f"SELECT DISTINCT schema_name, table_name FROM {_quote(COLUMN_TYPES_TABLE)} "
+        "ORDER BY 1, 2").fetchall()]
 
 
 def clear_campaign(conn, campaign_id: str) -> dict:
@@ -163,16 +181,16 @@ def clear_campaign(conn, campaign_id: str) -> dict:
     re-ingesting the whole corpus.
     """
     deleted = {}
-    for table in known_tables(conn):
+    for schema, table in known_tables(conn):
         cursor = conn.execute(
-            f"DELETE FROM {_quote(table)} WHERE campaign_id = %s", (campaign_id,))
+            f"DELETE FROM {qualified(table, schema)} WHERE campaign_id = %s", (campaign_id,))
         if cursor.rowcount:
             deleted[table] = cursor.rowcount
     return deleted
 
 
 def ensure_table(conn, table: str, types: dict, *, source: str = "",
-                 context=CONTEXT_COLUMNS) -> list:
+                 context=CONTEXT_COLUMNS, schema: str = METRIC_SCHEMA) -> list:
     """Make *table* able to hold columns *types*; return the widenings that happened.
 
     *types* maps column name to a :mod:`csv_types` verdict, as
@@ -189,28 +207,31 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
     Returns ``[(column, before, after), ...]``, empty when the table already fitted.
     """
     ensure_metadata_tables(conn)
-    known = read_verdicts(conn, table)
+    if schema:
+        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema)}")
+    name = qualified(table, schema)
+    known = read_verdicts(conn, table, schema)
     widened = []
 
     if not known:
         columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
         defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
-        conn.execute(f"CREATE TABLE IF NOT EXISTS {_quote(table)} ({defs})")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
         # The one index data.db also built: every read is scoped to a run or a campaign,
         # and a sequential scan of a pose table is the difference between a plot and a
         # timeout.
-        index_cols = ", ".join(_quote(name) for name, _ in context)
+        index_cols = ", ".join(_quote(col) for col, _ in context)
         conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
-                     f"ON {_quote(table)} ({index_cols})")
-        for name, verdict in columns:
-            _record_verdict(conn, table, name, verdict)
+                     f"ON {name} ({index_cols})")
+        for col, verdict in columns:
+            _record_verdict(conn, table, col, verdict, schema)
         return widened
 
     for column, verdict in types.items():
         if column not in known:
-            conn.execute(f"ALTER TABLE {_quote(table)} "
+            conn.execute(f"ALTER TABLE {name} "
                          f"ADD COLUMN IF NOT EXISTS {_quote(column)} {_PG_TYPE[verdict]}")
-            _record_verdict(conn, table, column, verdict)
+            _record_verdict(conn, table, column, verdict, schema)
             continue
         current = known[column]
         target = widest(current, verdict)
@@ -220,9 +241,9 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
         # lossless, and anything -> text has a cast. Never narrows, so a stored value is
         # never re-interpreted under a tighter type than the one it was written for.
         using = f" USING {_quote(column)}::{_PG_TYPE[target]}"
-        conn.execute(f"ALTER TABLE {_quote(table)} ALTER COLUMN {_quote(column)} "
+        conn.execute(f"ALTER TABLE {name} ALTER COLUMN {_quote(column)} "
                      f"TYPE {_PG_TYPE[target]}{using}")
-        _record_verdict(conn, table, column, target)
+        _record_verdict(conn, table, column, target, schema)
         widened.append((column, current, target))
         note = (f"widened {current} -> {target}"
                 + (f" by {source}" if source else "")
