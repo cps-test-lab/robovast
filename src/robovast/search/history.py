@@ -82,6 +82,25 @@ def recorded_batches(store, campaign_row_id: int) -> list:
     for batch in store.batches(campaign_row_id):
         rows = store.units(batch["id"])
         out.append(RecordedBatch(
-            asked=len(rows),
+            asked=_asked(batch, rows),
             evaluations=[_evaluation(r) for r in rows if r["status"] == "evaluated"]))
     return out
+
+
+def _asked(batch, rows) -> int:
+    """How many parameter sets this batch PROPOSED.
+
+    The batch row's own count, which is the only place it is known: two draws with the
+    same values are one cell -- ``ParamSet.id`` is derived from them and results are
+    addressed by it -- so the batch composes and records that cell once, and the unit rows
+    are then fewer than the ask.
+
+    Falls back to the row count for a store written before ``batch.asked`` existed, where
+    the two were the same number: no draw was ever collapsed there, because a repeated one
+    aborted the campaign instead.
+    """
+    try:
+        asked = batch["asked"]
+    except (IndexError, KeyError):      # a store predating the column
+        return len(rows)
+    return len(rows) if asked is None else int(asked)

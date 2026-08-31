@@ -710,14 +710,22 @@ class CampaignController:
         The batch count lives on ``self._batches_done`` rather than being returned,
         because :meth:`_run_search` needs it on the path where this does NOT return.
         """
+        from robovast.search.compose import distinct_draws
         from robovast.search.stopping import StopResult, StopSnapshot
         batch_idx = self._batches_done
         result = None
         while True:
-            param_sets = self.strategy.ask(self.per_batch)
+            proposed = self.strategy.ask(self.per_batch)
+            # A repeated draw is one cell, not two: collapsed before composition, which
+            # can only give it one config name and one result directory.
+            param_sets = distinct_draws(proposed, f"Batch {batch_idx}")
             if self.repetition_policy is not None:
                 param_sets = self.repetition_policy.assign(param_sets, self._history)
-            batch_id = self.store.open_batch(campaign_id, batch_idx, ".")
+            # `asked` is what the STRATEGY proposed, not what survived the line above: a
+            # resume re-drives the strategy through the sequence it saw, and asking it for
+            # the collapsed count would rewind its stream by every repeat.
+            batch_id = self.store.open_batch(campaign_id, batch_idx, ".",
+                                             asked=len(proposed))
             if self.state is not None:
                 self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",

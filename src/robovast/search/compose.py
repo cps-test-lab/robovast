@@ -81,6 +81,48 @@ def config_name_for(param_set: ParamSet) -> str:
     return f"c{param_set.id}"
 
 
+def distinct_draws(param_sets: list[ParamSet], where: str = "this batch") -> list[ParamSet]:
+    """One entry per distinct cell of *param_sets*, keeping the first of each.
+
+    A strategy may propose the same parameter values twice in one batch, and on a discrete
+    space it routinely does: optuna's TPE re-proposes a category it likes, and a random or
+    low-discrepancy draw collides as soon as the space has few enough levels. Two such
+    draws are not two cells. :attr:`ParamSet.id` is derived from the values and everything
+    downstream is addressed by it -- the config's name, its result directory, the unit row
+    -- so the campaign has exactly one place to put their results.
+
+    Composing both anyway produced two configs under one name. :meth:`Compose._resolve_names`
+    saw a block that had yielded two configs, which is its signature for a variation that
+    expanded combinatorially, and aborted the campaign telling the operator to make their
+    variation parameters scalar -- on a campaign that may declare no variations at all.
+    Had it passed, the two would have written into one result directory and been recorded
+    as two units over one set of runs, counting every run of that cell twice.
+
+    So the repeat is dropped **before** composition, and the strategy is told one
+    evaluation for that cell -- the short generation :meth:`SearchStrategy.tell` already
+    contracts to accept. What the strategy PROPOSED is not lost: the controller records it
+    as ``batch.asked``, which is what a resume replays.
+    """
+    seen: dict[str, int] = {}
+    distinct = []
+    for ps in param_sets:
+        if ps.id in seen:
+            seen[ps.id] += 1
+            continue
+        seen[ps.id] = 1
+        distinct.append(ps)
+    repeated = {ps_id: n for ps_id, n in seen.items() if n > 1}
+    if repeated:
+        logger.warning(
+            "%s proposed %d parameter set(s) but only %d distinct cell(s): %s. A repeat is "
+            "the same cell -- its results are addressed by the same id -- so it is "
+            "evaluated once and the strategy is told once for it. A space with few levels "
+            "reaches this often; that is the space, not a fault.",
+            where, len(param_sets), len(distinct),
+            ", ".join(f"{ps_id} x{n}" for ps_id, n in sorted(repeated.items())))
+    return distinct
+
+
 def _set_scenario_param(params: list, name: str, value: Any) -> None:
     """Set scenario parameter ``name`` in a list of single-key dicts."""
     for entry in params:
@@ -144,6 +186,19 @@ class Compose:
         Returns ``(campaign_data, name_by_id)`` where ``name_by_id`` maps each
         ``ParamSet.id`` to its config (result-dir) name.
         """
+        ids = [ps.id for ps in param_sets]
+        if len(set(ids)) != len(ids):
+            # Stated here rather than discovered in `_resolve_names`, which sees only that
+            # a block produced two configs and reports that as a combinatorial variation --
+            # a diagnosis that sends the operator to variation parameters a campaign in this
+            # state may not even declare. Callers collapse a repeat with `distinct_draws`;
+            # reaching composition with one is a caller's bug, and this says whose.
+            duplicates = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(
+                f"compose() was given the same parameter set more than once "
+                f"({', '.join(duplicates)}). A repeated draw is one cell -- results are "
+                f"addressed by ParamSet.id -- so it cannot become two configs. Collapse "
+                f"the batch with search.compose.distinct_draws() before composing it.")
         blocks = []
         id_by_block = {}
         for ps in param_sets:
@@ -293,7 +348,10 @@ def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
     # real ask/tell round draws — capped, because composing runs the variation
     # plugins for real and a preview should stay cheap.
     n = sample_size or min(search_cfg.per_batch, _PREVIEW_SAMPLE_CAP)
-    param_sets = build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n)
+    # Collapsed exactly as a real batch is, so the preview reports what the campaign would
+    # compose rather than failing on a repeat the campaign itself would have absorbed.
+    param_sets = distinct_draws(
+        build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n), "This preview")
 
     with tempfile.TemporaryDirectory(prefix="robovast_preview_") as artifacts:
         campaign_data, name_by_id = Compose(vast_file).compose(param_sets, artifacts)
