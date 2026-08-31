@@ -34,8 +34,8 @@ from pathlib import Path
 
 from robovast.common.execution import is_campaign_dir
 
-__all__ = ["RAW", "POSTPROCESSED", "VARIANTS", "archive_name", "parse_archive_name",
-           "campaign_variant"]
+__all__ = ["RAW", "POSTPROCESSED", "VARIANTS", "POSTPROCESSING_RECORD", "archive_name",
+           "parse_archive_name", "campaign_variant", "variant_from_record"]
 
 RAW = "raw"
 POSTPROCESSED = "postprocessed"
@@ -83,13 +83,54 @@ def parse_archive_name(basename: str):
     return (stem, RAW) if is_campaign_dir(stem) else None
 
 
+#: Postprocessing's provenance record, campaign-relative. Written by
+#: ``results_processing.postprocessing`` and by nothing else, at the end of the command
+#: run, listing one entry per derived output with the sources and plugin it came from.
+from robovast.common.campaign_data import POSTPROCESSING_RECORD
+
+
+def variant_from_record(record) -> str:
+    """Which variant a campaign is, given the bytes of its :data:`POSTPROCESSING_RECORD`.
+
+    *record* is the file's contents, or ``None`` when the campaign has no such file.
+
+    Why this file and not a derived artifact. The variant has to be decidable from the
+    archive ALONE -- a recipient analyses it without our service and without the results
+    index -- so querying the index is out, and after the per-campaign ``data.db`` was
+    dropped in favour of that index there is no single derived file left to point at:
+    what postprocessing leaves in the directory is per-run CSVs whose names come from the
+    campaign's own plugin list, so "is there derived data?" would mean guessing at names
+    a stranger's campaign chose. The provenance record is the one thing postprocessing
+    always writes, under a fixed name, and it is *self-describing*: it does not merely
+    imply that derived data exists, it says which files were derived from which sources
+    by which plugin -- exactly what the recipient of a ``postprocessed`` archive needs.
+
+    An empty ``entries`` list is :data:`RAW`, deliberately. The file is written even when
+    every step failed or none was configured, and calling that ``postprocessed`` would
+    hand a reader a campaign with no derived data under a name promising results -- the
+    one direction of error that is not recoverable by looking.
+
+    A record that cannot be parsed raises: it is postprocessing's own output in a format
+    postprocessing wrote, so a broken one is a real defect in the campaign, and the two
+    silent answers available here ("raw" or "postprocessed") would both be inventions.
+    """
+    from robovast.common.campaign_data import \
+        postprocessing_entries  # pylint: disable=import-outside-toplevel
+
+    entries = postprocessing_entries(record)
+    return POSTPROCESSED if entries else RAW
+
+
 def campaign_variant(campaign_root) -> str:
     """Which variant a campaign *directory* would be archived as.
 
-    Postprocessing's own output is what tells them apart: ``_execution/data.db`` is
-    written by it and by nothing else, so its presence is the question already
-    answered. Reading the directory beats threading a flag down from whoever
-    happened to know -- the campaign-end upload and a later ``vast share export``
-    then agree without having to be told.
+    Reads the directory rather than being told by whoever happened to know, so that the
+    campaign-end upload and a later ``vast share export`` cannot disagree. What is read,
+    and why it is the right evidence offline, is in :func:`variant_from_record`.
     """
-    return POSTPROCESSED if (Path(campaign_root) / "_execution" / "data.db").exists() else RAW
+    path = Path(campaign_root) / POSTPROCESSING_RECORD
+    try:
+        record = path.read_bytes()
+    except FileNotFoundError:
+        record = None
+    return variant_from_record(record)

@@ -1519,11 +1519,11 @@ listing campaigns is cheap. ``test.xml`` (JUnit, one per run) is the runner's
 on-disk contract; the controller already parses it at record time, so capturing a
 ``run`` row there is free. Pass/fail counts are then one ``GROUP BY status`` over
 ``run`` — no filesystem walk — and are available **live**, before postprocessing.
-The postprocessed ``_execution/data.db`` ``runs`` table is the analytics-wide
-*view* over these rows (joining sysinfo, exploding params into ``param_*``
-columns); ``generate_data_db`` reads outcomes from ``campaign.db.run`` rather than
-re-parsing every ``test.xml``. Heavy per-run measurement data (metric time-series)
-stays in ``data.db`` only — ``campaign.db`` remains the lightweight live store.
+The central index's ``run_view`` is the analytics-wide *view* over these rows
+(joining sysinfo and the unit's params); the ingest mirrors ``campaign.db`` rather
+than re-parsing every ``test.xml``. Heavy per-run measurement data (metric
+time-series) is streamed into the index — ``campaign.db`` remains the lightweight
+live store.
 
 ::
 
@@ -1760,7 +1760,7 @@ recorded facts — ``_summary_for``, ``_started_at_for``, ``_description_for``,
 materializes exactly two small objects — ``campaign.db`` and ``_execution/outcome.json``
 — into the campaign's cache dir, after which every inherited reader is correct with no
 second implementation. Deliberately
-a **single-object** fetch (``_materialize``, shared with ``_query_dir``) and never
+a **single-object** fetch (``_materialize``) and never
 ``fetch_campaign``: a 2 KB record must not drag a 1 TB campaign. It is skipped for a
 campaign this process is driving (its driver owns ``campaign.db``), for one whose local dir
 already has it, and for one the index does not list — that last check is what keeps a
@@ -2403,11 +2403,11 @@ Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make t
 Analysis postprocessing: local vs cluster
 -----------------------------------------
 
-``data.db`` (what the eval viewer and ``query_campaign_data_sql`` read) is produced by *analysis*
-postprocessing. It splits along a natural seam: **only the batched ``rosbags_*`` → CSV step needs
-ROS2**; everything after it (``generate_data_db``, metadata) is plain Python.
+The rows ``query_campaign_data_sql`` reads are produced by *analysis* postprocessing. It splits
+along a natural seam: **only the batched ``rosbags_*`` → CSV step needs ROS2**; everything after it
+(the index ingest, metadata) is plain Python.
 
-**What ``generate_data_db`` ingests.** One table per data file, discovered per run directory:
+**What the index ingest reads.** One table per data file, discovered per run directory:
 ``*.csv``, and ``*.jsonl`` for producers that need more than a flat table can express. A JSONL
 file declares its layout in the ``format`` key of its **first record**, and ``_JSONL_READERS``
 maps that to the function turning its records into rows — dispatch on the file's own declaration
@@ -2460,7 +2460,7 @@ driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
   root, i.e. "beside the bag", so the local path is unchanged. The Job then mirrors ``/out``
   wholesale to a ``<campaign_prefix>_postproc/`` staging prefix; no rosbag is ever re-uploaded.
 
-Stage 2 (``data.db`` + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
+Stage 2 (index ingest + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
 skipped (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence.
 
 Two entry points share that one implementation (``postprocess_campaign``):

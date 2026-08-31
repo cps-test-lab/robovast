@@ -1229,8 +1229,8 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     """Run analysis postprocessing in-cluster, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
-    ``campaign.db`` is flushed — ``generate_data_db``'s ``runs`` table reads it) and
-    **before** :func:`_finalize`, so the resulting ``data.db``/CSVs ride the existing
+    ``campaign.db`` is flushed — the index ingest mirrors it) and
+    **before** :func:`_finalize`, so the resulting CSVs ride the existing
     campaign upload instead of needing one of their own.
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)

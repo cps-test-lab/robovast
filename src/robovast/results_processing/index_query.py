@@ -78,19 +78,29 @@ class IndexQueryError(RuntimeError):
     include_traceback = False
 
 
-def open_index(*, readonly: bool = True,
-               timeout_ms: int = STATEMENT_TIMEOUT_MS) -> "psycopg.Connection":
+def open_index(*, readonly: bool = True, timeout_ms: int = STATEMENT_TIMEOUT_MS,
+               row_factory: bool = False) -> "psycopg.Connection":
     """A connection to the index, ready to be queried.
 
     Ensures the query functions exist before handing the connection back, so a caller
     never has to know that ``PERCENTILE`` is something RoboVAST defines rather than
     something Postgres ships.
+
+    *row_factory* returns rows as dicts, for the plugin seam (:func:`open_data_db`) whose
+    consumers already index rows by column name.
     """
     # The no-member disables below are pylint failing to infer psycopg's Connection through
     # index_db.connect's deliberately local driver import -- not a missing method.
     conn = index_db.connect(readonly=False)
     try:
+        # Functions first, row factory after. `install` reads its version marker
+        # positionally, and a dict factory set beforehand turns that into a KeyError that
+        # takes down every caller of `open_data_db` -- which is to say every notebook read
+        # and every service-endpoint plugin.
         index_functions.install(conn)
+        if row_factory:
+            from psycopg.rows import dict_row  # pylint: disable=import-outside-toplevel
+            conn.row_factory = dict_row
         conn.execute(  # pylint: disable=no-member
             f"SET statement_timeout = {int(timeout_ms)}")
         if readonly:
@@ -129,6 +139,20 @@ def _campaign_exists(conn, campaign_id: str) -> bool:
     except Exception:  # pylint: disable=broad-except
         return False
     return row is not None
+
+
+def campaign_is_ingested(campaign_id: str) -> bool:
+    """Has *campaign_id* ever been ingested? Opens its own connection.
+
+    The public form of :func:`_campaign_exists`, for callers holding no connection -- the
+    notebook readers, which need the question answered before deciding whether an empty
+    frame means "measured nothing" or "never postprocessed".
+    """
+    conn = open_index(readonly=True)
+    try:
+        return _campaign_exists(conn, campaign_id)
+    finally:
+        conn.close()  # pylint: disable=no-member
 
 
 def missing_campaign_note(campaign_id: str) -> str:

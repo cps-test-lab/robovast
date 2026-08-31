@@ -545,16 +545,36 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     return conn
 
 
-def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
-    """Open a campaign's queryable databases **read-only** — the public seam.
+def open_data_db(campaign_dir, extra_dirs: dict | None = None):
+    """Open the index **read-only** — the public seam for package-provided endpoints.
 
-    Thin public wrapper over the internal opener, for package-provided service endpoints
-    (``robovast.service_endpoints``) that read a campaign's ``data.db``/``campaign.db``
-    directly (e.g. to serve a postprocessed table untruncated). The caller must ``close()``
-    the returned connection (or use :meth:`RunDataContext.open_db`, which does). Raises
-    :class:`DataQueryError` when the campaign has neither database.
+    Returns a live connection, as before, so a plugin can read a table untruncated. The
+    caller must ``close()`` it (or use :meth:`RunDataContext.open_db`, which does).
+
+    **This is the one contract the move to a central index could not preserve, and it is
+    better to say so than to fake it.** What comes back is a Postgres connection, not a
+    ``sqlite3.Connection``, and the two differ in ways a shim would only paper over
+    briefly: parameters are ``%s`` rather than ``?``, there is no ``sqlite_master`` to
+    probe for a table, and ``CAST(x AS REAL)`` means a 4-byte float here (see
+    :mod:`robovast.results_processing.index_dialect`). An adapter translating those would
+    be a second dialect nobody documented, failing in new ways at the edges.
+
+    So a plugin carrying SQLite SQL breaks **loudly**, with a syntax error naming the
+    problem, rather than quietly returning something plausible. Rows come back as dicts,
+    which is what ``row["timestamp"]`` already assumed.
+
+    *extra_dirs* is gone: one index holds every campaign, so spanning them is a ``WHERE``
+    clause rather than an attach.
     """
-    return _open_db(campaign_dir, extra_dirs)
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
+
+    if extra_dirs:
+        raise DataQueryError(
+            "extra_dirs is no longer needed: every campaign is in one index, so a query "
+            "spanning campaigns filters on campaign_id instead of attaching a database.")
+    del campaign_dir  # scoping is a WHERE clause now, not a file to open
+    return index_query.open_index(readonly=True, row_factory=True)
 
 
 # What an LLM needs to write a correct query against a table it cannot see: what one row
@@ -1075,11 +1095,13 @@ def describe_data_db(campaign_dir) -> dict:
     Works before postprocessing: when ``data.db`` is absent, the attached
     ``campaign`` schema (config/objectives/batch progress) is still described.
     """
-    conn = _open_db(campaign_dir)
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
+
     try:
-        return {"tables": _list_tables(conn), "note": _DESCRIBE_NOTE}
-    finally:
-        conn.close()
+        return index_query.describe_index(campaign_id_of(campaign_dir))
+    except index_query.IndexQueryError as exc:
+        raise DataQueryError(str(exc)) from exc
 
 
 def _cap_cell(value):
@@ -1126,6 +1148,31 @@ def _cap_result_size(rows: list, max_bytes: int = _MAX_RESULT_BYTES) -> tuple:
     return rows, False
 
 
+def campaign_id_of(campaign_dir) -> str:
+    """The campaign a path belongs to, from anywhere inside it.
+
+    The directory name *is* the campaign id, and a caller may hand in the campaign root,
+    one configuration, or one run -- the notebook surface routinely does. Resolving it here
+    rather than making every caller pass an id is what keeps this flip to one file: the
+    scoping a path carried is still derived from the path, by the code that already knew how
+    (:func:`robovast.common.analysis.db.run_scope`), and only the *storage* moved.
+    """
+    from robovast.common.analysis.db import (  # pylint: disable=import-outside-toplevel
+        campaign_root)
+
+    path = Path(campaign_dir)
+    if not path.exists():
+        # The cluster lane resolves a query to the campaign's cache dir *without fetching
+        # it* -- there is nothing left to fetch, the rows are in the index -- so the path
+        # names a campaign that has no directory on this machine at all. Walking up for
+        # campaign.db would refuse every such query. A path that does not exist carries no
+        # structure to walk, so its name is the id; an existing path that is not a campaign
+        # still raises below.
+        return path.name
+
+    return campaign_root(path).name
+
+
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
                   extra_dirs: dict | None = None,
                   max_bytes: int | None = None) -> dict:
@@ -1142,6 +1189,32 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
 
     Raises :class:`DataQueryError` for a rejected (non-read) or invalid query.
     """
+    # The rows live in the central index now. The signature is unchanged because the
+    # scoping a campaign_dir carried is still real -- it is simply a WHERE clause the
+    # caller writes rather than a file that has to be fetched and opened.
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
+
+    if extra_dirs:
+        # One index holds every campaign, so comparing them is a WHERE clause. Attaching
+        # was the workaround for per-campaign files, and it cost a fetch per campaign --
+        # ~10 GB to answer one question about a nine-campaign arm.
+        raise DataQueryError(
+            "extra_dirs is no longer needed: every campaign is in one index, so a query "
+            "spanning campaigns filters on campaign_id instead of attaching a second "
+            "database.")
+    try:
+        return index_query.query_index(
+            sql, max_rows=max_rows, max_bytes=max_bytes,
+            campaign_id=campaign_id_of(campaign_dir))
+    except index_query.IndexQueryError as exc:
+        raise DataQueryError(str(exc)) from exc
+
+
+def _legacy_query_data_db(campaign_dir, sql: str, max_rows: int = 500,
+                          extra_dirs: dict | None = None,
+                          max_bytes: int | None = None) -> dict:
+    """The ``data.db`` implementation, kept for the differential tests only."""
     conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
     max_rows = max(1, min(int(max_rows), 5000))
     max_bytes = _MAX_RESULT_BYTES if max_bytes is None else max(1024, int(max_bytes))
@@ -1198,17 +1271,28 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
     import csv
     import io
 
-    conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
+    from robovast.results_processing import (  # pylint: disable=import-outside-toplevel
+        index_dialect, index_query)
+
+    if extra_dirs:
+        raise DataQueryError(
+            "extra_dirs is no longer needed: every campaign is in one index, so a query "
+            "spanning campaigns filters on campaign_id instead of attaching a second "
+            "database.")
+
+    del campaign_dir  # the rows are not in a directory any more; the WHERE clause scopes
+    import psycopg  # pylint: disable=import-outside-toplevel
+
+    conn = index_query.open_index(readonly=True)
     try:
-        conn.set_authorizer(_readonly_authorizer)
         try:
-            cursor = conn.execute(sql)
-        except sqlite3.DatabaseError as e:
-            msg = str(e)
-            if "not authorized" in msg.lower():
+            cursor = conn.execute(index_dialect.translate(sql))
+        except psycopg.Error as exc:
+            message = str(exc).strip()
+            if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
                 raise DataQueryError(
-                    f"Only read-only SELECT queries are allowed (rejected: {msg}).") from e
-            raise DataQueryError(f"SQL error: {msg}") from e
+                    f"Only read-only SELECT queries are allowed (rejected: {message}).") from exc
+            raise DataQueryError(f"SQL error: {message}") from exc
         if cursor.description is None:
             raise DataQueryError("query returned no result set (only SELECT is supported)")
 
@@ -1221,7 +1305,7 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
             buffer.truncate(0)
             return text
 
-        writer.writerow([d[0] for d in cursor.description])
+        writer.writerow([d.name for d in cursor.description])
         yield _flush()
         while True:
             batch = cursor.fetchmany(1000)
@@ -1230,7 +1314,6 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
             writer.writerows(batch)
             yield _flush()
     finally:
-        conn.set_authorizer(None)
         conn.close()
 
 

@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The evidence must outlive the campaign it explains.
 
-A campaign that dies mid-batch records no ``run`` rows and never postprocesses, so
-``data.db`` is never built -- and the query interface fetches only ``campaign.db`` and
-``_execution/data.db`` (``ClusterService._QUERY_DBS``). Anything that lived only in
-``data.db``, or only in a JSON file, would therefore be unreachable by SQL for exactly the
-campaign that needs explaining. That is not hypothetical: it is what happened to
+A campaign that dies mid-batch records no ``run`` rows and never postprocesses, so nothing
+it produced is ever ingested -- the only thing SQL can still reach is what the campaign
+store itself recorded. Anything that lived only in postprocessing's output, or only in a
+JSON file, would therefore be unreachable by SQL for exactly the campaign that needs
+explaining. That is not hypothetical: it is what happened to
 ``rr-roqsim-full-2026-08-23-03124069``, whose whole post-mortem had to be reconstructed
 from one formatted log sentence after its pod was collected.
 """

@@ -1,6 +1,11 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the read-only SQL data-access tools + the runs dimension table."""
+"""Tests for the read-only SQL data-access tools.
+
+The ``runs`` table here is written by hand: the builder that used to produce it went with
+the ``data.db`` writer (see ``notes/runs_table_port.md``), and what these tests are about is
+the *reader* — attach, truncation, the write refusals, the cross-campaign join.
+"""
 
 import asyncio
 import sqlite3
@@ -8,7 +13,6 @@ import sqlite3
 import pytest
 
 from robovast.mcp_server.plugins import results as run_data
-from robovast.results_processing.postprocessing_plugins import _build_runs_table
 
 # The two query tools are coroutines: they announce a pending object-store fetch *before*
 # blocking on it, which needs an await. Driven here rather than through a pytest asyncio
@@ -45,29 +49,21 @@ def campaign(tmp_path):
         (run0 / "test.xml").write_text(
             f'<testsuite tests="1" failures="{fails}" errors="0" time="12.5">'
             f'<testcase time="12.5"/></testsuite>')
-    # build data.db with just the runs table
+    # data.db with just the runs table, in the shape postprocessing used to build:
+    # per-run outcome from test.xml, params exploded into typed param_* columns.
     db = sqlite3.connect(cdir / "_execution" / "data.db")
     db.execute("CREATE TABLE _table_name_map (display_name TEXT PRIMARY KEY, sql_name TEXT)")
-    _build_runs_table(db, cdir, sorted(d for d in cdir.iterdir()
-                                       if d.is_dir() and not d.name.startswith("_")))
+    db.execute("CREATE TABLE runs (config_name TEXT, run_id INTEGER, status TEXT, "
+               "passed INTEGER, duration_s REAL, objective REAL, "
+               "param_wind REAL, param_mass REAL)")
+    db.executemany("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)", [
+        ("cfg-a", 0, "passed", 1, 12.5, 0.9, 2.5, 1.8),
+        ("cfg-b", 0, "failed", 0, 12.5, 0.4, 4.0, 1.8),
+    ])
+    db.execute("CREATE INDEX idx_runs_ctx ON runs (config_name, run_id)")
     db.commit()
     db.close()
     return str(cdir)
-
-
-def test_runs_table_has_params_status_duration(campaign):
-    db = sqlite3.connect(f"{campaign}/_execution/data.db")
-    cols = {r[1] for r in db.execute("PRAGMA table_info(runs)")}
-    assert {"config_name", "run_id", "status", "duration_s", "objective",
-            "param_wind", "param_mass"} <= cols
-    rows = {r[0]: r for r in db.execute(
-        "SELECT config_name, status, duration_s, param_wind, objective FROM runs")}
-    assert rows["cfg-a"][1] == "passed" and rows["cfg-a"][2] == 12.5
-    assert rows["cfg-b"][1] == "failed"
-    # Numeric params are stored as numbers, so comparisons/ORDER BY over them are
-    # numeric rather than lexicographic.
-    assert rows["cfg-a"][3] == 2.5 and rows["cfg-a"][4] == 0.9
-    assert isinstance(rows["cfg-a"][3], float)
 
 
 def test_describe_lists_runs_and_attached_campaign(campaign):

@@ -16,7 +16,7 @@
 
 """Tables in the central index, created and widened as runs arrive.
 
-A table per data-file stem, exactly as ``generate_data_db`` created them in ``data.db``:
+A table per data-file stem, exactly as the retired ``data.db`` writer created them:
 drop a ``poses.csv`` in a run directory and a ``poses`` table appears, with no
 registration anywhere. What changes here is only *where* the table lives, and therefore
 two things about its lifetime.
@@ -32,7 +32,7 @@ every plot the run view draws.
 **Widening is an ``ALTER``, not a rebuild.** A column's type is declared by the first run
 that writes it and the evidence is every run, so a later run can turn an ``INTEGER``
 column real, or demote a numeric one to text with a single ``'n/a'``. In SQLite that
-needed the rename-copy-drop dance in ``postprocessing_plugins._retype_table``, because
+needed a rename-copy-drop dance (what the retired ``data.db`` writer did), because
 SQLite cannot change a column's type. Postgres can, so the same correction is one
 statement and the data is never copied.
 

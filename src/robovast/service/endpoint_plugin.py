@@ -96,8 +96,17 @@ class RunDataContext:
 
     @contextmanager
     def open_db(self):
-        """A **read-only** sqlite connection over the campaign's ``data.db`` (with
-        ``campaign.db`` attached as schema ``campaign``), auto-closed on exit. Raises
+        """A **read-only** connection to the central index (campaign dimensions live in
+        schema ``campaign``), auto-closed on exit. Rows are dicts, keyed by column name.
+
+        **This is Postgres, not sqlite, and a handler must be written for it.** Parameters
+        are ``%s``; there is no ``sqlite_master`` to probe for a table; and ``CAST(x AS
+        REAL)`` is a *4-byte* float here, which silently mangles an epoch timestamp -- use
+        ``double precision``. A shim pretending otherwise would only move the surprise.
+
+        **A handler must filter on ``campaign_id``.** One index now holds every campaign,
+        so a query scoped to ``config_name``/``run_id`` alone matches the same run in every
+        other campaign -- and returns one of them, plausibly. Raises
         :class:`~robovast.results_processing.data_query.DataQueryError` (→ 400) when the
         campaign has no database yet (postprocessing hasn't run)."""
         from robovast.results_processing.data_query import \

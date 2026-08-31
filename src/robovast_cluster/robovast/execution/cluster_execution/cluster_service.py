@@ -162,12 +162,11 @@ class ClusterService(LocalTransport):
         self._pf_generation = 0
         self._pf_monitor: "threading.Thread | None" = None
         self._pf_monitor_stop = threading.Event()
-        # Per-campaign locks so concurrent data queries don't each re-download the
-        # same campaign into the shared cache dir (the results explorer fires one
-        # query per sub-view on first load). Guarded by ``_fetch_locks_guard``.
+        # Per-campaign locks so concurrent readers don't each re-download the same
+        # objects into the shared cache dir. Guarded by ``_fetch_locks_guard``.
         self._fetch_locks: dict[str, threading.Lock] = {}
         self._fetch_locks_guard = threading.Lock()
-        # What this service's last transfer of each campaign's query databases cost, as
+        # What this service's last transfer of each campaign's objects cost, as
         # ``(bytes, seconds)`` — so ``campaign_data_status`` reports a measured number
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
@@ -2841,8 +2840,8 @@ class ClusterService(LocalTransport):
 
     def _cache_dir(self, campaign_id: str) -> Path:
         """Local scratch mirroring a campaign's objects. Ephemeral by design — the object
-        store is the durable home — and shared by the whole-campaign fetch and the
-        query-database fetch, so the two can never hold divergent copies of one file."""
+        store is the durable home — and shared by the whole-campaign fetch and every
+        named-object fetch, so the two can never hold divergent copies of one file."""
         return Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
 
     def _data_dir(self, campaign_id: str):
@@ -2858,15 +2857,16 @@ class ClusterService(LocalTransport):
         no test fails, the page merely takes minutes and the pod moves gigabytes. So a caller
         says what it needs and pays only that:
 
-        * :meth:`_query_dir` — the two databases a SQL query reads.
+        * :meth:`_query_dir` — the campaign a SQL query names (it reads the index).
         * :meth:`_config_dir` — the frozen ``_config`` snapshot.
         * :meth:`_whole_campaign_dir` — everything, when that is genuinely the need.
         """
         raise NotImplementedError(
             f"_data_dir is not available on the cluster lane (campaign {campaign_id!r}): "
             "it would fetch the whole campaign from the object store. Ask for what you "
-            "need instead — _query_dir (the query databases), _config_dir (the frozen "
-            "config snapshot), or _whole_campaign_dir (everything, deliberately).")
+            "need instead — _query_dir (a query, which reads the index), _config_dir "
+            "(the frozen config snapshot), or _whole_campaign_dir (everything, "
+            "deliberately).")
 
     def _whole_campaign_dir(self, campaign_id: str):
         """Everything, deliberately: the campaign prefix into the local cache.
@@ -2881,8 +2881,8 @@ class ClusterService(LocalTransport):
         """Materialise only the frozen ``_config`` snapshot, then answer from the cache.
 
         A handful of small objects against ``fetch_campaign``'s whole prefix — the same
-        discipline as :meth:`_scene_source_dir` and :meth:`_query_dir`, and the reason
-        the declared-plots and panel-asset readers are cheap again.
+        discipline as :meth:`_scene_source_dir`, and the reason the declared-plots and
+        panel-asset readers are cheap again.
         """
         storage, bucket, prefix = self._campaign_object_location(
             campaign_id, interactive=True)
@@ -2931,29 +2931,24 @@ class ClusterService(LocalTransport):
             with self._work_progress_guard:
                 self._work_progress.pop(campaign_id, None)
 
-    #: The only two objects a SQL query reads, relative to the campaign prefix (see
-    #: ``data_query._open_db``). Neither is required to exist: ``campaign.db`` alone is
-    #: queryable before postprocessing has built ``data.db``.
-    _QUERY_DBS = ("_execution/data.db", "campaign.db")
-
     def _materialize(self, campaign_id: str, rel_paths, subject: str, *,
                      interactive: bool = False) -> Path:
         """Copy named objects of a campaign into its cache dir; return the dir.
 
         A **single-object** fetch per path — the same discipline as the ``/results`` file
         overrides below, and the reason both callers exist: pulling the campaign prefix to
-        read a 40 MB ``data.db`` (or a 2 KB ``outcome.json``) drags every rosbag the
-        campaign produced, in the deployment where campaigns are largest. Writes into the
+        read a 2 KB ``outcome.json`` drags every rosbag the campaign produced, in the
+        deployment where campaigns are largest. Writes into the
         *same* cache dir, so a later full ``fetch_campaign`` finds these files already at
         the right size and skips them.
 
-        A cached copy is validated by **size, not existence**: ``data.db`` and
-        ``outcome.json`` are both rewritten in place by re-postprocessing, and an existence
-        check would pin the first version this service ever saw and serve it forever.
+        A cached copy is validated by **size, not existence**: ``outcome.json`` is
+        rewritten in place by re-postprocessing, and an existence check would pin the first
+        version this service ever saw and serve it forever.
 
         A missing object is skipped, not an error: whether "not published yet" is a problem
-        is the caller's question, and each answers it differently (``_open_db`` raises its
-        own clear message; a campaign with no ``outcome.json`` reconstructs to ``unknown``).
+        is the caller's question, and each answers it differently (a campaign with no
+        ``outcome.json`` reconstructs to ``unknown``).
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
@@ -2981,8 +2976,9 @@ class ClusterService(LocalTransport):
                     if dst.exists() and dst.stat().st_size == size:
                         continue
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    # Published before the transfer, not after: a ``data.db`` can be hundreds
-                    # of MB, so the interesting part of this wait is the one file in flight.
+                    # Published before the transfer, not after: a single object can be
+                    # hundreds of MB, so the interesting part of this wait is the file in
+                    # flight.
                     # Nothing is published when every path is already cached — an instant
                     # call should not flash a progress bar.
                     publish(phase="downloading", unit="files", done=done,
@@ -3196,8 +3192,15 @@ class ClusterService(LocalTransport):
         return self._images.pull_secret_name()
 
     def _query_dir(self, campaign_id: str):
-        """Materialize just the query databases into the campaign's cache dir; return it."""
-        return self._materialize(campaign_id, self._QUERY_DBS, "query databases")
+        """Where the campaign *would* be — a path, not a transfer.
+
+        A query reads the central index, so nothing about this campaign has to be on this
+        pod's disk for one to answer. All the shared query surface still wants from a path
+        is the campaign it names, so this returns the cache dir unfetched: the id is in its
+        name and no object is touched. It stays an override because the inherited
+        ``_query_dir`` goes through the refused :meth:`_data_dir`.
+        """
+        return Path(self._cache_dir(campaign_id))
 
     #: The campaign's **recorded facts**: its store row (start time, description, per-run
     #: tallies) and its durable terminal outcome. Both small and both enough to summarize a
@@ -3300,59 +3303,19 @@ class ClusterService(LocalTransport):
             return local
 
     def campaign_data_status(self, campaign_id: str):
-        """Cluster: a query reads the object store, so report what that will cost.
+        """Cluster: a query transfers nothing, because it reads the central index.
 
-        Two ``stat_object`` calls — deliberately not a listing of the campaign prefix,
-        which is the cost this whole seam exists to avoid.
+        Kept as an override even though the answer now matches the local lane's shape: the
+        *reason* differs, and the note is what a client shows. The databases are not on this
+        pod and never have to be — the campaign's rows are in the index, so there is no
+        fetch to warn about and no probe of the object store to run.
         """
         from robovast.service.interface import CampaignDataStatus
-        in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
-        dest = self._cache_dir(campaign_id)
-        transfer = "cluster-network" if in_pod else "port-forward"
-        with self._work_progress_guard:
-            progress = self._work_progress.get(campaign_id)
-        if progress is not None:
-            # Busy: answer from memory and skip the two ``stat_object`` calls entirely. A
-            # client polls this once a second precisely while a transfer is saturating the
-            # link, so the probe must not add round-trips to the store it is describing —
-            # and it has nothing to add, since a fetch in flight already means not cached.
-            return CampaignDataStatus(
-                campaign_id=campaign_id, source="object-store", fetch_required=True,
-                cached=False, transfer=transfer, fetch_in_progress=True, progress=progress,
-                note=("this service is fetching the campaign's data from the object store "
-                      "right now; the query runs when it lands"))
-        # Interactive: two ``stat_object`` calls whose whole purpose is to be cheap enough
-        # to ask before a query — a minutes-long block here defeats the seam.
-        storage, bucket, prefix = self._campaign_object_location(
-            campaign_id, interactive=True)
-        db_bytes, cached = 0, True
-        for rel in self._QUERY_DBS:
-            size = storage.stat_object(bucket, f"{prefix}{rel}")
-            if size is None:
-                continue
-            db_bytes += size
-            dst = dest / Path(rel)
-            if not (dst.exists() and dst.stat().st_size == size):
-                cached = False
-        with self._fetch_locks_guard:
-            lock = self._fetch_locks.get(campaign_id)
-        last = self._last_fetch.get(campaign_id)
-        if cached:
-            note = ("the campaign's query databases are already in the service cache; "
-                    "this query reads them locally")
-        else:
-            where = ("the in-cluster object store" if in_pod else
-                     "the object store through a kubectl port-forward")
-            note = (f"the query databases are not in the service cache yet; they are "
-                    f"fetched from {where} first")
         return CampaignDataStatus(
-            campaign_id=campaign_id, source="object-store", fetch_required=True,
-            cached=cached, transfer=transfer,
-            db_bytes=db_bytes,
-            fetch_in_progress=bool(lock is not None and lock.locked()),
-            last_fetch_bytes=None if last is None else last[0],
-            last_fetch_seconds=None if last is None else last[1],
-            note=note)
+            campaign_id=campaign_id, source="object-store", fetch_required=False,
+            cached=True, transfer="none",
+            note="the campaign's results are in the central index; a query reads them "
+                 "there and transfers nothing from the object store")
 
     # -- files: the /results namespace, served straight from the object store --------
     #
@@ -3517,7 +3480,7 @@ class ClusterService(LocalTransport):
                            campaign_id, e)
 
     def _publish_execution(self, campaign_id: str, campaign_root) -> None:
-        """Upload a campaign's ``_execution/`` (outcome + logs + data.db) to the store."""
+        """Upload a campaign's ``_execution/`` (outcome + logs) to the store."""
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
@@ -3530,9 +3493,10 @@ class ClusterService(LocalTransport):
         background operation (returns immediately; watch it in the campaign view).
 
         The rosbag→CSV step runs as a Job in the campaign's own execution image and the
-        ``data.db`` step runs here (pure Python) — the same two stages the campaign loop
-        chains. ``postprocess_campaign`` streams into the scratch ``postprocessing.log``,
-        which is published to the object store so the Monitor and a later restart see it.
+        host step — metrics, provenance, the index ingest — runs here (pure Python), the
+        same two stages the campaign loop chains. ``postprocess_campaign`` streams into the
+        scratch ``postprocessing.log``, which is published to the object store so the
+        Monitor and a later restart see it.
         """
         from robovast.execution.notify import Notifier
         from robovast.execution.status_recovery import record_step_outcome
@@ -3540,7 +3504,14 @@ class ClusterService(LocalTransport):
         from .postprocess_job import postprocess_campaign
 
         def work(state):
-            campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+            # A real whole-campaign need, unlike a query: the host stage reads the run
+            # tree it postprocesses -- the frozen ``_config``, ``campaign.db``, every
+            # ``test.xml`` and the converted CSVs. Not ``force=True`` any more: that was
+            # there for the one mutable object in the prefix, the per-campaign ``data.db``
+            # this stage used to rewrite. It is gone (the rows go to the index), and the
+            # conversion's own outputs are refreshed by ``sync_outputs``, which carries
+            # ``force`` itself -- so forcing here only re-downloaded every rosbag.
+            campaign_root = self.fetch_campaign(request.campaign_id)
             cfg = self._cluster_config()
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,

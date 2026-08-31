@@ -6,21 +6,20 @@ The unit tests cover the parsing and the slicing. What only shows up here is the
 that a run finds its job through the **manifest** and not the ``job`` symlink (the property
 that makes this work on the cluster, where a symlink cannot exist), that a packed job is
 read once, that a degraded campaign still succeeds and says what was wrong, and that the
-files land where ``generate_data_db``'s glob will pick them up.
+files land where the index ingest's glob will pick them up.
 
 ``RunLog`` is exercised alongside ``ResourceUsage`` because both now share
 :mod:`robovast.results_processing.run_slices`, and nothing else pins that ``RunLog`` still
 walks a campaign the way it always did.
 """
 
-import sqlite3
-
 import pytest
 import yaml
 
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
-from robovast.results_processing.postprocessing_plugins import (ResourceUsage, RunLog,
-                                                                generate_data_db)
+from robovast.results_processing.campaign_ingest import _scenario_verdict
+from robovast.results_processing.csv_types import INTEGER, REAL, infer_column_types
+from robovast.results_processing.postprocessing_plugins import ResourceUsage, RunLog
 
 _HEADER = "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
 
@@ -110,6 +109,13 @@ def _run(campaign, config, run, *, start_epoch=None, duration=10.0, failures=0):
     return run_dir
 
 
+def _junit_passed(path) -> bool:
+    """The run's own verdict, as the runner recorded it in JUnit."""
+    import xml.etree.ElementTree as ET
+    suite = ET.parse(path).getroot()
+    return int(suite.get("failures", 0)) == 0 and int(suite.get("errors", 0)) == 0
+
+
 def _rows(path):
     import csv
     with open(path, newline="", encoding="utf-8") as handle:
@@ -127,7 +133,7 @@ def campaign(tmp_path):
 
 
 def test_the_plugin_writes_one_csv_per_run_into_the_run_dir(campaign):
-    """Into the RUN dir, because that is the only place generate_data_db's glob looks."""
+    """Into the RUN dir, because that is the only place the ingest's glob looks."""
     ok, message, entries = ResourceUsage()(str(campaign))
     assert ok, message
     rows = _rows(campaign / "cfg-a" / "0" / "resource_usage.csv")
@@ -200,24 +206,22 @@ def test_a_packed_job_is_read_once_and_split_between_its_runs(tmp_path, monkeypa
     assert len(first | second) == 4, "a tick was dropped"
 
 
-def test_the_table_lands_in_data_db_with_numbers_as_numbers(campaign, tmp_path):
-    """The whole point: it is queryable, joined on (config_name, run_id), and its numeric
-    columns compare numerically rather than lexicographically."""
+def test_the_table_the_ingest_will_build_has_numbers_as_numbers(campaign):
+    """The whole point: what the ingest reads from these files is queryable, scoped to
+    (config_name, run_id), and its numeric columns compare numerically rather than
+    lexicographically."""
     RunLog()(str(campaign))
     ResourceUsage()(str(campaign))
-    ok, message = generate_data_db(str(campaign))[:2]
-    assert ok, message
 
-    db = sqlite3.connect(campaign / "_execution" / "data.db")
-    columns = {r[1]: r[2] for r in db.execute("PRAGMA table_info(resource_usage)")}
-    assert columns["cpu_percent"] == "REAL"
-    assert columns["memory_rss_bytes"] == "INTEGER"
-    assert {"config_name", "run_id"} <= set(columns)
+    usage = _rows(campaign / "cfg-a" / "0" / "resource_usage.csv")
+    types = infer_column_types(usage, usage[0].keys())
+    assert types["cpu_percent"] == REAL
+    assert types["memory_rss_bytes"] == INTEGER
 
     # The two derived tables must agree on what to call a container: they are joined on it.
-    used = {r[0] for r in db.execute("SELECT DISTINCT container FROM resource_usage")}
-    logged = {r[0] for r in db.execute(
-        "SELECT DISTINCT container FROM run_log WHERE container != ''")}
+    used = {r["container"] for r in usage}
+    logged = {r["container"] for r in _rows(campaign / "cfg-a" / "0" / "run_log.csv")
+              if r["container"]}
     assert logged <= used
 
 
@@ -264,17 +268,20 @@ def test_a_packed_jobs_log_is_split_so_no_run_inherits_a_siblings_verdict(tmp_pa
     assert not any("test_scenario-0" in m for m in second), "run 1 sees run 0's trial"
     assert not any("tip_over" in m for m in second), "the reported symptom, exactly"
 
-    ok, message = generate_data_db(str(camp))
-    assert ok, message
-    with sqlite3.connect(str(camp / "_execution" / "data.db")) as conn:
-        verdicts = dict(conn.execute(
-            "SELECT run_id, status FROM scenario_timestamps ORDER BY run_id").fetchall())
-        passed = dict(conn.execute(
-            "SELECT run_id, passed FROM runs ORDER BY run_id").fetchall())
-    assert verdicts == {0: "failed", 1: "succeeded"}
+    # What the ingest derives from each run's own slice of that log -- the same function it
+    # calls, so this pins the verdict a query would come back with, not a re-match here.
+    verdicts = {run: _scenario_verdict(_rows(camp / "cfg-a" / str(run) / "run_log.csv"))
+                for run in (0, 1)}
+    assert {run: v.get("status") for run, v in verdicts.items()} == {0: "failed",
+                                                                    1: "succeeded"}
     # The user-visible invariant: the two sources of "did this run work" must not disagree.
-    assert passed == {0: 0, 1: 1}
-    assert [verdicts[i] == "succeeded" for i in (0, 1)] == [bool(passed[i]) for i in (0, 1)]
+    # The other source is the run's own test.xml, which the campaign record is written from
+    # and which the index mirrors -- read here rather than restated, so the two really are
+    # independent.
+    passed = {run: _junit_passed(camp / "cfg-a" / str(run) / "test.xml") for run in (0, 1)}
+    assert passed == {0: False, 1: True}
+    assert [verdicts[i]["status"] == "succeeded" for i in (0, 1)] == \
+        [passed[i] for i in (0, 1)]
 
 
 def test_each_run_owns_the_scenario_start_line_stamped_just_before_its_own_start(tmp_path):

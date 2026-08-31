@@ -160,8 +160,7 @@ def column_def(name: str, col_type: str) -> str:
 def cast_expr(name: str, col_type: str) -> str:
     """A SELECT expression re-typing an already-stored column to *col_type*.
 
-    Used when a table is rebuilt because later runs widened a column
-    (see ``postprocessing_plugins._retype_table``): the values already in the table
+    Used when a table is rebuilt because later runs widened a column: the values in it
     were converted under the old, narrower verdict and have to be brought over as the
     new type so storage matches the declaration. ``CAST`` reformats a number on its
     way to ``TEXT`` (``1e-3`` was already stored as ``0.001``), which is the price of

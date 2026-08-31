@@ -150,7 +150,7 @@ joinable to ``runs``. So "which failed runs share a warning pattern?" is now one
 has only its streams.
 
 (The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
-written to the **job** directory, which ``generate_data_db`` does not glob. That gap is what
+written to the **job** directory, which the index ingest does not glob. That gap is what
 ``run_log`` closes.)
 
 **5b. The file address space's remaining substrate costs.** The address space landed

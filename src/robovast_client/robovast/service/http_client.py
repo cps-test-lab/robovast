@@ -438,11 +438,11 @@ class HTTPTransport(RobovastInterface):
     def list_variation_types(self) -> VariationTypesResponse:
         return VariationTypesResponse.model_validate(self._get(Routes.VARIATION_TYPES))
 
-    #: A cluster campaign's first data call can spend minutes inside the request fetching
-    #: from the object store (``ClusterService._query_dir``), and the default 30 s would
-    #: abort the client while the service is still transferring — leaving the caller with a
-    #: ReadTimeout indistinguishable from a broken service. The web UI never hit this
-    #: because ``fetch`` sets no timeout at all.
+    #: A data call can spend minutes inside the request — a query is answered by the index
+    #: now rather than by a fetch, but a wide aggregate over a large campaign still runs
+    #: there — and the default 30 s would abort the client mid-answer, leaving the caller
+    #: with a ReadTimeout indistinguishable from a broken service. The web UI never hit
+    #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
 
     #: A screenshot renders inside the request, and on a node that has never run this

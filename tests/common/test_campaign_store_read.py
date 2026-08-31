@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reading a campaign's own record does not require its measurements.
 
-``open_campaign_db`` is the postprocessed metrics and rightly refuses a campaign with no
-``data.db``. A search notebook wants the other half: what was proposed, in which round, and
-what it scored — written by the controller as the search runs. Tying that to postprocessing
+``open_campaign_db`` is the postprocessed metrics -- now the central index -- and rightly
+refuses a campaign that was never ingested into it. A search notebook wants the other half:
+what was proposed, in which round, and what it scored — written by the controller as the
+search runs, and still a local ``campaign.db``. Tying that to postprocessing
 would make a batch or archive view unavailable while the search is going and on any campaign
 that was never postprocessed, which is exactly when watching a search is worth anything.
 
@@ -12,6 +13,7 @@ Before this existed each search notebook opened ``campaign.db`` with a hand-buil
 raw ``sqlite3.connect``, once per notebook, each with its own guess at where the file was.
 """
 
+import os
 import sqlite3
 
 import pytest
@@ -49,14 +51,25 @@ def test_the_store_is_readable_without_postprocessing(tmp_path):
         con.close()
 
 
+@pytest.mark.skipif(not os.environ.get("ROBOVAST_TEST_PG_DSN"),
+                    reason="ROBOVAST_TEST_PG_DSN is not set")
 def test_the_metrics_reader_still_refuses_the_same_campaign(tmp_path):
     # The two are deliberately different: asking for measurements that were never built is an
     # error with a remedy, and this is the campaign that would otherwise fail one table at a
     # time as "no such table".
+    #
+    # Where the measurements live changed, and with it what "never built" looks like: not a
+    # missing data.db but a campaign the index has never been told about. That is the more
+    # dangerous shape of the same mistake — one index holds every campaign, so a campaign
+    # whose postprocessing never ran answers with zero rows exactly as one that genuinely
+    # measured nothing does. Hence the reader has to ask, which needs an index to ask.
+    os.environ["ROBOVAST_INDEX_DSN"] = os.environ["ROBOVAST_TEST_PG_DSN"]
     root = _campaign(tmp_path)
     with pytest.raises(CampaignDataError) as excinfo:
         open_campaign_db(root)
-    assert "data.db" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "not in the index" in message
+    assert "postprocessing" in message, "the refusal has to name the remedy"
 
 
 def test_tables_are_unqualified(tmp_path):

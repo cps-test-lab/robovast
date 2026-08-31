@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A campaign's results directory read into the index, replacing ``generate_data_db``.
+"""A campaign's results directory read into the index, replacing the ``data.db`` writer.
 
 Against a real Postgres and a results tree built here, because what is under test is the
 ingest contract as a whole: one file becomes one table, a stem collision is refused, the

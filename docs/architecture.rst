@@ -513,9 +513,10 @@ Fetch what the caller needs, not the campaign
 same answer is a directory read locally and an object-store transfer on the cluster:
 
 ``_query_dir``
-    Just ``_execution/data.db`` and ``campaign.db`` — the only two objects
-    ``data_query._open_db`` opens. Used by ``describe_campaign_data`` and
-    ``query_campaign_data_sql``.
+    Nothing at all: a query reads the central index, so it needs only the campaign the
+    path *names*. This returns the cache dir unfetched. Used by
+    ``describe_campaign_data`` and ``query_campaign_data_sql``. It stayed an override
+    only because the inherited one goes through the refused ``_data_dir``.
 
 ``_config_dir``
     The frozen ``_config`` snapshot: a handful of small objects. Used by the cheap
@@ -533,34 +534,36 @@ same answer is a directory read locally and an object-store transfer on the clus
 
 The refusal is the design. While ``_data_dir`` silently meant ``fetch_campaign``, every
 *inherited* method that touched it became a whole-campaign download — and nothing errored,
-so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` over a
-40 MB ``data.db`` pulled every rosbag the campaign produced, inside an HTTP request whose
-client timeout was 30 s; the web UI survived it only because ``fetch`` sets no timeout at
-all. ``list_campaign_plots`` arrived that way too, and the Results page calls it *per
+so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` pulled
+every rosbag the campaign produced, inside an HTTP request whose client timeout was 30 s;
+the web UI survived it only because ``fetch`` sets no timeout at all. Narrowing that to the
+campaign's databases removed most of the cost, and the central index removed the rest:
+there is now no per-campaign file a query has to have. ``list_campaign_plots`` arrived that
+way too, and the Results page calls it *per
 campaign*, so opening the UI moved gigabytes to render a list of plot names.
 
 Fixing those one at a time left the trap armed for the next method. Now a caller that
 reaches for ``_data_dir`` fails immediately, naming the three alternatives, instead of
 quietly moving a terabyte in production.
 
-Two properties of the narrow path are load-bearing:
+Two properties of the narrow path are load-bearing for the seams that still transfer
+something (``_config_dir``, ``_record_dir``, the ``/results`` file reads):
 
-* **The cached copy is validated by size, not existence.** ``data.db`` is the one campaign
-  object that is *mutable* — re-postprocessing rewrites it in place, which is what
-  ``fetch_campaign(force=True)`` exists for. An existence check would pin the first version a
-  service ever saw and serve stale metrics indefinitely.
-* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock.** The
-  results explorer fires one query per sub-view on first load; without both, one request
-  opens a ``data.db`` another is still streaming and SQLite reports "no such table: runs".
+* **The cached copy is validated by size, not existence.** ``outcome.json`` is rewritten in
+  place by re-postprocessing, and an existence check would pin the first version a service
+  ever saw and serve it indefinitely.
+* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock**, so one
+  request never reads a file another is still streaming.
 
-Both seams write into the *same* cache directory, so a later whole-campaign fetch finds the
-two databases already at the right size and skips them, and ``delete_campaign`` still clears
+They write into the *same* cache directory as the whole-campaign fetch, so a later one finds
+those objects already at the right size and skips them, and ``delete_campaign`` still clears
 one place.
 
 The data-status probe (``GET /campaigns/{id}/data-status``, exposed as ``describe_campaign_data(preflight_only=True)``) reports whether a query would
 transfer anything and what it would cost, so a caller can explain the wait *before* it waits.
-It is bounded to two ``stat_object`` calls — a probe that itself enumerated the prefix would
-only move the cost it exists to warn about. It is a **control** route, not a ``/results``
+On both lanes the answer is now "nothing": the rows are in the index, and the probe says so
+from memory rather than probing the store — a probe that costs a round-trip to warn about a
+transfer that no longer happens is pure loss. It is a **control** route, not a ``/results``
 path: every segment there is a user-chosen file name, so a literal ``data-status`` under it
 would shadow a campaign file of that name.
 
@@ -738,21 +741,19 @@ metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
 :mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
 :ref:`evaluation-reading-results`).
 
-**Versioned, never migrated.** The layout is stamped into ``PRAGMA user_version``
-(``DATA_DB_SCHEMA_VERSION``), and no migration table goes with it — the deliberate difference
-from ``campaign.db``, whose :data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The
-store is *authored*: written as the campaign runs, and the only record of what happened, so an
-old one must be upgraded in place. ``data.db`` is *derived*: postprocessing deletes and rebuilds
-it from the run directories, which keep their CSV/JSONL, so the upgrade path for an old one is
-to run postprocessing again — which re-executes no trial, and needs neither ROS nor the
-campaign's execution image, since only the ``rosbags_*`` → CSV step does and everything after
-it is plain Python. A migration here would be code maintained to reproduce what the builder
-already does.
+**Not versioned, because it is derived.** The metrics store carries no schema version and no
+migration ladder — the deliberate difference from ``campaign.db``, whose
+:data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The store is *authored*: written
+as the campaign runs, and the only record of what happened, so an old one must be upgraded in
+place. The metrics are *derived*: postprocessing rebuilds them from the run directories, which
+keep their CSV/JSONL, so the upgrade path is to run postprocessing again — which re-executes no
+trial, and needs neither ROS nor the campaign's execution image, since only the ``rosbags_*`` →
+CSV step does and everything after it is plain Python. A migration here would be code
+maintained to reproduce what the ingest already does.
 
-The stamp does not gate reads, because a version is too coarse to answer the question a reader
-actually has: most campaigns on disk predate it, and many carry everything a given notebook
-needs. What gates a query is whether the columns are there, which the reader checks directly;
-the version only sharpens the error when they are not.
+A version would not gate reads anyway, because it is too coarse to answer the question a reader
+actually has. What gates a query is whether the columns are there, which the reader checks
+directly.
 
 **Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
 run: config, status, duration, params, search round, host record) and ``config_view`` (the ``.vast`` as

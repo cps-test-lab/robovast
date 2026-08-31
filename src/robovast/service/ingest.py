@@ -450,17 +450,19 @@ def _migrate_store_in_place(campaign_dir: Path, store_path: Path) -> None:
 
 
 def _check_analysis_db(campaign_dir: Path) -> dict:
-    """Whether the postprocessed analysis database is present.
+    """Whether the campaign carries a per-campaign analysis database.
 
-    Absent is expected for a *raw* (pre-postprocess) archive and is recoverable by running
-    postprocessing, so it is reported with that action rather than as a failure.
+    Historical only: postprocessed rows now stream into the central index, so a modern
+    campaign directory carries none and *absent* is the ordinary answer -- recoverable, as
+    it always was, by running postprocessing, which is what loads the campaign into the
+    index. Reported rather than dropped because an archive from before the index still has
+    such a file, and saying so is how a reader knows where its metrics are.
     """
-    from robovast.common.analysis.db import DATA_DB_SCHEMA_VERSION
-
     candidates = sorted(campaign_dir.glob("**/*.duckdb")) + sorted(campaign_dir.glob("**/data.db"))
     if not candidates:
         return _stage(STAGE_ABSENT,
-                      "no analysis database. Expected for a raw, pre-postprocess archive; "
-                      "regenerate it with 'vast campaign postprocess <campaign-id>'.")
-    return _stage(STAGE_OK, f"{len(candidates)} analysis database(s) present "
-                            f"(current schema v{DATA_DB_SCHEMA_VERSION})")
+                      "no per-campaign analysis database. Expected -- postprocessed rows "
+                      "live in the central index; load them with "
+                      "'vast campaign postprocess <campaign-id>'.")
+    return _stage(STAGE_OK, f"{len(candidates)} legacy per-campaign analysis database(s) "
+                            f"present; the queryable copy is the central index")

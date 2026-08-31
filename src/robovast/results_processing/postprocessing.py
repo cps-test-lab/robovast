@@ -828,9 +828,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     all_provenance_entries = (_staged_provenance_entries(campaign_dir)
                               + all_provenance_entries)
 
-    # Write postprocessing.yaml in campaign/_transient/
-    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
-
     _record_campaign_providers(campaign_dir, output)
 
 
@@ -856,6 +853,24 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             totals = campaign_ingest.ingest_campaign(conn, campaign_dir, campaign_id)
         rows = sum(totals.values())
         output(f"✓ Indexed {campaign_id}: {rows} rows across {len(totals)} tables")
+
+    # The provenance record is written LAST, after the ingest, and the ordering is the
+    # point rather than an accident of where the call sits.
+    #
+    # This file is now the evidence that a campaign is postprocessed -- both for the
+    # archive variant (`share_providers.naming.variant_from_record`) and for
+    # `Status.postprocessed` (`common.campaign_data.campaign_has_derived_data`), which
+    # used to prove it from a finished `data.db` and its absent WAL sidecars. A file has
+    # no equivalent of those sidecars, so "finished" has to come from *when* it is
+    # written: written before the ingest, it would claim results for a campaign whose rows
+    # are not in the index -- and the ingest is the step most likely to fail, since it is
+    # the one that needs the index to be up. Written after, its presence means every step
+    # that produces derived data has already succeeded.
+    #
+    # `skip_db` is deliberately not special-cased: a caller who skipped the ingest asked
+    # for a campaign that is not queryable, and the record still describes what was
+    # derived, which is what an archive's recipient reads it for.
+    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Generate metadata.yaml in each campaign directory
     if skip_metadata:

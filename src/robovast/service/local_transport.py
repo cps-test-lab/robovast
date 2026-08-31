@@ -4427,8 +4427,8 @@ class LocalTransport(RobovastInterface):
 
     def stream_campaign_query_csv(self, campaign_id: str, sql: str,
                                   extra_campaign_ids=None):
-        # Resolved through _query_dir like the JSON path, so the cluster service's
-        # object-store fetch happens here too rather than needing its own override.
+        # Resolved through _query_dir like the JSON path, so both lanes name the campaign
+        # the same way rather than this one needing its own override.
         from robovast.results_processing.data_query import stream_query_csv
         extra_dirs = {f"c{i + 1}": self._query_dir(cid)
                       for i, cid in enumerate(extra_campaign_ids or [])}
@@ -4452,8 +4452,8 @@ class LocalTransport(RobovastInterface):
         Locally this is a directory on disk and everything below can share it. On the
         cluster there is no such thing: the campaign lives in the object store, and any
         answer here would have to materialise it. ``ClusterService`` therefore **refuses**
-        this call and each caller states what it needs instead — :meth:`_query_dir` (two
-        databases), :meth:`_config_dir` (the frozen ``.vast``), or
+        this call and each caller states what it needs instead — :meth:`_query_dir` (the
+        campaign a query names), :meth:`_config_dir` (the frozen ``.vast``), or
         :meth:`_whole_campaign_dir` (everything, said out loud).
 
         That refusal is the point. While this method silently answered "the whole
@@ -4483,13 +4483,13 @@ class LocalTransport(RobovastInterface):
         return Path(self._data_dir(campaign_id)) / "_config"
 
     def _query_dir(self, campaign_id: str):
-        """Dir a **query** reads: it needs only ``_execution/data.db`` + ``campaign.db``
-        (see ``data_query._open_db``).
+        """Dir a **query** names. The rows come from the central index; all this has to
+        carry is which campaign is being asked about.
 
-        Locally identical to :meth:`_data_dir`. Separate from it because on the cluster a
-        query needs two objects and the campaign may be terabytes, so ``ClusterService``
-        overrides this one alone. Callers needing more say which more: the frozen config
-        via :meth:`_config_dir`, or everything via :meth:`_whole_campaign_dir`."""
+        Locally identical to :meth:`_data_dir`. Separate from it because ``ClusterService``
+        refuses ``_data_dir`` — there a campaign dir means an object-store transfer, and a
+        query needs none. Callers needing actual files say which: the frozen config via
+        :meth:`_config_dir`, or everything via :meth:`_whole_campaign_dir`."""
         return self._data_dir(campaign_id)
 
     def resolve_data_dir(self, campaign_id: str):

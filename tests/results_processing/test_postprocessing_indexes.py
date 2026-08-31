@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Postprocessing loads the campaign into the index, or fails saying so.
 
-Written because swapping ``generate_data_db`` for the index ingest inside
-``run_postprocessing`` broke no test at all: every existing test drives
-``generate_data_db`` directly, so the call site itself was uncovered and a regression
-there would have been silent.
+Written because swapping the ``data.db`` writer for the index ingest inside
+``run_postprocessing`` broke no test at all: every existing test drove that writer
+directly, so the call site itself was uncovered and a regression there would have been
+silent.
 
 The failure direction matters more than the success one. "Finished" has to keep meaning
 "queryable"; a postprocess that completes with the index down would make those two things

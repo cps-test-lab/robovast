@@ -386,31 +386,20 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
-The first query on a campaign can be slow
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A query never fetches a campaign
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A cluster campaign's durable home is the object store, so the service materializes its two
-query databases into a local cache the first time something asks for them — **inside** that
-request. On a local ``vast serve`` this never happens; against a cluster reached through a
-``kubectl port-forward`` it is the difference between a query answering immediately and one
-taking a few seconds. Every query after it reads the cache.
+Results live in a central index, so a query is answered there for every campaign, on both
+lanes. Nothing is materialized in the service to answer one: no first-query transfer, and no
+per-campaign database that has to exist before a question can be asked.
 
-That is reported rather than left to be guessed at:
+``describe_campaign_data(preflight_only=True)`` therefore reports ``fetch_required: false``
+and ``transfer: none``, which is what "the question does not apply" looks like. It remains a
+cheap pre-flight worth calling before a batch of queries, and the ``fetch`` field on a query
+result reports the same — a client that used to explain a wait now has nothing to explain.
 
-* Before the wait, as a log notification naming the size and the transport, so a client that
-  renders MCP notifications shows *why* it is waiting instead of appearing to hang.
-* With the result, as a ``fetch`` field — ``{source, transfer, cold[, seconds, bytes]}`` —
-  which is the measured cost of that call, not an estimate. It also reaches clients that
-  ignore notifications, via the warning channel every tool result carries.
-* On demand, from ``describe_campaign_data(preflight_only=True)`` — a cheap pre-flight (two metadata lookups)
-  worth calling before a *batch* of queries against a campaign you have not touched yet.
-  ``fetch_required: false`` means the question does not apply. ``transfer`` separates
-  ``cluster-network`` (in-pod, fast) from ``port-forward`` (off-cluster driver, slow): the
-  same object store reached two ways, differing by orders of magnitude.
-
-A query fetches **only** those two databases (``_execution/data.db`` and ``campaign.db``),
-never the campaign's run artifacts — the same rule ``read_file`` follows for ``/results``.
-The cost therefore tracks the size of the metrics, not of the rosbags beside them.
+Cost tracks the rows a query touches, not the rosbags beside them — the same rule
+``read_file`` follows for ``/results``.
 
 
 .. _mcp-files:
