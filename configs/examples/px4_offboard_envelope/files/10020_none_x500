@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# @name X500 V2 (external MAVLink simulator)
+#
+# @type Quadrotor x
+# @class Copter
+#
+# THIS FILE EXISTS BECAUSE PX4 SHIPS NO SUCH AIRFRAME, and that absence is a result of this
+# example rather than an inconvenience it works around.
+#
+# PX4's default SITL airframe is `4001_gz_x500` (Holybro X500 V2). Its first act is
+# `param set-default SIM_GZ_EN 1`, and `ROMFS/px4fmu_common/init.d-posix/px4-rc.simulator`
+# branches to the gz-transport bridge as soon as SIM_GZ_EN is 1 -- before it can ever reach
+# `px4-rc.mavlinksim`, which is the simulator-agnostic MAVLink HIL path every non-gz simulator
+# attaches through. The only airframe in the tree that reaches that path is `10016_none_iris`,
+# an Iris.
+#
+# So PX4's default *airframe* and PX4's portable *interface* are not available together out of
+# the box: the default simulator's airframes are welded to the default simulator's transport.
+# This file is `10016_none_iris` with the x500's control-allocation geometry from `4001_gz_x500`
+# substituted, which is the smallest change that makes the two meet.
+#
+# It is a data file, not a patch: PX4 resolves airframes by name from
+# `${R}etc/init.d-posix/airframes` at run time, so dropping a file in beside the shipped ones is
+# the documented extension point. `files/px4_start.sh` copies it there before starting PX4.
+#
+# Select it with PX4_SIM_MODEL=none_x500 (or PX4_SYS_AUTOSTART=10020). Do NOT also set SIM_GZ_EN.
+
+. ${R}etc/init.d/rc.mc_defaults
+
+param set-default CA_AIRFRAME 0
+param set-default CA_ROTOR_COUNT 4
+
+# Quad-X, in PX4's FRD body frame: +x forward, +y right. The arm half-span is 0.174 m, which is
+# the X500 V2's 500 mm diagonal wheelbase. KM is the rotor's moment (yaw torque per unit thrust)
+# and its SIGN is the spin direction -- rotors 0 and 1 turn one way, 2 and 3 the other. This
+# ordering is load-bearing on both sides of the MAVLink link: PX4's control allocator decides
+# which HIL_ACTUATOR_CONTROLS output is which motor, and a permuted order flies an aircraft that
+# is stable in yaw and diverges in roll. The simulator's `multirotor_motors` must place its
+# rotors to match (note that MuJoCo is FLU, so every PY sign flips there).
+param set-default CA_ROTOR0_PX 0.174
+param set-default CA_ROTOR0_PY 0.174
+param set-default CA_ROTOR0_KM 0.05
+param set-default CA_ROTOR1_PX -0.174
+param set-default CA_ROTOR1_PY -0.174
+param set-default CA_ROTOR1_KM 0.05
+param set-default CA_ROTOR2_PX 0.174
+param set-default CA_ROTOR2_PY -0.174
+param set-default CA_ROTOR2_KM -0.05
+param set-default CA_ROTOR3_PX -0.174
+param set-default CA_ROTOR3_PY 0.174
+param set-default CA_ROTOR3_KM -0.05
+
+param set-default PWM_MAIN_FUNC1 101
+param set-default PWM_MAIN_FUNC2 102
+param set-default PWM_MAIN_FUNC3 103
+param set-default PWM_MAIN_FUNC4 104
+
+# The single number that ties this airframe to the simulator's actuators, and the one that sets
+# the campaign's whole thrust axis. PX4 hovers this airframe at 60% throttle, so the four rotors
+# together must deliver weight / 0.6 at full command: 2.0 kg * 9.80665 / 0.6 = 32.7 N, i.e. 8.2 N
+# per rotor, which is what `multirotor_motors` is configured for. Unloaded thrust-to-weight is
+# therefore 1.67 -- see README.md for the table, and note that it is nothing like the 3+ a bench
+# figure for these motors would suggest, because PX4's hover throttle is what defines the scale.
+param set-default MPC_THR_HOVER 0.6

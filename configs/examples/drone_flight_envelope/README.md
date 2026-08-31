@@ -12,6 +12,14 @@ be a template worth copying for an aerial campaign of your own.
 > runs in milliseconds and needs no simulator. This one is a real airframe in MuJoCo, flown over
 > ROS 2, and needs a simulator image.
 
+> See also [`../px4_offboard_envelope/`](../px4_offboard_envelope/), which asks the same physical
+> question of a real flight stack: a 2 kg X500-class quadrotor flown by **PX4** over uXRCE-DDS and
+> the MAVLink HIL interface. The division of labour is deliberate. This example tests the
+> *framework's* aerial plumbing — models, wind, payload, variation, panels — with the controller
+> inside the simulator, and stays the cheap one to copy for an aerial campaign of your own. That
+> one tests the *flight software*: EKF2, PX4's controllers, its control allocation, its arming
+> checks, and it pays PX4's bringup cost for it.
+
 ```bash
 # look at the world, no campaign involved
 roqsim sim world/drone_envelope.yaml

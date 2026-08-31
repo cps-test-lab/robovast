@@ -1,0 +1,83 @@
+<!--
+  The flight room: 20 x 20 m, 8 m to the ceiling.
+
+  Derived from ../../drone_flight_envelope/world/room.xml, and the size is the one thing that had
+  to change. That room is 6 x 6 x 2.8 m because a Crazyflie is 0.1 m across and a 2.4 m course
+  fills the frame. An X500 is 0.5 m across — five times the span, and roughly 75 times the mass —
+  and PX4 does not fly it like a lab quadrotor: the position controller's default velocity and
+  acceleration limits are sized for an outdoor airframe, so a 2.4 m leg is over before the
+  controller has left its acceleration phase and the campaign would be measuring the ramp rather
+  than the flight. The arena grew because the airframe grew; the course below spans 10 x 10 m at
+  3 m altitude, which is several seconds of steady cruise per leg.
+
+  The ceiling clearance is deliberate too. PX4 arms, takes off under its own logic and can climb
+  past a commanded setpoint during the transient; 2.8 m would put the aircraft into the ceiling
+  during a normal takeoff and score a control problem as a collision.
+
+  Everything here is primitives and built-in textures — no meshes, no external assets — so the
+  room travels with the example and anyone can read it.
+
+  Frame: floor at z = 0, room centred on the origin, +x east, ENU. (PX4 speaks NED; that
+  conversion lives in the bridge and in the scenario, never in the world — see
+  world/px4_envelope.yaml.)
+-->
+<mujoco model="px4_flight_room">
+  <visual>
+    <!-- Softer, wider shadows than the default: hard shadows on flat primitives read as dirt.
+         zfar is 60 rather than the small room's 30 — the far wall is now 14 m from the tracking
+         camera's usual position, and a clipped wall reads as a hole in the world. -->
+    <quality shadowsize="8192" offsamples="8"/>
+    <map znear="0.05" zfar="60" shadowclip="0.5" shadowscale="0.7"/>
+    <headlight ambient="0.40 0.40 0.43" diffuse="0.0 0.0 0.0" specular="0.0 0.0 0.0"/>
+  </visual>
+
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient"
+             rgb1="0.62 0.70 0.80" rgb2="0.86 0.90 0.94" width="256" height="256"/>
+    <!-- A light, low-contrast floor. A dark checker swallows both the drone and its shadow, and the
+         shadow is what tells you the altitude at a glance. texrepeat is 20 so one checker square is
+         1 m: at this room size the squares double as a scale rule for reading drift off a still. -->
+    <texture name="floor_tex" type="2d" builtin="checker"
+             rgb1="0.88 0.89 0.91" rgb2="0.74 0.76 0.79" width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="20 20" specular="0.0" shininess="0.0"
+              reflectance="0.0"/>
+    <material name="wall_mat" rgba="0.90 0.89 0.87 1" specular="0.05" shininess="0.05"/>
+    <material name="trim_mat" rgba="0.55 0.57 0.60 1" specular="0.1" shininess="0.1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Directional lights, not point lights. Overhead point sources put a bright pool where their
+         cones overlap, which reads as a spotlight rather than a lit room and washes out the drone's
+         shadow exactly where the drone spends its time. Directional light has no position and no
+         falloff, so a 20 m floor is evenly lit edge to edge — which is the reason the choice
+         matters more here than it did in the 6 m room. One casts the shadow (a single crisp shadow
+         is a depth cue; several is mud), the other two only fill. -->
+    <light name="key"    directional="true" dir="-0.45 -0.35 -1" diffuse="0.42 0.42 0.41" specular="0 0 0" castshadow="true"/>
+    <light name="fill_a" directional="true" dir=" 0.55 -0.25 -1" diffuse="0.16 0.16 0.17" specular="0 0 0" castshadow="false"/>
+    <light name="fill_b" directional="true" dir=" 0.10  0.60 -1" diffuse="0.13 0.13 0.14" specular="0 0 0" castshadow="false"/>
+
+    <geom name="floor" type="plane" size="10.0 10.0 0.05" material="floor_mat"
+          friction="1.0 0.005 0.0001"/>
+
+    <!-- Walls: 8 m, thin, solid. The drone can hit them, which is the point when the wind wins.
+         They are kept (rather than flying in open sky) because a bounded arena is what makes
+         "drifted downwind" a bounded, comparable number across the grid instead of an unbounded
+         one — and because a wall is the only thing in an aerial run that turns a slow divergence
+         into an event you can see. -->
+    <geom name="wall_north" type="box" pos=" 0.0  10.0 4.0" size="10.05 0.05 4.0" material="wall_mat"/>
+    <geom name="wall_south" type="box" pos=" 0.0 -10.0 4.0" size="10.05 0.05 4.0" material="wall_mat"/>
+    <geom name="wall_east"  type="box" pos=" 10.0  0.0 4.0" size="0.05 10.05 4.0" material="wall_mat"/>
+    <geom name="wall_west"  type="box" pos="-10.0  0.0 4.0" size="0.05 10.05 4.0" material="wall_mat"/>
+
+    <!-- A skirting line, purely so the eye can find the floor/wall join and judge depth. -->
+    <geom name="trim_north" type="box" pos=" 0.0  9.94 0.10" size="10.0 0.012 0.10" material="trim_mat" contype="0" conaffinity="0"/>
+    <geom name="trim_south" type="box" pos=" 0.0 -9.94 0.10" size="10.0 0.012 0.10" material="trim_mat" contype="0" conaffinity="0"/>
+    <geom name="trim_east"  type="box" pos=" 9.94  0.0 0.10" size="0.012 10.0 0.10" material="trim_mat" contype="0" conaffinity="0"/>
+    <geom name="trim_west"  type="box" pos="-9.94  0.0 0.10" size="0.012 10.0 0.10" material="trim_mat" contype="0" conaffinity="0"/>
+
+    <!-- A fixed cinematic camera, for `roqsim render` with `camera room`. The tracking free camera is
+         what the run view uses; this one is here so a still or a clip can be framed identically
+         across configurations, which a tracking camera cannot do. Pulled back to match the room. -->
+    <camera name="room" pos="9.0 -9.0 7.0" xyaxes="0.7071 0.7071 -0.0000 -0.3536 0.3536 0.8660"/>
+  </worldbody>
+</mujoco>
