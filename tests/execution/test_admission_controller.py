@@ -719,9 +719,11 @@ def test_a_probes_refusal_is_recorded_under_the_probe_owner_not_the_campaign():
     So the campaign's own key staying empty is not a bug to fix here -- it is correct, and it
     is exactly why the batch loop has to read BOTH keys.
     """
-    p = FakeProvider(per_node=[("n1", 1.0, 512 * MIB, 0)])
+    p = FakeProvider(per_node=[("n1", 1.0, 512 * MIB, 0), ("n2", 8.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1"),
+                            Capacity(12.0, 10240 * MIB, 0, "n2")])
     c = _controller(p)
-    # The campaign's own work fits ...
+    # The campaign's own work fits, on the node its probe is not waiting for ...
     c.submit("camp", [("j-0", JobSizing(0.5, MIB), lambda _n=None: None)], started_at=0.0)
     # ... while its probe, pinned to n1 and sized at the declared figure, does not.
     c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
@@ -735,32 +737,117 @@ def test_a_probes_refusal_is_recorded_under_the_probe_owner_not_the_campaign():
         "key is how the probe's reason went unread"
 
 
-def test_a_pinned_probe_is_starved_by_smaller_work_it_outranks():
-    """Priority buys first pick, not a reservation, and a probe is the largest pod a
-    calibrated campaign asks for.
+def test_a_pinned_item_that_does_not_fit_holds_its_node_open():
+    """Priority ordered the queue and reserved nothing, which is why a probe was never placed.
 
-    `drain` skips an item that does not fit rather than blocking behind it, on the reasoning
-    that a campaign's jobs are all the same shape so nothing is lost. A probe breaks that
-    premise: it runs at the DECLARED sizing while calibrated jobs run at a measured fraction
-    of it, so the probe is skipped and the smaller work it outranks takes the room. Documented
-    as the mechanism behind the unmeasured node rather than fixed here -- the fix is the batch
-    limit in `node_calibration`, which stops it being terminal on first sight.
+    `drain` skips a non-fitting item rather than blocking behind it -- right for an item that
+    can be served from anywhere later, wrong for a PINNED one, whose "later" only arrives if
+    its node is left room. And a probe is the largest pod a calibrated campaign asks for, so
+    the smaller work it outranks took its node every pass.
     """
-    p = FakeProvider(per_node=[("n1", 6.0, 10240 * MIB, 0)])
+    # 5 free: too little for the 5.85 probe, ample for two 2-core jobs.
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1")])
     c = _controller(p)
     c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
              started_at=0.0, priority=1, pin="n1")
-    _items(c, "other", 3, cpu=2.0, memory=MIB, started_at=1.0)
-    # First drain: the probe fits, and being highest priority it goes first.
-    assert c.drain() >= 1
+    made = _items(c, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
 
-    # Now the same race with the node a fraction too full for the probe alone.
-    p2 = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)])
-    c2 = _controller(p2)
-    c2.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
-              started_at=0.0, priority=1, pin="n1")
-    made = _items(c2, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
-    c2.drain()
+    assert c.drain() == 0, "the node is held for the probe, so nothing else goes there"
+    assert made == [], "the smaller jobs must not take the room the probe is waiting for"
+    assert "holding that node open" in c.refusal("camp#probes")
+
+
+def test_the_node_is_held_only_where_the_wait_can_end():
+    """A node that could never hold the item even empty must NOT be reserved: draining it
+    would keep it drained, which is strictly worse than not reserving -- such a node at least
+    runs other campaigns' work today. The batch limit in node_calibration is what ends it."""
+    # n1 is a small machine: 6 cores in total, so a 5.85 probe plus headroom never fits.
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(4.0, 10240 * MIB, 0, "n1")])
+    c = _controller(p)
+    c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    made = _items(c, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
+
+    c.drain()
     assert made == ["other-0", "other-1"], \
-        "the smaller jobs took the room the probe was waiting for"
-    assert "no node has that free" in c2.refusal("camp#probes")
+        "the probe can never fit here, so the node keeps working"
+    assert "holding that node open" not in c.refusal("camp#probes")
+
+
+def test_an_unknowable_capacity_still_reserves():
+    """A provider that carries no node ids must not silently switch the reservation off. The
+    conservative answer is to reserve, because a wrong reserve costs one batch (the tally in
+    node_calibration catches it) while a wrong skip costs the whole campaign."""
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB)])   # no node_id
+    c = _controller(p)
+    c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    made = _items(c, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
+    c.drain()
+    assert made == [], "unknowable capacity errs towards holding the node"
+
+
+def test_holding_one_node_does_not_stall_the_others():
+    """The reservation is per node, which is the whole point of it being taken in priority
+    order: work that can go elsewhere still goes, so a held node costs one machine's
+    throughput rather than the cluster's."""
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0), ("n2", 40.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1"),
+                            Capacity(48.0, 10240 * MIB, 0, "n2")])
+    c = _controller(p)
+    c.submit("camp#probes", [("probe-n1", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    created = []
+    c.submit("other", [(f"other-{i}", JobSizing(2.0, MIB),
+                        (lambda node=None, k=f"other-{i}": created.append((k, node))))
+                       for i in range(2)], started_at=1.0)
+    c.drain()
+    assert [k for k, _ in created] == ["other-0", "other-1"]
+    assert {node for _, node in created} == {"n2"}, "placed on the node that is not held"
+
+
+def test_a_second_pin_on_a_held_node_changes_nothing():
+    """Two campaigns probing the same node: the first claimant is the highest-priority one
+    because the queue is walked in priority order, and a second claim is bookkeeping only."""
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1")])
+    c = _controller(p)
+    c.submit("a#probes", [("probe-a", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1")
+    c.submit("b#probes", [("probe-b", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=1.0, priority=1, pin="n1")
+    assert c.drain() == 0
+    assert "holding that node open" in c.refusal("a#probes"), "the older campaign claims it"
+    assert "holding that node open" not in c.refusal("b#probes"), \
+        "the second is skipped as before, and says so without claiming anything"
+
+
+def test_the_waiting_count_is_this_owners_not_the_whole_queues():
+    """A campaign with an 8-job batch was told "144 job(s) waiting" -- the entire cluster's
+    queue, reported into its own log. The refusal SLOT was made per owner for exactly this
+    confusion; the number inside the string was not."""
+    c = _controller(FakeProvider(cpu=1.0))
+    _items(c, "mine", 2, cpu=99.0, memory=MIB, started_at=0.0)
+    _items(c, "theirs", 40, cpu=99.0, memory=MIB, started_at=1.0)
+    c.drain()
+    assert "2 job(s) waiting" in c.refusal("mine"), c.refusal("mine")
+    assert "40 job(s) waiting" in c.refusal("theirs"), c.refusal("theirs")
+
+
+def test_the_refusal_names_the_size_the_fit_test_actually_used():
+    """`need` was left at the DECLARED sizing whenever nothing fit, so a calibrated campaign
+    was told its job needs the declared figure while the nodes it was being tested against had
+    measured ones. The fit test already used the per-node figure; only the message did not."""
+    p = FakeProvider(per_node=[("n1", 1.0, 512 * MIB, 0)])
+    c = _controller(p)
+    c.submit("camp", [("j-0", JobSizing(5.85, 1792 * MIB), lambda _n=None: None)],
+             started_at=0.0,
+             # n1 is calibrated: the same job costs 3.0 there, which is what the fit test uses.
+             sizing_for_node=lambda node_id: JobSizing(3.0, 1024 * MIB))
+    c.drain()
+    message = c.refusal("camp")
+    assert "needs 3 cpu" in message, message
+    assert "5.85" not in message, "the declared figure was never the one being tested"

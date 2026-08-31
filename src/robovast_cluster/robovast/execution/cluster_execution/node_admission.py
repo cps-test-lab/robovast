@@ -125,10 +125,20 @@ class JobSizing:
 
 @dataclass(frozen=True)
 class Capacity:
-    """What one node could hold if it were empty. Used only to answer "ever", never "now"."""
+    """What one node could hold if it were empty. Used only to answer "ever", never "now".
+
+    *node_id* is optional and exists for ONE question: whether a **pinned** item could ever
+    fit the node it is pinned to. "Ever" was a cluster-wide question while every item could
+    go anywhere -- ``preflight`` only asks whether SOME node is large enough -- but a pinned
+    item has exactly one candidate, and for it "no node is that large" and "that node is not
+    that large" are different facts with different remedies. It stays optional because a
+    caller that only asks the cluster-wide question has no use for it, and every existing
+    construction site passes positionally.
+    """
     cpu: float
     memory: int
     gpu: int = 0
+    node_id: "str | None" = None
 
     def holds(self, sizing: JobSizing) -> bool:
         return (self.cpu >= sizing.cpu
@@ -323,6 +333,13 @@ class AdmissionController:
         self._seq = itertools.count()
         self._budget: Optional[Budget] = None
         self._budget_at = 0.0
+        #: Per-node "could it EVER hold this", cached on the same TTL as the budget and read
+        #: only when a pinned item does not fit -- which is rare, and is the one moment the
+        #: question is worth a cluster read. ``capacities()`` lists the same nodes
+        #: ``budget()`` does, so caching them together keeps the two answers from describing
+        #: different clusters.
+        self._capacities: "Optional[list]" = None
+        self._capacities_at = 0.0
         #: ``owner -> why nothing was created for it last time``. Per owner, not one string:
         #: ``drain`` works the global queue, so a single slot was overwritten by whichever
         #: campaign's item happened to be next -- and campaign B would have read campaign A's
@@ -381,6 +398,20 @@ class AdmissionController:
         job must not hold the cluster idle while smaller ones could run. Within a campaign the
         jobs are the same shape, so this costs nothing there.
 
+        **A PINNED item is the exception, and it has to be.** Skipping assumes the item can be
+        served later from somewhere; a pinned item has one candidate, so "later" only arrives
+        if that node is left room. It is also the largest pod a calibrated campaign asks for --
+        a probe runs at the declared sizing while the calibrated jobs behind it run at a
+        measured fraction of it -- so skipping it hands its node to the smaller work it
+        outranks, every pass, forever. Priority ordered the queue but reserved nothing, and on
+        the smallest node of a mixed cluster that meant a probe was never placed at all: four
+        campaigns ended having measured every node but one.
+
+        So a pinned item that does not fit **claims its node** for the rest of the pass:
+        nothing further is placed there, the node drains as its work finishes, and the item
+        goes on the pass where it fits. Only where the wait can end -- see
+        :meth:`_could_ever_hold_locked`.
+
         On a growable cluster a job that fits no node may still be created unpinned, but only
         up to :data:`GROWTH_UNPINNED_LIMIT` of them at a time -- see there for why the cap is
         what keeps the autoscaler exception from being a hole.
@@ -394,6 +425,11 @@ class AdmissionController:
             by_id = {n.node_id: n for n in nodes}
             unpinned = self._unpinned_outstanding_locked()
             failed: "List[WorkItem]" = []
+            # Nodes a pinned item is waiting for. Built as the pass walks the queue in
+            # priority order, so it only ever shuts out work that ranks BELOW the item
+            # holding the node -- which is what makes it a reservation rather than a
+            # cluster-wide stall.
+            held_for_pin: "set" = set()
             for item in pending:
                 if limit is not None and created >= limit:
                     break
@@ -413,12 +449,21 @@ class AdmissionController:
                 # that way. A missing label now costs the pin, never the run.
                 fits = [n for n in by_id.values()
                         if item.may_use(n.node_id)
+                        and n.node_id not in held_for_pin
                         and n.holds(item.sizing_on(n.node_id))]
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
                 if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
-                    waiting = f"{len(pending) - created} job(s) waiting"
+                    # **This owner's items, not the queue's.** The count spanned every owner,
+                    # so a campaign with an 8-job batch was told "144 job(s) waiting" -- the
+                    # whole cluster's queue, reported into its log as though it were its own.
+                    # The refusal SLOT was made per owner for exactly this confusion; the
+                    # number inside the string was not. `state` is mutated as items are
+                    # created, so counting PLANNED here is accurate mid-pass.
+                    own = sum(1 for i in pending
+                              if i.owner == item.owner and i.state == PLANNED)
+                    waiting = f"{own} job(s) waiting"
                     # Which of the two filters emptied the list, because they need opposite
                     # responses and the message is the only thing an operator sees. A node
                     # excluded by `may_use` is being measured, or is outside the configured
@@ -427,6 +472,14 @@ class AdmissionController:
                     # "no node has that free (most free: 89 cpu)" for a job needing 4.25,
                     # while all four nodes were simply out for calibration.
                     usable = [n for n in by_id.values() if item.may_use(n.node_id)]
+                    # What it would need on the node it would actually go to. `need` was left
+                    # at the DECLARED sizing whenever nothing fit -- so a calibrated campaign
+                    # was told its job needs 5.85 cpu while two nodes had measured figures
+                    # that would have asked for a third less. The fit test already used the
+                    # per-node figure; only the message did not.
+                    if usable:
+                        emptiest = max(usable, key=lambda n: n.free_cpu)
+                        need = item.sizing_on(emptiest.node_id)
                     if chosen is None and growable:
                         self._refusals[item.owner] = (
                             f"{waiting}: {unpinned} already created for a node the "
@@ -443,6 +496,17 @@ class AdmissionController:
                             f"{waiting}: next needs {need.cpu:g} cpu / "
                             f"{need.memory // (1024 ** 2)}Mi and no node has that free "
                             f"(most free of {len(usable)} usable: {biggest:g} cpu)")
+                    # **Claim the node, so the wait can end.** Only for a pinned item, only
+                    # where the node could hold it empty, and only if nothing has claimed it
+                    # already -- the first claimant is the highest-priority one, since the
+                    # queue is walked in priority order, and a second claim on the same node
+                    # would change nothing but the bookkeeping.
+                    if item.pin is not None and item.pin not in held_for_pin \
+                            and self._could_ever_hold_locked(item.pin, item.sizing_on(item.pin)):
+                        held_for_pin.add(item.pin)
+                        self._refusals[item.owner] = (
+                            f"{self._refusals.get(item.owner, '')} -- holding that node open "
+                            f"for it, so nothing further is placed there until it drains")
                     continue
                 try:
                     # ``None`` means create unpinned, and there are two ways to get here: a
@@ -616,6 +680,33 @@ class AdmissionController:
             f"that large -- the biggest holds {biggest.cpu:g} cpu / "
             f"{biggest.memory // (1024 ** 2)}Mi. Reduce execution.containers.*.resources, or "
             "run where a node can hold it.")
+
+    def _could_ever_hold_locked(self, node_id, sizing: JobSizing) -> bool:
+        """Could *node_id* run *sizing* if it were empty? ``True`` when unknowable.
+
+        The guard on the pin reservation in :meth:`drain`. Holding a node open for a pinned
+        item that could never fit it drains that machine and keeps it drained -- strictly
+        worse than not reserving at all, because today such a node at least runs other
+        campaigns' work. So the reservation is only taken where waiting can actually end.
+
+        **Unknowable answers ``True``**, deliberately: a provider that does not carry node
+        ids, or a node absent from the capacity reading, must not silently disable the
+        reservation. Erring towards reserving keeps the behaviour the same for every existing
+        provider, and the batch limit in ``node_calibration`` is the backstop that stops a
+        wrong ``True`` from lasting more than a batch.
+        """
+        now = self._clock()
+        if self._capacities is None or now - self._capacities_at >= self._budget_ttl:
+            try:
+                self._capacities = list(self._provider.capacities() or [])
+            except Exception:  # noqa: BLE001 - a failed read is not a verdict
+                self._capacities = None
+                return True
+            self._capacities_at = now
+        for capacity in self._capacities:
+            if getattr(capacity, "node_id", None) == node_id:
+                return capacity.holds(sizing)
+        return True
 
     def refusal(self, owner: str) -> str:
         """Why nothing was created for *owner* last time, for its campaign's log.
