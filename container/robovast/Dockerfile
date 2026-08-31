@@ -316,7 +316,11 @@ RUN mkdir -p /out && chmod 777 /out
 # it does not have. The same value used to be written to a file inside the image as well, read
 # by starting a container to `cat` one integer; that could not be read remotely at all, and a
 # workload inspecting its own image is not how admission is decided anywhere else here.
-LABEL org.robovast.compat-version="2"
+# Passed in rather than written here, like ROBOVAST_GIT_REVISION below: a constant copied by
+# hand into each Dockerfile drifts, which is why it needed a CI gate comparing the copies.
+# container/image_stamp.sh derives it from COMPAT_VERSION and refuses to build without it.
+ARG ROBOVAST_COMPAT_VERSION
+LABEL org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"
 
 # Standard OCI provenance. These are the spec'd names — no reason to invent our own — and they
 # are what lets a campaign's results say which commit its image was built from, so an image
@@ -339,6 +343,21 @@ ARG SCENARIO_EXECUTION_REF
 LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
 ARG SCENARIO_EXECUTION_SERVER_REF
 LABEL org.robovast.scenario-execution-server-ref="${SCENARIO_EXECUTION_SERVER_REF}"
+
+# What a rebuild would have to start FROM, as opposed to which bytes this is. A digest is
+# reproducible exactly as long as the registry keeps it; these are what survive that.
+#
+# All three are already pinned above -- the base by digest, and both apt archives to a dated
+# snapshot so `apt-get install` a year from now resolves the same versions rather than whatever
+# is current. They are build ARGs, though, and therefore invisible from outside the build: the
+# comment beside the source refs above says exactly that, and solves it the same way. Without
+# these labels the only way to answer "what was this built from?" is to read this file at the
+# recorded commit and hope no ARG was overridden on the command line.
+#
+# The base as a whole ref rather than a bare digest, so it can be used as-is.
+LABEL org.robovast.base-image="ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}"
+LABEL org.robovast.ubuntu-snapshot="${UBUNTU_SNAPSHOT}"
+LABEL org.robovast.ros-snapshot="${ROS_SNAPSHOT}"
 
 ARG TARGETARCH
 RUN USER=ubuntu && \

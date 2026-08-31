@@ -35,7 +35,7 @@ def _no_probes(monkeypatch):
     """
     monkeypatch.setattr(execution_mod, "_get_image_revision", lambda image: "unknown")
     monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
-    monkeypatch.setattr(execution_mod, "image_build_refs", lambda containers, images: {})
+    monkeypatch.setattr(execution_mod, "image_build_refs", lambda *a, **kw: {})
 
 
 def _read(root):

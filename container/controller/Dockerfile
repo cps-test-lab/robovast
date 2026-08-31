@@ -225,7 +225,8 @@ LABEL org.opencontainers.image.created="${ROBOVAST_BUILD_DATE}"
 #
 # This is the one place the move from a file to a label SUBTRACTS a fact rather than relocating
 # it: this image carried only the file, so without this line it would report no protocol at all.
-LABEL org.robovast.compat-version="2"
+ARG ROBOVAST_COMPAT_VERSION
+LABEL org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"
 
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a

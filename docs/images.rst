@@ -251,6 +251,19 @@ image without pulling it:
    the host↔container protocol version — the only marker for it. A file inside the image once
    carried the same value; it could not be read without starting a container, and could not be
    read remotely at all, which is the case that matters.
+``org.robovast.base-image``
+   the base this was built ``FROM``, as a whole digest-pinned ref so it can be used as-is.
+``org.robovast.ubuntu-snapshot`` / ``.ros-snapshot``
+   the dated apt archives it installed from. Together with the base, this is what a rebuild
+   needs in order to *reproduce* rather than approximate: pinning package versions alone does
+   not survive, because an archive drops a superseded version and ``apt-get install pkg=1.2.3``
+   then fails. Like the source refs above these are build ``ARG``\ s, so the labels are the only
+   way out of the build — see ``container/pins/``.
+
+All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_refs``. On the
+cluster lane that block used to be empty for every campaign: it read labels with ``docker
+inspect``, and the controller pod that writes the file has no docker CLI. It now uses the labels
+the protocol check already read from the registry.
 
 **The build lock** — ``/etc/robovast/build-manifest/``, holding ``apt.txt`` (every package with
 its version), ``pip.txt`` (``pip freeze`` output) and, when a spec named a moving git ref,
