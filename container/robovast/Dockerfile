@@ -256,8 +256,7 @@ RUN mkdir -p /ws/src
 # Not a ``COPY`` of a directory a build script creates in a temp context: git cannot track an
 # empty directory, so such a COPY resolves against nothing in a plain checkout -- and CI builds
 # with ``context: .``, so this image's own workflow could not produce it. A Dockerfile that only
-# builds through one particular
-# wrapper is a Dockerfile whose CI job is decorative.
+# builds through one particular wrapper is a Dockerfile whose CI job is decorative.
 COPY --from=scenario-execution-src / /ws/src/scenario-execution
 
 # Declared in the global scope above, like scenario-execution's, so the bare re-declaration at the
