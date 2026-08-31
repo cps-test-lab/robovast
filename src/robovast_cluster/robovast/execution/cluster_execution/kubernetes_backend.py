@@ -2328,13 +2328,23 @@ class BatchJobRunner:
     def _capture_image_digest(self, job_label: str) -> None:
         """Record the immutable digest the run pods actually used for the SUT image.
 
-        Read once, from this batch's pods while they still exist (before Job cleanup),
-        so ``execution.yaml`` can pin ``:latest`` to the exact ``repo@sha256:…`` the runs
-        ran — and postprocessing reuses that identical image. Best-effort: any failure
-        leaves the image unpinned (the tag), never blocking the campaign.
+        Two sources, and the order matters. The **plan** was pinned to digests before any pod
+        was written, so it answers for every container without a cluster round trip and without
+        a pod having to still exist. The batch's **pods** are then read on top, because they
+        report what the kubelet actually pulled and they name containers the plan does not (the
+        sidecar; the scenario container under its pod name ``robovast``).
+
+        Best-effort on the pod half only: an unreadable status leaves whatever the plan already
+        established, and never blocks the campaign.
         """
-        if self._resolved_image_digest:
+        if self._resolved_image_digest and self._resolved_image_digests:
             return  # already captured (search mode calls this per batch)
+        # Both halves, not just the singular: up-front pinning fills `_resolved_image_digest`
+        # on the FIRST call, so guarding on it alone made every later batch return here -- and
+        # a per-container digest the first batch missed could then never be filled in by a
+        # later one. That is half of how a campaign ends up with `image_revision` recorded and
+        # `image_revisions` absent.
+        #
         # A ref pinned BEFORE the pods were written is already the digest those pods ran:
         # a digest ref cannot resolve to different bytes, so there is nothing to read back.
         # Taking it here is what up-front pinning promised ("execution.yaml records what ran
@@ -2344,8 +2354,17 @@ class BatchJobRunner:
         # loop's per-batch bag conversion can then resolve no execution image at all -- so
         # every batch fails to score and the campaign blames the world. The pod read below
         # still runs: it is the only source of a PER-CONTAINER digest.
-        if self.image and "@sha256:" in self.image:
+        if self.image and "@sha256:" in self.image and not self._resolved_image_digest:
             self._resolved_image_digest = self.image
+        # The same argument, per container. `_pin_image_refs` resolved every ref in the plan to
+        # a digest before any pod was written, so the plan already holds the per-role answer the
+        # pod read below goes looking for -- and holds it whether or not there is a pod left to
+        # ask. Seeding from it is what makes the record survive the case that produced this
+        # comment: a RESUME, whose pods were reaped long before it started, recording a perfectly
+        # good `image_revision` from the pin above and no `image_revisions` at all.
+        planned = getattr(getattr(self, "plan", None), "containers", ()) or ()
+        per_role = {c.name: c.image for c in planned
+                    if c.image and "@sha256:" in c.image}
         try:
             pods = self.k8s_client.list_namespaced_pod(
                 self.namespace, label_selector=job_label).items
@@ -2362,16 +2381,21 @@ class BatchJobRunner:
             # a run's geometry from the world the capture names, and that world and its
             # exporter live in the simulation image. Keyed on the container's own digest,
             # it was compiled -- or rather, failed to compile -- in the scenario image.
-            per_role = {}
+            # The pod read OVERRIDES the seed rather than merely filling gaps: it reports what
+            # the kubelet actually pulled, which is the stronger claim. It also contributes
+            # names the plan does not have -- the sidecar, and the scenario container under its
+            # pod name `robovast`.
+            observed = {}
             for cs in statuses:
                 name = getattr(cs, "name", None)
                 pullable = pullable_digest(getattr(cs, "image_id", None))
-                if name and pullable and name not in per_role:
-                    per_role[name] = pullable
+                if name and pullable and name not in observed:
+                    observed[name] = pullable
+            per_role = {**per_role, **observed}
         except Exception as exc:  # noqa: BLE001 - never block the run on a status read
             logger.debug("Could not resolve SUT image digest for %s: %s",
                          self.campaign, exc)
-            return
+            digest = ""
         if per_role:
             self._resolved_image_digests = per_role
         if digest and not self._resolved_image_digest:

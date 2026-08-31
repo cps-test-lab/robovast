@@ -165,6 +165,54 @@ def test_a_built_container_with_no_recorded_image_is_refused(svc, tmp_path):
     assert e.value.include_traceback is False       # self-contained: no stack wanted
 
 
+def test_a_build_free_campaign_with_only_tags_recorded_is_retriggered(svc, tmp_path):
+    """The regression this whole change is about.
+
+    A cluster campaign that built nothing records mutable tags in ``images`` and, if its
+    per-container digests were lost (a resume whose pods were already reaped), nothing pinnable
+    at all. It used to be refused for failing to pin images it never built — while the refusal
+    told you to relaunch from the workspace, which resolves exactly the same tags. Now it
+    proceeds and says what it re-resolved.
+    """
+    _source_campaign(
+        tmp_path / "results",
+        vast=_vast({"simulation": {"image": "sim:1"}, "sut": {"image": "sut:1"}}),
+        execution={"runs": 3, "execution_type": "cluster",
+                   "images": {"simulation": "reg.example/sim:latest",
+                              "sut": "reg.example/sut:latest"}},
+        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
+    plan = _prepare(svc, "pilot-2026-08-08-120000")
+    assert plan.pinned_images == {}     # nothing pinned, and that is not an error
+
+
+def test_a_build_free_campaign_is_not_blocked_by_the_preflight(svc, tmp_path):
+    """``check`` and ``prepare`` must agree; they answered this differently once."""
+    _source_campaign(
+        tmp_path / "results",
+        vast=_vast({"simulation": {"image": "sim:1"}, "sut": {"image": "sut:1"}}),
+        execution={"runs": 3, "execution_type": "cluster",
+                   "images": {"simulation": "reg.example/sim:latest",
+                              "sut": "reg.example/sut:latest"}},
+        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
+    report = retrigger.check(
+        svc._retrigger_source_dir("pilot-2026-08-08-120000"),   # noqa: SLF001
+        "pilot-2026-08-08-120000")
+    assert "images" not in report["blocking"]
+    assert report["axes"]["images"]["reresolved"] == ["simulation", "sut"]
+
+
+def test_a_built_container_that_recorded_only_a_tag_is_still_refused(svc, tmp_path):
+    """The half that must not be lost: it BUILT this image, so a tag is not a substitute."""
+    _source_campaign(
+        tmp_path / "results",
+        vast=_vast({"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}),
+        execution={"runs": 3, "execution_type": "cluster",
+                   "images": {"scenario": "reg.example/exp:latest"}})
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        _prepare(svc, "pilot-2026-08-08-120000")
+    assert "build context" in str(e.value)
+
+
 def test_no_execution_yaml_is_fine_when_nothing_builds(svc, tmp_path):
     """Refusing here would rule out relaunching any campaign that died early, which is most
     of what someone wants to relaunch."""
