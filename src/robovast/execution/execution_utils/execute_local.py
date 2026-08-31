@@ -250,23 +250,22 @@ if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
     echo ""
 fi
 
-# Container protocol check. The label first: `docker inspect` reads it without starting
-# anything, where the legacy file costs a whole container to read one integer. The file is
-# still consulted, because an image built before the label carries only that -- and those are
-# exactly the campaigns worth re-running.
+# Container protocol check, off the image's label -- `docker inspect` reads it without starting
+# anything. There used to be a second marker, a file inside the image read by starting a
+# container to `cat` one integer; it is gone, and one marker read one way is the point.
 IMAGE_COMPAT=$(docker inspect --format '{{index .Config.Labels "@@COMPAT_LABEL@@"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
 COMPAT_SOURCE="label"
-if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
-    IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
-    COMPAT_SOURCE="file"
+if [ "$IMAGE_COMPAT" = "<no value>" ]; then
+    IMAGE_COMPAT=""
 fi
 # A RANGE, not equality. Equality orphans every published image on the first bump, so a
 # campaign pinning one by digest could never be re-run -- refusing the case this exists for.
 if [ -z "$IMAGE_COMPAT" ]; then
     echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."
     echo "  This host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@."
-    echo "  The image reports neither the @@COMPAT_LABEL@@ label nor /etc/robovast_compat_version,"
-    echo "  so it is either not a robovast image or predates both markers."
+    echo "  The image carries no @@COMPAT_LABEL@@ label, so it is either not a robovast image"
+    echo "  or predates the label. If it is one and you have its source, rebuild it from the"
+    echo "  revision the campaign recorded (_execution/execution.yaml: robovast_revision)."
     exit 1
 elif [ "$IMAGE_COMPAT" -gt "@@COMPAT_VERSION@@" ]; then
     echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"

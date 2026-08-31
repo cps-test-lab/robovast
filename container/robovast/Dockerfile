@@ -306,16 +306,16 @@ ENV QT_X11_NO_MITSHM=1
 RUN mkdir -p /out && chmod 777 /out
 
 # Compatibility version — must match COMPAT_VERSION in
-# src/robovast/common/execution.py.  Read by all execution contexts
-# (local, cluster, postprocessing) to detect host/container mismatches.
+# src/robovast/common/execution.py. Read by every execution context (local, cluster,
+# postprocessing) to detect host/container mismatches, and by the CI gate in
+# .github/workflows/image.yml, which is what keeps the two equal.
 #
-# Written TWICE, on purpose. The label is what readers should use: `docker inspect` gets it
-# without starting a container, and `buildx imagetools inspect` gets it from a *remote* image
-# without pulling — which is what a pre-flight on a year-old campaign needs, since the question
-# is whether those bytes are still obtainable at all. The file stays because every image built
-# before the label existed carries only the file, and those are exactly the campaigns worth
-# re-running; dropping it would make them unreadable to the very check meant to rescue them.
-RUN echo "2" > /etc/robovast_compat_version
+# ONE marker, and it is a label: `docker inspect` reads it without starting a container, and
+# the registry serves it for a *remote* image without pulling — which is what a pre-flight on a
+# year-old campaign needs, since the whole question is whether this host can still drive bytes
+# it does not have. The same value used to be written to a file inside the image as well, read
+# by starting a container to `cat` one integer; that could not be read remotely at all, and a
+# workload inspecting its own image is not how admission is decided anywhere else here.
 LABEL org.robovast.compat-version="2"
 
 # Standard OCI provenance. These are the spec'd names — no reason to invent our own — and they
