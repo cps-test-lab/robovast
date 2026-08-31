@@ -393,8 +393,17 @@ NO_STALL_VERDICT_OFF_RUN = (
 def stall_report(status: "Status") -> dict:
     """Has this campaign's progress stopped advancing, and may we say so?
 
-    The single derivation of the stall verdict, shared by every renderer (MCP, CLI,
-    and — via the same fields — the web UI). Two kinds of answer, kept apart:
+    The single derivation of the stall verdict for every renderer that can call it: the
+    MCP and the CLI. **The web UI cannot** — the REST status endpoint serves the raw
+    :class:`Status`, so the verdict is not on the wire and the card re-derives it in
+    ``frontend/ui/src/lib/stall.ts``. That copy must gate identically and in this order.
+    It has drifted three times, most recently by omitting ``waiting_for_capacity`` and
+    painting a red "stalled" on a queued batch this function correctly refused to judge.
+    A gate added here needs one added there; ``stall.test.ts`` is what makes the omission
+    visible. This docstring previously claimed the UI shared the derivation "via the same
+    fields", which is how the drift went unnoticed.
+
+    Two kinds of answer, kept apart:
 
     * ``progress_age_s`` is a **fact**: seconds since progress last advanced (see
       ``ControllerState._stamp_progress``). Present whenever the campaign is live.
