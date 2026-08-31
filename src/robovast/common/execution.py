@@ -772,10 +772,20 @@ _BUILD_REF_LABELS = {
     "source": "org.opencontainers.image.source",
     "roqsim_ref": "org.robovast.roqsim-ref",
     "scenario_execution_ref": "org.robovast.scenario-execution-ref",
+    # Written by the Dockerfile and, until now, collected by nothing -- so a campaign recorded
+    # three of the four source refs its image was built from.
+    "scenario_execution_server_ref": "org.robovast.scenario-execution-server-ref",
+    # The rest of the recipe: what a rebuild starts FROM, and the dated archives that make it
+    # install the same versions rather than whatever is current. Without these, "rebuild it"
+    # means "rebuild something like it".
+    "base_image": "org.robovast.base-image",
+    "ubuntu_snapshot": "org.robovast.ubuntu-snapshot",
+    "ros_snapshot": "org.robovast.ros-snapshot",
 }
 
 
-def image_build_refs(containers: dict, role_images: dict) -> dict:
+def image_build_refs(containers: dict, role_images: dict,
+                     labels_by_role: "dict | None" = None) -> dict:
     """``{role: {...}}`` naming what each container's image was built from.
 
     Answers the question a re-run asks once the image itself is gone: *rebuild it from what?*
@@ -791,10 +801,11 @@ def image_build_refs(containers: dict, role_images: dict) -> dict:
     * **the container's declared ``provenance:``** -- for a user-supplied image, where robovast
       cannot know and the author is the only source.
 
-    Absent entries mean "not knowable here", never "nothing to record": labels can only be read
-    for an image already present locally, and a campaign is often composed before its images are
-    pulled. Recording a guess would be worse than recording nothing, since a rebuild would follow
-    it.
+    Absent entries mean "not knowable here", never "nothing to record": recording a guess would
+    be worse than recording nothing, since a rebuild would follow it. What *is* knowable widened
+    with *labels_by_role* -- a caller holding labels it read some other way (the cluster backend
+    reads them from the registry, which is the only way that works inside the controller pod)
+    passes them in, and this stops being a local-docker-only answer.
     """
     out: dict = {}
     for role, block in sorted((containers or {}).items()):
@@ -802,8 +813,17 @@ def image_build_refs(containers: dict, role_images: dict) -> dict:
         entry = {}
 
         image = (role_images or {}).get(role) or block.get("image")
+        # A caller that has already read this image's labels hands them over; nobody else can
+        # get them. The cluster lane writes this file from inside the controller pod, which
+        # ships no docker CLI at all -- so every probe below returned "" there and the block
+        # was silently empty for every campaign that ran on a cluster. Its own docstring said
+        # absent means "not knowable here", which was true and useless.
+        supplied = (labels_by_role or {}).get(role)
         for key, label in _BUILD_REF_LABELS.items():
-            value = _docker_label(image, label) if image else ""
+            if supplied is not None:
+                value = supplied.get(label, "")
+            else:
+                value = _docker_label(image, label) if image else ""
             if value:
                 entry[key] = value
 
@@ -2337,7 +2357,7 @@ def _carry_forward_provenance(path, execution_data: dict) -> None:
 
 
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
-                          image_digest=None, image_digests=None):
+                          image_digest=None, image_digests=None, image_labels=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
@@ -2345,6 +2365,10 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         output_dir: Directory where execution.yaml will be created
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         context: Kubernetes context name to use. ``None`` uses the active context.
+        image_labels: ``{role: {label: value}}`` already read for each container's image, when
+            the caller has them. The cluster lane does -- it reads them from the registry to
+            check the container protocol -- and must pass them, because this function runs in
+            the controller pod where the docker probes it would otherwise use cannot work.
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
@@ -2394,7 +2418,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
 
     # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
     # only for as long as the registry keeps it; this is what a rebuild would start from.
-    build_refs = image_build_refs(containers, images)
+    build_refs = image_build_refs(containers, images, labels_by_role=image_labels)
     if build_refs:
         execution_data['image_build_refs'] = build_refs
 

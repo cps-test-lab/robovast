@@ -1057,6 +1057,19 @@ now carries, because both were learned the expensive way:
   knowledge to a client that must not have it — so there is exactly one field that is
   allowed out, rather than a rule to remember at each return.
 
+**One reader, several policies.** Four things ask a campaign's records which image it ran, and
+they want different answers: a re-run needs bytes it can obtain *elsewhere*, a cache needs
+anything that identifies bytes (a bare local id will do), postprocessing needs something it can
+run *here* and is right to accept a mutable tag, and the publication gate asks whether an
+outsider could obtain or rebuild them. Each of those is correct for its question.
+
+They used to re-derive the record separately, with the precedence baked into each — and drifted,
+visibly: the publication gate called a campaign opaque that the retrigger pre-flight called
+pinnable, about one file on one disk. So ``campaign_image_record`` reads the record once and
+returns facts with no verdict attached, and each policy stays with the caller that owns it. The
+two predicates the policies differ on — ``image_is_pullable`` against ``image_identifies_bytes``,
+which differ by exactly the bare-local-id case — are named rather than spelled out at each site.
+
 A diagnostic against a **campaign** does not use a store at all: the campaign recorded which
 image each role ran on, and ``campaign_role_image`` returns those bytes. Re-deriving a hash
 from the campaign's frozen ``_config/`` cannot work anyway — that snapshot holds the ``.vast``
