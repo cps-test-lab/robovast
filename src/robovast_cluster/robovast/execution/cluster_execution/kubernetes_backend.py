@@ -66,16 +66,17 @@ from pathlib import Path
 import yaml
 from kubernetes import client
 
-from robovast.common import (COMPAT_VERSION, MIN_IMAGE_COMPAT, get_execution_env_variables,
-                             plan_containers, prepare_campaign_configs, scenario_env)
+from robovast.common import (get_execution_env_variables, plan_containers,
+                             prepare_campaign_configs, scenario_env)
 from robovast.common.campaign_data import (KIND_INVALID, record_container_failures,
                                            record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
-from robovast.common.execution import (build_job_parameter_documents, create_job_links,
-                                       dump_multi_document_yaml, job_artifact_rel, node_label,
-                                       read_job_links, resolve_sidecar_image,
-                                       sidecar_backend_env, write_job_links_manifest)
+from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
+                                       create_job_links, dump_multi_document_yaml,
+                                       job_artifact_rel, node_label, read_job_links,
+                                       resolve_sidecar_image, sidecar_backend_env,
+                                       write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
                                          RunOptions)
@@ -648,7 +649,8 @@ class BatchJobRunner:
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
-                  built_images=None, image_digest_cache=None, admission=None):
+                  built_images=None, image_digest_cache=None, admission=None,
+                  image_label_cache=None):
         self = cls()
         # The process-wide admission queue, or None. None means "create every job at once",
         # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
@@ -717,7 +719,14 @@ class BatchJobRunner:
         # Before anything is put in a manifest: every ref these pods will run, resolved
         # to the bytes it names right now. Shared across the campaign's batches by the
         # backend, so a sweep asks the registry once and not once per batch.
+        # Shared across the campaign's batches for the same reason the digest cache is: the
+        # labels of a ref cannot change between two batches of one campaign, and asking the
+        # registry per batch would put a round trip in front of every one of a sweep's.
+        self._image_label_cache = {} if image_label_cache is None else image_label_cache
         self._pin_image_refs(image_digest_cache)
+        # Immediately after the pin and before any manifest is written, so the verdict is
+        # about the exact bytes the pods will run and no pod is created if it fails.
+        self._check_image_compat()
         # Once per campaign, not per job: a `list_node()` per job would add an API call to
         # every one of a sweep's runs to answer a question whose answer cannot change
         # between them.
@@ -2054,9 +2063,7 @@ class BatchJobRunner:
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
         yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
-                                       pull_policy=pull_policy_for(image),
-                                       compat_version=COMPAT_VERSION,
-                                       min_compat_version=MIN_IMAGE_COMPAT)
+                                       pull_policy=pull_policy_for(image))
         manifest = yaml.safe_load(yaml_str)
 
         # No queue-membership label, deliberately: this Job is admitted by RoboVAST's own
@@ -2150,6 +2157,69 @@ class BatchJobRunner:
                 "registry -- which a wide batch can rate-limit itself out of. The pods "
                 "also carry no guarantee of running the same bytes for the whole "
                 "campaign.", len(unpinned), ", ".join(unpinned))
+
+    def _check_image_compat(self) -> None:
+        """Refuse the campaign here if this host cannot drive the image its pods will run.
+
+        Asked at **submission**, host-side, which is where a workload's admission is decided
+        everywhere else. It used to be asked by an initContainer inside the image itself,
+        reading a file the image carried -- a workload inspecting its own image, which is not a
+        shape anything else here uses, and which could only report by failing N pods.
+
+        Two things make the host-side version strictly better. The refs were pinned to digests
+        just above, so this binds to the exact bytes the pods will run -- the initContainer's
+        one real claim over an up-front check. And a refusal now costs no pods at all, instead
+        of one crash-looping init per job in the batch.
+
+        **Fail closed.** Unlike pinning, which is an optimisation and is right to shrug, a
+        compat check that cannot read the image has not established anything -- and running
+        anyway is how an incompatible image becomes a campaign that fails obscurely halfway
+        through. ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK`` is the documented way past it for the
+        case this cannot distinguish: a registry that is briefly unreachable.
+
+        The **scenario image only**. The sidecar sets no label and a user's system-under-test
+        is not a robovast image at all, so an absent label on those means "not applicable",
+        not "unreadable" -- failing closed on them would refuse every campaign with a SUT.
+        """
+        from robovast.common.execution import check_image_compat  # noqa: PLC0415
+
+        if not self.image:
+            return
+        if os.environ.get("ROBOVAST_SKIP_IMAGE_COMPAT_CHECK"):
+            logger.warning(
+                "Image protocol check skipped for %s: ROBOVAST_SKIP_IMAGE_COMPAT_CHECK is set. "
+                "The campaign runs without having established that this host can drive %s.",
+                self.campaign, self.image)
+            return
+        labels = self._image_labels(self.image)
+        raw = (labels.get(COMPAT_VERSION_LABEL) or "").strip()
+        version = int(raw) if raw.isdigit() else None
+        source = "registry label" if version is not None else (
+            f"no {COMPAT_VERSION_LABEL} label, and the registry would not say")
+        problem = check_image_compat(self.image, version=version, source=source)
+        if problem:
+            raise CampaignConfigError(
+                f"{problem}\n"
+                f"Checked before any pod was created, against the digest these pods would "
+                f"run. Set ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1 to run anyway -- which is the "
+                f"right move only when the registry is unreachable and you know the image.")
+
+    def _image_labels(self, ref: str) -> dict:
+        """Every label *ref* carries per the registry, or ``{}`` when it will not say."""
+        from .registry_client import manifest_labels  # noqa: PLC0415 - optional path
+        if ref in self._image_label_cache:
+            return self._image_label_cache[ref]
+        labels: dict = {}
+        try:
+            registry = self.cluster_config.get_registry_config()
+            labels = manifest_labels(
+                ref, dockerconfigjson=self._registry_dockerconfig(registry),
+                insecure=getattr(registry, "insecure", False),
+                ca_path=self._registry_ca_path(registry))
+        except Exception:  # noqa: BLE001 - absence is the answer; the caller decides
+            logger.debug("could not read labels for %s", ref, exc_info=True)
+        self._image_label_cache[ref] = labels
+        return labels
 
     def _resolve_digest(self, ref: str) -> str:
         """*ref* as ``repo@sha256:…`` if this deployment's registry will say, else ``""``.
@@ -3024,6 +3094,7 @@ class KubernetesBackend(ExecutionBackend):
         # and re-asking the registry fifty times answers a question that must not change
         # between batches anyway (see BatchJobRunner._pin_image_refs).
         self._image_digest_cache: dict = {}
+        self._image_label_cache: dict = {}
         # node label -> that machine's facts, built once and reused. A campaign's runs
         # land on the same handful of machines thousands of times, and what a machine IS
         # cannot change between two runs of one campaign, so this is asked once per
@@ -3102,6 +3173,7 @@ class KubernetesBackend(ExecutionBackend):
             state=self._state,
             built_images=options.images,
             image_digest_cache=self._image_digest_cache,
+            image_label_cache=self._image_label_cache,
             admission=self._admission,
         )
         batch_error = None

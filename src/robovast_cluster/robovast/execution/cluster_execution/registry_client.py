@@ -290,45 +290,79 @@ def manifest_created(image_ref: str, *, dockerconfigjson: str = "",
     This is an addition to what a caller already shows, never a new way for the rest of it
     to come back empty -- so it must not raise and must not manufacture a date.
     """
-    try:
-        host, repository, _ = split_image_ref(image_ref)
-    except ValueError as e:
-        logger.warning("registry check: %s", e)
-        return ""
-    manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
-                              insecure=insecure, ca_path=ca_path)
-    if manifest is None:
-        return ""
-    if "manifests" in manifest:
-        # An index: the tag names a set of per-platform images, none of which is the
-        # config. Any of them dates the build -- they are pushed together -- so this takes
-        # the first real entry rather than matching a platform the caller has not named.
-        child = _index_child(manifest)
-        if not child:
-            return ""
-        manifest = _manifest_json(image_ref, digest=child,
-                                  dockerconfigjson=dockerconfigjson,
-                                  insecure=insecure, ca_path=ca_path)
-        if manifest is None:
-            return ""
-    config_digest = (manifest.get("config") or {}).get("digest") or ""
-    if not config_digest.startswith("sha256:"):
-        return ""
-    resp = _registry_request(host, f"{repository}/blobs/{config_digest}", method="GET",
-                             dockerconfigjson=dockerconfigjson, insecure=insecure,
-                             ca_path=ca_path, accept="application/json")
-    if resp is None or resp.status_code != 200:
-        return ""
-    try:
-        config = resp.json()
-    except ValueError:
-        logger.warning("registry check: image config for %s is not JSON", image_ref)
-        return ""
+    config = _image_config(image_ref, dockerconfigjson=dockerconfigjson,
+                           insecure=insecure, ca_path=ca_path)
     labels = ((config.get("config") or {}).get("Labels") or {})
     created = (labels.get(_CREATED_LABEL) or config.get("created") or "").strip()
     if created.startswith(_EPOCH_ZERO_PREFIXES):
         return ""
     return created
+
+
+def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
+                    insecure: bool = False, ca_path: str = "") -> dict:
+    """Every label *image_ref* carries, as the registry reports it, or ``{}``.
+
+    The same walk :func:`manifest_created` does -- manifest, index child if there is one, then
+    the image config blob -- returning the whole label map rather than one date out of it. Both
+    answer "what does this image say about itself", and asking the registry twice for the same
+    config blob to read two labels out of it would be silly.
+
+    Costs the same two small GETs (three through an index), and fetches no layer.
+
+    ``{}`` on every uncertainty, like everything else here: an unreachable registry, a ref this
+    deployment holds no credential for, a config that will not parse. A caller that must not
+    proceed without an answer has to say so itself -- absence is never a verdict about the
+    image.
+    """
+    config = _image_config(image_ref, dockerconfigjson=dockerconfigjson,
+                           insecure=insecure, ca_path=ca_path)
+    labels = ((config.get("config") or {}).get("Labels") or {})
+    return {str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else {}
+
+
+def _image_config(image_ref: str, *, dockerconfigjson: str = "",
+                  insecure: bool = False, ca_path: str = "") -> dict:
+    """*image_ref*'s image config blob, parsed, or ``{}``.
+
+    Shared by the two readers above so the manifest -> index child -> config blob walk exists
+    once. ``{}`` on any uncertainty; never raises.
+    """
+    try:
+        host, repository, _ = split_image_ref(image_ref)
+    except ValueError as e:
+        logger.warning("registry check: %s", e)
+        return {}
+    manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
+                              insecure=insecure, ca_path=ca_path)
+    if manifest is None:
+        return {}
+    if "manifests" in manifest:
+        # An index: the tag names a set of per-platform images, none of which is the
+        # config. Any of them answers -- they are pushed together -- so this takes the
+        # first real entry rather than matching a platform the caller has not named.
+        child = _index_child(manifest)
+        if not child:
+            return {}
+        manifest = _manifest_json(image_ref, digest=child,
+                                  dockerconfigjson=dockerconfigjson,
+                                  insecure=insecure, ca_path=ca_path)
+        if manifest is None:
+            return {}
+    config_digest = (manifest.get("config") or {}).get("digest") or ""
+    if not config_digest.startswith("sha256:"):
+        return {}
+    resp = _registry_request(host, f"{repository}/blobs/{config_digest}", method="GET",
+                             dockerconfigjson=dockerconfigjson, insecure=insecure,
+                             ca_path=ca_path, accept="application/json")
+    if resp is None or resp.status_code != 200:
+        return {}
+    try:
+        parsed = resp.json()
+    except ValueError:
+        logger.warning("registry check: image config for %s is not JSON", image_ref)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _manifest_json(image_ref: str, *, digest: str = "", dockerconfigjson: str = "",

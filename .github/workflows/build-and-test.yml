@@ -63,3 +63,10 @@ jobs:
       - name: Check the config version bump matches the schema change
         run: |
           . venv/bin/activate && make check-config-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}
+
+      # Beside its sibling above, and for the same reason: the answer is only knowable in the
+      # change itself. Unlike that one this is a prompt rather than a proof -- it cannot tell a
+      # contract change from a comment edit -- so it takes a commit trailer for an answer.
+      - name: Check the container protocol bump matches the contract change
+        run: |
+          . venv/bin/activate && make check-compat-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}

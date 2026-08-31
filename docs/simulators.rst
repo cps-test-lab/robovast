@@ -230,7 +230,7 @@ lives in the images named below, which the backend only *refers to*.
 
 It serves **both** shapes, and both from the **same** image — the ``robovast-roqsim``
 family member, which is the only one carrying roqsim *and* the RoboVAST contract
-(``/etc/robovast_compat_version``, scenario-execution, the ``/out`` mount):
+(the ``org.robovast.compat-version`` label, scenario-execution, the ``/out`` mount):
 
 - ``mode: ros2`` — a ``simulation`` container of its own, running
   ``roqsim sim <config> --ros --headless``. Nothing a campaign owns contains roqsim, so the

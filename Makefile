@@ -166,6 +166,10 @@ check-config-fields: ## Fail if compat/config_fields.json is out of date with th
 check-config-version: ## Fail if a config version bump is missing, or unnecessary
 	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)
 
+.PHONY: check-compat-version
+check-compat-version: ## Fail if the host<->container contract changed without a version bump
+	@python3 tools/check_compat_version.py $(if $(BASE),--base $(BASE),)
+
 # The lock is what the controller image installs from -- it COPYs pyproject.toml and
 # poetry.lock together and runs `poetry install`, which refuses the pair outright when the
 # hash disagrees. So an unrelocked pyproject fails minutes into an image build instead of
