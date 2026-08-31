@@ -644,11 +644,18 @@ class CampaignController:
             self._evaluations_done += len(batch.evaluations)
             self._history.extend(batch.evaluations)
             # What the batch COST, by the same measure the live loop uses: executions
-            # attempted, counted from what was asked for rather than from what produced a
-            # sample. A draw that composed to nothing still occupied the plan.
-            self._runs_done += sum(
-                (ev.params.n_reps or self.runs) for ev in batch.evaluations)
-            self._runs_done += (batch.asked - len(batch.evaluations)) * self.runs
+            # attempted -- every cell's ALLOCATION, not what produced a sample. A draw that
+            # composed to nothing still occupied the plan its allocation reserved, so this
+            # sums over every recorded cell rather than over the scored ones.
+            #
+            # Read from the record rather than re-derived. `search.repetitions` sizes each
+            # cell separately, so re-deriving meant recounting an unevenly-spent campaign as
+            # an evenly spent one -- under where the policy had spent above `execution.runs`,
+            # over where it had spent below -- and a `runs` budget then stopped the resumed
+            # search in the wrong place. `execution.runs` stands in only for a row that
+            # recorded no allocation, which is a store from before one could be recorded,
+            # where it is what that cell actually got.
+            self._runs_done += sum((n or self.runs) for n in batch.reps)
         logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                     "%d run(s) already spent.",
                     self._batches_done, self._evaluations_done, self._runs_done)
@@ -899,7 +906,8 @@ class CampaignController:
                         self.store.record_unit(
                             batch_id=batch_id, paramset_id=ps.id, config_name="",
                             params=ps.values, objectives={}, measures={},
-                            n_samples=0, status="composition_failed", result_dir="")
+                            n_samples=0, status="composition_failed", result_dir="",
+                            n_reps=reps)
                         continue
                     config_dir = Path(self.campaign_root) / config_name
                     result_dir = os.path.relpath(config_dir, self.campaign_root)
@@ -923,7 +931,8 @@ class CampaignController:
                         unit_id = self.store.record_unit(
                             batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                             params=ps.values, objectives={}, measures={},
-                            n_samples=0, status="no_sample", result_dir=result_dir)
+                            n_samples=0, status="no_sample", result_dir=result_dir,
+                            n_reps=reps)
                         # Unlike composition_failed, these runs HAPPENED: record them so the
                         # cell's failures are visible and counted rather than vanishing with
                         # the evaluation that could not use them.
@@ -939,7 +948,7 @@ class CampaignController:
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=result_dir)
+                        result_dir=result_dir, n_reps=reps)
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
