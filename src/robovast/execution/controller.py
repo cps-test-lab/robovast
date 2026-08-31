@@ -795,7 +795,8 @@ class CampaignController:
         cur = float(p.current)
         return {"label": p.label,
                 "current": None if math.isnan(cur) else cur,
-                "limit": float(p.limit), "done": bool(p.done), "kind": p.kind}
+                "limit": float(p.limit), "done": bool(p.done), "kind": p.kind,
+                "op": p.op}
 
     def _update_best(self, best, evaluations, obj_name):
         """Fold this batch's objective values into the best-so-far (raw units,

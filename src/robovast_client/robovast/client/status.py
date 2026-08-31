@@ -209,6 +209,23 @@ class BudgetItem(BaseModel):
     # metric somebody named ``batches`` as the batch counter. ``None`` on a status
     # written before this field existed.
     kind: Optional[str] = None
+    # The comparison that makes this criterion FIRE, as ``current <op> limit`` -- one of
+    # ``>=``, ``<=``, ``>``, ``<``. See ``CriterionProgress.op`` for which kind gets which.
+    #
+    # On the wire because ``label current / limit`` is ambiguous as soon as the comparison is
+    # not ``>=``: a ``metric`` with ``op: '<='`` at ``0.1 / 0.8`` has already fired and reads
+    # to a human as "12% of the way there". ``done`` answers *whether* it fired; this answers
+    # *which way* it was heading, which is what lets a reader render the row as a sentence.
+    #
+    # Static config, written once and never changing, so it is the cheapest tier this payload
+    # has (see docs/http_api.rst) -- and it rides on every row of every poll, which two
+    # characters is the right price for rows that cannot otherwise be rendered correctly.
+    #
+    # ``None`` on a status written before this field existed, and on a finished campaign whose
+    # budget is replayed from the ``outcome.json`` its controller wrote at the time. A reader
+    # falls back to ``>=``, which is correct for five of the seven kinds and is what every
+    # reader assumed before this existed.
+    op: Optional[str] = None
 
 
 class Status(BaseModel):

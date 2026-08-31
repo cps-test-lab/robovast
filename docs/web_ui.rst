@@ -58,10 +58,22 @@ It provides four views:
 
   Only the four ``budget`` kinds can fill the ring. They are monotone resource caps, so a share of
   them means something; the three ``stopping`` kinds are result-dependent early exits and are not a
-  share of anything — ``no_improvement`` resets to zero on an improvement, and ``metric`` carries a
-  comparison direction that is not published — so they appear on the hover as figures, never as an
-  arc or a bar. A search bounded **only** by those draws the bare ring with its round count inside:
-  there is no denominator, and none is invented.
+  share of the same thing — ``no_improvement`` resets to zero on an improvement, so a ring driven
+  by it would run backwards — and they appear on the hover as figures rather than as an arc. A
+  search bounded **only** by those draws the bare ring with its round count inside: there is no
+  denominator, and none is invented.
+
+  In the **open** card every criterion is a sentence rather than a pair: ``coverage >= 0.8`` beside
+  ``now 0.1``, with a ``✓`` once it has fired. The comparison is published (``BudgetItem.op``)
+  because a bare ``0.1 / 0.8`` silently implies ``>=``, so a ``metric`` written ``<=`` read as
+  "12% of the way there" when it had in fact already stopped the campaign.
+
+  A **bar** is drawn only where the criterion has a floor to measure from: the four caps, and
+  ``no_improvement`` counting up from zero to its patience (a static row claiming "2 of 3 strikes"
+  survives the reset that rules it out of the ring). A ``metric`` and a ``target_objective`` get
+  none — knowing a metric fires at ``<= 0.8`` says nothing about where it *started*, and an
+  objective's initial value is whatever the first batch happened to measure. Publishing the
+  comparison made those rows readable, not their fraction computable.
 
   The campaign list itself is **streamed** over Server-Sent Events
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list

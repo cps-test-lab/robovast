@@ -168,10 +168,11 @@ the progress signal.** That tuple may contain only facts whose change *is* evide
 advanced. Wall clock advancing is not one.
 
 Two worked examples of the tiers, for the search criteria specifically. A criterion's comparison
-sense (a ``metric``'s ``op``, an objective's ``direction``) is **tier one** — static config, written
-once, never changing — and belongs on the status, because without it no reader can render a
-``stopping`` row correctly. A strategy's ``report().extra`` is **tier two's opposite**: an open dict
-of unbounded size (it carries ``elites``, ``measure_names``, ``best_elite``), so putting it on the
+sense is **tier one** — static config, written once, never changing — and is on the status as
+``BudgetItem.op`` for exactly that reason: without it no reader can render a ``stopping`` row
+correctly, and a bare ``current / limit`` pair silently asserts a ``>=`` the criterion may not use.
+
+A strategy's ``report().extra`` is **tier two's opposite**: an open dict of unbounded size (it carries ``elites``, ``measure_names``, ``best_elite``), so putting it on the
 status to surface a QD ``coverage`` figure would recreate ``batch_history`` exactly. It belongs on a
 route keyed on ``batches_done``, like the trajectory above.
 
