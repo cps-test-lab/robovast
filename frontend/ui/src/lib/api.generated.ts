@@ -1653,6 +1653,8 @@ export interface components {
             label: string;
             /** Limit */
             limit: number;
+            /** Op */
+            op: string | null;
         };
         /**
          * BuildImageRequest

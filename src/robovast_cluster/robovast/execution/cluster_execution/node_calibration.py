@@ -93,11 +93,10 @@ MIN_PROBE_SAMPLES = 10
 #: the smallest node -- is a configuration fault, and it is already caught before any job
 #: exists, by the ``preflight`` in ``_start_probes``. What reaches the end of a batch
 #: unmeasured is therefore the other case: a pinned probe that lost a race for *free*
-#: capacity. That drains. Failing on first sight turned a busy minute at campaign start into
-#: a terminal error, and because the batch's own runs had already finished by then it
-#: discarded work that was complete and correct: four campaigns died that way on one
-#: afternoon, ~60 finished runs thrown out, each with a diagnosis that named a cause nobody
-#: had observed.
+#: capacity. That drains. Failing on first sight turned a busy moment at campaign start into
+#: a terminal error, and because the batch's own runs have already finished by then it
+#: discarded work that was complete and correct -- with a diagnosis naming a cause that had
+#: never been observed, since the probe's own wait was recorded under a key nobody read.
 #:
 #: Two is enough to tell them apart. A node that sat out one batch and is measured on the
 #: next was contended; one that sits out twice running is not resolving itself, which is the

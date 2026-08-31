@@ -15,8 +15,21 @@ an "upgrade robovast" problem, and those are not interchangeable advice.
 
 import pytest
 
+from robovast.common import execution as execution_mod
 from robovast.common.execution import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COMPAT,
                                        check_image_compat, image_compat_version)
+
+
+@pytest.fixture(autouse=True)
+def _no_remote_label_memo():
+    """Reading a ref's labels is memoised per process, which would make these order-dependent.
+
+    Cleared around every case rather than only before, so a test that populates it cannot reach
+    the next one either way round.
+    """
+    execution_mod._REMOTE_LABEL_CACHE.clear()   # noqa: SLF001 - the memo is the thing under test
+    yield
+    execution_mod._REMOTE_LABEL_CACHE.clear()   # noqa: SLF001
 
 
 def test_the_window_is_a_real_range_the_right_way_round():
@@ -55,10 +68,8 @@ def test_an_image_that_reports_nothing_is_refused_not_assumed():
     assert f"{MIN_IMAGE_COMPAT}..{COMPAT_VERSION}" in message
 
 
-def test_the_label_is_preferred_over_the_file(monkeypatch):
-    """Reading the file costs a whole container started to read one integer, and cannot inspect
-    a remote image at all without pulling it -- which is exactly what a pre-flight on an old
-    campaign has to do. So the label wins when present, and the file is never consulted."""
+def test_a_local_image_is_read_without_touching_the_registry(monkeypatch):
+    """The cheap path stays cheap: one `docker inspect`, no network, nothing started."""
     calls = []
 
     def fake_run(args, **_kwargs):
@@ -72,24 +83,67 @@ def test_the_label_is_preferred_over_the_file(monkeypatch):
     monkeypatch.setattr("subprocess.run", fake_run)
     version, source = image_compat_version("img:1")
     assert (version, source) == (3, "label")
-    assert calls == ["inspect"], "the file must not be read when the label answered"
+    assert calls == ["inspect"], "nothing else may be asked once the local read answered"
 
 
-def test_the_file_is_the_fallback_for_an_unlabelled_image(monkeypatch):
-    """Images built before the label carry only the file, and those are precisely the archived
-    campaigns worth re-running -- dropping the fallback would make the check unable to read the
-    very images it exists to rescue."""
+def test_an_image_this_machine_does_not_have_is_read_from_the_registry(monkeypatch):
+    """The case the label exists for, and the one it could not serve until now.
+
+    A year-old campaign's image is not on the machine asking whether this host can still drive
+    it. `docker inspect` fails there, and the answer is one config-blob read away -- so the
+    pre-flight used to report "cannot tell" in precisely the situation it was built for.
+    """
+    import json as _json
+
     def fake_run(args, **_kwargs):
-        subcommand = args[1]
-
         class Result:
-            returncode = 0
-            # `docker inspect` prints the Go zero value for a missing key, not "".
-            stdout = "<no value>" if subcommand == "inspect" else "2"
+            returncode = 0 if "buildx" in args else 1
+            stdout = _json.dumps(
+                {"config": {"Labels": {"org.robovast.compat-version": "2"}}}
+            ) if "buildx" in args else ""
         return Result()
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    assert image_compat_version("img:1") == (2, "file")
+    assert image_compat_version("reg.example/img:1") == (2, "label")
+
+
+def test_a_multi_arch_index_answers_from_any_platform(monkeypatch):
+    """`imagetools` reports one config per platform for an index. They are pushed together, so
+    any of them dates the protocol -- the same reasoning the registry client's index walk uses."""
+    import json as _json
+
+    def fake_run(args, **_kwargs):
+        class Result:
+            returncode = 0 if "buildx" in args else 1
+            stdout = _json.dumps({
+                "linux/amd64": {"config": {"Labels": {"org.robovast.compat-version": "2"}}},
+                "linux/arm64": {"config": {"Labels": {"org.robovast.compat-version": "2"}}},
+            }) if "buildx" in args else ""
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert image_compat_version("reg.example/img:1") == (2, "label")
+
+
+def test_an_unlabelled_image_is_refused_rather_than_guessed(monkeypatch):
+    """The cost of dropping the in-image file, asserted so it stays a known one.
+
+    An image built before the label reports nothing at all now. That is the right answer --
+    those images predate protocol 2, which is also the floor -- but the message has to say what
+    to do about it rather than only that it could not tell.
+    """
+    def fake_run(args, **_kwargs):
+        class Result:
+            returncode = 0
+            # `docker inspect` prints the Go zero value for a missing key, not "".
+            stdout = "<no value>"
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    version, source = image_compat_version("img:1")
+    assert version is None
+    message = check_image_compat("img:1", version=version, source=source)
+    assert "rebuild it from the revision the campaign recorded" in message
 
 
 def test_no_docker_at_all_is_unknown_not_a_crash(monkeypatch):
@@ -106,9 +160,9 @@ def test_no_docker_at_all_is_unknown_not_a_crash(monkeypatch):
 
 
 def test_an_empty_image_reference_is_unknown():
-    assert image_compat_version("") == (None,
-                                        "not reported by the image (no label and no "
-                                        "/etc/robovast_compat_version)")
+    version, source = image_compat_version("")
+    assert version is None
+    assert "org.robovast.compat-version" in source
 
 
 def test_the_label_name_is_namespaced():

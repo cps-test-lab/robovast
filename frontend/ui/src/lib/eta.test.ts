@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, budgetPosition, isFractionableBudget, noResultRuns, ringBudget } from './eta'
+import { batchesBudget, budgetPosition, campaignEtaSeconds, criterionOp, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, hasDrawableFloor, isBatchesBudget, isFractionableBudget, noResultRuns, ringBudget } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -332,5 +332,40 @@ describe('budgetPosition', () => {
       budget: [timeRow(0)],   // never republished since the search began
     })
     expect(ringBudget(st)?.share).toBeCloseTo(0.25)
+  })
+})
+
+// Publishing `op` made the criterion ROW readable; it did not make the fraction computable.
+// Both halves matter, so both are asserted.
+describe('criterionOp / hasDrawableFloor', () => {
+  it('falls back to >= for a row written before op existed', () => {
+    // An older controller's status, or a finished campaign replaying its outcome.json. `>=` is
+    // right for five of the seven kinds and is what every reader assumed before the field, so
+    // the fallback restores the old behaviour rather than guessing.
+    expect(criterionOp({ ...crit('metric', 1, 2), op: null } as BudgetItem)).toBe('>=')
+  })
+
+  it('reports the published comparison', () => {
+    expect(criterionOp({ ...crit('metric', 0.1, 0.8), op: '<=' } as BudgetItem)).toBe('<=')
+    expect(criterionOp({ ...crit('target_objective', -1.42, -2), op: '<=' } as BudgetItem)).toBe('<=')
+  })
+
+  it('draws a bar for the caps and for no_improvement, which counts up from zero', () => {
+    // `stale_batches` 2 of 3 IS a fraction: it has a real floor. The ring still refuses it,
+    // because it resets on an improvement and a ring running backwards reads as a bug -- a
+    // static row claiming "2 of 3 strikes" survives the reset.
+    expect(hasDrawableFloor(crit('runs', 120, 180))).toBe(true)
+    expect(hasDrawableFloor(crit('no_improvement', 2, 3, { label: 'stale_batches' }))).toBe(true)
+    expect(ringBudget(status({}, {
+      budget: [crit('no_improvement', 2, 3, { label: 'stale_batches' })],
+    }))).toBeNull()
+  })
+
+  it('refuses a bar where there is no origin to measure from, op or not', () => {
+    // Knowing a metric fires at `<= 0.8` says nothing about where it started; an objective's
+    // initial value is whatever the first batch happened to measure.
+    expect(hasDrawableFloor({ ...crit('metric', 0.1, 0.8), op: '<=' } as BudgetItem)).toBe(false)
+    expect(hasDrawableFloor({ ...crit('metric', 0.1, 0.8), op: '>=' } as BudgetItem)).toBe(false)
+    expect(hasDrawableFloor({ ...crit('target_objective', -1.42, -2), op: '<=' } as BudgetItem)).toBe(false)
   })
 })
