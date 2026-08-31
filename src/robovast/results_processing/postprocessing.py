@@ -31,7 +31,6 @@ from robovast.common.common import load_config
 from robovast.common.plugin_ref import is_file_ref, load_ref
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing_plugins import generate_data_db
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 
@@ -835,15 +834,28 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     _record_campaign_providers(campaign_dir, output)
 
 
-    # Build SQLite data.db for the campaign
+    # Load the campaign into the central index. This is what used to write a per-campaign
+    # data.db -- a 1.1 GB SQLite file that then had to be uploaded and downloaded again on
+    # the first cold query, and that could only ever answer about one campaign.
+    #
+    # A failure here fails postprocessing, deliberately and without a fallback. The run
+    # artifacts are untouched in the object store and re-ingest is the ordinary path, so
+    # nothing is lost -- the campaign is simply not queryable until postprocessing is
+    # re-run. Continuing quietly would be worse: "finished" would stop meaning "queryable",
+    # and the difference would surface only when somebody asked a question and got nothing
+    # back. See ``common.index_db`` on why there is no degraded mode anywhere on this path.
     if skip_db:
-        output("Skipping data.db creation")
+        output("Skipping index ingest")
     else:
-        db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
-        if db_success:
-            output(f"✓ {db_msg}")
-        else:
-            raise RuntimeError(f"data.db generation failed: {db_msg}")
+        from robovast.common import index_db  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing import \
+            campaign_ingest  # pylint: disable=import-outside-toplevel
+
+        campaign_id = os.path.basename(os.path.normpath(campaign_dir))
+        with index_db.connect() as conn:
+            totals = campaign_ingest.ingest_campaign(conn, campaign_dir, campaign_id)
+        rows = sum(totals.values())
+        output(f"✓ Indexed {campaign_id}: {rows} rows across {len(totals)} tables")
 
     # Generate metadata.yaml in each campaign directory
     if skip_metadata:
