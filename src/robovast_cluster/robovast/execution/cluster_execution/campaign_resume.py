@@ -87,9 +87,12 @@ def owed_work(service) -> list:
     back has to get the campaign someone is watching moving again before it works through
     older ones.
     """
-    index = service._campaign_index()  # noqa: SLF001 - same package, one collaborator
+    # A pair of maps, not one: ``(created_at, finished_at)``. Only the first orders the
+    # re-launch; an ending is read from the campaign's own outcome.json below rather than
+    # from the index, because that is the record a resume must not step on.
+    created, _finished = service._campaign_index()  # noqa: SLF001 - same package, one collaborator
     owed = []
-    for campaign_id in sorted(index, key=lambda cid: index[cid] or "", reverse=True):
+    for campaign_id in sorted(created, key=lambda cid: created[cid] or "", reverse=True):
         try:
             if not _terminal_outcome(service, campaign_id):
                 owed.append(campaign_id)
@@ -223,8 +226,15 @@ def resume_all(service) -> dict:
     outcomes: dict = {}
     try:
         candidates = owed_work(service)
-    except Exception as e:  # noqa: BLE001 - an unreachable store must not block startup
-        logger.warning("Could not check for campaigns to resume: %s", e)
+    except Exception as e:  # noqa: BLE001 - nothing here is worth refusing to start over
+        # Loud, with the traceback, and without naming a cause. A store outage does not
+        # reach here -- ``_campaign_index`` degrades to its cache and ``_terminal_outcome``
+        # is caught per campaign -- so what lands here is a fault in this module, and the
+        # one thing it must not do is read like the routine outage it is not. Blaming the
+        # store once cost a service restart every campaign it was driving.
+        logger.error("Could not check for campaigns to resume, so none was picked up "
+                     "and every interrupted campaign is left for 'vast campaign import': %s",
+                     e, exc_info=True)
         return outcomes
     for campaign_id in candidates:
         try:

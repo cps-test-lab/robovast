@@ -8,7 +8,7 @@
 // Markup stays in `components/`; this is the same split `lib/eta.ts` and `lib/detailsGeometry.ts`
 // already make, and the reason those have tests while the charts do not.
 
-import type { CampaignSummary, JobCounts, Status } from './robovastClient'
+import { isTerminalPhase, type CampaignSummary, type JobCounts, type Status } from './robovastClient'
 import type { MeterSegment } from '@/components/MeterBar'
 import { finishedRuns, noResultRuns } from './eta'
 
@@ -35,10 +35,32 @@ export function runMeterSegments(status: Status, counts?: JobCounts): MeterSegme
   ]
 }
 
-/** `done/total`, the one pair the meter is labelled with. Uses `finishedRuns` so the label, the
- *  painted fraction and the ETA cannot disagree — see the note there. */
+/** The label the meter carries inside its track, in the tense the campaign is in.
+ *
+ *  While it runs, the share done, to one decimal: the interesting movement on a long campaign is
+ *  the tenth of a percent, and a whole-percent label sits still for minutes at a time.
+ *
+ *  Once it is over, that share is 100% for every campaign and says nothing. The size of the
+ *  campaign takes its place — how many runs it was, which is what a finished row is scanned for
+ *  — with the failures beside it (see `runMeterFailed`).
+ *
+ *  Uses `finishedRuns` so the label, the painted fraction and the ETA cannot disagree — see the
+ *  note there. With no denominator there is no share to state, so the bar goes unlabelled rather
+ *  than claiming 0%. */
 export function runMeterText(status: Status, counts?: JobCounts): string {
-  return `${finishedRuns(status, counts)}/${status.runs.total}`
+  const { runs } = status
+  if (isTerminalPhase(status.phase)) return `${runs.total}`
+  if (runs.total <= 0) return ''
+  return `${((finishedRuns(status, counts) / runs.total) * 100).toFixed(1)}%`
+}
+
+/** Runs the meter paints red: a failing verdict and a run that delivered nothing, together.
+ *
+ *  The label needs one number, and both reds are the same answer to "is there something to look
+ *  at here" — the hover keeps the two axes apart. Without it a finished campaign reads `100%`
+ *  over a part-red bar, where the percent means done and only the color means passed. */
+export function runMeterFailed(status: Status, counts?: JobCounts): number {
+  return status.runs.failed + noResultRuns(status, counts)
 }
 
 /** A `RunProgress` from a campaign LISTING, for the moment before the live status arrives.

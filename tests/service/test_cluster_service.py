@@ -2549,3 +2549,26 @@ def test_an_unreachable_store_still_serves_what_scratch_has(cs, monkeypatch, tmp
     chunk = cs.get_campaign_logs("camp-1")
 
     assert "ran" in chunk.text
+
+
+def test_owed_work_reads_the_real_services_campaign_index(indexed, monkeypatch):
+    """``campaign_resume`` against a real ClusterService, not a hand-written stub.
+
+    Every other resume test drives a ``_FakeService``, and that stub answered
+    ``_campaign_index`` with a bare map where the real method returns a
+    ``(created_at, finished_at)`` pair. So the whole suite passed while the deployed
+    service raised ``TypeError`` on its first candidate, resumed nothing, and reported it
+    as an unreachable store. A feature whose collaborator is only ever a double is a
+    feature nothing has run.
+    """
+    from robovast.execution.cluster_execution import campaign_resume, in_pod_storage
+
+    cs, storage = indexed
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("bkt", f"{cid}/"))
+    cs._on_campaign_started("live-2026-07-18-120000", "2026-07-18T12:00:00+00:00")
+    cs._on_campaign_started("over-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
+    storage.objects["over-2026-07-17-120000/_execution/outcome.json"] = b"{}"
+
+    # Only the campaign with no recorded ending, and the newest first.
+    assert campaign_resume.owed_work(cs) == ["live-2026-07-18-120000"]

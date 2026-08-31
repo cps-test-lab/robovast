@@ -29,7 +29,7 @@ import {
 } from '@/lib/eta'
 import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
-import { runMeterSegments, runMeterText } from '@/lib/runMeter'
+import { runMeterFailed, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock, formatLocalTime } from '@/lib/time'
 import { NEUTRAL, withAlpha } from '@/colors'
@@ -94,17 +94,20 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
 
 /** The run meter, short enough to sit in a campaign card's header row.
  *
- *  The same bar the open card draws full width -- same segments, same `done/total` -- shrunk to a
- *  fixed column and carrying its label inside the track instead of above it. It exists so a
- *  COLLAPSED campaign still says what its runs did without the row growing a second line: a page of
- *  finished campaigns is a page of these, one per line.
+ *  The same bar the open card draws full width -- same segments -- shrunk to a fixed column and
+ *  carrying its label inside the track instead of above it, so a COLLAPSED campaign says what its
+ *  runs did without the row growing a second line.
  *
  *  Kept in this file rather than beside the card that uses it, deliberately: it is the same meter
  *  as the one above and a change to either must be made looking at the other.
  *
- *  Everything that does not survive the shrink goes on the hover -- the failure counts, the wall
- *  clock, the pass rate. A bar 140px wide has room for one pair of numbers, and `done/total` is the
- *  pair that answers "did this finish".
+ *  The track's label follows the campaign's tense (see `runMeterText`): the share done while it
+ *  runs, the size of the campaign once it is over. Beside it, the number of runs that failed, and
+ *  only when there is one -- red on the bar with no number against it leaves the reader counting
+ *  pixels. One color for the whole label: the segments under it already carry the red, and a label
+ *  in two colors reads as two labels. The rest -- the counts, the two failure axes apart, the wall
+ *  clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
+ *  single row.
  */
 export function MiniRunMeter({
   status,
@@ -127,6 +130,7 @@ export function MiniRunMeter({
   const done = finishedRuns(status, counts)
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
+  const failed = runMeterFailed(status, counts)
   return (
     // The ring's slot is reserved whether or not there is a ring, so this whole group is a
     // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
@@ -161,6 +165,7 @@ export function MiniRunMeter({
           text={
             <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
               {runMeterText(status, counts)}
+              {failed > 0 ? ` (${failed} failed)` : ''}
             </Box>
           }
         />

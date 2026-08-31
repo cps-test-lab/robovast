@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
@@ -317,6 +317,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const closeMenu = () => setMenuAnchor(null)
+
+  // Wraps a control that sits inside the row-wide fold target: the row folds on any click the
+  // controls do not claim, so a control must claim its own or it both acts and folds the card
+  // under itself. The chevron needs it too — folding twice is folding not at all.
+  const claim = (fn: () => void) => (e: MouseEvent) => {
+    e.stopPropagation()
+    fn()
+  }
   const [ppOpen, setPpOpen] = useState(false)
 
   const del = useMutation({
@@ -618,20 +626,39 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   return (
     <Paper sx={{ px: 2, py: collapsed ? 0.75 : 2 }}>
-      <Stack direction="row" spacing={1} alignItems="center" mb={collapsed ? 0 : 1.5}>
-        {/* The fold's click target: the row's whole non-interactive span, which is what makes a
-            collapsed card openable without aiming at the chevron (the same affordance
-            CollapsibleBox's header offers). It wraps only inert elements, so no child needs to
-            stop the click from propagating — the buttons after it are outside it entirely. */}
+      {/* The fold's click target is the WHOLE header, chevron row included: a folded card is
+          opened by clicking the line it occupies, not by aiming at one of the two spans that
+          happen to hold text. It bleeds into the Paper's own padding (negative margin, the same
+          padding added back inside) so the strip beside and above the row folds too — an edge
+          that looks like part of the row and did not act like it.
+
+          The controls stop the click from propagating; everything else in here is inert. */}
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        onClick={toggle}
+        // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
+        // target should not paint its phase dot and its age. The text worth copying opts back
+        // in individually.
+        sx={{
+          cursor: 'pointer',
+          userSelect: 'none',
+          // The Paper's padding, cancelled outside and restored inside, so the padded strip is
+          // part of the target and nothing moves. The gap the row used to hold below itself
+          // (`mb`) is folded into the bottom margin rather than kept as a second rule.
+          mx: -2,
+          px: 2,
+          mt: collapsed ? -0.75 : -2,
+          mb: collapsed ? -0.75 : -0.5,
+          py: collapsed ? 0.75 : 2,
+        }}
+      >
         <Stack
           direction="row"
           spacing={1}
           alignItems="center"
-          onClick={toggle}
-          // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
-          // target should not paint its phase dot and its age. The text worth copying opts back
-          // in individually.
-          sx={{ minWidth: 0, flexGrow: 1, cursor: 'pointer', userSelect: 'none' }}
+          sx={{ minWidth: 0, flexGrow: 1 }}
         >
           <PhaseDot phase={phase} issue={stepIssue} />
           {phaseAge ? (
@@ -776,6 +803,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           direction="row"
           spacing={1}
           alignItems="center"
+          // No handler of its own: the column is mostly empty space on a folded row, and space
+          // that looks like the row must fold like the row. Each control claims its own click
+          // instead (`claim`), which is the smallest thing that is not the fold.
           sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
         >
         {/* Left of the menu, and an icon like everything else in this column: a labelled button
@@ -799,7 +829,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               color="error"
               aria-label="stop campaign"
               disabled={stop.isPending}
-              onClick={onStop}
+              onClick={claim(() => void onStop())}
             >
               {stop.isPending ? <CircularProgress size={16} /> : <StopRoundedIcon fontSize="small" />}
             </IconButton>
@@ -824,7 +854,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 size="small"
                 aria-label="campaign actions"
                 aria-haspopup="menu"
-                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuAnchor(e.currentTarget)
+                }}
                 disabled={del.isPending}
               >
                 {del.isPending ? (
@@ -834,7 +867,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 )}
               </IconButton>
             </Tooltip>
-            <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
+            {/* The menu is portalled out of the card but its events still travel this React
+                tree, so without this every entry picked from it also folded the card. */}
+            <Menu
+              anchorEl={menuAnchor}
+              open={!!menuAnchor}
+              onClose={closeMenu}
+              onClick={(e) => e.stopPropagation()}
+            >
               {menuItems}
             </Menu>
           </>
@@ -849,7 +889,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             size="small"
             aria-label={collapsed ? 'expand campaign' : 'collapse campaign'}
             aria-expanded={!collapsed}
-            onClick={toggle}
+            onClick={claim(toggle)}
           >
             {collapsed ? (
               <KeyboardArrowDownRoundedIcon fontSize="small" />
