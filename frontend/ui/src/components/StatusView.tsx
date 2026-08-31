@@ -269,7 +269,7 @@ function SearchRing({
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {bound ? Math.round(share) : done}
+          {ringLabel(bound ? bound.share : null, done)}
         </Typography>
       </Box>
     </Tooltip>
@@ -406,17 +406,49 @@ const RING = {
   viewBox: 40,
   /** Circumference 100, so a dash length IS a percentage. */
   radius: 15.9155,
-  stroke: 5,
-  labelField: 13.4,
+  stroke: 6,
+  /** Radius of the opaque disc the label sits on. Deliberately INSIDE the band rather than at
+   *  its inner edge: the disc is what defines the label's field, so widening it buys room for
+   *  the label without thinning the stroke or shrinking the type. The band still shows
+   *  `radius + stroke/2 - labelField` of itself, which at these values is 2.4px -- a normal
+   *  thin donut, and filled and track are clipped equally so the contrast between them is
+   *  untouched. */
+  labelField: 15.2,
   fontSize: 9,
 } as const
 
 /** The ring's diameter, and so the width its slot reserves on every row. */
 const RING_SIZE = RING.size
 
-/** How wide the ring's hole is, in rendered pixels. */
-export function ringHoleWidth(): number {
-  return 2 * (RING.radius - RING.stroke / 2) * (RING.size / RING.viewBox)
+/** What the hole shows once the budget is spent.
+ *
+ *  A tick rather than `100%`, and that is what lets the rest keep its `%` sign: three digits plus
+ *  the sign wants about 24px and does not fit a 26px ring at any legible size, and it was the
+ *  reason the sign was dropped from every value. Replacing only the one value that does not fit
+ *  costs one glyph and buys the sign back for the other hundred.
+ *
+ *  It also reads better than the number it replaces: at 100% the binding budget is exhausted, so
+ *  "done" is what the reader wants, not an arithmetic identity. */
+const RING_DONE = '\u2713'
+
+/** The hole's label for a share in [0,1], or the round count when nothing bounds the search.
+ *
+ *  Only an EXACT full share earns the tick. `Math.round` would hand it to 99.6%, claiming a
+ *  budget spent while a run of it remains -- so short of exhaustion the number is capped at 99
+ *  and understates by a fraction, which is the same direction `ringBudget` clamps in. */
+export function ringLabel(share: number | null, rounds: number): string {
+  if (share == null) return String(rounds)
+  if (share >= 1) return RING_DONE
+  return `${Math.min(99, Math.round(share * 100))}%`
+}
+
+/** How wide the label's field is, in rendered pixels: the opaque disc, not the hole.
+ *
+ *  The disc is what the label may occupy, and it is wider than the hole on purpose -- see
+ *  `RING.labelField`. Measuring against the hole instead is what made the first attempt at this
+ *  shrink the type and drop the `%` sign when neither was necessary. */
+export function ringLabelField(): number {
+  return 2 * RING.labelField * (RING.size / RING.viewBox)
 }
 
 /** Roughly how wide *label* renders at the ring's type size.
@@ -426,7 +458,8 @@ export function ringHoleWidth(): number {
  *  per-character ems are conservative for a semibold tabular sans -- digits are set to one
  *  width by `tabular-nums`, and `%` is the widest glyph the string could contain. */
 export function ringLabelWidth(label: string): number {
-  const em = [...label].reduce((w, ch) => w + (ch === '%' ? 0.85 : 0.6), 0)
+  const em = [...label].reduce(
+    (w, ch) => w + (ch === '%' ? 0.85 : ch === RING_DONE ? 1.0 : 0.6), 0)
   return em * RING.fontSize
 }
 
