@@ -183,3 +183,50 @@ def test_run_and_evaluation_budgets_reject_non_positive(kind):
                      extract={'plugin': 'failure_rate'},
                      objectives=[{'name': 'failure_rate'}], per_batch=4,
                      budget=[{kind: 0}])
+
+
+# -- the comparison each criterion fires on ----------------------------------
+
+
+def _rows(sc, snap):
+    return {p.label: p for p in sc.progress(snap)}
+
+
+def test_resource_caps_and_no_improvement_fire_at_or_above_their_limit():
+    """Five of the seven kinds fire at ``>=``, which is why that is the reader's fallback for a
+    status written before ``op`` existed -- the fallback is the old behaviour, not a guess."""
+    sc = _sc(budget=[BatchesBudget(type='batches', value=10),
+                     TimeBudget(type='time', seconds=600),
+                     EvaluationsBudget(type='evaluations', value=20),
+                     RunsBudget(type='runs', value=40)],
+             stopping=[NoImprovementStop(type='no_improvement', patience=3)])
+    rows = _rows(sc, _snap(best=0.5))
+    for label in ('batches', 'time', 'evaluations', 'runs', 'stale_batches'):
+        assert rows[label].op == '>=', label
+
+
+def test_target_objective_reports_the_direction_it_is_compared_on():
+    """A minimize search reaches its target from ABOVE, so the row must say ``<=``. Same
+    comparison ``_meets_target`` applies, so the row cannot describe a different test from the
+    one that actually stops the search."""
+    crit = [TargetObjectiveStop(type='target_objective', value=-2.0)]
+    snap = _snap(best=-1.42)
+    assert _rows(_sc(stopping=crit, direction='minimize'), snap)['failure_rate'].op == '<='
+    assert _rows(_sc(stopping=crit, direction='maximize'), snap)['failure_rate'].op == '>='
+
+
+def test_a_metric_reports_the_op_the_user_wrote():
+    """The case that motivated publishing this: ``<= 0.8`` at 0.1 has already FIRED, and a bare
+    ``0.1 / 0.8`` pair reads as 12% of the way there."""
+    sc = _sc(stopping=[MetricStop(type='metric', name='err', op='<=', value=0.8)])
+    row = _rows(sc, _snap(best=0.5, metrics={'err': 0.1}))['err']
+    assert row.op == '<=' and row.done is True
+
+
+def test_the_op_reaches_the_wire():
+    """``_budget_item`` is what the status, the CLI and the MCP all read."""
+    from robovast.execution.controller import CampaignController
+    from robovast.search.stopping import CriterionProgress
+    item = CampaignController._budget_item(
+        CriterionProgress('coverage', 0.1, 0.8, True, kind='metric', op='<='))
+    assert item['op'] == '<=' and item['kind'] == 'metric' and item['done'] is True

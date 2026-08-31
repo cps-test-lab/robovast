@@ -1653,6 +1653,8 @@ export interface components {
             label: string;
             /** Limit */
             limit: number;
+            /** Op */
+            op: string | null;
         };
         /**
          * BuildImageRequest
@@ -1852,6 +1854,11 @@ export interface components {
              * @default
              */
             description: string;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
             /** Finished At */
             finished_at: string | null;
             /**
@@ -3388,32 +3395,22 @@ export interface components {
             size: number;
         };
         /**
-         * Status
-         * @description The controller's live state, served by ``GET /campaigns/{id}/status``.
+         * StatusResponse
+         * @description :class:`Status` as the HTTP API serves it: the state, plus the stall verdict.
          *
-         *     ``phase`` is an **open** string the controller advances through a documented
-         *     vocabulary (``initializing`` → ``building`` → ``starting`` → ``variation`` →
-         *     ``running`` → ``finishing`` → ``importing`` → ``postprocessing`` → ``sharing`` →
-         *     ``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
-         *     ``"upload-to-share-done"``) slot in without a schema change.
+         *     The verdict is derived per read (as ``health`` is) and exists only on the wire. It is
+         *     deliberately NOT a field on :class:`Status`, which is the controller's mutable state and
+         *     is persisted verbatim as the campaign's durable outcome
+         *     (``campaign_data.write_execution_outcome`` / ``read_execution_outcome``): a stored verdict
+         *     would be read back later as a live accusation against a campaign that has long since
+         *     finished, which is the one error mode the tri-state exists to prevent.
          *
-         *     What is on the share is deliberately *not* here. It was, as ``share_provider``,
-         *     and nothing ever wrote it -- which is the shape of the mistake: the share is
-         *     another system's state, so a copy of it on a campaign goes stale the first time
-         *     somebody deletes an archive out of band. ``list_share_archives`` asks the share.
-         *
-         *     **Before adding a field: this is a hot fan-out payload.** The web UI renders every
-         *     campaign in the list as a card and each card polls ``GET /campaigns/{id}/status``
-         *     every 1.5 seconds, so anything here is paid for once per campaign on screen, per
-         *     poll, per open tab -- and some of it is computed per read (``health``). What belongs
-         *     here is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,
-         *     a batch index. A SERIES does not, however small it looks: ``batch_history`` was one
-         *     (a row per batch, growing all run long), nothing ever read it, and it was removed in
-         *     favour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while
-         *     something is displaying it, keyed on the ``batches_done`` cursor that lives here.
-         *     The rule, and where a live run view lands, is in ``docs/http_api.rst``.
+         *     Every added field is optional and absent unless :func:`stall_report` produced it, so a
+         *     terminal campaign carries no verdict rather than a null one — the same shape the MCP
+         *     returns, for the same reason: a field present on every campaign is one readers learn to
+         *     skip.
          */
-        Status: {
+        StatusResponse: {
             /**
              * Batch
              * @default 0
@@ -3458,15 +3455,25 @@ export interface components {
             postprocessed: boolean;
             /** Postprocessing Error */
             postprocessing_error: string | null;
+            /** Progress Age S */
+            progress_age_s: number | null;
             /** Progress Deadline S */
             progress_deadline_s: number | null;
             /** Progress Since */
             progress_since: number;
             runs: components["schemas"]["RunProgress"];
+            /** Search Since */
+            search_since: number | null;
             /** Share Error */
             share_error: string | null;
             /** Stage */
             stage: string | null;
+            /** Stall Reason */
+            stall_reason: string | null;
+            /** Stall Verdict */
+            stall_verdict: string | null;
+            /** Stalled */
+            stalled: boolean | null;
             /** Stop */
             stop: {
                 [key: string]: unknown;
@@ -5512,7 +5519,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Status"];
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
             /** @description Validation Error */

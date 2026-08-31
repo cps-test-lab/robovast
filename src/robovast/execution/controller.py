@@ -573,6 +573,21 @@ class CampaignController:
         # `self._batches_done` -- it was written that way so an abort mid-loop still counted
         # the batches behind it -- so seeding these IS the resume.
         start -= self._rehydrate_search(campaign_id)
+        # The search's time ORIGIN, published once, so every reader can derive elapsed itself
+        # instead of waiting for the next batch to republish it.
+        #
+        # `start` is a time.monotonic() reading and cannot cross a process boundary, so it is
+        # converted to the time.time() epoch the other `*_since` fields use. The subtraction
+        # above is carried across with it, which is what makes a resumed search report the
+        # wall-clock age its `time` budget is actually capped against rather than a fresh clock.
+        #
+        # Published here and never again. Refreshing a `time` budget's `current` on a timer was
+        # the obvious alternative and would have broken stall detection outright:
+        # `_progress_signal` includes each budget row's `current`, so a row rewritten from
+        # wall-clock advances the progress signal on every poll forever and no time-budgeted
+        # search could be called stalled again. An origin cannot do that.
+        if self.state is not None:
+            self.state.update(search_since=time.time() - (time.monotonic() - start))
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -780,7 +795,8 @@ class CampaignController:
         cur = float(p.current)
         return {"label": p.label,
                 "current": None if math.isnan(cur) else cur,
-                "limit": float(p.limit), "done": bool(p.done), "kind": p.kind}
+                "limit": float(p.limit), "done": bool(p.done), "kind": p.kind,
+                "op": p.op}
 
     def _update_best(self, best, evaluations, obj_name):
         """Fold this batch's objective values into the best-so-far (raw units,
@@ -1157,10 +1173,23 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     cluster_config = getattr(backend, "cluster_config", None)
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
+    # A campaign this process RESUMED holds only its control plane until now (see
+    # cluster_execution.campaign_resume), and ``data.db`` is derived from the whole tree.
+    # Here rather than in the caller's tail because this is the first reader that needs it:
+    # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
+    # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
+    # start to finish in this process.
+    # The phase moves BEFORE the root is completed, because completing it is postprocessing's
+    # own first step and can take minutes on a resumed campaign. Left until after, the campaign
+    # sat in `running` for the whole transfer -- where `status.stall_report` measures silence
+    # against the per-run budget and calls it "no progress ... the run is not merely slow",
+    # sending a reader to diagnose a run that had already finished. That verdict is suppressed
+    # off the running phase, and this is what makes the suppression apply.
+    if state is not None:
+        state.set_phase(Phase.POSTPROCESSING)
+    backend.ensure_campaign_root_complete(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
-        if state is not None:
-            state.set_phase(Phase.POSTPROCESSING)
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),

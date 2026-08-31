@@ -48,7 +48,8 @@ from .simulators import SIM_CONFIG_FILE
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
 # paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
 # package, a ROS distro change, a script interface change). The same value must appear in the
-# Dockerfile as /etc/robovast_compat_version and as the org.robovast.compat-version label.
+# Dockerfiles as the org.robovast.compat-version label -- one marker, and the CI gate in
+# .github/workflows/image.yml is what keeps it equal to this constant.
 #
 # A **window**, not a single value, and that is the whole point. This was compared with `!=`
 # at every site, so the first bump orphaned every image already published: a campaign whose
@@ -70,11 +71,17 @@ COMPAT_VERSION = 2
 #: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
 MIN_IMAGE_COMPAT = 2
 
-#: Image label carrying the protocol version. Preferred over /etc/robovast_compat_version
-#: because reading that file costs a `docker run` -- a whole container started to read one
-#: integer -- and cannot inspect a remote image at all without pulling it first. The file is
-#: still written, and still read as a fallback, because images built before this label exists
-#: carry only the file.
+#: Image label carrying the protocol version -- the only marker there is.
+#:
+#: It replaced a file inside the image for two reasons. Reading a file costs a `docker run`, a
+#: whole container started to read one integer; and it cannot be read for a remote image at
+#: all, which is the case the marker most needs to answer -- whether this host can still drive
+#: the image a year-old campaign recorded, asked from a machine that does not have it.
+#:
+#: The cost of dropping the file, recorded because it is real: an image built before this label
+#: existed reports nothing, and `check_image_compat` refuses rather than guessing. Those images
+#: predate protocol 2, which is also `MIN_IMAGE_COMPAT`, so a refusal is the right answer for
+#: them anyway -- but the message has to say what to do, not merely that it cannot tell.
 COMPAT_VERSION_LABEL = "org.robovast.compat-version"
 
 # The unprivileged user a robovast execution image runs as (fixuid is configured for it). Experiment
@@ -543,23 +550,20 @@ MAX_RECORDED_CHANGED_PATHS = 20
 def image_compat_version(image: str) -> "tuple[int | None, str]":
     """``(version, source)`` for *image*'s protocol version. ``(None, reason)`` when unknown.
 
-    Tries the label first and the file second, because the label is strictly cheaper and
-    strictly more capable: ``docker inspect`` reads it without starting anything, and
-    ``buildx imagetools inspect`` reads it from a **remote** image without pulling -- which is
-    what a pre-flight on a year-old campaign needs, since the whole question is whether those
-    bytes are still obtainable. The file needs a container started to read one integer.
+    The label, read the standard way: ``docker inspect`` locally, and the registry's config
+    blob for an image this machine does not have. One marker, both ways of reading it.
 
-    The file remains the fallback rather than being dropped: every image built before the
-    label existed carries only the file, and those are exactly the campaigns worth re-running.
-    ``source`` is returned so a caller can say which answered.
+    There used to be a second marker -- a file inside the image, read by starting a container
+    to ``cat`` one integer. It is gone. It could not be read remotely at all, which is the case
+    that matters (a year-old campaign's image is not on the machine asking about it), and a
+    workload inspecting its own image is not how this question is answered anywhere else.
+
+    ``source`` is returned so a caller can say what answered.
     """
     labelled = _docker_label(image, COMPAT_VERSION_LABEL)
     if labelled and labelled.strip().isdigit():
         return int(labelled.strip()), "label"
-    from_file = _compat_version_file(image)
-    if from_file is not None:
-        return from_file, "file"
-    return None, "not reported by the image (no label and no /etc/robovast_compat_version)"
+    return None, f"not reported by the image (no {COMPAT_VERSION_LABEL} label)"
 
 
 #: Seconds any docker probe here may take. These run inside a pre-flight that is supposed to
@@ -602,35 +606,71 @@ def local_image_id(image: str) -> str:
 
 
 def _docker_label(image: str, label: str) -> str:
-    """One label off a local image, or ``""``. Never raises -- absence is the answer."""
+    """One label off *image*, local first and then the registry, or ``""``.
+
+    Never raises -- absence is the answer, here as everywhere else in this module's probes.
+
+    The remote half is what makes this usable for the question it is mostly asked: *can this
+    host still drive the image a year-old campaign recorded?* That image is generally not on
+    the machine asking, and the point of a label over a file was always that a remote read is
+    possible -- ``buildx imagetools inspect`` reads the config blob without pulling a layer.
+    Until now only the local daemon was consulted, so a pre-flight on an archived campaign
+    answered "cannot tell" in exactly the case the label exists for.
+    """
     if not image:
         return ""
     result = _docker(['docker', 'inspect', '--format',
                       '{{index .Config.Labels "%s"}}' % label, image])
-    if not result or result.returncode != 0:
+    if result and result.returncode == 0:
+        value = result.stdout.strip()
+        # `docker inspect` prints the Go zero value for a missing key, not an empty string.
+        if value not in ("", "<no value>"):
+            return value
+        # Present locally and genuinely unlabelled: the registry cannot say otherwise about
+        # the same bytes, so do not pay for a round trip to be told the same thing.
         return ""
-    value = result.stdout.strip()
-    # `docker inspect` prints the Go zero value for a missing key, not an empty string.
-    return "" if value in ("", "<no value>") else value
+    return _remote_labels(image).get(label, "")
 
 
-def _compat_version_file(image: str) -> "int | None":
-    """The legacy marker, read by starting the container. Only for images without the label.
+def _remote_labels(image: str) -> dict:
+    """Every label on *image* as the registry reports it, or ``{}``.
 
-    **Only ever for an image already present locally.** ``docker run`` on an absent image
-    *pulls* it, so probing this way turned a pre-flight that is supposed to cost nothing into
-    a network fetch of possibly gigabytes -- and, against a registry that cannot serve it, into
-    a hang. ``--pull=never`` is passed as well, so the guard holds even if the image disappears
-    between the two calls.
+    All of them in one call, memoised per ref, because the callers ask for several: reading
+    four build refs off an absent image would otherwise be four network round trips to fetch
+    one config blob four times.
+
+    Memoised **for the life of the process**, which is the honest scope: a moving tag could
+    resolve to different bytes between two calls, but every caller here is a probe inside a
+    single short-lived answer (a pre-flight, one campaign's launch), and a probe that reports
+    two different things about one ref within one answer would be worse than a stale one.
     """
-    if not image or not _image_present_locally(image):
-        return None
-    result = _docker(['docker', 'run', '--rm', '--pull=never', '--entrypoint', 'cat', image,
-                      '/etc/robovast_compat_version'])
-    if not result:
-        return None
-    text = result.stdout.strip()
-    return int(text) if result.returncode == 0 and text.isdigit() else None
+    if image in _REMOTE_LABEL_CACHE:
+        return _REMOTE_LABEL_CACHE[image]
+    labels: dict = {}
+    result = _docker(['docker', 'buildx', 'imagetools', 'inspect', '--format',
+                      '{{json .Image}}', image])
+    if result and result.returncode == 0:
+        try:
+            payload = json.loads(result.stdout.strip() or "{}")
+        except ValueError:
+            payload = {}
+        # Two shapes: a single image config, or one config per platform for a multi-arch
+        # index. Any entry answers -- they are pushed together, the same reasoning the
+        # registry client's index handling already uses.
+        candidates = [payload] if "config" in payload else [
+            v for v in payload.values() if isinstance(v, dict)]
+        for candidate in candidates:
+            found = ((candidate.get("config") or {}).get("Labels") or {})
+            if found:
+                labels = {str(k): str(v) for k, v in found.items()}
+                break
+    _REMOTE_LABEL_CACHE[image] = labels
+    return labels
+
+
+#: Per-process memo behind :func:`_remote_labels`. Not an LRU: the number of distinct refs one
+#: process asks about is the number of containers in one campaign.
+_REMOTE_LABEL_CACHE: dict = {}
 
 
 def check_image_compat(image: str, *, version: "int | None" = None,
@@ -650,8 +690,13 @@ def check_image_compat(image: str, *, version: "int | None" = None,
 
     if version is None:
         return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
-                f"This host speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION}. An image that "
-                f"reports nothing is either not a robovast image or predates the marker.")
+                f"This host speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION}. An image that reports "
+                f"nothing is either not a robovast image or predates the {COMPAT_VERSION_LABEL} "
+                f"label.\n"
+                f"If it is a robovast image and you have its source, rebuild it from the "
+                f"revision the campaign recorded (_execution/execution.yaml: robovast_revision) "
+                f"-- the rebuilt image carries the label. If you know which protocol it speaks, "
+                f"re-tag it with that label rather than guessing here.")
     if MIN_IMAGE_COMPAT <= version <= COMPAT_VERSION:
         return None
     if version > COMPAT_VERSION:
@@ -1403,11 +1448,26 @@ echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
 # and its resource monitor have stopped), so last-writer-wins is the correct resolution
 # and not a race. Payload each container uniquely owns was never affected -- mc skips
 # same-size objects, so this costs no extra transfer for the bag or the capture.
-mc mirror --overwrite /out/ "${S3_DEST}/"
+#
+# --exclude '*.part' keeps IN-PROGRESS files out of the store. The suffix is roqsim's live
+# sample stream (roqsim.capture.STREAM_SUFFIX): the recorder appends to run.npz.part as the
+# run goes, and packs it into run.npz at close, unlinking the stream. But the containers
+# above upload in FINISHING order, so one that stops while the simulator is still recording
+# mirrors the half-written stream -- and mc mirror does not delete (no --remove), so the
+# object survives the unlink that removed the file. Every successful run was leaving a
+# permanent second copy of its samples behind: one measured campaign held 336 of them,
+# 158 MB, one beside every run.npz it had.
+#
+# Safe to drop wholesale rather than by name: nothing reads a .part. roqsim documents the
+# one left by a hard kill as forensics whose signal is the ARCHIVE'S ABSENCE, not the
+# stream's presence, so excluding it loses no evidence -- and a run's own container removes
+# its stream before uploading anyway, which is why this only ever catches another
+# container's snapshot of a file still being written.
+mc mirror --overwrite --exclude '*.part' /out/ "${S3_DEST}/"
 echo "[s3-upload] Mirror complete. Re-tagging executable files..."
 # Re-tag executable files with x-amz-meta-executable metadata
 _exec_count=0
-find /out/ -type f -executable | while IFS= read -r f; do
+find /out/ -type f -executable -not -name '*.part' | while IFS= read -r f; do
     rel="${f#/out/}"
     mc cp --attr "x-amz-meta-executable=yes" "${S3_DEST}/${rel}" "${S3_DEST}/${rel}" --quiet
     _exec_count=$((_exec_count + 1))
@@ -2224,6 +2284,58 @@ def _get_image_revision(image: str) -> str:
     return 'unknown'
 
 
+#: Fields of ``execution.yaml`` that describe the CAMPAIGN's images rather than one execution
+#: of it, and are therefore carried forward when a rewrite has nothing to put in them.
+#:
+#: The distinction is the whole point, so it is a list and not "everything missing": a digest is
+#: a fact about the campaign and stays true, while ``execution_time``, ``runs``, ``cluster_info``
+#: and the ``robovast_*`` provenance describe the run that is writing right now and MUST be
+#: overwritten -- carrying those forward would mix two executions into one record and misreport
+#: which code, and which cluster, produced the campaign.
+_CARRIED_PROVENANCE_FIELDS = ('image', 'images', 'image_revision', 'image_revisions',
+                              'image_build_refs')
+
+
+def _records_nothing(value) -> bool:
+    """Whether a provenance field holds no actual fact.
+
+    ``'unknown'`` counts as nothing, and has to: :func:`_get_image_revision` returns that
+    literal string when it cannot read an image, so a resume writes a *truthy* placeholder over
+    a perfectly good digest. Treating it as a value is exactly the erasure this guards against.
+    """
+    return not value or value == 'unknown'
+
+
+def _carry_forward_provenance(path, execution_data: dict) -> None:
+    """Keep image provenance a rewrite cannot re-derive, instead of blanking it.
+
+    ``execution.yaml`` is rewritten, not appended to, and a rewrite can know strictly less than
+    the one before it: a RESUME starts after its campaign's pods have been reaped, so the
+    per-container digests it would read are simply gone. Emitting those keys only when there is
+    something to put in them then means the rewrite *deletes* what the first run recorded --
+    which is how real campaigns ended up with ``image_revision`` present and ``image_revisions``
+    absent, and therefore not re-runnable.
+
+    Best-effort and never fatal: an unreadable previous record leaves the new one exactly as
+    composed. Only *missing or empty* fields are filled, so a rewrite that does know better
+    always wins.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            previous = yaml.safe_load(handle) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return
+    if not isinstance(previous, dict):
+        return
+    for field in _CARRIED_PROVENANCE_FIELDS:
+        if _records_nothing(execution_data.get(field)) and not _records_nothing(
+                previous.get(field)):
+            execution_data[field] = previous[field]
+            logger.info("Kept %s from the previous execution record: this write had none, "
+                        "and it is a fact about the campaign rather than about this run.",
+                        field)
+
+
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
                           image_digest=None, image_digests=None):
     """Create execution.yaml file with ISO formatted timestamp.
@@ -2306,6 +2418,8 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     cluster_info = _get_cluster_info(context=context)
     if cluster_info is not None:
         execution_data['cluster_info'] = cluster_info
+
+    _carry_forward_provenance(execution_yaml_path, execution_data)
 
     with open(execution_yaml_path, 'w') as f:
         yaml.dump(execution_data, f, default_flow_style=False, sort_keys=False)

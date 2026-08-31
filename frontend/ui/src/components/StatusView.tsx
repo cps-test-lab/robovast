@@ -11,6 +11,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
+  type BudgetItem,
   isTerminalPhase,
   type JobCounts,
   type JobSummary,
@@ -24,8 +25,11 @@ import {
   estimateBatchesEtaSeconds,
   isBatchesBudget,
   estimateEtaSeconds,
+  criterionOp,
   finishedRuns,
+  hasDrawableFloor,
   noResultRuns,
+  ringBudget,
 } from '@/lib/eta'
 import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
@@ -36,7 +40,7 @@ import { NEUTRAL, withAlpha } from '@/colors'
 import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
-import { HoverFacts } from './HoverFacts'
+import { FactRows, HoverFacts } from './HoverFacts'
 import { LogPanel } from './LogPanel'
 import { MeterBar } from './MeterBar'
 
@@ -175,17 +179,26 @@ export function MiniRunMeter({
   )
 }
 
-/** What a SEARCH campaign has done, as a ring, for a collapsed campaign card.
+/** What a SEARCH campaign has spent, as a ring, for a collapsed campaign card.
  *
  *  The run meter beside it answers a smaller question here than it does for a batch campaign: a
  *  search's `runs` counters are scoped to the CURRENT BATCH (see lib/eta.ts), so on a finished
- *  search they describe its last round, not the campaign. Rounds are the thing that is whole, so
- *  the rounds get the part-to-whole shape and the count sits in the hole — the same idiom as the
- *  Details panel's pod ring, at the one size a header row has room for.
+ *  search they describe its last round, not the campaign. The ring is the campaign-scope figure.
  *
- *  With nothing bounding the rounds there is no denominator, and none is invented: a search
- *  bounded by runs or time draws the bare track with its count inside. A filled ring there would
- *  claim a limit the campaign never declared.
+ *  It measures whichever declared budget is CLOSEST TO EXHAUSTING (`ringBudget`), not the `batches`
+ *  row: a `batches` criterion is one way to bound a search, and hanging the ring on it left every
+ *  search bounded by runs, time or evaluations with no arc at all -- an unfilled circle beside a
+ *  campaign 67% through its run budget. Six of the eight shipped `nav_search` examples are in that
+ *  position, and the budget those campaigns declare is deliberate.
+ *
+ *  The hole carries the SHARE as a percent rather than a count, because the unit varies: `120` runs,
+ *  `4` rounds and `1800` seconds cannot share one 18px hole, and a percent is at most four
+ *  characters whatever the criterion is. The counts, their unit and their scope are on the hover.
+ *
+ *  With nothing FRACTIONABLE declared there is still no denominator and none is invented: a search
+ *  bounded only by convergence (`target_objective`, `no_improvement`, `metric`) draws the bare track
+ *  with its round count inside, exactly as before. A filled ring there would claim a limit the
+ *  campaign never declared; a percent there would be a share of nothing.
  */
 function SearchRing({
   campaignId,
@@ -198,9 +211,8 @@ function SearchRing({
 }) {
   const theme = useTheme()
   const done = status.batches_done ?? 0
-  const bound = batchesBudget(status)
-  const limit = bound && bound.limit > 0 ? bound.limit : null
-  const share = limit ? Math.min(1, done / limit) * 100 : 0
+  const bound = ringBudget(status)
+  const share = bound ? bound.share * 100 : 0
   const radius = 15.9155 // circumference 100, so a dash length IS a percentage
   return (
     <Tooltip
@@ -217,7 +229,7 @@ function SearchRing({
             component="circle" cx="20" cy="20" r={radius}
             sx={{ fill: 'none', stroke: theme.palette.action.hover, strokeWidth: 6 }}
           />
-          {limit ? (
+          {bound ? (
             <Box
               component="circle" cx="20" cy="20" r={radius}
               // -90deg so the first round starts at twelve o'clock, where a reader expects it.
@@ -236,43 +248,91 @@ function SearchRing({
           sx={{
             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
             justifyContent: 'center', fontSize: 10, fontWeight: 600,
+            // Tabular figures because this number changes under a fixed-width mark: proportional
+            // digits make the label shift inside the hole as it climbs through 1%..100%.
+            fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {done}
+          {bound ? `${Math.round(share)}%` : done}
         </Typography>
       </Box>
     </Tooltip>
   )
 }
 
-/** The hover behind the ring: the rounds in words, the best objective, and the trajectory.
+/** How a budget row reads on the ring's hover: its unit, its position and its scope.
+ *
+ *  `time` is a duration and every other kind is a count, which is the only per-kind formatting
+ *  here. The SCOPE on `runs` is not decoration: the meter immediately right of the ring shows the
+ *  runs of the CURRENT BATCH (`15 of 24`) while a runs budget counts the campaign's (`120 of 180`),
+ *  so without saying which is which the row shows two run figures that look like they disagree.
+ *  The CLI labels its own bar `Runs (this batch)` for the same reason. */
+function budgetFactValue(b: BudgetItem): string {
+  if (b.current == null) return `— of ${b.limit}`
+  if (b.kind === 'time') return `${formatDuration(b.current)} of ${formatDuration(b.limit)}`
+  return `${b.current} of ${b.limit}`
+}
+
+/** The label a budget row wears on the hover: its own label, plus what the figure is scoped to and
+ *  a mark when it has already fired. `done` is on the wire and is a fact rather than a proximity,
+ *  so it is stated in text -- a colour alone would leave the reader to decode it. */
+function budgetFactLabel(b: BudgetItem): string {
+  const scope = b.kind === 'runs' ? ' (campaign)' : ''
+  return `${b.label}${scope}${b.done ? ' ✓' : ''}`
+}
+
+/** The hover behind the ring: the rounds, what bounds the search, and the trajectory.
  *
  *  A separate component because that is what makes the chart cheap. MUI mounts a tooltip's title
  *  only while it is open, so the `/search/history` request below is issued on the first hover and
  *  never on a page of collapsed cards nobody pointed at. Same query key and staleTime as the open
  *  card's objective section, so hovering a card you later expand costs one request between them.
+ *
+ *  The ROUNDS lead, and they are here unconditionally. They used to live in the ring's hole, which
+ *  now carries the budget share -- and rounds remain the fact the ring exists to surface, since a
+ *  search's run counters describe one batch. Below them, the binding criterion first (it is what
+ *  the arc measures), then every other declared criterion including the `stopping` ones: any of
+ *  them may be what actually ends this campaign, and the arc can only show one.
  */
 function SearchHover({ campaignId, status }: { campaignId: string; status: Status }) {
   const done = status.batches_done ?? 0
-  const bound = batchesBudget(status)
+  const bound = ringBudget(status)
   const history = useQuery({
     queryKey: ['search-history', campaignId, done],
     queryFn: () => robovast.getSearchHistory(campaignId),
     retry: false,
     staleTime: Infinity,
   })
+  // The binding row first, then the rest in declaration order. Compared by identity, not by label:
+  // two criteria can share a label (a metric named after the objective) and dropping the wrong one
+  // would hide a criterion that is about to fire.
+  const others = status.budget.filter((b) => b !== bound?.item)
   return (
     <Box sx={{ width: 260 }}>
-      <Typography sx={{ fontSize: 11, fontWeight: 600, mb: 0.5 }}>
-        {bound ? `round ${bound.current ?? '—'} of ${bound.limit}` : `${done} rounds`}
-      </Typography>
+      <FactRows
+        title="search"
+        facts={[
+          { label: 'rounds', value: String(done) },
+          // A criterion whose position is not yet known keeps its row and shows `— of N`: the
+          // criterion demonstrably exists (the campaign declared it), which is a different fact
+          // from the one HoverFacts drops, where the panel never had the value at all. A
+          // `target_objective` before the first result is exactly this case.
+          ...(bound
+            ? [{ label: budgetFactLabel(bound.item), value: budgetFactValue(bound.item) }]
+            : []),
+          ...others.map((b) => ({ label: budgetFactLabel(b), value: budgetFactValue(b) })),
+          {
+            label: 'best objective',
+            value: status.best_objective != null ? String(status.best_objective) : null,
+          },
+        ]}
+      />
       {!bound ? (
+        // Not a failure and not a warning: a search may legitimately be bounded only by
+        // convergence. It is said because an unfilled ring otherwise reads as "0% spent".
         <Typography sx={{ fontSize: 11, opacity: 0.7, mb: 0.5 }}>
-          nothing bounds the rounds — this search is bounded by runs or time
+          no budget bounds this search — it stops on convergence
         </Typography>
-      ) : null}
-      {status.best_objective != null ? (
-        <Typography sx={{ fontSize: 11, mb: 0.5 }}>best objective: {status.best_objective}</Typography>
       ) : null}
       {history.isLoading ? (
         <Typography sx={{ fontSize: 11, opacity: 0.7 }}>reading the search's rounds…</Typography>
@@ -475,24 +535,40 @@ export function StatusView({
         />
       ) : null}
 
-      {budget.filter((b) => !isBatchesBudget(b)).map((b) => (
+      {budget.filter((b) => !isBatchesBudget(b)).map((b, i) => (
         // Every criterion except the batch counter, which the rounds section above owns.
         // These are measured in units nothing here can turn into a duration, so no estimate.
-        <Box key={b.label}>
+        //
+        // Index in the key, not the label alone: two criteria may share a label (a `metric` named
+        // after the objective), and keying on the label drops one of the rows.
+        <Box key={`${b.label}-${i}`}>
           <Stack direction="row" justifyContent="space-between">
+            {/* The criterion as a SENTENCE -- `coverage >= 0.8` -- not a bare `0.1 / 0.8` pair.
+                A pair silently implies the comparison is `>=`, so a `metric` written `<=` read
+                as 12% of the way to firing when it had already fired. The threshold belongs
+                beside the name it is a threshold ON. */}
             <Typography variant="caption" color="text.secondary">
-              {b.label}
+              {b.label} {criterionOp(b)} {b.limit}
               {b.done ? ' ✓' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {b.current == null ? '—' : b.current} / {b.limit}
+              now {b.current == null ? '—' : b.current}
             </Typography>
           </Stack>
-          <MeterBar
-            height={10}
-            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
-            color="secondary.main"
-          />
+          {/* A bar only where the criterion has a FLOOR to measure from -- see hasDrawableFloor.
+              The resource caps do, and so does `no_improvement`, counting up from zero to its
+              patience. A `metric` and a `target_objective` do not: knowing a metric fires at
+              `<= 0.8` says nothing about where it started, and an objective's initial value is
+              whatever the first batch measured. Those two carry the comparison in the label
+              instead, which is the honest rendering -- publishing `op` made the row readable,
+              not the fraction computable. */}
+          {hasDrawableFloor(b) ? (
+            <MeterBar
+              height={10}
+              fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
+              color="secondary.main"
+            />
+          ) : null}
         </Box>
       ))}
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
+import { batchesBudget, budgetPosition, campaignEtaSeconds, criterionOp, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, hasDrawableFloor, isBatchesBudget, isFractionableBudget, noResultRuns, ringBudget } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -212,5 +212,160 @@ describe('campaignEtaSeconds', () => {
     expect(campaignEtaSeconds(status({ completed: 0 }, { mode: 'batch' }), undefined, false)).toBeNull()
     expect(campaignEtaSeconds(status({ completed: 20 }, { mode: 'batch' }), undefined, true)).toBeNull()
     expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, true)).toBeNull()
+  })
+})
+
+const crit = (kind: string, current: number | null, limit: number, over: Partial<BudgetItem> = {}) =>
+  ({ kind, label: kind, current, limit, done: false, ...over }) as BudgetItem
+
+// What the rounds ring measures. The whole point is that it is NOT the `batches` row: hanging it
+// there left every search bounded by runs, time or evaluations with an unfilled circle.
+describe('ringBudget', () => {
+  const of = (...budget: BudgetItem[]) => ringBudget(status({}, { budget }))
+
+  it('draws each of the four budget kinds', () => {
+    // The `search.budget` vocabulary in full — these are monotone resource caps, so `current/limit`
+    // is a share of something.
+    expect(of(crit('runs', 120, 180))?.share).toBeCloseTo(120 / 180)
+    expect(of(crit('batches', 4, 10))?.share).toBeCloseTo(0.4)
+    expect(of(crit('evaluations', 40, 200))?.share).toBeCloseTo(0.2)
+    expect(of(crit('time', 1800, 3600))?.share).toBeCloseTo(0.5)
+  })
+
+  it('refuses every stopping kind, at any position', () => {
+    // target_objective: `current` is the objective, so the quotient is not a share and is
+    // direction-dependent. A minimize search on a negative objective makes that obvious.
+    expect(of(crit('target_objective', -1.42, -2))).toBeNull()
+    // no_improvement: resets to 0 on an improvement, so an arc driven by it runs backwards.
+    expect(of(crit('no_improvement', 2, 3, { label: 'stale_batches' }))).toBeNull()
+    // metric: the `op` deciding which side satisfies is not on the wire. This row is SATISFIED and
+    // would have drawn as 12%.
+    expect(of(crit('metric', 0.1, 0.8, { label: 'coverage' }))).toBeNull()
+  })
+
+  it('picks the criterion closest to exhausting, since that is the one that fires', () => {
+    // 5/6 batches beats 120/180 runs: the campaign ends on the batches row, and the runs row
+    // describes a moment it will never reach.
+    expect(of(crit('runs', 120, 180), crit('batches', 5, 6))?.item.kind).toBe('batches')
+    expect(of(crit('runs', 170, 180), crit('batches', 1, 6))?.item.kind).toBe('runs')
+  })
+
+  it('ignores a stopping row even when it would be the largest fraction', () => {
+    // The max is taken over the fractionable rows only — otherwise a satisfied metric at 40/1
+    // would win and drive the arc.
+    expect(of(crit('runs', 120, 180), crit('metric', 40, 1))?.item.kind).toBe('runs')
+  })
+
+  it('is null when only stopping criteria bound the search', () => {
+    // Legal: validation requires one criterion across budget AND stopping together. The ring draws
+    // its bare track rather than inventing a denominator.
+    expect(of(crit('no_improvement', 1, 3), crit('target_objective', 0.4, 0.9))).toBeNull()
+    expect(ringBudget(status({}, { budget: [] }))).toBeNull()
+  })
+
+  it('clamps past-cap counts to 1', () => {
+    // A `runs` budget counts what each batch ASKS FOR, before it runs, so the last batch can carry
+    // the count past the cap. 103% of a ring is a dash array that wraps.
+    expect(of(crit('runs', 184, 180))?.share).toBe(1)
+  })
+
+  it('skips a row with no position yet rather than drawing it at zero', () => {
+    // NaN reaches the wire as null (see controller._budget_item). Drawing 0% would claim the
+    // campaign has spent nothing, which is a different statement from "not known yet".
+    expect(of(crit('runs', null, 180))).toBeNull()
+    expect(of(crit('runs', null, 180), crit('batches', 2, 10))?.item.kind).toBe('batches')
+  })
+
+  it('reads a pre-kind status by label, for the two kinds whose label IS the type', () => {
+    // `kind` is younger than the campaigns that have to render, and a finished campaign replays the
+    // budget its controller wrote at the time — so these report null forever.
+    expect(isFractionableBudget(crit('batches', 4, 10, { kind: null }))).toBe(true)
+    expect(isFractionableBudget(crit('time', 60, 600, { kind: null }))).toBe(true)
+    // A legacy `runs` row is indistinguishable from a user metric named `runs`, so it is refused
+    // rather than guessed at — the same trade isBatchesBudget makes.
+    expect(isFractionableBudget(crit('runs', 120, 180, { kind: null }))).toBe(false)
+    expect(isFractionableBudget(crit('metric', 2, 3, { kind: null, label: 'coverage' }))).toBe(false)
+  })
+})
+
+// A `time` budget's `current` is published once per round, so the row is derived forward from the
+// search's origin. See budgetPosition / budget_positions -- the origin is published, never the
+// value, because a value rewritten from wall-clock would make the controller's progress signal
+// advance forever and no time-budgeted search could be called stalled again.
+describe('budgetPosition', () => {
+  const timeRow = (current: number, limit = 3600) => crit('time', current, limit)
+
+  it('derives elapsed from the search origin, ignoring the stale published value', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 1800, budget: [] })
+    // Published as 600 at the last batch boundary; 1800s have actually passed.
+    expect(budgetPosition(timeRow(600), st).current).toBe(1800)
+  })
+
+  it('clamps to the limit', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 99_999, budget: [] })
+    // A search stops when the criterion fires, so elapsed past the cap is time it never spent.
+    expect(budgetPosition(timeRow(600), st).current).toBe(3600)
+  })
+
+  it('leaves every other kind alone', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 1800, budget: [] })
+    // Counts are written when they change and are already current; only wall-clock is derived.
+    expect(budgetPosition(crit('runs', 120, 180), st).current).toBe(120)
+    expect(budgetPosition(crit('batches', 4, 10), st).current).toBe(4)
+  })
+
+  it('keeps the published value when no origin was ever written', () => {
+    freeze()
+    // A batch campaign, or a status recovered from disk. Stale by at most one round beats
+    // derived from an origin nobody published.
+    const st = status({}, { budget: [] })
+    expect(budgetPosition(timeRow(600), st).current).toBe(600)
+  })
+
+  it('feeds the ring, so a time-budgeted search fills live', () => {
+    freeze()
+    const st = status({}, {
+      search_since: NOW / 1000 - 900,
+      budget: [timeRow(0)],   // never republished since the search began
+    })
+    expect(ringBudget(st)?.share).toBeCloseTo(0.25)
+  })
+})
+
+// Publishing `op` made the criterion ROW readable; it did not make the fraction computable.
+// Both halves matter, so both are asserted.
+describe('criterionOp / hasDrawableFloor', () => {
+  it('falls back to >= for a row written before op existed', () => {
+    // An older controller's status, or a finished campaign replaying its outcome.json. `>=` is
+    // right for five of the seven kinds and is what every reader assumed before the field, so
+    // the fallback restores the old behaviour rather than guessing.
+    expect(criterionOp({ ...crit('metric', 1, 2), op: null } as BudgetItem)).toBe('>=')
+  })
+
+  it('reports the published comparison', () => {
+    expect(criterionOp({ ...crit('metric', 0.1, 0.8), op: '<=' } as BudgetItem)).toBe('<=')
+    expect(criterionOp({ ...crit('target_objective', -1.42, -2), op: '<=' } as BudgetItem)).toBe('<=')
+  })
+
+  it('draws a bar for the caps and for no_improvement, which counts up from zero', () => {
+    // `stale_batches` 2 of 3 IS a fraction: it has a real floor. The ring still refuses it,
+    // because it resets on an improvement and a ring running backwards reads as a bug -- a
+    // static row claiming "2 of 3 strikes" survives the reset.
+    expect(hasDrawableFloor(crit('runs', 120, 180))).toBe(true)
+    expect(hasDrawableFloor(crit('no_improvement', 2, 3, { label: 'stale_batches' }))).toBe(true)
+    expect(ringBudget(status({}, {
+      budget: [crit('no_improvement', 2, 3, { label: 'stale_batches' })],
+    }))).toBeNull()
+  })
+
+  it('refuses a bar where there is no origin to measure from, op or not', () => {
+    // Knowing a metric fires at `<= 0.8` says nothing about where it started; an objective's
+    // initial value is whatever the first batch happened to measure.
+    expect(hasDrawableFloor({ ...crit('metric', 0.1, 0.8), op: '<=' } as BudgetItem)).toBe(false)
+    expect(hasDrawableFloor({ ...crit('metric', 0.1, 0.8), op: '>=' } as BudgetItem)).toBe(false)
+    expect(hasDrawableFloor({ ...crit('target_objective', -1.42, -2), op: '<=' } as BudgetItem)).toBe(false)
   })
 })

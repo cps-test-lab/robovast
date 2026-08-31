@@ -35,6 +35,7 @@ const DEFAULT_NAV: Nav = {
   campaignId: '',
   configCampaignId: '',
   shareImport: '',
+  openCampaign: '',
   sel: CAMPAIGN_SEL,
   tab: '',
 }
@@ -54,6 +55,7 @@ describe('navFromHash', () => {
       campaignId: '',
       configCampaignId: '',
       shareImport: '',
+      openCampaign: '',
       sel: CAMPAIGN_SEL,
       tab: '',
     })
@@ -87,6 +89,7 @@ describe('navFromHash', () => {
       campaignId: '',
       configCampaignId: '',
       shareImport: '',
+      openCampaign: '',
       sel: CAMPAIGN_SEL,
       tab: '',
     })
@@ -100,6 +103,7 @@ describe('navFromHash', () => {
       campaignId: 'nav-2026-08-12',
       configCampaignId: '',
       shareImport: '',
+      openCampaign: '',
     })
     // An unknown view falls back to the topic's first, rather than rejecting the hash.
     expect(at('#/results/nope').viewId).toBe('explorer')
@@ -167,6 +171,7 @@ describe('hashFor — what each view is allowed to spell', () => {
     tab,
     configCampaignId: '',
     shareImport: '',
+    openCampaign: '',
   })
 
   it('gives the Explorer the whole selection and its tab', () => {
@@ -235,6 +240,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     campaignId: 'c1',
     configCampaignId: '',
     shareImport: '',
+    openCampaign: '',
     sel: CAMPAIGN_SEL,
     tab: '',
   }
@@ -244,6 +250,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     campaignId: '',
     configCampaignId: 'c1',
     shareImport: '',
+    openCampaign: '',
     sel: CAMPAIGN_SEL,
     tab: '',
   }
@@ -292,6 +299,37 @@ describe('nextNav — which campaign survives a navigation', () => {
       campaignId: '',
       configCampaignId: '',
       shareImport: '',
+      openCampaign: '',
     })
+  })
+})
+
+describe('#/execution?campaign=', () => {
+  it('carries which campaign the view should open', () => {
+    const nav = at('#/execution?campaign=nav-2026-08-30-1916')
+    expect(nav.topicId).toBe('execution')
+    expect(nav.openCampaign).toBe('nav-2026-08-30-1916')
+  })
+
+  it('round-trips through hashFor', () => {
+    const nav = at('#/execution?campaign=a%2Fb')
+    expect(nav.openCampaign).toBe('a/b')
+    expect(at(`#${hashFor(nav)}`).openCampaign).toBe('a/b')
+  })
+
+  it('is refused when addressed at another page', () => {
+    // Same rule as `import`, for the same reason: every page stays mounted under KeepAlive, so a
+    // request one page would act on must not be readable from another page's address.
+    expect(at('#/config?campaign=x').openCampaign).toBe('')
+  })
+
+  it('is dropped by a sidebar click, because that means "the list"', () => {
+    const nav = at('#/execution?campaign=x')
+    expect(nextNav(nav, TOPICS, 'execution').openCampaign).toBe('')
+  })
+
+  it('does not compete with an import request in one link', () => {
+    const nav = { ...DEFAULT_NAV, topicId: 'execution', shareImport: 's', openCampaign: 'c' }
+    expect(hashFor(nav)).toBe('/execution?import=s')
   })
 })

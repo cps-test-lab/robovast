@@ -670,10 +670,13 @@ class LocalTransport(RobovastInterface):
         :func:`~robovast.common.results_root.local_results_root`, shared with the MCP results
         reader so the two cannot disagree about where a campaign is.
 
-        Pure path resolver — the dir is materialized lazily by ``CampaignStore``
-        on first run, so simply asking where campaigns live (e.g. from
-        :class:`ClusterService`, whose results live in the object store) never
-        creates a stray local directory.
+        Pure path resolver — the dir is materialized lazily by ``CampaignStore`` on first
+        run, so simply asking where campaigns live never creates a stray local directory.
+
+        :class:`ClusterService` uses this too. Its campaigns' *durable* home is the object
+        store, but the ones it is driving have a working root here all the same, and it is
+        not a cache: a batch downloads its results into it, extraction reads it through a
+        path, and postprocessing derives ``data.db`` from it.
         """
         from robovast.common.results_root import local_results_root
         if self._results_dir:
@@ -5131,7 +5134,9 @@ class LocalTransport(RobovastInterface):
             # From the same snapshot as the phase, so a listing cannot show a campaign as
             # finished-and-fine while its Status says postprocessing failed.
             postprocessing_error=snap.postprocessing_error or "",
-            share_error=snap.share_error or "")
+            share_error=snap.share_error or "",
+            # First line only -- see the field's note. Free here: `snap` is already in hand.
+            error=(snap.error or "").strip().splitlines()[0] if snap.error else "")
         if key is not None:
             self._summary_cache[cid] = (key, summary)
         return summary

@@ -613,7 +613,7 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
 
     Each **install group** becomes one ``RUN``, so pip resolves the group's specs
     together (see :attr:`BuildSpec.install_groups`). The base image supplies the
-    ROS/nav2 scaffolding *and* ``/etc/robovast_compat_version``, so the result stays
+    ROS/nav2 scaffolding *and* the ``org.robovast.compat-version`` label, so the result stays
     compat-valid — we never rewrite that marker.
 
     A robovast base image ends as an unprivileged user, so the build steps run as root

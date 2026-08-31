@@ -107,21 +107,31 @@ jobs:
       # builds or, run beside them, let a mismatched image publish anyway.
       - name: Validate compat version consistency
         run: |
-          # Three places now state the protocol version, and a reader may consult any of
-          # them: the host's max, the legacy file, and the label a remote inspect can read
-          # without pulling. Two agreeing while the third drifts is the failure that would
-          # make a pre-flight answer differently depending on which it happened to read.
+          # The host's max and the label every image carries. One marker now, but two images
+          # write it -- the ROS base and the controller/service image -- and the controller's
+          # was unguarded until it became that image's only marker.
           PYTHON_VER=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
           PYTHON_MIN=$(grep -oP '^MIN_IMAGE_COMPAT\s*=\s*\K\d+' src/robovast/common/execution.py)
-          DOCKER_FILE=$(grep -oP 'echo "\K\d+(?=" > /etc/robovast_compat_version)' container/robovast/Dockerfile)
-          DOCKER_LABEL=$(grep -oP 'org\.robovast\.compat-version="\K\d+' container/robovast/Dockerfile)
-          echo "Python COMPAT_VERSION: $PYTHON_VER  (min supported: $PYTHON_MIN)"
-          echo "Dockerfile /etc file:  $DOCKER_FILE"
-          echo "Dockerfile label:      $DOCKER_LABEL"
-          if [ "$PYTHON_VER" != "$DOCKER_FILE" ] || [ "$PYTHON_VER" != "$DOCKER_LABEL" ]; then
-            echo "::error::Compat version mismatch! Python=$PYTHON_VER, File=$DOCKER_FILE, Label=$DOCKER_LABEL"
-            exit 1
-          fi
+          BASE_LABEL=$(grep -oP 'org\.robovast\.compat-version="\K\d+' container/robovast/Dockerfile)
+          CTRL_LABEL=$(grep -oP 'org\.robovast\.compat-version="\K\d+' container/controller/Dockerfile)
+          echo "Python COMPAT_VERSION:   $PYTHON_VER  (min supported: $PYTHON_MIN)"
+          echo "Base image label:        $BASE_LABEL"
+          echo "Controller image label:  $CTRL_LABEL"
+          # Named individually rather than reported as one mismatch: an empty value means the
+          # LABEL line is gone or was reworded, which reads nothing like a version disagreement
+          # and is the more likely way this breaks.
+          for pair in "base:$BASE_LABEL:container/robovast/Dockerfile" \
+                      "controller:$CTRL_LABEL:container/controller/Dockerfile"; do
+            name=${pair%%:*}; rest=${pair#*:}; value=${rest%%:*}; file=${rest#*:}
+            if [ -z "$value" ]; then
+              echo "::error::No org.robovast.compat-version label found in $file ($name image)"
+              exit 1
+            fi
+            if [ "$value" != "$PYTHON_VER" ]; then
+              echo "::error::$name image label ($value) != COMPAT_VERSION ($PYTHON_VER) in $file"
+              exit 1
+            fi
+          done
           # The window has to be a real range, and the right way round.
           if [ -z "$PYTHON_MIN" ] || [ "$PYTHON_MIN" -gt "$PYTHON_VER" ]; then
             echo "::error::MIN_IMAGE_COMPAT ($PYTHON_MIN) must be set and <= COMPAT_VERSION ($PYTHON_VER)"
@@ -286,8 +296,8 @@ jobs:
   # can be built FROM the tag that job just pushed -- built against a floating :latest the
   # two could describe different framework code while looking like a matched pair.
   #
-  # No compat-version check of its own: it inherits /etc/robovast_compat_version from the
-  # base, so a second check could only ever disagree with the first. The integration test
+  # No compat-version check of its own: it inherits the org.robovast.compat-version label from
+  # the base, so a second check could only ever disagree with the first. The integration test
   # asserts the inheritance instead.
   # The stepped-simulator image: the base plus roqsim. Same per-architecture shape as the base
   # above and for the same reason -- see build-base. It could not be built for arm64 while its

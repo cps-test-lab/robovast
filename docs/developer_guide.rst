@@ -261,8 +261,8 @@ How it works
 The host declares a **window** of protocol versions it can drive:
 ``MIN_IMAGE_COMPAT .. COMPAT_VERSION``, both in
 ``src/robovast/common/execution.py``.  ``COMPAT_VERSION`` is baked into the
-container image twice — as the label ``org.robovast.compat-version`` and, for
-backwards compatibility, as the file ``/etc/robovast_compat_version``.
+container images as the label ``org.robovast.compat-version`` — one marker, and
+the only one.
 
 A window rather than a single value, because an exact-match comparison orphans
 every image already published on the first bump: a campaign whose results pin an
@@ -270,16 +270,43 @@ image by digest could never be re-run again — even with those exact bytes stil
 the registry.  Bumping the maximum is harmless; **dropping** support is a separate,
 deliberate act of raising the minimum.
 
-Readers prefer the label, because ``docker inspect`` reads it without starting a
-container and ``docker buildx imagetools inspect`` reads it from a *remote* image
-without pulling.  The file is still consulted as a fallback: images built before
-the label carry only the file, and those are exactly the archived campaigns worth
-re-running.
+A label, and read the standard way: ``docker inspect`` gets it without starting a
+container, and for an image this machine does not have, the registry serves it out
+of the config blob without pulling a layer.  That second reading is the one that
+matters — the question is usually asked *about* an image the asker does not have,
+by a pre-flight on a year-old campaign.
+
+There used to be a second marker, the file ``/etc/robovast_compat_version``, read
+by starting a container to ``cat`` one integer.  It could not be read remotely at
+all, and reading it cost a container start.  It is gone.
 
 - **Local execution**: the generated ``run.sh`` checks before ``docker-compose up``.
-- **Cluster execution**: a Kubernetes init container checks the file — a pod has no
-  daemon socket, so the label is not reachable from inside the image.
+- **Cluster execution**: the **submitter** checks, host-side, immediately after the
+  campaign's refs are pinned to digests and before any manifest is written — so the
+  verdict is about the exact bytes the pods will run, and a refusal creates no pods.
+  This used to be an init container running *inside* the image; a workload inspecting
+  its own image is not how admission is decided anywhere else, and it could only
+  report a mismatch by failing one init container per job in the batch.
 - **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
+
+The cluster check **fails closed**: if the registry will not say what protocol the
+image speaks, the campaign is refused rather than started.  Pinning, right beside
+it, does the opposite and is right to — pinning is an optimisation, and not applying
+it leaves exactly what would have run anyway, whereas a compat check that could not
+read the image has established nothing.  Set
+``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1`` to run anyway; that is the right move only
+when the registry is unreachable and you know the image.
+
+Only the campaign's own image is checked.  The sidecar sets no label and a
+system-under-test image is not a robovast image at all, so an absent label on those
+means "not applicable" rather than "unreadable" — failing closed on them would
+refuse every campaign that has a SUT.
+
+An image built before the label existed now reports nothing and is refused.  Those
+images predate protocol 2, which is also ``MIN_IMAGE_COMPAT``, so a refusal is the
+right answer for them regardless — but the message says what to do about it
+(rebuild from the recorded revision, or re-tag with the label) rather than only
+that it could not tell.
 
 Outside the window, execution fails immediately, and the message differs by
 direction because the fixes are not interchangeable: an image **older** than the
@@ -310,12 +337,36 @@ How to bump the version
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 1. Increment ``COMPAT_VERSION`` in ``src/robovast/common/execution.py``
-2. Update the ``LABEL`` and ``RUN echo`` lines in
-   ``container/robovast/Dockerfile`` to match
-3. Rebuild and push the container image
+2. Rebuild and push the container images
 
-The CI workflow (``image.yml``) validates that all three values are in sync
-before building the image.
+That is the whole procedure, because there is only one copy. The images take the
+value as a build arg that ``container/image_stamp.sh`` derives from that constant
+— the same way they take the git revision and the build date, and for the same
+reason: a constant copied by hand into each Dockerfile drifts, which is why it
+used to need a CI gate comparing the copies. ``image_stamp.sh`` refuses to build
+if it cannot read the constant, rather than producing an image that carries no
+protocol at all.
+
+``image.yml`` still guards the shape: each Dockerfile must declare
+``ARG ROBOVAST_COMPAT_VERSION`` and label from it, so a literal cannot creep back.
+
+**Remembering to bump is the part nothing could check** — the version is a claim,
+and it fails by being forgotten. ``make check-compat-version`` (run in CI on every
+pull request, beside the config-version check) compares the change against the
+files that define the contract — the two Dockerfiles, ``entrypoint.sh``,
+``secondary_entrypoint.sh``, ``ros2_exec.sh`` — and fails if one of them moved and
+the version did not.
+
+It is a *prompt*, not a proof: it cannot tell a contract change from a comment
+edit in the same file, and it cannot see a change made somewhere it is not
+looking. When nothing the host relies on actually moved, say so in the commit
+message and it passes::
+
+    Compat-Unchanged: moved a comment; nothing the container must provide changed
+
+A trailer rather than a flag, so the answer lands in history next to the change it
+is about. If it turns out to be used on most changes, the check is crying wolf and
+the path list is too broad — that ratio is the signal for whether it earns itself.
 
 
 Extending RoboVAST

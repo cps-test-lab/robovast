@@ -56,7 +56,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, SearchHistory,
                                         ServiceConfig, ServiceSetting,
-                                        StagedArchive, Status,
+                                        StagedArchive, StatusResponse,
+                                        status_response,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse, VersionInfo,
@@ -1093,9 +1094,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             _sse_campaign_list(request),
             media_type="text/event-stream", headers=_sse_headers)
 
-    @app.get(Routes.campaign_status("{campaign_id}"), response_model=Status, tags=["campaigns"])
-    def get_status(campaign_id: str) -> Status:
-        return _guard(lambda: impl.get_status(campaign_id))
+    @app.get(Routes.campaign_status("{campaign_id}"), response_model=StatusResponse,
+             tags=["campaigns"])
+    def get_status(campaign_id: str) -> StatusResponse:
+        # Attached here rather than derived by each caller, so `stall_report`'s gates are the
+        # only ones: from `progress_since` and the deadline alone a caller has to reproduce
+        # them, and any gate it omits becomes a stall the contract itself refuses to assert.
+        return status_response(_guard(lambda: impl.get_status(campaign_id)))
 
     @app.get(Routes.campaign_search_history("{campaign_id}"), response_model=SearchHistory,
              tags=["campaigns"])

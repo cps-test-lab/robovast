@@ -248,8 +248,9 @@ image without pulling it:
    outside the build, so without the labels the only way to answer is to read the Dockerfile at
    the recorded commit — and hope the ref was not overridden at build time.
 ``org.robovast.compat-version``
-   the host↔container protocol version. Also written as
-   ``/etc/robovast_compat_version`` for images built before the label existed.
+   the host↔container protocol version — the only marker for it. A file inside the image once
+   carried the same value; it could not be read without starting a container, and could not be
+   read remotely at all, which is the case that matters.
 
 **The build lock** — ``/etc/robovast/build-manifest/``, holding ``apt.txt`` (every package with
 its version), ``pip.txt`` (``pip freeze`` output) and, when a spec named a moving git ref,

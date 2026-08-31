@@ -49,6 +49,13 @@ makes true -- a seed is set, and the strategy does not declare itself unresumabl
 checked before the campaign is re-launched rather than discovered halfway through its
 second half.
 
+**Only the control plane is fetched**, because all of this happens inside
+``ClusterService.__init__`` -- before ``vast serve`` binds its port, so the service is
+unreachable for the whole of it. Re-entering a campaign needs its launch record, its frozen
+config, its store and its per-run verdicts; the artifacts are gigabytes and are not read until
+postprocessing, which fetches them itself through
+``ExecutionBackend.ensure_campaign_root_complete``. See :func:`_is_control_plane`.
+
 **Refusals are left alone rather than failed.** A campaign this module will not pick up
 keeps whatever ``reconstruct_status_from_disk`` says about it, which is ``crashed``: the
 honest answer for a campaign nothing is driving. Its data stays recoverable by hand
@@ -246,13 +253,41 @@ def resume_all(service) -> dict:
     return outcomes
 
 
+#: Keys a campaign must have locally before it can be re-entered, relative to its prefix.
+#:
+#: The launch record and the frozen ``_config/`` are what :func:`plan_for` reads; ``campaign.db``
+#: is the store a resumed search replays its ask/tell sequence out of
+#: (``search.history.recorded_batches``); ``_execution/`` carries the campaign's own account of
+#: itself; and a run's ``test.xml`` is the verdict ``BatchJobRunner._jobs_already_done`` adopts
+#: finished jobs on. Nothing else is read before postprocessing.
+_CONTROL_PLANE_PREFIXES = ("_config/", "_execution/")
+_CONTROL_PLANE_FILES = ("launch.yaml", "campaign.db")
+
+
+def _is_control_plane(rel: str) -> bool:
+    """Whether the object at *rel* is needed to re-enter a campaign (not to analyse it)."""
+    return (rel.startswith(_CONTROL_PLANE_PREFIXES)
+            or rel in _CONTROL_PLANE_FILES
+            or rel.endswith("/test.xml"))
+
+
 def _resume_one(service, campaign_id: str) -> "str | None":
     """Restore one campaign's root and re-launch it; return a refusal, or ``None``."""
     campaign_root = service._campaign_dir(campaign_id)  # noqa: SLF001
-    # The whole prefix, into the driver's own root rather than the scratch cache: from here
-    # the controller and the batch runner read it as the campaign's working directory, which
-    # is what lets them adopt the finished jobs instead of re-running them.
-    service.fetch_campaign(campaign_id, dest=campaign_root)
+    # The control plane only, into the driver's own root rather than the scratch cache: from
+    # here the controller and the batch runner read it as the campaign's working directory,
+    # which is what lets them adopt the finished jobs instead of re-running them.
+    #
+    # NOT the whole prefix, which is what this used to take. Resume runs inside
+    # `ClusterService.__init__`, before `vast serve` binds its port, so every byte fetched here
+    # is a byte the service spends being unreachable -- and a campaign's artifacts run to
+    # gigabytes against a few hundred kilobytes of control plane. A service with live campaigns
+    # could not finish before the liveness probe killed it, and each attempt started over.
+    #
+    # The rest is fetched by `ExecutionBackend.ensure_campaign_root_complete` at the point it is
+    # first needed, which is postprocessing. Between here and there the root is incomplete on
+    # purpose; see that hook for why nothing in between reads it.
+    service.fetch_campaign(campaign_id, dest=campaign_root, include=_is_control_plane)
     target, request, refusal = plan_for(service, campaign_id, Path(campaign_root))
     if refusal is not None:
         logger.info("Not resuming campaign %s: %s", campaign_id, refusal)
