@@ -156,3 +156,74 @@ def test_max_speed_is_computed_from_the_measurement_clock_not_the_arrival_clock(
     arrivals = [_arrival(t) for (t, *_rest) in _POSES]
     gaps = {round(b - a, 6) for a, b in itertools.pairwise(arrivals)}
     assert gaps == {0.0, 1.5}, "the fixture must actually exhibit the aliasing it is testing for"
+
+
+#: One cell per class, by the map server's rule with the usual thresholds
+#: (``occupied_thresh`` 0.65, ``free_thresh`` 0.196): occupancy is ``1 - pixel/255``, so
+#: 254 is free, 0 and 60 are occupied, and 205 and 200 fall in the unknown band. 60 and
+#: 200 are the ones that separate the two readings — against the *shade* instead of the
+#: occupancy, 60 reads unknown and 200 reads free.
+_MAP_PIXELS = [254, 205, 0, 60, 200]
+_EXPECTED_CELLS = {"occupied": 2, "free": 1, "unknown": 2}
+
+
+@pytest.fixture
+def map_campaign(tmp_path, monkeypatch):
+    """A campaign whose configuration carries a one-row occupancy map."""
+    pytest.importorskip("PIL")
+    from PIL import Image as PILImage
+
+    monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
+    cdir = tmp_path / "results" / _CAMPAIGN
+    maps = cdir / "cfg-map" / "_config" / "maps"
+    maps.mkdir(parents=True)
+    image = PILImage.new("L", (len(_MAP_PIXELS), 1))
+    image.putdata(_MAP_PIXELS)
+    image.save(maps / "room.pgm")
+    (maps / "room.yaml").write_text(
+        "image: room.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n"
+        "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n")
+    monkeypatch.setattr(service_access, "service_client", lambda: None)
+    return str(cdir)
+
+
+def test_occupancy_classifies_cells_by_occupancy_not_by_shade(map_campaign):
+    """The thresholds belong to the occupancy the map server derives, not to the stored
+    shade. Read against the shade, the two are swapped: a nearly-black cell counts as
+    unknown and an unknown-grey one as free, while the totals still add up — so nothing
+    downstream can tell the counts are wrong."""
+    result = nav.nav_get_map_info(_CAMPAIGN, "cfg-map", occupancy=True)
+    assert (result["occupied_cells"], result["free_cells"], result["unknown_cells"]) == (
+        _EXPECTED_CELLS["occupied"], _EXPECTED_CELLS["free"], _EXPECTED_CELLS["unknown"])
+    assert result["total_cells"] == len(_MAP_PIXELS)
+    assert result["occupied_ratio"] == pytest.approx(2 / len(_MAP_PIXELS))
+
+
+def test_negate_inverts_which_cells_are_occupied(map_campaign, tmp_path):
+    """``negate: 1`` says the raster stores occupancy directly. Reporting the field while
+    ignoring it answers about a map nobody has."""
+    maps = tmp_path / "results" / _CAMPAIGN / "cfg-map" / "_config" / "maps"
+    (maps / "room.yaml").write_text(
+        "image: room.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n"
+        "negate: 1\noccupied_thresh: 0.65\nfree_thresh: 0.196\n")
+    result = nav.nav_get_map_info(_CAMPAIGN, "cfg-map", occupancy=True)
+    # The same pixels read as occupancy directly: 254/205/200 are occupied, 0 is free,
+    # and 60 lands in the unknown band -- the mirror image of the reading above.
+    assert (result["occupied_cells"], result["free_cells"], result["unknown_cells"]) == (
+        3, 1, 1)
+
+
+def test_a_palette_image_counts_cells_not_channels(map_campaign, tmp_path):
+    """A palette or RGB raster's raw array is indices or three planes, so counting it
+    unconverted reports a cell count that is not the map's."""
+    from PIL import Image as PILImage
+    maps = tmp_path / "results" / _CAMPAIGN / "cfg-map" / "_config" / "maps"
+    rgb = PILImage.new("RGB", (len(_MAP_PIXELS), 1))
+    rgb.putdata([(p, p, p) for p in _MAP_PIXELS])
+    rgb.save(maps / "room.png")
+    (maps / "room.yaml").write_text(
+        "image: room.png\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n"
+        "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n")
+    result = nav.nav_get_map_info(_CAMPAIGN, "cfg-map", occupancy=True)
+    assert result["total_cells"] == len(_MAP_PIXELS)
+    assert result["occupied_cells"] == _EXPECTED_CELLS["occupied"]
