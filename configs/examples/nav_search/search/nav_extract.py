@@ -32,19 +32,35 @@ barrier. So the objective is the STL-style minimum over one margin per failure m
 Continuous, signed, negative means failed, and it degrades gracefully: a run that merely
 *nearly* collided scores just above zero rather than jumping to "passed".
 
-**Each margin is divided by a SCALE, never by its own threshold**, and that distinction is
-the whole design. A threshold answers *did it fail*; a scale answers *by how much*.
-Dividing by the threshold conflates them, and it plateaus: with the 0.05 m contact
-threshold as denominator the clearance margin carried 12x the sensitivity of the goal
-margin, so ``min()`` returned whichever margin had the tightest denominator rather than
-whichever failure was nearest. Measured on a 48-cell Halton search, the clearance term
-decided 31 of 48 cells and 32 of 48 sat on the floor -- a worse cliff than the
-``failure_rate`` this objective was built to replace (30 of 48). The ``time`` margin was
-the only one already divided by its scale, and the only one that never needed a floor.
+**There is no floor, and that is what keeps the values distinct.** A margin below -1 means
+what it says -- missed by more than the whole scale -- and stays ordered against its
+neighbours, which is what lets an adversarial search keep descending after its first failure
+instead of going blind. Clamping is what destroys that: every cell past the clamp becomes the
+same number.
 
-So there is no floor. A margin below -1 means what it says -- missed by more than the whole
-scale -- and stays ordered against its neighbours, which is what lets an adversarial search
-keep descending after it has found its first failure instead of going blind.
+That is worth stating precisely, because an earlier version of this docstring credited the
+wrong change. It reported a plateau under threshold denominators and a cure under scale
+denominators -- but that comparison moved two things at once, the denominator AND a floor at
+-1, and it was the floor doing the work. Measured on 16 cells x 15 repeats, holding everything
+else fixed:
+
+===================================================  ==========  =======
+scheme                                               distinct    <= -1
+===================================================  ==========  =======
+thresholds as denominators, floor at -1                   2/16     15/16
+thresholds as denominators, no floor                     16/16     15/16
+scales as denominators, no floor                         16/16      0/16
+===================================================  ==========  =======
+
+Removing the clamp alone restores every distinct value with the denominators unchanged. So a
+future change here should not expect the denominator to protect it from a plateau -- only the
+absence of a clamp does that.
+
+**Each margin is still divided by a SCALE rather than its own threshold**, for a different
+and equally load-bearing reason: a threshold answers *did it fail*, a scale answers *by how
+much*, and the three margins have to be able to reach comparable depths or the deepest one
+decides every score on its own. That is what the next paragraph is about, and it is why the
+third row above sits in a usable range where the second does not.
 
 **Both margins must be able to reach the same depth**, or the deeper one decides every
 score. A refusal leaves the robot the whole traverse short, so its goal margin reaches
@@ -139,17 +155,14 @@ class NavExtract(Extractor):
         # threshold, and confusing the two is what made two earlier versions of this
         # objective plateau.
         #
-        # A threshold answers *did it fail*; a scale answers *by how much*, and dividing by
-        # the threshold conflates them. With contact = 0.05 m as the denominator the
-        # clearance margin carries 20 per metre while the goal margin carries 1.67 -- 12x --
-        # so `min()` returned whichever margin had the tightest denominator rather than
-        # whichever failure was closest. Measured on a 48-cell Halton search: the clearance
-        # term decided the score in 31 of 48 cells, and 32 of 48 landed on the floor.
+        # A threshold answers *did it fail*; a scale answers *by how much*, and a margin
+        # divided by its threshold cannot reach the depth one divided by a scale can. With
+        # contact = 0.05 m as the denominator the clearance margin carries 20 per metre
+        # against the goal margin's 1.67, so `min()` returns whichever margin has the
+        # tightest denominator rather than whichever failure is closest.
         #
-        # The corroboration is the margin that never misbehaved. `time` was already divided
-        # by its scale (the timeout) rather than by a threshold, and across those 48 cells it
-        # spanned +0.233 .. +0.863 -- it never once needed a floor. The two margins divided
-        # by thresholds are exactly the two that produced plateaus.
+        # It is NOT what caused the plateau this objective was once blamed for -- see the
+        # module docstring, where the two are separated by measurement. A clamp did that.
         #
         # Both scales below are derived from values this example already declares, so they
         # move when the world does rather than being tuned until the numbers look good:
@@ -196,13 +209,11 @@ class NavExtract(Extractor):
             margins.append((timeout - duration) / timeout)
             if to_goal is not None:
                 margins.append((goal_tol - to_goal) / path_scale)
-            # No floor. Once each margin is divided by its scale nothing reaches -1 on its
-            # own, so a clamp would only discard order it no longer needs to bound: on the
-            # 48 cells that motivated this, re-normalising alone gave 48 distinct values
-            # with none at or below -1. A margin below -1 now means what it says -- the run
-            # missed by more than the whole scale -- and stays ordered against its
-            # neighbours, which is what an adversarial search needs in order to keep
-            # descending after it has found the first failure.
+            # No floor, and this is the line that keeps the objective usable: a clamp
+            # collapses every cell past it onto one value, which is exactly the plateau an
+            # adversarial search cannot climb. Measured, clamping at -1 takes 16 distinct
+            # cells down to 2. A margin below -1 means what it says -- the run missed by
+            # more than the whole scale -- and stays ordered against its neighbours.
             robustness.append(min(margins) if margins else 0.0)
 
             if clearance is not None:

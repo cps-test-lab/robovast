@@ -82,13 +82,22 @@ instead and it caps near −0.16, `min()` returns the goal margin whenever the r
 arrive, and the objective ranks a robot that safely stopped short below one that hit the
 pedestrian.
 
-Measured over the 48 cells of one `nav_search_halton` run:
+Measured over the 48 cells of one `nav_search_halton` run, `failure_rate` took 4 distinct
+values with 30 of 48 (62.5%) on an endpoint — the cliff this replaced.
 
-| objective | distinct values | cells at the floor |
+**Two changes are easy to confuse here, so they are separated by measurement** — 16 cells at
+15 repeats each, one thing varied at a time:
+
+| | distinct values | cells ≤ −1 |
 |---|---|---|
-| `failure_rate` | 4 | 30/48 (62.5%) |
-| `robustness`, thresholds as denominators | 17 | **32/48 (66.7%)** |
-| `robustness`, scales as denominators | **48** | **0/48** |
+| thresholds as denominators, **floor at −1** | **2/16** | 15/16 |
+| thresholds as denominators, **no floor** | **16/16** | 15/16 |
+| scales as denominators, no floor | **16/16** | **0/16** |
+
+Removing the clamp is what restores the distinct values; the denominators are unchanged
+between the first two rows. What the scales buy is different and also necessary: they put the
+margins in a range where the three can be compared, which is the paragraph above. Expect a
+clamp, not a denominator, to be what flattens this objective if it is ever changed again.
 
 The sign agrees on 48 of 48 cells: re-normalising does not move the verdict, only its
 resolution. The tightest cell sits at −0.007, and one cell of the earlier 16-cell grid
