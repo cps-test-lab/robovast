@@ -283,9 +283,28 @@ pull-request job asks this from the Dockerfile's own pins, needing no image at a
 build then asserts the pushed bytes actually carry what was declared, which is the half only a
 real build can answer.
 
-Neither rebuilds. Rebuilding is the only thing that proves a recipe *sufficient*, and it costs a
-full image build — this is the cheap check that runs often, not a replacement for the expensive
-one. That remains a manual step today.
+Neither of those rebuilds, and rebuilding is the only thing that proves a recipe *sufficient* --
+that the pins it names are the **complete** set of inputs. Something reaching the network
+unpinned passes both cheap checks and fails only in a rebuild.
+
+So ``tools/rebuild_from_recipe.py`` rebuilds an image from its own recorded recipe and compares
+the **software**, weekly (``.github/workflows/recipe_rebuild.yml``) rather than per pull request,
+because it costs a full image build.
+
+The comparison is the build lock, not the digest: Docker builds are not bit-reproducible, so a
+perfect rebuild still differs by timestamps and layer ordering. The lock is ``dpkg-query``
+output, ``pip freeze``, and the commit each floating git ref resolved to — the software, which
+is what an experiment depends on.
+
+Two things it needs that are easy to miss. The **Dockerfile is an input**, and the recipe records
+the commit it came from rather than the file, so the rebuild checks that revision out first and
+refuses if it cannot; building today's Dockerfile with an old image's pins tests a combination
+that never existed. And the recipe and the lock must come from the **same** image — a tag means
+different bytes locally and remotely the moment the registry moves ahead, so a real comparison
+insists on one image and only ``--plan-only`` may ask the registry.
+
+It proves sufficiency at the moment it runs, not forever: a rot detector on a longer timescale
+than the checks above, and not a standing guarantee.
 
 **The build lock** — ``/etc/robovast/build-manifest/``, holding ``apt.txt`` (every package with
 its version), ``pip.txt`` (``pip freeze`` output) and, when a spec named a moving git ref,

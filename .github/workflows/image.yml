@@ -105,6 +105,20 @@ jobs:
       # Cheap greps over the checkout, so running it in each architecture's job costs nothing
       # measurable and keeps it a gate: as its own job it would either serialise ahead of the
       # builds or, run beside them, let a mismatched image publish anyway.
+      # The base image recorded no revision at all: this job passed neither the build arg nor
+      # metadata-action's labels, so `org.opencontainers.image.revision` came out as the
+      # Dockerfile's empty default. The Dockerfile's comment beside that LABEL says CI supplies
+      # it -- true for the controller image, which does pass it, and not for this one.
+      #
+      # It matters more than a missing note: the Dockerfile is an input to a rebuild, and the
+      # recipe records everything else. Without the revision, a rebuild from a recorded recipe
+      # cannot know WHICH Dockerfile produced the image, so any difference it finds is
+      # unattributable. Short sha, matching container/image_stamp.sh, because the two are
+      # compared as strings.
+      - name: Short revision for the image to report
+        id: rev
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       # The one place the protocol version is defined, read once and handed to the build.
       - name: Read the container protocol version
         id: compat
@@ -209,6 +223,7 @@ jobs:
           build-args: |
             ROS_DISTRO=jazzy
             ROBOVAST_COMPAT_VERSION=${{ steps.compat.outputs.version }}
+            ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
 
       # The other half of the recipe check, and the half only a real build can answer: the
       # Dockerfile declaring a pin is not the same as the image carrying it. A forgotten
