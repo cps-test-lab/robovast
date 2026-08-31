@@ -406,4 +406,26 @@ RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
     mc --version > /dev/null && \
     echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m), e_machine=${want}"
 
+# The build lock: what this image contains, as opposed to what it was asked for.
+#
+# The labels above say where a rebuild starts -- the base, the dated archives, the source
+# commits. This says what that produced, so a rebuild can be checked against it rather than
+# merely attempted (tools/rebuild_from_recipe.py compares the two).
+#
+# Every image robovast builds for a campaign carries one (image_build._manifest_lines). The
+# family images need it for the same reason: they are what most campaigns run, and what a
+# re-run has to reproduce.
+#
+# Last, and in its own layer, so it observes the finished image rather than an intermediate one
+# and never invalidates the install layers above it. Same files and formats the per-campaign
+# builder writes, so one parser reads both. No vcs.txt: the sources this image bakes are
+# recorded as labels above.
+RUN mkdir -p /etc/robovast/build-manifest
+RUN dpkg-query -W -f='${Package}=${Version}\n' 2>/dev/null | sort \
+    > /etc/robovast/build-manifest/apt.txt
+# `|| true`: a base that ships no pip is not a broken build, and failing here would turn
+# recording a fact into a reason nothing can run.
+RUN (pip list --format=freeze 2>/dev/null || true) | sort \
+    > /etc/robovast/build-manifest/pip.txt
+
 USER ubuntu:ubuntu
