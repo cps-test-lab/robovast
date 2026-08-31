@@ -32,7 +32,11 @@ import pathlib
 import subprocess
 import sys
 
-_REPO = pathlib.Path(__file__).resolve().parents[1]
+#: The checkout to build. The **working directory**, not this file's location: the caller may
+#: copy this script out of the tree it is checking -- the rebuild workflow does exactly that, so
+#: that a fix to the checker is not itself pinned to the revision being checked -- and where the
+#: script happens to sit then says nothing about which checkout to build.
+_REPO = pathlib.Path.cwd()
 
 #: Recipe label -> the build ARG it was baked from. The values are what a rebuild must be given
 #: back; a pin recorded but not passed reproduces the shape and not the software.
