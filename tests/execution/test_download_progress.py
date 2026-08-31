@@ -210,8 +210,10 @@ def test_the_progress_denominator_describes_the_filtered_transfer(tmp_path):
     listings = []
     objects = {"camp/0/test.xml": b"1234", "camp/0/run.npz": b"12345678"}
     client = _s3_client(objects, listings)
-    include = (lambda rel: rel.endswith("test.xml"))
     seen = []
+
+    def include(rel):
+        return rel.endswith("test.xml")
 
     n = client.download_prefix("bucket", "camp", str(tmp_path), include=include,
                                on_progress=lambda *args: seen.append(args))
