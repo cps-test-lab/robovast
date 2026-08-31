@@ -32,6 +32,42 @@ export type Fact = {
   value?: string | null
 }
 
+/** The panel itself: an optional caption, then the rows.
+ *
+ *  Separate from `HoverFacts` because a panel is not always a tooltip of its own. The ring's hover
+ *  is already inside a `Tooltip` (it has a chart under the facts, which `HoverFacts` has no place
+ *  carrying), and nesting one tooltip's trigger inside another's title does not work. Both callers
+ *  render the same table, which is the point: the facts under the run meter and the facts under the
+ *  ring beside it must not be formatted two different ways.
+ */
+export function FactRows({ title, facts }: { title?: string; facts: Fact[] }) {
+  const shown = facts.filter((f) => f.value)
+  if (!shown.length) return null
+
+  const cell = { padding: '1px 8px 1px 0', whiteSpace: 'nowrap' as const, fontSize: 11 }
+  return (
+    <Box>
+      {title ? (
+        <Typography sx={{ fontSize: 11, fontWeight: 600, mb: 0.5 }}>{title}</Typography>
+      ) : null}
+      <Box component="table" sx={{ borderCollapse: 'collapse' }}>
+        <tbody>
+          {shown.map((f, i) => (
+            // Index, not label: a caller may legitimately pass two rows with the same label (a
+            // search naming a `metric` criterion after its objective does), and keying on the
+            // label silently drops one of them -- which for a criterion about to fire is the row
+            // the reader needed.
+            <tr key={`${f.label}-${i}`}>
+              <td style={{ ...cell, textAlign: 'left', opacity: 0.7 }}>{f.label}</td>
+              <td style={{ ...cell, textAlign: 'left' }}>{f.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </Box>
+    </Box>
+  )
+}
+
 export function HoverFacts({
   title,
   facts,
@@ -46,10 +82,7 @@ export function HoverFacts({
    *  changes, so any affordance is the caller's to add. */
   children: React.ReactElement
 }) {
-  const shown = facts.filter((f) => f.value)
-  if (!shown.length) return children
-
-  const cell = { padding: '1px 8px 1px 0', whiteSpace: 'nowrap' as const, fontSize: 11 }
+  if (!facts.some((f) => f.value)) return children
   return (
     <Tooltip
       placement={placement}
@@ -57,23 +90,7 @@ export function HoverFacts({
       // interactive popper takes pointer events, which over a trigger people drag across (the
       // campaign name is one) eats the selection they were making.
       disableInteractive
-      title={
-        <Box>
-          {title ? (
-            <Typography sx={{ fontSize: 11, fontWeight: 600, mb: 0.5 }}>{title}</Typography>
-          ) : null}
-          <Box component="table" sx={{ borderCollapse: 'collapse' }}>
-            <tbody>
-              {shown.map((f) => (
-                <tr key={f.label}>
-                  <td style={{ ...cell, textAlign: 'left', opacity: 0.7 }}>{f.label}</td>
-                  <td style={{ ...cell, textAlign: 'left' }}>{f.value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </Box>
-        </Box>
-      }
+      title={<FactRows title={title} facts={facts} />}
     >
       {children}
     </Tooltip>

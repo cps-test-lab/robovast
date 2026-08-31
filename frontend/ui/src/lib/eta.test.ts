@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
+import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, isFractionableBudget, noResultRuns, ringBudget } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -212,5 +212,78 @@ describe('campaignEtaSeconds', () => {
     expect(campaignEtaSeconds(status({ completed: 0 }, { mode: 'batch' }), undefined, false)).toBeNull()
     expect(campaignEtaSeconds(status({ completed: 20 }, { mode: 'batch' }), undefined, true)).toBeNull()
     expect(campaignEtaSeconds(search([runs(90, 150)]), undefined, true)).toBeNull()
+  })
+})
+
+const crit = (kind: string, current: number | null, limit: number, over: Partial<BudgetItem> = {}) =>
+  ({ kind, label: kind, current, limit, done: false, ...over }) as BudgetItem
+
+// What the rounds ring measures. The whole point is that it is NOT the `batches` row: hanging it
+// there left every search bounded by runs, time or evaluations with an unfilled circle.
+describe('ringBudget', () => {
+  const of = (...budget: BudgetItem[]) => ringBudget(status({}, { budget }))
+
+  it('draws each of the four budget kinds', () => {
+    // The `search.budget` vocabulary in full — these are monotone resource caps, so `current/limit`
+    // is a share of something.
+    expect(of(crit('runs', 120, 180))?.share).toBeCloseTo(120 / 180)
+    expect(of(crit('batches', 4, 10))?.share).toBeCloseTo(0.4)
+    expect(of(crit('evaluations', 40, 200))?.share).toBeCloseTo(0.2)
+    expect(of(crit('time', 1800, 3600))?.share).toBeCloseTo(0.5)
+  })
+
+  it('refuses every stopping kind, at any position', () => {
+    // target_objective: `current` is the objective, so the quotient is not a share and is
+    // direction-dependent. A minimize search on a negative objective makes that obvious.
+    expect(of(crit('target_objective', -1.42, -2))).toBeNull()
+    // no_improvement: resets to 0 on an improvement, so an arc driven by it runs backwards.
+    expect(of(crit('no_improvement', 2, 3, { label: 'stale_batches' }))).toBeNull()
+    // metric: the `op` deciding which side satisfies is not on the wire. This row is SATISFIED and
+    // would have drawn as 12%.
+    expect(of(crit('metric', 0.1, 0.8, { label: 'coverage' }))).toBeNull()
+  })
+
+  it('picks the criterion closest to exhausting, since that is the one that fires', () => {
+    // 5/6 batches beats 120/180 runs: the campaign ends on the batches row, and the runs row
+    // describes a moment it will never reach.
+    expect(of(crit('runs', 120, 180), crit('batches', 5, 6))?.item.kind).toBe('batches')
+    expect(of(crit('runs', 170, 180), crit('batches', 1, 6))?.item.kind).toBe('runs')
+  })
+
+  it('ignores a stopping row even when it would be the largest fraction', () => {
+    // The max is taken over the fractionable rows only — otherwise a satisfied metric at 40/1
+    // would win and drive the arc.
+    expect(of(crit('runs', 120, 180), crit('metric', 40, 1))?.item.kind).toBe('runs')
+  })
+
+  it('is null when only stopping criteria bound the search', () => {
+    // Legal: validation requires one criterion across budget AND stopping together. The ring draws
+    // its bare track rather than inventing a denominator.
+    expect(of(crit('no_improvement', 1, 3), crit('target_objective', 0.4, 0.9))).toBeNull()
+    expect(ringBudget(status({}, { budget: [] }))).toBeNull()
+  })
+
+  it('clamps past-cap counts to 1', () => {
+    // A `runs` budget counts what each batch ASKS FOR, before it runs, so the last batch can carry
+    // the count past the cap. 103% of a ring is a dash array that wraps.
+    expect(of(crit('runs', 184, 180))?.share).toBe(1)
+  })
+
+  it('skips a row with no position yet rather than drawing it at zero', () => {
+    // NaN reaches the wire as null (see controller._budget_item). Drawing 0% would claim the
+    // campaign has spent nothing, which is a different statement from "not known yet".
+    expect(of(crit('runs', null, 180))).toBeNull()
+    expect(of(crit('runs', null, 180), crit('batches', 2, 10))?.item.kind).toBe('batches')
+  })
+
+  it('reads a pre-kind status by label, for the two kinds whose label IS the type', () => {
+    // `kind` is younger than the campaigns that have to render, and a finished campaign replays the
+    // budget its controller wrote at the time — so these report null forever.
+    expect(isFractionableBudget(crit('batches', 4, 10, { kind: null }))).toBe(true)
+    expect(isFractionableBudget(crit('time', 60, 600, { kind: null }))).toBe(true)
+    // A legacy `runs` row is indistinguishable from a user metric named `runs`, so it is refused
+    // rather than guessed at — the same trade isBatchesBudget makes.
+    expect(isFractionableBudget(crit('runs', 120, 180, { kind: null }))).toBe(false)
+    expect(isFractionableBudget(crit('metric', 2, 3, { kind: null, label: 'coverage' }))).toBe(false)
   })
 })
