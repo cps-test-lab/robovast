@@ -339,6 +339,11 @@ ways can this fail?", not just "what is the single worst case". Use it for
   centroids; preferred for more than ~2 measures).
 * ``archive.measures`` — the behavior axes, ``{name: {low, high, bins}}``; each
   name must be a measure the extractor returns (``bins`` applies to ``grid``).
+  Enforced, and fatally: a cell is placed by all of its axes at once, so one the
+  extractor did not report leaves it nowhere to go. The search stops naming the axis,
+  the cell and what the extractor did return — the same refusal a missing objective
+  gets, and for the same reason. Reporting *more* than the declared axes is fine; the
+  archive reads the ones it declares.
 * ``sigma`` — emitter step size as a fraction of each dimension's range
   (default ``0.1``).
 * ``emitters`` — number of CMA-ME emitters (default ``1``).

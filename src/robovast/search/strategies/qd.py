@@ -202,10 +202,38 @@ class QDStrategy(SearchStrategy):
             ev = by_id[ps_id]
             value = float(ev.objectives[name])
             obj_batch.append(-value if self._direction == 'minimize' else value)
-            meas_batch.append([measure_value(self._measure_specs[m], ev.measures[m], m)
-                               for m in self.measure_names])
+            meas_batch.append(self._coordinates(ev))
         self.scheduler.tell(np.array(obj_batch), np.array(meas_batch))
         self._batches_done += 1
+
+    def _coordinates(self, ev: Evaluation) -> list:
+        """*ev*'s position on every declared archive axis.
+
+        An axis the extractor did not report is refused HERE, by name. The archive places
+        a cell by all of its axes at once, so one that is missing leaves the cell with no
+        cell to be in -- and the alternatives are worse than stopping: a substituted
+        coordinate files the evaluation somewhere it was never measured, and dropping the
+        evaluation quietly empties the archive the campaign exists to fill.
+
+        Refused rather than tolerated for the same reason
+        :class:`~robovast.search.evaluator.Evaluator` refuses a missing objective, and this
+        says so the same way. It is a defect in the extractor or in the archive's
+        declaration -- the two disagree about what is measured -- and it recurs on every
+        cell, so carrying on would spend the whole budget to produce nothing. Reaching the
+        strategy as a bare ``KeyError`` from inside a list comprehension, it named the axis
+        and nothing else: not the cell, not what the extractor did return, and not which of
+        the two declarations to correct.
+        """
+        absent = [m for m in self.measure_names if m not in ev.measures]
+        if absent:
+            raise ValueError(
+                f"Extractor did not return archive measure(s) {absent} for parameter set "
+                f"{ev.params.id}; it returned {sorted(ev.measures)}. Every axis declared in "
+                f"strategy_parameters.archive.measures has to be reported for a cell to be "
+                f"placed, so either the extractor must report {absent} or the archive must "
+                f"stop declaring them.")
+        return [measure_value(self._measure_specs[m], ev.measures[m], m)
+                for m in self.measure_names]
 
     def _tell_incomplete(self, by_id: dict, missing: list) -> None:
         """Close a generation that came back short, without inventing the missing rows.
@@ -244,8 +272,7 @@ class QDStrategy(SearchStrategy):
             value = float(ev.objectives[name])
             sols.append(sol)
             obj_batch.append(-value if self._direction == 'minimize' else value)
-            meas_batch.append([measure_value(self._measure_specs[m], ev.measures[m], m)
-                               for m in self.measure_names])
+            meas_batch.append(self._coordinates(ev))
         logger.warning(
             "QD batch came back short: %d of %d draw(s) produced no evaluation (%s). "
             "The %d measured one(s) still enter the archive; the emitters skip this "

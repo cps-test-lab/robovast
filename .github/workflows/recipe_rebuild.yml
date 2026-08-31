@@ -61,6 +61,11 @@ jobs:
           revision=$(python3 tools/rebuild_from_recipe.py \
             --image '${{ steps.target.outputs.image }}' --print-revision)
           echo "Rebuilding at $revision"
+          # The DOCKERFILE has to be the one that produced the image. The TOOL does not, and
+          # must not: taken from the same revision it could only ever be the version that
+          # shipped with that image, so a fix to the checker would not reach the check until
+          # a new image had been published by the fixed checker. Keep it from HEAD.
+          cp tools/rebuild_from_recipe.py "$RUNNER_TEMP/rebuild_from_recipe.py"
           git checkout --detach "$revision"
 
       # The build lock can only be read by running the image, so it has to be here.
@@ -73,4 +78,5 @@ jobs:
       # from the dated archives is what takes the time here, and is the thing being tested.
       - name: Rebuild from the recorded recipe and compare the software
         run: |
-          python3 tools/rebuild_from_recipe.py --image '${{ steps.target.outputs.image }}'
+          python3 "$RUNNER_TEMP/rebuild_from_recipe.py" \
+            --image '${{ steps.target.outputs.image }}'
