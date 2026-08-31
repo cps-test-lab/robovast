@@ -88,6 +88,10 @@ execution:
   # it between 0.5 and 1.1 cores depending on the node.
   sizing: calibrated
   mode: ros2
+  # 3, deliberately, where the adversarial campaigns use 8. This campaign estimates a
+  # FRACTION OVER CELLS, and the precision of a fraction comes from the number of cells, not
+  # from how well each one is pinned down -- a cell's own error averages out across the
+  # sample, where for a search that must rank cells it does not. Same runs, more cells.
   runs: 3
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
   # verdict about a wedged run is possible, and `vast campaign wait` cannot exit on one.

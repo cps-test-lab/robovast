@@ -101,6 +101,21 @@ def _campaign_db(path, space):
     conn.close()
 
 
+#: What each notebook must be seen to compute, keyed by the campaign it belongs to. These are
+#: the questions the README gives each campaign, so a change that makes two notebooks print
+#: the same thing fails here rather than being noticed when someone reads the analysis.
+ANSWERS = {
+    "nav_search_random": ["the fraction of the space that fails", "Wilson interval"],
+    "nav_search_halton": ["the fraction of the space that fails", "Wilson interval"],
+    "nav_search_tpe": ["how FEW evaluations found it", "best crossing found"],
+    "nav_search_cmaes": ["how FEW evaluations found it", "best crossing found"],
+    "nav_search_qd": ["how many KINDS of trouble exist", "distinct failure modes found"],
+    "nav_search_boundary": ["WHERE it starts failing", "cells within +-0.05 of the boundary"],
+    "nav_search_adaptive_reps": ["the same answer for FEWER runs", "repetitions per cell"],
+    "nav_search_minimax": ["which TUNING survives the worst", "tunings evaluated"],
+}
+
+
 @pytest.mark.parametrize("vast", _notebooks(), ids=lambda p: p.stem)
 def test_the_notebook_executes_and_draws_something(vast, tmp_path):
     space = (yaml.safe_load(vast.read_text()).get("search") or {}).get("search_space") or {}
@@ -122,19 +137,29 @@ def test_the_notebook_executes_and_draws_something(vast, tmp_path):
                       for o in c.get("outputs", []) if o.get("output_type") == "stream")
     # The two unscorable cells must be excluded from the scored population, not counted in it.
     assert "18 scored" in printed, f"{vast.stem} miscounted the scorable cells: {printed[:200]}"
-    # The headline comparison must actually compute. It is guarded by `if 'm_failure_rate'
-    # in scored`, so a renamed column does not raise -- it prints nan, or nothing at all,
-    # and the campaign's central claim quietly goes missing from its own analysis.
-    assert "a verdict, and a cliff" in printed, (
-        f"{vast.stem} did not print the failure_rate comparison at all")
-    assert "nan%" not in printed, (
-        f"{vast.stem} printed the comparison as nan -- it is reading a column the "
+    # The campaign's OWN answer must actually compute. Every answer block is guarded on a
+    # column it needs -- `m_failure_mode` for the archive, the outer parameters for minimax --
+    # so a renamed column does not raise: it prints nothing, and the campaign's central claim
+    # quietly goes missing from its own analysis. Asserted per notebook rather than against
+    # one shared string, because each campaign is run to answer a different question and a
+    # notebook printing its neighbour's numbers is exactly the failure worth catching.
+    assert "What this campaign is FOR" in printed, (
+        f"{vast.stem} printed no answer block at all")
+    for phrase in ANSWERS[vast.stem]:
+        assert phrase in printed, (
+            f"{vast.stem} did not print {phrase!r} -- its answer is guarded on a column "
+            f"the extractor no longer produces under that name")
+    assert "nan" not in printed.lower(), (
+        f"{vast.stem} printed part of its answer as nan -- it is reading a column the "
         f"extractor no longer produces under that name")
 
 
 def test_every_search_vast_has_a_notebook():
-    """The generator writes one per ``.vast``; a new campaign without one is an omission,
-    and this is where it is noticed rather than when someone goes looking for the analysis."""
+    """A campaign without a notebook has no analysis, and this is where that is noticed
+    rather than when someone goes looking for it after the campaign is spent. Each notebook
+    is a standalone artifact -- there is no generator to regenerate a missing one from."""
     vasts = {v.stem for v in EXAMPLE.glob("nav_search_*.vast")}
     books = {n.stem for n in (EXAMPLE / "analysis").glob("nav_search_*.ipynb")}
     assert vasts and vasts == books, f"missing notebooks: {sorted(vasts - books)}"
+    assert vasts == set(ANSWERS), (
+        f"ANSWERS is out of step with the campaigns: {sorted(vasts ^ set(ANSWERS))}")
