@@ -345,17 +345,63 @@ def _no_docs() -> dict:
                      "docs/ path."}
 
 
-def search_docs(query: str = "", page: str = "") -> dict:
+#: Lines of context either side of a matching line.
+_CONTEXT = 2
+
+#: Excerpts returned per page by default. Bounded because a search reply is read by an
+#: LLM, where every line costs context: a term as common as a product name matches
+#: thousands of lines across the corpus, and returning all of them with context is
+#: megabytes -- more than a client can carry, for a question that is answered by the
+#: first few and a page name. ``limit=0`` still asks for every one.
+_DEFAULT_EXCERPTS = 5
+
+
+#: Matching lines above which a search says it is sampling. Not a cap -- the per-page
+#: ``limit`` is the cap; this is the reply admitting that a word appearing this often is
+#: answered by a page name rather than by more of its excerpts.
+_COMMON_TERM_LINES = 100
+
+
+def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict], int]:
+    """``(excerpts, windows_total)`` for the matching line indices *hits*.
+
+    Neighbouring hits are merged into ONE excerpt when their context windows touch,
+    rather than each producing its own: consecutive matches otherwise return the same
+    five lines over and over, so a page's reply grew with how *clustered* its matches
+    were rather than with how much it had to say. Each excerpt reports how many matching
+    lines it covers, so nothing is hidden by the merge.
+    """
+    windows: list[list] = []
+    for i in hits:
+        start, end = max(0, i - _CONTEXT), min(len(lines), i + _CONTEXT + 1)
+        if windows and start <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], end)
+            windows[-1][2] += 1
+        else:
+            windows.append([start, end, 1, i])
+    kept = windows if limit <= 0 else windows[:limit]
+    return ([{"line": first + 1, "matching_lines": count,
+              "excerpt": "\n".join(lines[start:end])}
+             for start, end, count, first in kept], len(windows))
+
+
+def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
     """The RoboVAST documentation: list the pages, search them, or read one.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of
-            context, grouped by page.
+            context, grouped by page; adjacent matches share one excerpt.
         page: Read this page in full (a ``name`` from the listing).
+        limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
+            is megabytes). Narrow the term or read the page instead of raising this.
 
     Returns:
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
-        Search: ``{results, total}`` of ``{page, title, matches}``.
+        Search: ``{results, total, matching_lines_total, truncated}`` — each result
+        ``{page, title, matches, matching_lines, excerpts_total, truncated}``, where
+        ``matches`` are the excerpts returned and ``matching_lines`` is how many lines
+        of that page matched at all. ``truncated`` marks a page whose excerpts were
+        capped, so a narrowed read is never mistaken for the whole answer.
         Page: ``{page, title, content}``. Or ``{error}``.
     """
     if not _doc_files:
@@ -372,15 +418,32 @@ def search_docs(query: str = "", page: str = "") -> dict:
         return {"pages": pages, "total": len(pages)}
 
     results = []
+    matching_lines_total = 0
+    truncated = False
     query_lower = query.lower()
     for name in sorted(_doc_files):
         lines = _doc_content[name].splitlines()
-        matches = [{"line": i + 1,
-                    "excerpt": "\n".join(lines[max(0, i - 2):min(len(lines), i + 3)])}
-                   for i, line in enumerate(lines) if query_lower in line.lower()]
-        if matches:
-            results.append({"page": name, "title": _doc_meta[name], "matches": matches})
-    return {"results": results, "total": len(results)}
+        hits = [i for i, line in enumerate(lines) if query_lower in line.lower()]
+        if not hits:
+            continue
+        matches, excerpts_total = _excerpts(lines, hits, limit)
+        matching_lines_total += len(hits)
+        cut = len(matches) < excerpts_total
+        truncated = truncated or cut
+        results.append({"page": name, "title": _doc_meta[name], "matches": matches,
+                        "matching_lines": len(hits), "excerpts_total": excerpts_total,
+                        "truncated": cut})
+    out = {"results": results, "total": len(results),
+           "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if matching_lines_total > _COMMON_TERM_LINES:
+        # A term this common is not answered by more excerpts of it. Say so, since the
+        # reply otherwise reads as "here is what the docs say about X" when it is a
+        # sample of the pages the word appears in.
+        out["note"] = (
+            f"{query!r} matches {matching_lines_total} lines across {len(results)} "
+            "pages, so these excerpts are a sample: narrow the term, or read a page "
+            "with search_docs(page=...)")
+    return out
 
 
 # -- Plugin class ------------------------------------------------------------
@@ -404,7 +467,8 @@ class DocsPlugin:
         def get_doc(name: str) -> str:
             """Retrieve a RoboVAST documentation page by name.
 
-            Use list_docs() to discover available page names.
+            ``search_docs()`` lists the page names, and reads one for a client with no
+            way to fetch a resource URI.
             """
             if name not in _doc_files:
                 available = ", ".join(sorted(_doc_files))
@@ -414,7 +478,7 @@ class DocsPlugin:
             return _doc_content[name]
 
         # Register each page as a static resource so clients can discover them
-        # without calling the list_docs tool first.
+        # without calling the search_docs tool first.
         for _page_name, _page_content in _doc_content.items():
             _uri = f"docs://{_page_name}"
             _title = _doc_meta.get(_page_name, _page_name)

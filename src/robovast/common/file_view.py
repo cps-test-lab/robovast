@@ -23,6 +23,7 @@ them, not the client — a caller asking for 100 lines of a cluster log must tra
 lines, not the file.
 """
 
+import codecs
 import logging
 import os
 from pathlib import Path
@@ -35,8 +36,31 @@ _SNIFF_BYTES = 8192
 
 
 def is_binary_bytes(data: bytes) -> bool:
-    """Whether *data* looks binary (a NUL byte in its first :data:`_SNIFF_BYTES`)."""
-    return b"\x00" in data[:_SNIFF_BYTES]
+    """Whether *data* looks binary, from its first :data:`_SNIFF_BYTES`.
+
+    Two tests, because a NUL byte alone does not mark binary content. A raster whose
+    samples avoid ``0x00`` carries none -- a grayscale occupancy map of open floor is
+    every byte ``0xfe`` -- so a NUL-only rule renders it as text, and the caller gets
+    replacement characters instead of the byte URL that exists for this case. The text
+    lane decodes as UTF-8, so "does this decode" is the question that matches what the
+    page will actually do with the bytes.
+
+    The decode is incremental so a multi-byte character straddling the end of the
+    sample counts as text; a whole-sample decode would call a UTF-8 document binary
+    depending on where its characters happened to fall.
+
+    Text in a non-UTF-8 encoding therefore reads as binary. That is the intended
+    trade: such a file renders as replacement characters in the text lane, and an
+    address the caller can fetch the real bytes from is worth more than a mangled page.
+    """
+    sample = data[:_SNIFF_BYTES]
+    if b"\x00" in sample:
+        return True
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(sample, False)
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def is_binary(path: Path) -> bool:

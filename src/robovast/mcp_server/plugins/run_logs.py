@@ -55,9 +55,10 @@ _DEFAULT_MAX_CAMPAIGNS = 5
 _CAMPAIGN_SCAN = 200
 
 #: Rows a summary reads per campaign, regardless of ``limit``. A summary's whole value is the
-#: *counts*, so scanning only as far as the returned-row limit would report "no errors" for a run
-#: whose errors came after the two-hundredth line -- which it did, before this existed. 5000 is
-#: the service's own per-query clamp; reaching it is reported as ``dropped``.
+#: *counts*, so scanning only as far as the returned-row limit reports "no errors" for a run
+#: whose errors came after the two-hundredth line. 5000 is the service's own per-query clamp;
+#: a campaign that reaches it is named in ``truncated``/``note``, since its counts then cover
+#: a prefix of its matches.
 _SUMMARY_SCAN = 5000
 
 
@@ -286,7 +287,10 @@ async def search_run_logs(
         ``{campaigns, campaigns_skipped}`` plus one of: ``runs`` (per-run ``hits``,
         ``first_sim_time``, ``worst_severity``, ``example`` joined to ``passed``/``status``, and
         ``clock_map_source`` — ``none`` means that run has no ``sim_time`` at all); ``lines`` with
-        ``lines_total``/``returned``/``truncated``; or ``patterns`` with ``severity_counts``.
+        ``lines_total``/``returned``/``truncated``; or ``patterns`` with ``severity_counts``,
+        ``matched_lines`` (rows summarized) and ``lines_total`` (rows that matched at all),
+        ``truncated`` naming in ``note`` any campaign whose counts cover only its first
+        rows.
 
     Examples::
 
@@ -314,6 +318,10 @@ async def search_run_logs(
     rollup: list = []
     lines: list = []
     lines_total = 0
+    #: Campaigns whose summary scan reached its cap, so their counts describe a prefix of
+    #: the matches rather than all of them. Per campaign because the cap is per campaign:
+    #: a sum over campaigns crosses it while every one of them was read whole.
+    scan_capped: list = []
 
     # Batched to the ATTACH limit rather than one query per campaign: within a batch SQLite
     # does the union itself, and the whole batch pays one materialization pass.
@@ -343,6 +351,8 @@ async def search_run_logs(
                 rollup.extend(rows)
             else:
                 lines.extend(rows)
+                if summarize and len(rows) >= scan:
+                    scan_capped.append(cid)
                 counted = data_access.query(primary, _count_sql(index, scoped), 1,
                                             attached or None)
                 total_rows = (counted.get("rows") or [{}])[0].get("n")
@@ -367,13 +377,24 @@ async def search_run_logs(
         view = log_view.view_log(text, summarize=summarize, top=top,
                                 tail=0 if summarize else limit)
         if summarize:
-            out.update(view)
+            # The counts and the patterns only. `view_log`'s line accounting describes the
+            # text it was handed, and here the filtering happened in SQL: its `dropped` and
+            # `shutdown_dropped` are structurally zero, and a reported `shutdown_dropped: 0`
+            # contradicts the note above, which says the shutdown phase was excluded.
+            out.update({k: view[k] for k in
+                        ("patterns", "patterns_total", "severity_counts")})
+            out["matched_lines"] = view["lines"]
             out["lines_total"] = lines_total
-            # Reaching the scan cap means the counts describe a prefix of the log, not the log.
-            if lines_total >= _SUMMARY_SCAN:
+            # Reaching the scan cap means the counts describe a prefix of that campaign's
+            # matches, not all of them. Judged per campaign, against the rows that campaign
+            # returned: measured against the total across campaigns, a search of five
+            # campaigns read whole reported itself truncated as soon as their matches added
+            # up past one campaign's cap.
+            if scan_capped:
                 out["truncated"] = True
                 out["note"] = (f"{out.get('note', '')}; counts cover the first "
-                               f"{_SUMMARY_SCAN} matching rows per campaign").lstrip("; ")
+                               f"{_SUMMARY_SCAN} matching rows of "
+                               f"{', '.join(scan_capped)}").lstrip("; ")
             return out
         out["lines"] = lines[offset:offset + limit]
         out["lines_total"] = lines_total
