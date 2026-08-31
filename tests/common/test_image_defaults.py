@@ -62,8 +62,8 @@ def test_both_roqsim_shapes_name_the_combined_member(mode):
     """One member for both shapes — the only image with roqsim *and* the contract.
 
     Not roqsim's own published image: that one carries the simulator but not
-    ``/etc/robovast_compat_version``, so the runner rejects it — and nothing publishes that
-    tag anyway.
+    the ``org.robovast.compat-version`` label, so the runner rejects it — and nothing publishes
+    that tag anyway.
 
     Asserted on what ``containers()`` returns rather than on a module constant: the
     constant is not the contract, the contributed container block is.

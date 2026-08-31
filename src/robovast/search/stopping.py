@@ -74,6 +74,20 @@ class CriterionProgress:
     limit: float
     done: bool
     kind: str = ""            # the criterion's `type`; see the class docstring
+    #: The comparison that makes this criterion FIRE, as ``current <op> limit``. Every kind has
+    #: one: the resource caps and ``no_improvement`` fire at ``>=`` their limit,
+    #: ``target_objective`` at ``<=`` or ``>=`` depending on the objective's direction, and
+    #: ``metric`` at whatever the user wrote.
+    #:
+    #: Published because ``label current / limit`` alone is ambiguous the moment the comparison
+    #: is not ``>=``: a ``metric`` with ``op: '<='`` at ``0.1 / 0.8`` is already SATISFIED and
+    #: reads to a human as "12% of the way there". ``done`` says whether it fired; this says
+    #: which way it was heading, which is what makes the row a sentence rather than a pair.
+    #:
+    #: It does NOT make a fraction computable. A ``<=`` criterion has no lower bound to measure
+    #: from and an objective has no origin, so only kinds with a real floor (the caps, and
+    #: ``no_improvement`` counting up from zero) can be drawn as a share of anything.
+    op: str = ">="
 
 
 def _fmt(v: float) -> str:
@@ -197,7 +211,10 @@ class StopConditions:
         if t == 'target_objective':
             cur = snap.best_objective if snap.best_objective is not None else float('nan')
             done = snap.best_objective is not None and self._meets_target(snap.best_objective, crit.value)
-            return CriterionProgress(self.objective_name, cur, crit.value, done, kind=t)
+            # `<=` when lower is better -- the same comparison `_meets_target` applies, so the
+            # row cannot describe a different test from the one that stops the search.
+            op = '<=' if self.direction == 'minimize' else '>='
+            return CriterionProgress(self.objective_name, cur, crit.value, done, kind=t, op=op)
         if t == 'no_improvement':
             h = self._best_history
             stale = 0
@@ -213,7 +230,7 @@ class StopConditions:
             if val is None:
                 return None
             return CriterionProgress(crit.name, val, crit.value,
-                                    _OPS[crit.op](val, crit.value), kind=t)
+                                    _OPS[crit.op](val, crit.value), kind=t, op=crit.op)
         return None
 
 

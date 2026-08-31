@@ -133,22 +133,20 @@ elif [ -e "$LAST_ARG" ]; then
     exit 1
 fi
 
-# Container protocol check. Label first (docker inspect, no container started), falling back to
-# the legacy file for images built before the label existed -- which is most archived campaigns.
+# Container protocol check, off the image's label -- one `docker inspect`, nothing started.
 if [ -n "$COMPAT_VERSION" ]; then
     MIN_COMPAT_VERSION="${MIN_COMPAT_VERSION:-$COMPAT_VERSION}"
     IMAGE_COMPAT=$(docker inspect --format "{{index .Config.Labels \"$COMPAT_LABEL\"}}" "$DOCKER_IMAGE" 2>/dev/null || echo "")
     COMPAT_SOURCE="label"
-    if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
-        IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
-        COMPAT_SOURCE="file"
+    if [ "$IMAGE_COMPAT" = "<no value>" ]; then
+        IMAGE_COMPAT=""
     fi
     # A RANGE, not equality: postprocessing re-runs against the image a finished campaign
     # recorded, so equality made every protocol bump retroactively un-postprocess-able.
     if [ -z "$IMAGE_COMPAT" ]; then
         echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."
-        echo "  This host speaks ${MIN_COMPAT_VERSION}..${COMPAT_VERSION}; the image reports"
-        echo "  neither the $COMPAT_LABEL label nor /etc/robovast_compat_version."
+        echo "  This host speaks ${MIN_COMPAT_VERSION}..${COMPAT_VERSION}; the image carries"
+        echo "  no $COMPAT_LABEL label, so it is either not a robovast image or predates it."
         exit 1
     elif [ "$IMAGE_COMPAT" -gt "$COMPAT_VERSION" ] || [ "$IMAGE_COMPAT" -lt "$MIN_COMPAT_VERSION" ]; then
         echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"

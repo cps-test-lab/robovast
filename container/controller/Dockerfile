@@ -202,10 +202,6 @@ RUN pip install --no-cache-dir ./src/robovast_cluster
 COPY --from=ui-build /ui/dist /opt/robovast/ui
 ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 
-# Compatibility marker, kept in sync with COMPAT_VERSION in
-# src/robovast/common/execution.py (same contract as the ROS image).
-RUN echo "2" > /etc/robovast_compat_version
-
 # The revision this image's `COPY src` came from, captured here because this is the ONLY
 # point at which it is knowable. `get_app_version` asks git, from the directory the module
 # lives in -- which in this image is site-packages, with no `.git` anywhere above it, so the
@@ -250,6 +246,14 @@ ENV ROBOVAST_BUILD_DATE=${ROBOVAST_BUILD_DATE}
 LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 LABEL org.opencontainers.image.created="${ROBOVAST_BUILD_DATE}"
+
+# Compatibility marker, kept in sync with COMPAT_VERSION in src/robovast/common/execution.py
+# (same contract as the ROS image) and guarded by the same CI gate.
+#
+# This is the one place the move from a file to a label SUBTRACTS a fact rather than relocating
+# it: this image carried only the file, so without this line it would report no protocol at all.
+ARG ROBOVAST_COMPAT_VERSION
+LABEL org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"
 
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a

@@ -182,6 +182,23 @@ class ExecutionBackend(ABC):
         storage, so the bucket holds a complete, local-equivalent campaign.
         """
 
+    def ensure_campaign_root_complete(self, campaign_root: str) -> None:
+        """Hook called before anything needs the campaign's *whole* directory on disk.
+
+        Default no-op: the local :class:`DockerBackend` writes every artifact straight into
+        ``campaign_root``, so it is never incomplete. The :class:`KubernetesBackend` overrides
+        this because a campaign it *resumed* starts with only its control plane -- resume runs
+        before the service can answer at all, so it takes what it needs to re-enter the
+        campaign and leaves the artifacts (see ``campaign_resume``).
+
+        Called from the run tail immediately before postprocessing, which is the first thing
+        that reads the whole tree: adoption reads only ``test.xml``, run counts come from the
+        store's own table rather than a directory walk, and a resumed search replays its
+        earlier evaluations out of ``campaign.db`` instead of re-extracting them. Cheap to
+        call when the tree is already whole -- the fetch skips same-size files -- so callers
+        that are unsure should call it rather than reason about it.
+        """
+
     def preflight_upload_to_share(self) -> None:
         """Validate this backend can honour ``--upload-to-share`` before the campaign runs.
 

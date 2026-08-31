@@ -68,7 +68,7 @@ execution:
     simulation:
       backend: roqsim
       config: world/empty_room.yaml
-      resources: {cpu: 0.6, cpu_limit: 2, memory: 640Mi}
+      resources: {cpu: 2.0, cpu_limit: 4, memory: 640Mi}
     # The system under test, kept vanilla. No `system_packages`: the TB4 description this
     # needs is already in the image, and declaring it anyway is not free -- any package key
     # makes RoboVAST build a derived image, so it costs an apt cycle per campaign to install
@@ -78,7 +78,20 @@ execution:
       resources: {cpu: 3, memory: 640Mi}
     scenario:
       resources: {cpu: 0.85, cpu_limit: 2, memory: 512Mi}
+  # Measured per node rather than declared: the same trial costs ~1.6x more CPU on the
+  # slowest machine of a mixed cluster than on the fastest, so one declared figure is right on
+  # none of them. `resources` above then states where measuring STARTS -- what the probe and
+  # every not-yet-measured node run at -- and the ceiling a measurement may not exceed, so it
+  # has to sit ABOVE demand rather than at it: a container capped under what it wants throttles
+  # against the cap, its probe is refused as having measured the ceiling instead of the demand,
+  # and no node is calibrated at all. simulation is 2.0 for exactly that reason; probes measure
+  # it between 0.5 and 1.1 cores depending on the node.
+  sizing: calibrated
   mode: ros2
+  # 3, deliberately, where the adversarial campaigns use 8. This campaign estimates a
+  # FRACTION OVER CELLS, and the precision of a fraction comes from the number of cells, not
+  # from how well each one is pinned down -- a cell's own error averages out across the
+  # sample, where for a search that must rank cells it does not. Same runs, more cells.
   runs: 3
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
   # verdict about a wedged run is possible, and `vast campaign wait` cannot exit on one.

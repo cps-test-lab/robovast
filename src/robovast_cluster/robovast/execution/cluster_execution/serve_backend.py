@@ -18,20 +18,25 @@ class ClusterServeBackend:
     storage = "object store"
 
     def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None,
-              results_dir=None):  # noqa: ARG002 - pinning and a results dir are local-lane affordances
+              workspace_dir=None, results_dir=None):
         """In-pod the config comes from the pod env; off-cluster it is read from the
         deployed service, which is the authoritative record -- so no local setup is
         needed, on any host with kubeconfig access.
 
-        ``results_dir`` is ignored: a cluster campaign's results live in the object store,
-        which is the whole reason this lane needs no local directory.
+        ``results_dir`` is honoured here, not ignored. A cluster campaign's *durable* home is
+        the object store, but the one being driven has a local working root all the same: each
+        batch downloads its own results into it, per-run extraction reads it through a path
+        (``search.extractor.Extractor.extract``), and postprocessing derives ``data.db`` from
+        it. Leaving that on the container's writable layer meant every restart discarded it --
+        and, because resume rebuilds it before the port is bound, a restart could never finish.
+        The deployment names the directory it mounts (``service_deploy.RESULTS_DATA_DIR``).
         """
         import click  # pylint: disable=import-outside-toplevel
 
         from .cluster_service import ClusterService  # pylint: disable=import-outside-toplevel
         if in_pod:
-            return ClusterService(kube_context=context, store=store)
+            return ClusterService(kube_context=context, store=store,
+                                  results_dir=results_dir)
 
         from .service_deploy import \
             read_service_config_from_cluster  # pylint: disable=import-outside-toplevel
@@ -56,4 +61,4 @@ class ClusterServeBackend:
             fg="yellow")
         return ClusterService(namespace=namespace, cluster_config_name=name,
                               cluster_config_kwargs=kwargs, kube_context=context,
-                              store=store)
+                              store=store, results_dir=results_dir)

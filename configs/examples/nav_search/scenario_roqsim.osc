@@ -71,7 +71,7 @@ scenario test_scenario:
                 # config mount root -- which is this scenario's directory -- because
                 # robovast namespaces a staged file per configuration so a packed job
                 # cannot serve one cell's parameters to another.
-                [key_value('params_file', get_scenario_file_directory() + '/' + params_file),
+                [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
                  key_value('map', '/config/files/empty_room.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:

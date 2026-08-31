@@ -46,6 +46,15 @@ So there is no floor. A margin below -1 means what it says -- missed by more tha
 scale -- and stays ordered against its neighbours, which is what lets an adversarial search
 keep descending after it has found its first failure instead of going blind.
 
+**Both margins must be able to reach the same depth**, or the deeper one decides every
+score. A refusal leaves the robot the whole traverse short, so its goal margin reaches
+(0.6 - 5.0)/5.0 = -0.88. A collision only ever penetrates a few centimetres, because contact
+is contact -- so dividing that by the doorway's geometry caps the clearance margin near
+-0.16 and `min()` stops being "whichever failure is nearest" and becomes "the goal margin,
+whenever the robot did not arrive". Scaled by the range it can actually occupy (~0.1 m), a
+full-penetration contact reaches about -1.0 and the two failure modes are comparable, which
+is what lets an adversarial search prefer the dangerous one.
+
 **Aggregated worst-case across repetitions**, never averaged -- four clean crossings and
 one that clipped the doorway average to "clean", and on a QD archive averaging collapses
 the very spread the archive exists to map.
@@ -144,12 +153,18 @@ class NavExtract(Extractor):
         #
         # Both scales below are derived from values this example already declares, so they
         # move when the world does rather than being tuned until the numbers look good:
-        #   clearance_scale  the clearance available in the most permissive configuration --
-        #                    half the widest doorway minus the robot's radius, 1.6/2 - 0.18
-        #                    (nav2_params.yaml's own `robot_radius`) = 0.62 m
+        #   clearance_scale  the range the CLEARANCE MARGIN can occupy, which is set by how
+        #                    far the robot gets INTO an obstacle before contact ends the
+        #                    trial -- ~0.1 m measured -- and not by how much room the widest
+        #                    doorway offers. A scale has to be the reach of its own term:
+        #                    normalising by the geometric maximum (1.6/2 - 0.18 = 0.62 m)
+        #                    gives the clearance term a sixth of the goal term's reach, and
+        #                    `min()` then returns the goal margin whenever the robot fails to
+        #                    arrive -- which ranks a robot that safely stopped short BELOW one
+        #                    that hit the pedestrian. See the module docstring.
         #   path_scale       the nominal traverse, |goal - start| from the scenario's two
         #                    poses: (-2.5, 0) -> (2.5, 0) = 5.0 m
-        clearance_scale = float(self.params.get('clearance_scale', 0.62))
+        clearance_scale = float(self.params.get('clearance_scale', 0.10))
         path_scale = float(self.params.get('path_scale', 5.0))
 
         robustness, clearances, durations, modes, recoveries = [], [], [], [], []

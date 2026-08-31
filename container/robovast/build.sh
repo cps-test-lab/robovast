@@ -267,6 +267,7 @@ build_base() {
     "${SRC_CONTEXT[@]}" \
     "${GIT_SECRET[@]}" \
     "${GIT_REVISION_ARGS[@]}" \
+    "${COMPAT_VERSION_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
     -f $BASEDIR/Dockerfile \
@@ -276,7 +277,7 @@ build_base() {
 build_roqsim() {
   # FROM the base by its *resolved* tag rather than a floating one, so the derived image
   # is always built on the base that was just built (or the one explicitly named) and
-  # the two cannot drift. It inherits /etc/robovast_compat_version from there, which is
+  # the two cannot drift. It inherits the org.robovast.compat-version label from there, which is
   # why the compat check needs no second home.
   local base="${BASE_IMAGE:-${PROJECT}robovast:${TAG}}"
 

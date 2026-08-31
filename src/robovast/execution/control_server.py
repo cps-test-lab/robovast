@@ -80,10 +80,18 @@ class ControllerState:
         Deliberately **not** ``updated_at``: the progress poller rewrites the same
         counters every few seconds, so any write-based clock ticks forever on a wedged
         run and reports it as healthy.
+
+        For the same reason the ``time`` budget row is **excluded**. Its value is a pure
+        function of wall-clock, so it advances whether or not the campaign does -- and a
+        signal that always advances is not a signal. Today it is only rewritten at a batch
+        boundary, where ``batches_done`` moves anyway, so this changes no verdict; it is here
+        so that publishing elapsed more often can never silently make every time-budgeted
+        search un-stallable. Only facts whose change IS evidence of progress belong in this
+        tuple.
         """
         st = self._status
         return (st.runs.completed if st.runs else 0, st.batches_done,
-                tuple(b.current for b in st.budget))
+                tuple(b.current for b in st.budget if b.kind != "time"))
 
     def _stamp_progress(self) -> None:
         """Move ``progress_since`` iff the progress signal actually advanced.

@@ -306,17 +306,21 @@ ENV QT_X11_NO_MITSHM=1
 RUN mkdir -p /out && chmod 777 /out
 
 # Compatibility version — must match COMPAT_VERSION in
-# src/robovast/common/execution.py.  Read by all execution contexts
-# (local, cluster, postprocessing) to detect host/container mismatches.
+# src/robovast/common/execution.py. Read by every execution context (local, cluster,
+# postprocessing) to detect host/container mismatches, and by the CI gate in
+# .github/workflows/image.yml, which is what keeps the two equal.
 #
-# Written TWICE, on purpose. The label is what readers should use: `docker inspect` gets it
-# without starting a container, and `buildx imagetools inspect` gets it from a *remote* image
-# without pulling — which is what a pre-flight on a year-old campaign needs, since the question
-# is whether those bytes are still obtainable at all. The file stays because every image built
-# before the label existed carries only the file, and those are exactly the campaigns worth
-# re-running; dropping it would make them unreadable to the very check meant to rescue them.
-RUN echo "2" > /etc/robovast_compat_version
-LABEL org.robovast.compat-version="2"
+# ONE marker, and it is a label: `docker inspect` reads it without starting a container, and
+# the registry serves it for a *remote* image without pulling — which is what a pre-flight on a
+# year-old campaign needs, since the whole question is whether this host can still drive bytes
+# it does not have. The same value used to be written to a file inside the image as well, read
+# by starting a container to `cat` one integer; that could not be read remotely at all, and a
+# workload inspecting its own image is not how admission is decided anywhere else here.
+# Passed in rather than written here, like ROBOVAST_GIT_REVISION below: a constant copied by
+# hand into each Dockerfile drifts, which is why it needed a CI gate comparing the copies.
+# container/image_stamp.sh derives it from COMPAT_VERSION and refuses to build without it.
+ARG ROBOVAST_COMPAT_VERSION
+LABEL org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"
 
 # Standard OCI provenance. These are the spec'd names — no reason to invent our own — and they
 # are what lets a campaign's results say which commit its image was built from, so an image
@@ -339,6 +343,21 @@ ARG SCENARIO_EXECUTION_REF
 LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
 ARG SCENARIO_EXECUTION_SERVER_REF
 LABEL org.robovast.scenario-execution-server-ref="${SCENARIO_EXECUTION_SERVER_REF}"
+
+# What a rebuild would have to start FROM, as opposed to which bytes this is. A digest is
+# reproducible exactly as long as the registry keeps it; these are what survive that.
+#
+# All three are already pinned above -- the base by digest, and both apt archives to a dated
+# snapshot so `apt-get install` a year from now resolves the same versions rather than whatever
+# is current. They are build ARGs, though, and therefore invisible from outside the build: the
+# comment beside the source refs above says exactly that, and solves it the same way. Without
+# these labels the only way to answer "what was this built from?" is to read this file at the
+# recorded commit and hope no ARG was overridden on the command line.
+#
+# The base as a whole ref rather than a bare digest, so it can be used as-is.
+LABEL org.robovast.base-image="ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}"
+LABEL org.robovast.ubuntu-snapshot="${UBUNTU_SNAPSHOT}"
+LABEL org.robovast.ros-snapshot="${ROS_SNAPSHOT}"
 
 ARG TARGETARCH
 RUN USER=ubuntu && \

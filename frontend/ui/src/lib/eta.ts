@@ -173,3 +173,125 @@ export function campaignEtaSeconds(
   }
   return bounded.length ? Math.min(...bounded) : null
 }
+
+/** The criterion kinds that can be read as a FRACTION OF WORK SPENT.
+ *
+ * Exactly `search.budget`'s vocabulary (see common/config.py: BudgetCriterion), and that split is
+ * the whole rule: a budget row is a monotone resource cap, so `current / limit` is a share of
+ * something. A `stopping` row is a result-dependent early exit and is not:
+ *
+ * - `target_objective` — `current` is the objective itself, so the quotient is not in [0,1]. It is
+ *   direction-dependent, can start on either side of the target, and is `null` until the first
+ *   result lands.
+ * - `no_improvement` — `stale_batches` RESETS TO 0 on an improvement, so a ring driven by it would
+ *   run backwards. It is a countdown to stopping, not progress through anything.
+ * - `metric` — the criterion carries an `op` (`>=`, `<=`, `>`, `<`) that decides which side
+ *   satisfies it, and `op` is not on the wire. A `<=` metric at 0.1/0.8 is already SATISFIED and
+ *   would draw as 12% — "barely started" for a campaign about to stop.
+ *
+ * An ALLOWLIST rather than a denylist of the stopping kinds, so a criterion kind added later is
+ * refused until somebody has decided it is monotone. Getting that wrong silently draws a
+ * meaningless arc; getting it wrong the other way just omits one. */
+const FRACTIONABLE_KINDS: ReadonlySet<string> = new Set([
+  'runs',
+  'batches',
+  'evaluations',
+  'time',
+])
+
+/** A budget row with a `time` row's `current` brought up to date from the search's origin.
+ *
+ * The TS mirror of `budget_positions` in `robovast_client/robovast/client/status.py`, which the
+ * Python readers (the MCP's progress figure and status dict, the CLI's budget line) share. A change
+ * to either must be made looking at the other.
+ *
+ * Only `time` is derived, because it is the only criterion whose value is a pure function of
+ * wall-clock: it is published from `stop.progress()`, which runs once per batch, so on the wire it
+ * steps per round instead of ticking. Everything else is a count the controller writes when it
+ * actually changes.
+ *
+ * Deriving it here rather than having the controller republish it is deliberate and is the reason
+ * `search_since` exists: a budget row rewritten from wall-clock would advance the controller's
+ * progress signal on every poll, and no time-budgeted search could ever be reported stalled again.
+ *
+ * Clamped to `limit` (a search stops when the criterion fires, so elapsed past the cap is time it
+ * did not spend) and left untouched when no origin was published — a batch campaign, or a status
+ * recovered from disk. The published `current` is then stale by at most one round, which is better
+ * than derived from an origin nobody wrote.
+ */
+export function budgetPosition(b: BudgetItem, status: Status): BudgetItem {
+  if (b.kind !== 'time' || status.search_since == null || !(b.limit > 0)) return b
+  const elapsed = Date.now() / 1000 - status.search_since
+  if (!(elapsed >= 0)) return b
+  return { ...b, current: Math.min(elapsed, b.limit) }
+}
+
+/** Whether this row is a budget cap whose share of work spent can be drawn.
+ *
+ * Same `kind`-over-`label` rule, and the same reason, as `isBatchesBudget`: the label is the
+ * criterion type only for `batches` and `time`, so a metric the user named `runs` must not be
+ * mistaken for the run cap. The pre-`kind` fallback matters here too — a campaign whose status was
+ * written before `kind` shipped reports `null` forever, and without the fallback every historical
+ * search would lose its arc. Only `batches` and `time` are recoverable from the label (they are the
+ * two kinds whose label IS the type); a legacy `runs` or `evaluations` row is indistinguishable
+ * from a user metric of that name, so it is refused rather than guessed at. */
+export function isFractionableBudget(b: BudgetItem): boolean {
+  if (b.kind == null) return b.label === 'batches' || b.label === 'time'
+  return FRACTIONABLE_KINDS.has(b.kind)
+}
+
+/** What the rounds ring measures: the declared budget CLOSEST TO EXHAUSTING, or null when none is.
+ *
+ * The binding criterion, because the campaign stops at whichever fires first — so the row with the
+ * greatest share is the one describing when this campaign actually ends, and any other describes a
+ * moment it will never reach. The same rule the MCP's `_progress_from_status` applies server-side
+ * (`max(current / limit)` over the budget) and the same rule `campaignEtaSeconds` below expresses
+ * in time units, where "fires first" means the SMALLER duration. Three readers, one rule; a change
+ * to any of them must be made looking at the other two.
+ *
+ * Null when nothing fractionable is declared, which is legal: validation requires one criterion
+ * across `budget` AND `stopping` together, so a search bounded only by convergence has no
+ * denominator at all. The ring then draws its bare track — no share is invented, exactly as before.
+ *
+ * `share` is clamped to [0,1]: `runs` is counted from what each batch ASKS FOR, before it runs, so
+ * a final batch can carry the count past its own cap. */
+export function ringBudget(
+  status: Status,
+): { item: BudgetItem; share: number } | null {
+  let best: { item: BudgetItem; share: number } | null = null
+  for (const raw of status.budget) {
+    const item = budgetPosition(raw, status)
+    if (!isFractionableBudget(item) || !(item.limit > 0) || item.current == null) continue
+    const share = Math.max(0, Math.min(1, item.current / item.limit))
+    if (best === null || share > best.share) best = { item, share }
+  }
+  return best
+}
+
+/** The comparison that makes a criterion fire, as a symbol to print.
+ *
+ * `>=` for a row written before `op` existed (a status from an older controller, or a finished
+ * campaign replaying the `outcome.json` its controller wrote at the time). That is the correct
+ * comparison for five of the seven kinds and is what every reader assumed before the field
+ * shipped, so the fallback is the old behaviour rather than a guess. */
+export function criterionOp(b: BudgetItem): string {
+  return b.op ?? '>='
+}
+
+/** Whether a criterion's progress toward FIRING can be drawn as a share of something.
+ *
+ * A superset of `isFractionableBudget`: the four resource caps, plus `no_improvement`. That one
+ * is the only `stopping` kind with a real floor -- `stale_batches` counts up from zero to
+ * `patience`, so "2 of 3" is a genuine fraction and a bar is honest.
+ *
+ * Still false for the other two, and `op` does not change that. Knowing a `metric` fires at
+ * `<= 0.8` says nothing about where it STARTED, so there is no denominator; the same is true of
+ * an objective, whose initial value is whatever the first batch happened to measure. A bar needs
+ * an origin, and those two have none -- so they get the comparison in words instead.
+ *
+ * `no_improvement` is deliberately absent from the RING's allowlist even though it is here: it
+ * resets to zero on an improvement, and a ring that runs backwards reads as a bug. A static row
+ * in the open card is a different claim -- "2 of 3 strikes" -- and survives the reset. */
+export function hasDrawableFloor(b: BudgetItem): boolean {
+  return isFractionableBudget(b) || b.kind === 'no_improvement'
+}

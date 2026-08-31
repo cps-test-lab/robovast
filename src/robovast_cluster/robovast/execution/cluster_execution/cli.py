@@ -31,7 +31,8 @@ from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.client.status import Phase, Status, stall_report
+from robovast.client.status import (Phase, Status, budget_positions, stall_report,
+                                    stopping_soon_report)
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +178,16 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         # bare age of the last completion says nothing a reader can act on, and cannot be
         # judged at all without a declared per-run budget -- which `validate_project`
         # reports once instead.
-        stall = stall_report(Status.model_validate(status))
+        parsed = Status.model_validate(status)
+        stall = stall_report(parsed)
         if stall.get("stall_reason"):
             lines.append(f"  Stalled: {stall['stall_reason']}")
+        # Only the affirmative verdict is printed, as with the stall above: a monitor line
+        # saying a search is NOT about to converge is noise on every refresh, and "no verdict
+        # possible" is not something a watcher can act on mid-run.
+        soon = stopping_soon_report(parsed)
+        if soon.get("stopping_reason"):
+            lines.append(f"  Stopping soon: {soon['stopping_reason']}")
         up = (status.get("extra") or {}).get("upload")
         # `Phase.SHARING`, spelled as the enum spells it. This read `"uploading"` -- a
         # phase no part of RoboVAST ever sets -- so the bar never drew once, for anyone.
@@ -226,7 +234,12 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         for cid in ids:
             try:
                 # `Status` is a pydantic model; _campaign_lines reads it as a dict.
-                status = client.get_status(cid).model_dump()
+                st = client.get_status(cid)
+                status = st.model_dump()
+                # A `time` budget's `current` is only republished when a round closes, so
+                # derive it from the search's origin before rendering -- otherwise a monitor
+                # refreshing every second shows an elapsed figure that steps once a batch.
+                status["budget"] = [b.model_dump() for b in budget_positions(st)]
             except Exception:  # pylint: disable=broad-except
                 blocks.append([f"Campaign {cid}  [status unavailable]"])
                 continue
@@ -892,8 +905,11 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
               help='Namespace the robovast-service runs in')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-@click.option('--timeout', default=180.0, show_default=True, metavar='SECONDS',
-              help='How long to wait for the new pod to take over before failing')
+@click.option('--timeout', default=1800.0, show_default=True, metavar='SECONDS',
+              help='How long to wait for the new pod to take over before failing. Generous '
+                   'because a service that comes up owing campaigns restores them before it '
+                   'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
+                   'loop) still fails fast on its own, without spending this.')
 @click.option('--buildkit-cache-max', default='', metavar='SIZE',
               help='Resize the build cache ceiling. Without this the daemon keeps whatever '
                    'it was set up with -- an upgrade is not the place to quietly re-size a '

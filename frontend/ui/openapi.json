@@ -298,6 +298,17 @@
           "limit": {
             "title": "Limit",
             "type": "number"
+          },
+          "op": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Op"
           }
         },
         "required": [
@@ -305,7 +316,8 @@
           "done",
           "kind",
           "label",
-          "limit"
+          "limit",
+          "op"
         ],
         "title": "BudgetItem",
         "type": "object"
@@ -574,6 +586,11 @@
             "title": "Description",
             "type": "string"
           },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -661,6 +678,7 @@
           "campaign_id",
           "created_by",
           "description",
+          "error",
           "finished_at",
           "mode",
           "num_composition_failed",
@@ -2652,6 +2670,89 @@
         "title": "ServiceConfig",
         "type": "object"
       },
+      "ServiceEvent": {
+        "description": "One thing the service did, as recorded.\n\n``kind`` is an open string and ``subject_type``/``subject_id`` are a typed pair rather than\na bare campaign id: a workspace, an image build or the service itself are all things worth\nan event later, and widening this model is a change where adding a ``kind`` is not.",
+        "properties": {
+          "actor": {
+            "default": "",
+            "title": "Actor",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "severity": {
+            "default": "info",
+            "title": "Severity",
+            "type": "string"
+          },
+          "subject_id": {
+            "default": "",
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_type": {
+            "default": "",
+            "title": "Subject Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor",
+          "at",
+          "kind",
+          "message",
+          "payload",
+          "seq",
+          "severity",
+          "subject_id",
+          "subject_type"
+        ],
+        "title": "ServiceEvent",
+        "type": "object"
+      },
+      "ServiceEvents": {
+        "description": "A page of the event log, oldest first, with the cursor to resume from.\n\nOldest first because a caller is resuming a position rather than browsing: it holds\n:attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "next_seq": {
+            "default": 0,
+            "title": "Next Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "next_seq"
+        ],
+        "title": "ServiceEvents",
+        "type": "object"
+      },
       "ServiceSetting": {
         "description": "One environment setting this service is running with, as reported to one caller.\n\nThe **environment** is what produces this list -- everything a ``.env`` set arrives in\nthe pod as an environment variable -- so a setting the service reads is here whether or\nnot anyone has described it. An undescribed one arrives with empty :attr:`group` and\n:attr:`description` and ``withheld=\"unclassified\"``: visible, because it IS in force,\nand valueless, because a credential added later must not leak through a surface written\nearlier.",
         "properties": {
@@ -2814,8 +2915,8 @@
         "title": "StagedArchive",
         "type": "object"
       },
-      "Status": {
-        "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``importing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192\n``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change.\n\nWhat is on the share is deliberately *not* here. It was, as ``share_provider``,\nand nothing ever wrote it -- which is the shape of the mistake: the share is\nanother system's state, so a copy of it on a campaign goes stale the first time\nsomebody deletes an archive out of band. ``list_share_archives`` asks the share.\n\n**Before adding a field: this is a hot fan-out payload.** The web UI renders every\ncampaign in the list as a card and each card polls ``GET /campaigns/{id}/status``\nevery 1.5 seconds, so anything here is paid for once per campaign on screen, per\npoll, per open tab -- and some of it is computed per read (``health``). What belongs\nhere is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,\na batch index. A SERIES does not, however small it looks: ``batch_history`` was one\n(a row per batch, growing all run long), nothing ever read it, and it was removed in\nfavour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while\nsomething is displaying it, keyed on the ``batches_done`` cursor that lives here.\nThe rule, and where a live run view lands, is in ``docs/http_api.rst``.",
+      "StatusResponse": {
+        "description": ":class:`Status` as the HTTP API serves it: the state, plus the stall verdict.\n\nThe verdict is derived per read (as ``health`` is) and exists only on the wire. It is\ndeliberately NOT a field on :class:`Status`, which is the controller's mutable state and\nis persisted verbatim as the campaign's durable outcome\n(``campaign_data.write_execution_outcome`` / ``read_execution_outcome``): a stored verdict\nwould be read back later as a live accusation against a campaign that has long since\nfinished, which is the one error mode the tri-state exists to prevent.\n\nEvery added field is optional and absent unless :func:`stall_report` produced it, so a\nterminal campaign carries no verdict rather than a null one \u2014 the same shape the MCP\nreturns, for the same reason: a field present on every campaign is one readers learn to\nskip.",
         "properties": {
           "batch": {
             "default": 0,
@@ -2933,6 +3034,17 @@
             ],
             "title": "Postprocessing Error"
           },
+          "progress_age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Age S"
+          },
           "progress_deadline_s": {
             "anyOf": [
               {
@@ -2950,6 +3062,17 @@
           },
           "runs": {
             "$ref": "#/components/schemas/RunProgress"
+          },
+          "search_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Since"
           },
           "share_error": {
             "anyOf": [
@@ -2973,6 +3096,39 @@
             ],
             "title": "Stage"
           },
+          "stall_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stall Reason"
+          },
+          "stall_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stall Verdict"
+          },
+          "stalled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stalled"
+          },
           "stop": {
             "anyOf": [
               {
@@ -2984,6 +3140,39 @@
               }
             ],
             "title": "Stop"
+          },
+          "stopping_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Reason"
+          },
+          "stopping_soon": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Soon"
+          },
+          "stopping_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Verdict"
           },
           "updated_at": {
             "title": "Updated At",
@@ -3011,16 +3200,24 @@
           "phase_since",
           "postprocessed",
           "postprocessing_error",
+          "progress_age_s",
           "progress_deadline_s",
           "progress_since",
           "runs",
+          "search_since",
           "share_error",
           "stage",
+          "stall_reason",
+          "stall_verdict",
+          "stalled",
           "stop",
+          "stopping_reason",
+          "stopping_soon",
+          "stopping_verdict",
           "updated_at",
           "waiting_for_capacity"
         ],
-        "title": "Status",
+        "title": "StatusResponse",
         "type": "object"
       },
       "UpdatePanelsSourceRequest": {
@@ -3093,6 +3290,11 @@
             "title": "Image Ref",
             "type": "string"
           },
+          "registry_built_at": {
+            "default": "",
+            "title": "Registry Built At",
+            "type": "string"
+          },
           "registry_digest": {
             "default": "",
             "title": "Registry Digest",
@@ -3134,6 +3336,7 @@
         "required": [
           "active_campaigns",
           "image_ref",
+          "registry_built_at",
           "registry_digest",
           "running_digest",
           "supported",
@@ -4023,6 +4226,60 @@
           }
         },
         "summary": "Service Config",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/events": {
+      "get": {
+        "description": "What this service did, from cursor *since* -- durable across restarts.\n\nIts own cursor-keyed route rather than a field on a polled payload, per the tiers in\n``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for\nas long as any tab is open.\n\nNot the same thing as ``/admin/log``, which is this process's recent stderr and dies\nwith it. The events worth keeping are the ones a restart destroys.",
+        "operationId": "get_service_events_admin_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Since",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceEvents"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Service Events",
         "tags": [
           "admin"
         ]
@@ -6316,7 +6573,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/StatusResponse"
                 }
               }
             },

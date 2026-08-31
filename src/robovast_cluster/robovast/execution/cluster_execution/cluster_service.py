@@ -118,8 +118,12 @@ class ClusterService(LocalTransport):
 
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
-                 reap_on_start=True, kube_context=None):
-        super().__init__(store=store)
+                 reap_on_start=True, kube_context=None, results_dir=None):
+        # Where the campaigns this service DRIVES keep their working root. Not a cache: a
+        # batch downloads its own results into it, extraction reads it through a path, and
+        # postprocessing derives data.db from it -- so it has to outlive a container, and the
+        # deployment mounts the directory it names (see serve_backend / service_deploy).
+        super().__init__(store=store, results_dir=results_dir)
         self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
         # Which kubeconfig context to dispatch into. None off-cluster means the
         # active context; in-cluster the incluster config is used for the API
@@ -3858,7 +3862,7 @@ class ClusterService(LocalTransport):
             lambda tar: cfg.add_campaign_members(
                 tar, campaign_id, exclude_prefixes={"_postproc"}))
 
-    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None):
+    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None, include=None):
         """Pull a campaign from the object store to a local dir; return it.
 
         The object store is the durable home (the campaign loop published the full
@@ -3875,6 +3879,12 @@ class ClusterService(LocalTransport):
         driver's own campaign root, so its controller re-enters a directory holding what
         the earlier life produced. Everything else wants the shared scratch cache and the
         deduplication that comes with it, so the default stands.
+
+        ``include`` narrows the fetch to the keys it selects (see
+        ``StorageClient.download_prefix``); the same caller uses it to take a campaign's
+        control plane without its run artifacts. A narrowed fetch leaves an **incomplete**
+        directory behind, so whoever asks for one owns getting the rest before anything reads
+        it -- ``ExecutionBackend.ensure_campaign_root_complete`` is that call.
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
@@ -3912,7 +3922,7 @@ class ClusterService(LocalTransport):
                 # line serves whoever reads the pod log; ``on_progress`` serves the UI, which
                 # additionally needs the denominator to draw a bar.
                 n = storage.download_prefix(
-                    bucket, prefix, str(dest), force=force,
+                    bucket, prefix, str(dest), force=force, include=include,
                     on_file=in_pod_storage.download_progress_logger(
                         f"Campaign {campaign_id}"),
                     on_progress=in_pod_storage.download_progress_reporter(on_change))

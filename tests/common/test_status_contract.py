@@ -188,3 +188,95 @@ def test_the_durable_outcome_round_trips_the_stall_fields(tmp_path):
     reloaded = read_execution_outcome(tmp_path)
     assert reloaded.progress_deadline_s == 900
     assert reloaded.progress_since == pytest.approx(stamp)
+
+
+# -- budget_positions: the one derivation every Python reader shares ----------
+
+
+def test_budget_positions_derives_only_the_time_row():
+    """A ``time`` criterion is the only one whose value is a pure function of wall-clock, so it
+    is the only one derived. Every other row is a count the controller writes when it actually
+    changes and is already current."""
+    import time
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(search_since=time.time() - 1800,
+                budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time"),
+                        BudgetItem(label="runs", current=120.0, limit=180.0, kind="runs")])
+    out = budget_positions(st)
+    assert 1790 < out[0].current < 1810   # derived, not the stale 600
+    assert out[1].current == 120.0        # untouched
+
+
+def test_budget_positions_clamps_and_does_not_mutate():
+    """Clamped because a search stops when the criterion fires, so elapsed past the cap is time
+    it never spent. Non-mutating because a derived value must never be written back into the
+    controller's state -- see ``_progress_signal``."""
+    import time
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(search_since=time.time() - 99_999,
+                budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time")])
+    assert budget_positions(st)[0].current == 3600.0
+    assert st.budget[0].current == 600.0
+
+
+def test_budget_positions_without_an_origin_returns_the_published_rows():
+    from robovast.client.status import BudgetItem, Status, budget_positions
+    st = Status(budget=[BudgetItem(label="time", current=600.0, limit=3600.0, kind="time")])
+    assert budget_positions(st)[0].current == 600.0
+
+
+# The verdict reaches HTTP callers on the wire, so no client re-derives the gates. What
+# follows pins that shape: the served status carries the verdict, the persisted one does not.
+
+
+def test_the_served_status_carries_the_verdict():
+    """A client of the status route must not need `stall_report` to know it is wedged."""
+    import time
+
+    from robovast.client.status import STALL_NEXT_STEP, status_response
+    served = status_response(_live(progress_since=time.time() - 700,
+                                   progress_deadline_s=600))
+    assert served.stalled is True
+    assert STALL_NEXT_STEP in (served.stall_reason or "")
+    assert served.progress_age_s >= 699
+
+
+def test_the_served_status_withholds_a_verdict_for_a_queued_batch():
+    """A batch queued for capacity has no run to judge, so the route must serve the
+    refusal rather than the arithmetic: the age passes the per-run budget while nothing
+    is running, and a client reading the age alone would call that a stall."""
+    import time
+
+    from robovast.client.status import NO_STALL_VERDICT_QUEUED, status_response
+    served = status_response(_live(progress_since=time.time() - 900,
+                                   progress_deadline_s=600,
+                                   waiting_for_capacity=True))
+    assert served.stalled is None
+    assert served.stall_verdict == NO_STALL_VERDICT_QUEUED
+    # Withholding the verdict must not withhold the wait: that is the number an operator acts on.
+    assert served.progress_age_s >= 899
+
+
+def test_a_terminal_campaign_is_served_no_verdict_at_all():
+    """Absent rather than null, matching the MCP: a field present on every campaign is one
+    readers learn to skip."""
+    import time
+
+    from robovast.client.status import Status, status_response
+    served = status_response(Status(phase="finished", progress_since=time.time() - 9000,
+                                    progress_deadline_s=600))
+    assert served.stalled is None
+    assert served.progress_age_s is None
+    assert served.stall_reason is None and served.stall_verdict is None
+
+
+def test_the_persisted_status_cannot_carry_a_verdict():
+    """`Status` is the controller's state and is stored verbatim, so a verdict on it would
+    be read back later as a live accusation against a campaign that has since moved on. The
+    derived fields exist only on the served shape."""
+    from robovast.client.status import Status, StatusResponse
+    derived = {"stalled", "stall_reason", "stall_verdict", "progress_age_s"}
+    assert derived & set(Status.model_fields) == set()
+    assert derived <= set(StatusResponse.model_fields)
+    # The served shape stays a superset of the state, so nothing a client read before is gone.
+    assert set(Status.model_fields) <= set(StatusResponse.model_fields)

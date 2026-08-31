@@ -123,7 +123,7 @@ second for as long as any tab is open. So the cost of a field there is multiplie
 screen, by polls, and by open tabs — and served over HTTP/2, where no connection limit throttles a
 page-load burst the way it once did.
 
-Three tiers, and the question to ask of any new data is which one it is in:
+Four tiers, and the question to ask of any new data is which one it is in:
 
 .. list-table::
    :header-rows: 1
@@ -131,9 +131,12 @@ Three tiers, and the question to ask of any new data is which one it is in:
    * - Kind
      - Example
      - Transport
+   * - An origin, for anything time-dependent
+     - ``phase_since``, ``batch_since``, ``search_since``
+     - on the polled ``Status``, written **once**
    * - Bounded state, and cursors
      - phase, run counters, ``batches_done``, ``best_objective``
-     - on the polled ``Status``
+     - on the polled ``Status``, written when it changes
    * - A series, read by whoever is looking at it
      - a search's per-batch objective trajectory
      - its own route, fetched lazily, keyed on a cursor
@@ -141,14 +144,50 @@ Three tiers, and the question to ask of any new data is which one it is in:
      - a future live run view
      - its own stream, per run
 
-The middle row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry
+The **series** row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry
 per batch, growing for the whole run — that **nothing ever read**, on the payload polled most
 often in the system. It was replaced by ``GET /campaigns/{id}/search/history``, which is requested
 only while something is displaying it and re-requested only when ``batches_done`` (a single integer
 on the status) moves. A series is almost never so small that it belongs on the status; if it grows
 with batches, runs, or time, it does not.
 
-The third row is deliberately a *separate* stream rather than another event type on
+``GET /admin/events`` is the **series** row done the way that row prescribes: its own
+cursor-keyed route, requested by whatever is displaying it and resumed from ``next_seq``, rather
+than a field on a payload every open tab re-fetches once a second.
+
+It is also the one durable thing this service keeps about itself. ``/admin/log`` is this
+process's recent stderr and dies with it, and the usage samples say the same about themselves —
+both answer "what is it doing *now*". The events worth keeping are the ones a restart destroys,
+which is why they are in SQLite on a mounted volume rather than a third ring. What it records
+today is **refusals**: a campaign's failure is on its card and in its ``outcome.json``, but a
+refused *action* was composed in the request that refused it, rendered once, and then gone.
+
+The **origin** row is the cheapest tier and the one most often missed. A value that is a pure
+function of wall-clock plus one stored origin is transported as the *origin*, never as the value:
+the reader already has a clock. A ``time`` budget's elapsed seconds is the case that established
+this. Its ``current`` comes from ``stop.progress()``, which the controller calls once per batch, so
+on the wire it steps per round rather than ticking — and the obvious fix, having the progress poller
+rewrite it every few seconds, is wrong twice over. It pays for the value on every poll forever, and
+it breaks stall detection: ``ControllerState._progress_signal`` includes each budget row's
+``current``, so a row rewritten from wall-clock advances the progress signal continuously and no
+time-budgeted search can ever be reported stalled again. That is the same trap the signal already
+avoids by not being ``updated_at``. What ships instead is ``search_since``, published once, with
+every reader deriving elapsed through ``budget_positions`` (and its TS mirror ``budgetPosition``).
+
+Hence the invariant behind it, which is not about transport at all: **a derived value never enters
+the progress signal.** That tuple may contain only facts whose change *is* evidence the campaign
+advanced. Wall clock advancing is not one.
+
+Two worked examples of the tiers, for the search criteria specifically. A criterion's comparison
+sense is **tier one** — static config, written once, never changing — and is on the status as
+``BudgetItem.op`` for exactly that reason: without it no reader can render a ``stopping`` row
+correctly, and a bare ``current / limit`` pair silently asserts a ``>=`` the criterion may not use.
+
+A strategy's ``report().extra`` is **tier two's opposite**: an open dict of unbounded size (it carries ``elites``, ``measure_names``, ``best_elite``), so putting it on the
+status to surface a QD ``coverage`` figure would recreate ``batch_history`` exactly. It belongs on a
+route keyed on ``batches_done``, like the trajectory above.
+
+The **telemetry** row is deliberately a *separate* stream rather than another event type on
 ``/campaigns/events``. A run's telemetry and a campaign list have different lifetimes
 (per-run-while-viewing versus always-on), different rates, and different failure semantics;
 multiplexed together, one slow consumer stalls the other and a run view's reconnects disturb the

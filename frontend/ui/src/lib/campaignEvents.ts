@@ -72,3 +72,28 @@ export function diffCampaignPhases(
 export function seedPhases(next: readonly CampaignSummary[]): Map<string, string> {
   return new Map(next.map((c) => [c.campaign_id, c.phase]))
 }
+
+/** What to say about each kind of transition. */
+export function describeCampaignEvent(evt: CampaignEvent): { message: string; note?: string } {
+  const runs = evt.summary.num_runs
+    ? `${evt.summary.num_runs} runs` +
+      (evt.summary.num_failed ? ` · ${evt.summary.num_failed} failed` : '')
+    : undefined
+  switch (evt.kind) {
+    case 'started':
+      return { message: `Campaign started`, note: evt.campaignId }
+    case 'finished':
+      return { message: `Campaign finished`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
+    case 'stopped':
+      return { message: `Campaign stopped`, note: [evt.campaignId, runs].filter(Boolean).join(' · ') }
+    case 'failed':
+      // The reason, when the listing carries one. Without it this notice could only name the
+      // campaign -- "Campaign failed", and go and look -- because the failure reason lived in
+      // the per-campaign Status, which this stream never fetches. `summary.error` is the first
+      // line of it; the card has the rest.
+      return {
+        message: `Campaign failed`,
+        note: [evt.campaignId, evt.summary.error].filter(Boolean).join(' · '),
+      }
+  }
+}
