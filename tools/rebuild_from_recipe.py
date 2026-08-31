@@ -49,6 +49,11 @@ _MANIFEST_DIR = "/etc/robovast/build-manifest"
 _MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
 _SEPARATORS = {"apt": "=", "pip": "==", "vcs": "->"}
 
+#: How long a cold rebuild may take before it is called a failure. Generous, because that is
+#: what it is: no build cache is used (a cached rebuild would reuse the layers being checked
+#: and confirm nothing), so this installs the whole stack from the dated archives every time.
+BUILD_TIMEOUT_S = 150 * 60
+
 
 def parse_lock(kind: str, text: str) -> dict:
     """One manifest file as ``{name: version}``. Mirrors ``image_build.\\_parse_manifest``."""
@@ -112,7 +117,9 @@ def build_command(recipe: dict, *, tag: str, dockerfile: str, context: str) -> l
         value = recipe.get(label)
         if value:
             args += ["--build-arg", f"{arg}={value}"]
-    return (["docker", "buildx", "build", "--load", "-t", tag,
+    # --progress=plain: the default renderer redraws in place, which a log file records as a
+    # single unreadable line. Plain output is what makes a long build followable.
+    return (["docker", "buildx", "build", "--progress=plain", "--load", "-t", tag,
              "-f", dockerfile] + args + [context])
 
 
@@ -236,10 +243,19 @@ def main() -> int:
               f"nothing to compare a rebuild against. Pull it first if it is not local.")
         return 1
 
-    built = _run(command, cwd=_REPO)
+    # Streamed, not captured. This is the long step by far -- a cold rebuild of the whole
+    # stack -- and a caller watching a silent process for an hour cannot tell a slow build
+    # from a wedged one. The timeout is the other half of that: a build that stops making
+    # progress must end as a failure with output, not as a job that runs until the runner
+    # kills it.
+    sys.stdout.flush()
+    try:
+        built = subprocess.run(command, cwd=_REPO, check=False, timeout=BUILD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"::error::the rebuild did not finish within {BUILD_TIMEOUT_S // 60} minutes. "
+              f"The output above is where it stopped.")
+        return 1
     if built.returncode != 0:
-        print(built.stdout[-4000:])
-        print(built.stderr[-4000:], file=sys.stderr)
         print("::error::the rebuild failed, so the recorded recipe is not sufficient to "
               "reproduce this image. The output above says which step could not be satisfied.")
         return 1
