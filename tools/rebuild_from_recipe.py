@@ -32,7 +32,11 @@ import pathlib
 import subprocess
 import sys
 
-_REPO = pathlib.Path(__file__).resolve().parents[1]
+#: The checkout to build. The **working directory**, not this file's location: the caller may
+#: copy this script out of the tree it is checking -- the rebuild workflow does exactly that, so
+#: that a fix to the checker is not itself pinned to the revision being checked -- and where the
+#: script happens to sit then says nothing about which checkout to build.
+_REPO = pathlib.Path.cwd()
 
 #: Recipe label -> the build ARG it was baked from. The values are what a rebuild must be given
 #: back; a pin recorded but not passed reproduces the shape and not the software.
@@ -48,6 +52,11 @@ _REVISION_LABEL = "org.opencontainers.image.revision"
 _MANIFEST_DIR = "/etc/robovast/build-manifest"
 _MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
 _SEPARATORS = {"apt": "=", "pip": "==", "vcs": "->"}
+
+#: How long a cold rebuild may take before it is called a failure. Generous, because that is
+#: what it is: no build cache is used (a cached rebuild would reuse the layers being checked
+#: and confirm nothing), so this installs the whole stack from the dated archives every time.
+BUILD_TIMEOUT_S = 150 * 60
 
 
 def parse_lock(kind: str, text: str) -> dict:
@@ -112,7 +121,9 @@ def build_command(recipe: dict, *, tag: str, dockerfile: str, context: str) -> l
         value = recipe.get(label)
         if value:
             args += ["--build-arg", f"{arg}={value}"]
-    return (["docker", "buildx", "build", "--load", "-t", tag,
+    # --progress=plain: the default renderer redraws in place, which a log file records as a
+    # single unreadable line. Plain output is what makes a long build followable.
+    return (["docker", "buildx", "build", "--progress=plain", "--load", "-t", tag,
              "-f", dockerfile] + args + [context])
 
 
@@ -236,10 +247,19 @@ def main() -> int:
               f"nothing to compare a rebuild against. Pull it first if it is not local.")
         return 1
 
-    built = _run(command, cwd=_REPO)
+    # Streamed, not captured. This is the long step by far -- a cold rebuild of the whole
+    # stack -- and a caller watching a silent process for an hour cannot tell a slow build
+    # from a wedged one. The timeout is the other half of that: a build that stops making
+    # progress must end as a failure with output, not as a job that runs until the runner
+    # kills it.
+    sys.stdout.flush()
+    try:
+        built = subprocess.run(command, cwd=_REPO, check=False, timeout=BUILD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"::error::the rebuild did not finish within {BUILD_TIMEOUT_S // 60} minutes. "
+              f"The output above is where it stopped.")
+        return 1
     if built.returncode != 0:
-        print(built.stdout[-4000:])
-        print(built.stderr[-4000:], file=sys.stderr)
         print("::error::the rebuild failed, so the recorded recipe is not sufficient to "
               "reproduce this image. The output above says which step could not be satisfied.")
         return 1
