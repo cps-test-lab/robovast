@@ -1403,11 +1403,26 @@ echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
 # and its resource monitor have stopped), so last-writer-wins is the correct resolution
 # and not a race. Payload each container uniquely owns was never affected -- mc skips
 # same-size objects, so this costs no extra transfer for the bag or the capture.
-mc mirror --overwrite /out/ "${S3_DEST}/"
+#
+# --exclude '*.part' keeps IN-PROGRESS files out of the store. The suffix is roqsim's live
+# sample stream (roqsim.capture.STREAM_SUFFIX): the recorder appends to run.npz.part as the
+# run goes, and packs it into run.npz at close, unlinking the stream. But the containers
+# above upload in FINISHING order, so one that stops while the simulator is still recording
+# mirrors the half-written stream -- and mc mirror does not delete (no --remove), so the
+# object survives the unlink that removed the file. Every successful run was leaving a
+# permanent second copy of its samples behind: one measured campaign held 336 of them,
+# 158 MB, one beside every run.npz it had.
+#
+# Safe to drop wholesale rather than by name: nothing reads a .part. roqsim documents the
+# one left by a hard kill as forensics whose signal is the ARCHIVE'S ABSENCE, not the
+# stream's presence, so excluding it loses no evidence -- and a run's own container removes
+# its stream before uploading anyway, which is why this only ever catches another
+# container's snapshot of a file still being written.
+mc mirror --overwrite --exclude '*.part' /out/ "${S3_DEST}/"
 echo "[s3-upload] Mirror complete. Re-tagging executable files..."
 # Re-tag executable files with x-amz-meta-executable metadata
 _exec_count=0
-find /out/ -type f -executable | while IFS= read -r f; do
+find /out/ -type f -executable -not -name '*.part' | while IFS= read -r f; do
     rel="${f#/out/}"
     mc cp --attr "x-amz-meta-executable=yes" "${S3_DEST}/${rel}" "${S3_DEST}/${rel}" --quiet
     _exec_count=$((_exec_count + 1))

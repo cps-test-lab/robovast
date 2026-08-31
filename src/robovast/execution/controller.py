@@ -1157,6 +1157,13 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     cluster_config = getattr(backend, "cluster_config", None)
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
+    # A campaign this process RESUMED holds only its control plane until now (see
+    # cluster_execution.campaign_resume), and ``data.db`` is derived from the whole tree.
+    # Here rather than in the caller's tail because this is the first reader that needs it:
+    # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
+    # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
+    # start to finish in this process.
+    backend.ensure_campaign_root_complete(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
         if state is not None:

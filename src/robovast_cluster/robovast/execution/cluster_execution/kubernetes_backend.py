@@ -3175,6 +3175,33 @@ class KubernetesBackend(ExecutionBackend):
         except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
             logger.warning("Could not publish campaign.db for %s: %s", campaign_id, e)
 
+    def ensure_campaign_root_complete(self, campaign_root: str) -> None:
+        """Fetch whatever of *campaign_root* resume left in the object store.
+
+        A resumed campaign starts with its control plane only (``campaign_resume``), so the
+        artifacts of everything its previous life ran are still nowhere but the store. This is
+        where they come back, because this is where they are first read.
+
+        A no-op in bytes for a campaign that was never interrupted: the objects are immutable
+        and ``download_prefix`` skips a local file whose size already matches, so all this
+        costs then is the listing. Best-effort is not an option here -- a truncated tree would
+        yield a truncated ``data.db`` and a canonical publish missing runs that really ran --
+        so a failure propagates.
+        """
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        bucket, prefix = in_pod_storage.campaign_storage_location(
+            self.cluster_config, campaign_id)
+        storage = in_pod_storage.storage_client_for(self.cluster_config)
+        os.makedirs(campaign_root, exist_ok=True)
+        n = storage.download_prefix(
+            bucket, prefix, campaign_root,
+            on_file=in_pod_storage.download_progress_logger(
+                f"Campaign {campaign_id} (completing root)"))
+        if n:
+            logger.info("Completed campaign root for %s with %d file(s) from %s/%s "
+                        "that a service restart had left in the object store",
+                        campaign_id, n, bucket, prefix)
+
     def finalize_campaign(self, campaign_root: str) -> None:
         """Publish the canonical campaign to storage so the bucket matches local.
 
