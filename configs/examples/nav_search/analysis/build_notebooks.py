@@ -178,24 +178,110 @@ if not scored.empty:
     plt.tight_layout(); plt.show()
 '''
 
-HEADLINE = '''\
-# Computed, never written into the text above: a notebook must not be able to claim a
-# finding its own campaign does not support.
+# --- headline numbers --------------------------------------------------------
+#
+# BASE is what every campaign can say about itself. ANSWER is what THIS campaign was run
+# to find out, and there is one per strategy, because a notebook that prints the same
+# numbers as its neighbour cannot answer a question its neighbour was not asked. Each is
+# computed from the campaign and never written into the prose above it.
+
+BASE = """\
 if not scored.empty:
     failed = (scored['robustness'] < 0).sum()
-    at_ends = ((scored['m_failure_rate'] == 0) | (scored['m_failure_rate'] == 1)).mean() \\
-        if 'm_failure_rate' in scored else float('nan')
     print(f"cells scored          : {len(scored)}")
     print(f"runs spent            : {int(scored['n_samples'].sum())}")
     print(f"cells that failed     : {failed}  ({failed / len(scored):.0%})")
     print(f"worst robustness      : {scored['robustness'].min():.3f}")
-    print(f"closest to the edge   : {scored['robustness'].abs().min():.3f}")
     print()
-    print("The comparison this campaign is FOR:")
-    print(f"  failure_rate sits at 0 or 1 for {at_ends:.0%} of cells -- a verdict, and a cliff.")
-    print(f"  robustness spans {scored['robustness'].min():.3f} to "
-          f"{scored['robustness'].max():.3f} -- the gradient a search can climb.")
-'''
+"""
+
+# random / halton: a fraction of a space, so the answer is that fraction and how well it is
+# pinned down. Wilson rather than Wald -- at 60 cells and a fraction near 0.7 the normal
+# approximation's interval runs past what a proportion can be.
+COVERAGE_ANSWER = """\
+    import math
+    n = len(scored); k = int(failed); phat = k / n
+    z = 1.96
+    denom = 1 + z * z / n
+    centre = (phat + z * z / (2 * n)) / denom
+    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
+    print("What this campaign is FOR -- the fraction of the space that fails:")
+    print(f"  {phat:.1%} of cells  (95% Wilson interval {centre - half:.1%} .. {centre + half:.1%})")
+    print(f"  interval width      : {2 * half:.1%} over {n} cells")
+    print("  A DIFFERENT strategy's fraction is read against this one. To compare the")
+    print("  WIDTH of two intervals, run each over several seed: values -- a spread is a")
+    print("  property of an estimator across repeats, not something one campaign reports.")
+"""
+
+# tpe / cmaes: adversarial, so the answer is not what was found but how fast. Measured
+# against the campaign's OWN best, so no external threshold has to be agreed on.
+CONVERGENCE_ANSWER = """\
+    order = scored.reset_index(drop=True)
+    best = order['robustness'].cummin()
+    final = best.iloc[-1]
+    print("What this campaign is FOR -- how FEW evaluations found it:")
+    print(f"  best crossing found : {final:.3f}")
+    for frac in (0.5, 0.9, 1.0):
+        target = final * frac
+        hit = (best <= target).idxmax() + 1 if (best <= target).any() else None
+        label = f"{frac:.0%} of that depth"
+        print(f"  {label:<20}: {hit} evaluation(s)" if hit else f"  {label:<20}: not reached")
+    print(f"  evaluations spent   : {len(order)}")
+    print("  Read against the other sampler at the same runs: budget. Fewer evaluations to")
+    print("  the same depth is the whole claim; the final number alone is not.")
+"""
+
+QD_ANSWER = """\
+    modes = scored['m_failure_mode'].value_counts() if 'm_failure_mode' in scored else {}
+    print("What this campaign is FOR -- how many KINDS of trouble exist:")
+    print(f"  distinct failure modes found : {len(modes)}")
+    for mode, count in modes.items():
+        sub = scored[scored['m_failure_mode'] == mode]['robustness']
+        print(f"    {mode:<12} {count:>3} cell(s), robustness {sub.min():.3f} .. {sub.max():.3f}")
+    print("  An archive is judged on the SPREAD it fills, not on its best cell: two modes")
+    print("  found once each beat one mode found forty times.")
+"""
+
+BOUNDARY_ANSWER = """\
+    band = scored[scored['robustness'].abs() <= 0.05]
+    print("What this campaign is FOR -- WHERE it starts failing:")
+    print(f"  cells within +-0.05 of the boundary : {len(band)} of {len(scored)}")
+    if not band.empty:
+        for col, label in (('gap_width', 'doorway [m]'), ('walker_dwell', 'walker dwell [s]')):
+            if col in band:
+                print(f"    {label:<18} {band[col].min():.2f} .. {band[col].max():.2f}")
+        print("  A boundary that spans a RANGE on both axes is a contour, not a threshold:")
+        print("  neither factor alone decides the outcome.")
+"""
+
+REPS_ANSWER = """\
+    reps = scored['n_samples']
+    spent = int(reps.sum())
+    flat = 3 * len(scored)
+    print("What this campaign is FOR -- the same answer for FEWER runs:")
+    print(f"  repetitions per cell : mean {reps.mean():.2f}, range {reps.min()}..{reps.max()}")
+    print(f"  runs spent           : {spent}")
+    print(f"  a flat 3 reps/cell   : {flat}   ({spent - flat:+d} runs)")
+    print("  The saving is real only if the worst crossing is as deep as the campaign this")
+    print("  is read against found with MORE runs. Compare both numbers, never one.")
+"""
+
+MINIMAX_ANSWER = """\
+    outer = [c for c in ('inflation_radius', 'max_speed') if c in scored]
+    print("What this campaign is FOR -- which TUNING survives the worst:")
+    if outer:
+        worst_per_tuning = scored.groupby(outer)['robustness'].min()
+        best_tuning = worst_per_tuning.idxmax()
+        print(f"  tunings evaluated    : {len(worst_per_tuning)}")
+        print(f"  most robust tuning   : " +
+              ", ".join(f"{c}={v:.3f}"
+                        for c, v in zip(outer, best_tuning if isinstance(best_tuning, tuple)
+                                        else (best_tuning,))))
+        print(f"  its worst crossing   : {worst_per_tuning.max():.3f}")
+        print(f"  the worst tuning's   : {worst_per_tuning.min():.3f}")
+        print("  The gap between those two is what the tuning choice is worth.")
+"""
+
 
 # --- what each notebook says -------------------------------------------------
 
@@ -208,7 +294,8 @@ is in the way. It assumes nothing and covers everything badly, which is the poin
 the reference every other strategy here is read against.
 
 **What to look for:** the dots land anywhere, including clumps and gaps. A failure region
-narrower than the gaps between them is one this campaign can miss entirely."""),
+narrower than the gaps between them is one this campaign can miss entirely.""",
+     COVERAGE_ANSWER),
 
     ("nav_search_halton", "Halton — the same estimate, tighter", SCATTER,
      """## Low-discrepancy coverage
@@ -218,7 +305,8 @@ by construction rather than by luck.
 
 **What to look for:** compare this picture with the random campaign's at the *same run
 budget*. Same number of dots, no clumps, no holes — and the headline's failure fraction
-carries less uncertainty for it."""),
+carries less uncertainty for it.""",
+     COVERAGE_ANSWER),
 
     ("nav_search_tpe", "TPE — the single worst crossing", CONVERGENCE,
      """## Exploitation
@@ -227,7 +315,8 @@ Optuna's TPE drives toward the most failure-prone combination it can find, and s
 it has a genuine failure rather than spending the rest of the budget confirming it.
 
 **What to look for:** how *early* the line drops. The comparison with random is not what
-was found but how few evaluations found it."""),
+was found but how few evaluations found it.""",
+     CONVERGENCE_ANSWER),
 
     ("nav_search_cmaes", "CMA-ES — a different way down", CONVERGENCE,
      """## An evolution strategy
@@ -238,7 +327,8 @@ which a fixed batch budget cannot see.
 
 **What to look for:** the same axes as the TPE notebook, so the two curves are directly
 comparable. A search that flattens early and keeps spending is the failure this stop
-exists to prevent."""),
+exists to prevent.""",
+     CONVERGENCE_ANSWER),
 
     ("nav_search_qd", "Quality-diversity — how many kinds of trouble", ARCHIVE,
      """## A map, not a maximum
@@ -249,7 +339,8 @@ came, so a cell that collides and a cell that gives up are different entries rat
 two points with the same score.
 
 **What to look for:** how many rows have anything in them. An empty row is a kind of
-failure this system does not exhibit — which is a result."""),
+failure this system does not exhibit — which is a result.""",
+     QD_ANSWER),
 
     ("nav_search_boundary", "Boundary — where it starts failing", SCATTER,
      """## The edge, not the extreme
@@ -259,7 +350,8 @@ where the edge *is*, and no budget spent deep inside the failure region answers 
 traces the contour where robustness crosses zero.
 
 **What to look for:** the samples should crowd along the colour change rather than
-spreading evenly. That crowding is the strategy working."""),
+spreading evenly. That crowding is the strategy working.""",
+     BOUNDARY_ANSWER),
 
     ("nav_search_adaptive_reps", "Adaptive repetitions — the same answer for less", REPS,
      """## Spending where the outcome is in doubt
@@ -270,7 +362,8 @@ uniformly. Read it against `nav_search_tpe`: same strategy, same space, same *ru
 **What to look for:** an uneven bar chart. Cells whose neighbours agreed get one run; cells
 near the boundary get several. On the campaign that motivated this, 3 of 32 cells produced
 a mixed outcome over 5 repetitions — the other 145 runs each bought a bit that one run had
-already established."""),
+already established.""",
+     REPS_ANSWER),
 
     ("nav_search_minimax", "Minimax — which tuning survives the worst", FRONT,
      """## Robust design
@@ -282,13 +375,14 @@ average.
 
 **What to look for:** `report().extra['robust_tuning']` in the campaign record holds the
 answer. The controller's own "best objective" does **not**: it folds the flat inner
-objective, which is a different quantity."""),
+objective, which is a different quantity.""",
+     MINIMAX_ANSWER),
 ]
 
 
 def main():
-    for name, title, figure, why in CAMPAIGNS:
-        nb = notebook(why, f"TITLE = {title!r}\n\n" + figure, HEADLINE)
+    for name, title, figure, why, answer in CAMPAIGNS:
+        nb = notebook(why, f"TITLE = {title!r}\n\n" + figure, BASE + answer)
         out = HERE / f"{name}.ipynb"
         out.write_text(json.dumps(nb, indent=1) + "\n")
         print("wrote", out.relative_to(HERE.parent))
