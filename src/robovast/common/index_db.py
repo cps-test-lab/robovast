@@ -38,8 +38,16 @@ to start because a database driver is absent from an image that never talks to o
 import logging
 import os
 import re
+from typing import TYPE_CHECKING
 
 from robovast.common.errors import IndexUnreachableError
+
+if TYPE_CHECKING:  # pragma: no cover - for type checkers and linters only
+    # The driver is imported for its type alone. At runtime it is imported inside the
+    # functions that need it (see the module docstring), so an image without it still
+    # imports this module; a static analyser that cannot see the return type otherwise
+    # reports every `conn.execute` in every caller as an error on a missing member.
+    import psycopg
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +86,8 @@ def index_dsn(dsn: str = None) -> str:
     return resolved
 
 
-def connect(dsn: str = None, *, readonly: bool = False, autocommit: bool = True):
+def connect(dsn: str = None, *, readonly: bool = False,
+            autocommit: bool = True) -> "psycopg.Connection":
     """Connect to the index, translating a failure to reach it into one sentence.
 
     *readonly* opens the session with ``default_transaction_read_only``, which is the
@@ -111,8 +120,8 @@ def connect(dsn: str = None, *, readonly: bool = False, autocommit: bool = True)
             f"{str(exc).strip() or exc.__class__.__name__}") from exc
 
     if readonly:
-        # pylint cannot see through the local import to psycopg's Connection, which does
-        # have execute(); the import is local for the reason in the module docstring.
+        # pylint infers the local psycopg import rather than the annotation above; the
+        # Connection does have execute().
         conn.execute(  # pylint: disable=no-member
             "SET default_transaction_read_only = on")
     return conn

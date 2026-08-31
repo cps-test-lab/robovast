@@ -186,6 +186,10 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
                    types={"display_name": TEXT, "sql_name": TEXT},
                    source=campaign_id)
 
+    # Recorded even when the campaign produced no rows at all: "ingested and empty" is a
+    # different answer from "never ingested", and only the registry can tell them apart.
+    index_schema.record_campaign(conn, campaign_id)
+
     logger.info("index: ingested %s (%s)", campaign_id,
                 ", ".join(f"{t}={n}" for t, n in sorted(totals.items())) or "nothing")
     return totals

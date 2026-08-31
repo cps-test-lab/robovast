@@ -95,6 +95,12 @@ COLUMN_TYPES_TABLE = "_column_types"
 #: a primary key of ``(table, column)`` alone would let one silently overwrite the other.
 COLUMN_NOTES_TABLE = "_column_notes"
 
+#: Which campaigns have been ingested. Written by the ingest, read to tell "not ingested"
+#: from "ingested and empty" -- two different answers that an empty result set conflates.
+#: A registry rather than an inference from the campaign record, because a campaign whose
+#: ``campaign.db`` is missing still has measurements worth reading.
+CAMPAIGNS_TABLE = "_campaigns"
+
 #: A note authored in code because the column always deserves the warning.
 NOTE_DOC = "doc"
 
@@ -130,6 +136,9 @@ def ensure_metadata_tables(conn) -> None:
         "column_name text NOT NULL, verdict text NOT NULL, "
         "PRIMARY KEY (schema_name, table_name, column_name))")
     conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {_quote(CAMPAIGNS_TABLE)} ("
+        "campaign_id text PRIMARY KEY, ingested_at timestamptz NOT NULL DEFAULT now())")
+    conn.execute(
         f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_NOTES_TABLE)} ("
         "table_name text NOT NULL, column_name text NOT NULL, kind text NOT NULL, "
         "note text NOT NULL, PRIMARY KEY (table_name, column_name, kind))")
@@ -159,6 +168,14 @@ def record_note(conn, table: str, column: str, note: str, kind: str = NOTE_DOC) 
         "VALUES (%s, %s, %s, %s) ON CONFLICT (table_name, column_name, kind) DO UPDATE "
         "SET note = EXCLUDED.note",
         (table, column, kind, note))
+
+
+def record_campaign(conn, campaign_id: str) -> None:
+    """Note that *campaign_id* has been ingested."""
+    ensure_metadata_tables(conn)
+    conn.execute(
+        f"INSERT INTO {_quote(CAMPAIGNS_TABLE)} (campaign_id) VALUES (%s) "
+        "ON CONFLICT (campaign_id) DO UPDATE SET ingested_at = now()", (campaign_id,))
 
 
 def known_tables(conn) -> list:
