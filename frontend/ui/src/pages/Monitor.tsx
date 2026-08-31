@@ -181,6 +181,33 @@ function StepFailure({
 // there is one and the newest finished one otherwise. It is the only card whose post-run failures
 // open by themselves, and those render only when the campaign is at rest (see StepFailure), so a
 // live campaign at the top simply means nothing auto-expands.
+/** What the time column says about a RUNNING campaign.
+ *
+ *  The column asks "how much longer", and for a search the estimate alone cannot answer it: it is
+ *  projected from what BOUNDS the search (see campaignEtaSeconds), so it reports when the declared
+ *  work runs out and not when the search stops. A `no_improvement` criterion one flat round from
+ *  firing means that work will not be done — and this cell was EMPTY for a search bounded only by
+ *  convergence, which is exactly the case whose answer is interesting.
+ *
+ *  `stopping_soon` supersedes the duration rather than joining it. It is the more decision-relevant
+ *  fact, it is what the duration would otherwise misstate, and AGE_COLUMN is a fixed width that a
+ *  `·`-joined pair would overflow. The numbers and the criterion's own sentence are on the hover.
+ *
+ *  The verdict is the service's (`stopping_soon_report` in the status contract) and this only
+ *  renders it — the same rule as the stall verdict beside it, and for the same reason: a second
+ *  copy of its gates here is a second set to keep in step. Tri-state, so only `true` may speak;
+ *  `null` means no verdict was possible and says nothing rather than claiming the search will run
+ *  its budget out.
+ */
+export function runningTimeCell(status: Status | undefined, eta: number | null): string {
+  if (status?.stopping_soon === true) return 'may stop early'
+  if (eta != null) return `~${formatDuration(eta)} left`
+  // No estimate and no warning. A search bounded only by convergence has no duration to project,
+  // but it is not silent about WHY -- naming the mechanism beats the empty cell this replaced.
+  if (status?.stopping_soon === false) return 'stops on convergence'
+  return ''
+}
+
 function CampaignCard({ summary, newest, openedByLink }: {
   summary: CampaignSummary; newest: boolean; openedByLink?: boolean
 }) {
@@ -806,6 +833,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
                       { label: 'started', value: formatLocalTime(summary.started_at) },
                       { label: 'running for', value: formatAge(summary.started_at) },
                       { label: 'expected finish', value: eta != null ? formatLocalClock(eta) : null },
+                      // The verdict's own words, so the cell's two-word label can stay short
+                      // while the reason ("not improved for 2 of 3 rounds") is one hover away.
+                      { label: 'stopping soon', value: status.data?.stopping_reason ?? null },
                     ]
                   : [
                       { label: 'started', value: formatLocalTime(summary.started_at) },
@@ -820,10 +850,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
                 noWrap
                 sx={{ flexShrink: 0, width: AGE_COLUMN, textAlign: 'right', cursor: 'help' }}
               >
-                {running
-                  ? eta != null
-                    ? `~${formatDuration(eta)} left`
-                    : ''
+                {running ? runningTimeCell(status.data, eta)
                   : formatAge(summary.finished_at ?? summary.started_at)}
               </Typography>
             </HoverFacts>

@@ -3478,6 +3478,12 @@ export interface components {
             stop: {
                 [key: string]: unknown;
             } | null;
+            /** Stopping Reason */
+            stopping_reason: string | null;
+            /** Stopping Soon */
+            stopping_soon: boolean | null;
+            /** Stopping Verdict */
+            stopping_verdict: string | null;
             /** Updated At */
             updated_at: number;
             /**
