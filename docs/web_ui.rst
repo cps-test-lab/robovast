@@ -129,9 +129,13 @@ It provides four views:
   it ended in, and the new campaign appears at the top of the list with a description
   naming the one it came from. It replays the recorded launch
   (``_execution/launch.yaml``), so re-running a one-config pilot stays a one-config
-  pilot. A campaign that never recorded a usable image is refused rather than rebuilt
-  from a guess: a campaign's build context is not archived in its results, so the
-  refusal names the container and points back at the workspace.
+  pilot. A campaign that built its own image and never recorded a usable ref for it is
+  refused rather than rebuilt from a guess: a campaign's build context is not archived
+  in its results, so the refusal names the container and points back at the workspace.
+  A container the campaign did *not* build is not refused — its declared ref is
+  resolved again at launch, exactly as a fresh launch from the workspace would, and the
+  new campaign says which containers that applied to, because it will not be running
+  the same bytes.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt

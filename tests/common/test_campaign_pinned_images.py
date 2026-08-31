@@ -24,7 +24,8 @@ Two traps these tests pin down:
 import pytest
 import yaml
 
-from robovast.common.campaign_data import CampaignImageUnpinnable, campaign_pinned_images
+from robovast.common.campaign_data import (CampaignImageUnpinnable, campaign_images,
+                                           campaign_pinned_images)
 
 CLUSTER_DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 SIM_DIGEST = "harbor.example/robovast/sim@sha256:" + "b" * 64
@@ -157,3 +158,58 @@ def test_the_refusal_names_every_source_it_tried(tmp_path):
     msg = str(e.value)
     assert "image_revisions" in msg and "images" in msg and "execution_type" in msg
     assert "build context" in msg          # says why no retry would help
+
+
+# -- campaign_images: the data, and what the launch record says about building ----
+
+
+def _with_launch(tmp_path, launch: dict):
+    """Give a campaign a ``launch.yaml``. Its ``images`` key is the 'did it build?' signal."""
+    (tmp_path / "_execution").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_execution" / "launch.yaml").write_text(yaml.safe_dump(launch))
+    return tmp_path
+
+
+def test_the_launch_record_distinguishes_built_nothing_from_no_record(tmp_path):
+    """``built`` is False when the record answered, None when there is no record.
+
+    This is the distinction the refusal turns on. ``launch.yaml`` is re-recorded with ``images``
+    only once a build has produced something, so a record carrying none is positive evidence of
+    a campaign that built nothing — as opposed to one too old to have a record, where the caller
+    has to fall back to reading the configuration.
+    """
+    built_none = _with_launch(tmp_path / "a", {"campaign_name": "x", "runs": 0})
+    _campaign(built_none, execution_type="cluster", images={"sut": "reg.example/x:latest"})
+    assert campaign_images(built_none).built is False
+
+    no_record = _campaign(tmp_path / "b", execution_type="cluster",
+                          images={"sut": "reg.example/x:latest"})
+    assert campaign_images(no_record).built is None
+
+
+def test_unpinnable_names_the_container_and_keeps_the_diagnostic(tmp_path):
+    """The caller needs the NAMES to apply a policy, and the text to explain a refusal."""
+    c = _campaign(tmp_path, execution_type="cluster",
+                  images={"simulation": "reg.example/sim:latest",
+                          "sut": "reg.example/sut:latest"})
+    images = campaign_images(c)
+    assert images.pins == {}
+    assert sorted(images.unpinnable) == ["simulation", "sut"]
+    assert "images['sut']='reg.example/sut:latest'" in images.unpinnable["sut"]
+
+
+def test_a_cluster_digest_in_images_is_a_pin(tmp_path):
+    """Once the lane records what RAN rather than what was declared, ``images`` is startable.
+
+    The lane check is about the *shape* of the ref, not the lane: a digest names the same bytes
+    everywhere, which is the property a tag lacks.
+    """
+    c = _campaign(tmp_path, execution_type="cluster", images={"sut": SIM_DIGEST})
+    assert campaign_pinned_images(c) == {"sut": SIM_DIGEST}
+
+
+def test_a_cluster_tag_in_images_is_still_not_a_pin(tmp_path):
+    """The half of the old rule that was right, and must not be lost with the other half."""
+    c = _campaign(tmp_path, execution_type="cluster", images={"sut": "reg.example/sut:latest"})
+    with pytest.raises(CampaignImageUnpinnable):
+        campaign_pinned_images(c)
