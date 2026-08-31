@@ -31,7 +31,8 @@ from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.client.status import Phase, Status, budget_positions, stall_report
+from robovast.client.status import (Phase, Status, budget_positions, stall_report,
+                                    stopping_soon_report)
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +178,16 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         # bare age of the last completion says nothing a reader can act on, and cannot be
         # judged at all without a declared per-run budget -- which `validate_project`
         # reports once instead.
-        stall = stall_report(Status.model_validate(status))
+        parsed = Status.model_validate(status)
+        stall = stall_report(parsed)
         if stall.get("stall_reason"):
             lines.append(f"  Stalled: {stall['stall_reason']}")
+        # Only the affirmative verdict is printed, as with the stall above: a monitor line
+        # saying a search is NOT about to converge is noise on every refresh, and "no verdict
+        # possible" is not something a watcher can act on mid-run.
+        soon = stopping_soon_report(parsed)
+        if soon.get("stopping_reason"):
+            lines.append(f"  Stopping soon: {soon['stopping_reason']}")
         up = (status.get("extra") or {}).get("upload")
         # `Phase.SHARING`, spelled as the enum spells it. This read `"uploading"` -- a
         # phase no part of RoboVAST ever sets -- so the bar never drew once, for anyone.
