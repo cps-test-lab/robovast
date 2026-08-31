@@ -9,10 +9,10 @@
 #   container/robovast/build.sh    (base + roqsim, via --image all)
 #   container/controller/build.sh  (controller)
 #
-# The sidecar has no build.sh, so it is built with buildx directly. It used to be left
-# out for that reason -- which meant a release to a dev registry published three images and
-# silently kept the public sidecar. That gap is why the family is published as a *set*: one
-# ROBOVAST_PROJECT moves all four, so there is no longer a per-image knob to forget.
+# The sidecar has no build.sh, so it is built with buildx directly -- and is released here all
+# the same. Leaving it out publishes three images to a dev registry while silently keeping the
+# public sidecar, which is why the family is published as a *set*: one ROBOVAST_PROJECT moves
+# all four, so there is no per-image knob to forget.
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--config-write] \

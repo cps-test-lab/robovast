@@ -109,7 +109,7 @@ WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 #: Where the service keeps the working root of the campaigns it drives, and the volume
 #: backing it.
 #:
-#: Not a cache, which is what made this one expensive to get wrong. A cluster campaign's
+#: Not a cache, and expensive to treat as one. A cluster campaign's
 #: *durable* home is the object store, but the one being driven has a local tree all the
 #: same: each batch downloads its own results into it, per-run extraction reads it through a
 #: path (``search.extractor.Extractor.extract``), and postprocessing derives ``data.db``
@@ -638,9 +638,9 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
 
     ``wait_for_service_ready`` returns as soon as one replica is Ready -- which the
     **old** pod satisfies for the whole of a rolling update. Anything reading the cluster
-    right after it can therefore be looking at the generation being replaced. That is
-    exactly what made ``upgrade`` report "image unchanged" across a genuine image change:
-    it read the outgoing pod both times.
+    right after it can therefore be looking at the generation being replaced -- which makes
+    ``upgrade`` report "image unchanged" across a genuine image change, having read the
+    outgoing pod both times.
 
     Convergence is the Deployment's own account of it: the controller has observed this
     spec (``observedGeneration``), every replica is on the new template
