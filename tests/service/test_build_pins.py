@@ -26,6 +26,7 @@ CONTAINER = pathlib.Path(__file__).resolve().parents[2] / "container"
 DOCKERFILES = sorted(p for p in CONTAINER.rglob("Dockerfile*")
                      if "pins" not in p.parts)
 ROBOVAST_DOCKERFILE = CONTAINER / "robovast" / "Dockerfile"
+ROQSIM_DOCKERFILE = CONTAINER / "robovast" / "Dockerfile.roqsim"
 
 _FROM = re.compile(r"^FROM\s+(?P<ref>\S+)", re.MULTILINE)
 
@@ -97,3 +98,58 @@ def test_rolling_archives_are_removed_and_the_removal_is_checked():
     for host in ("archive.ubuntu.com", "security.ubuntu.com", "packages.ros.org"):
         assert host in text, f"{host} is never removed"
     assert "a rolling apt archive survived" in text, "the removal is never verified"
+
+
+#: The archive both ROS images fetch Ubuntu packages from unless a mirror is passed, and the only
+#: value that may be committed as a default -- a site's own mirror belongs in an environment.
+_SNAPSHOT_URI = "https://snapshot.ubuntu.com/ubuntu"
+
+
+@pytest.mark.parametrize("path", [ROBOVAST_DOCKERFILE, ROQSIM_DOCKERFILE],
+                         ids=lambda p: p.name)
+def test_a_mirror_is_a_fetch_path_and_never_reaches_the_image(path):
+    """`--ubuntu-mirror` moves where the bytes come from, not what the image is.
+
+    Two things ride on that. An image that kept a site's mirror in its apt sources carries a host
+    nobody outside that network resolves, so every `apt-get update` in a campaign container fails
+    on it -- while `org.robovast.ubuntu-snapshot` still names an archive that image cannot reach.
+    And this is a public repository: the default has to be the snapshot service itself, so no
+    site's own hostname is ever committed here.
+
+    Textual for the module's stated reason, and positional because the ordering is the whole
+    mechanism: the sources file has to be put back after the last install, or the mirror is what
+    ships. Asserted as "the last write is not the mirror one" rather than against a particular
+    sed, so the two files can restore it in whichever way suits each.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    def last(needle):
+        """The last line running *needle*, comments excluded -- they discuss it, not do it."""
+        return max(i for i, line in enumerate(lines)
+                   if needle in line and not line.lstrip().startswith("#"))
+
+    assert f"ARG UBUNTU_SNAPSHOT_MIRROR={_SNAPSHOT_URI}" in lines, \
+        "the mirror must default to the snapshot service, not to a site's own"
+    install = last("apt-get install")
+    assert last("sources.list.d/ubuntu.sources") > install, \
+        "nothing restores the apt sources after the last install, so the image ships the mirror"
+    assert not [line for line in lines[install:]
+                if "UBUNTU_SNAPSHOT_MIRROR" in line and not line.lstrip().startswith("#")], \
+        "the mirror is still referenced after the last install"
+
+
+def test_the_unpinned_escape_is_explicit_and_needs_a_mirror():
+    """A rolling mirror is usable, but only by asking for it.
+
+    Most sites mirror the archive, not the snapshot service, and appending a stamp to one of those
+    is a 404 -- so the pressure to drop the pin is real and the escape exists. What must not
+    happen is dropping it *quietly*: `none` is spelled out by the caller, it cannot be satisfied
+    by the snapshot service (which serves dated paths only, hence the mirror requirement), and it
+    reaches the label so a campaign's provenance says which of the two this image is.
+    """
+    text = ROBOVAST_DOCKERFILE.read_text(encoding="utf-8")
+    assert 'if [ "${UBUNTU_SNAPSHOT}" = none ]' in text, "no unpinned escape"
+    assert "UBUNTU_SNAPSHOT=none needs an archive to install from" in text, \
+        "unpinned without a mirror must fail, not fall back to the snapshot service"
+    assert 'LABEL org.robovast.ubuntu-snapshot="${UBUNTU_SNAPSHOT}"' in text, \
+        "the label must carry `none` too, or an unpinned image reads as a pinned one"

@@ -116,6 +116,19 @@ ARG ROS_SNAPSHOT=2026-06-18
 # (The upstream key really does carry a misspelled "ROS Spanshot builder" uid beside the correct
 # one. That is upstream, not a substitution.)
 ARG ROS_SNAPSHOT_FPR=4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
+# WHERE those archives are fetched from, as opposed to WHICH bytes the pins above name. A build on
+# a network with a slow or blocked path to the snapshot service can point this at a mirror of it,
+# without changing a single installed version.
+#
+# By default it must mirror the SNAPSHOT service, not a rolling archive: the stamp is appended to
+# it, so a rolling mirror answers 404 rather than quietly installing today's packages into an
+# image whose labels claim a dated one. A rolling mirror is usable, but only by saying so --
+# UBUNTU_SNAPSHOT=none, which drops the stamp and gives up rebuildability; see the step below.
+#
+# Supplied per build (`build.sh --ubuntu-mirror`, or the UBUNTU_SNAPSHOT_MIRROR environment
+# variable) and never written into this file, which would put one site's hostname in a public
+# repository -- and the shipped image carries a canonical URI either way, restored below.
+ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
 # grep -R, not -r: the base ships ros2.sources as a SYMLINK into /usr/share/ros-apt-source/, and
 # -r skips symlinks found while recursing. With -r the rolling repo silently survives, apt then
 # prefers whichever version is higher, and the snapshot pin quietly does nothing -- which is why
@@ -126,8 +139,21 @@ ARG ROS_SNAPSHOT_FPR=4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
 RUN . /etc/os-release \
  && grep -Rl -e archive.ubuntu.com -e security.ubuntu.com -e packages.ros.org \
       /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f \
- && printf 'Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/%s\nSuites: %s %s-updates %s-backports %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-      "${UBUNTU_SNAPSHOT}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" \
+ && if [ "${UBUNTU_SNAPSHOT}" = none ]; then \
+      if [ "${UBUNTU_SNAPSHOT_MIRROR}" = "https://snapshot.ubuntu.com/ubuntu" ]; then \
+        echo "ERROR: UBUNTU_SNAPSHOT=none needs an archive to install from: the snapshot" >&2; \
+        echo "       service serves dated paths only. Pass --ubuntu-mirror <rolling archive>." >&2; \
+        exit 1; \
+      fi; \
+      UBUNTU_URI="${UBUNTU_SNAPSHOT_MIRROR%/}"; \
+      echo "ubuntu archive: UNPINNED -- versions are whatever this archive serves today, so this"; \
+      echo "                image cannot be rebuilt to the same software later"; \
+    else \
+      UBUNTU_URI="${UBUNTU_SNAPSHOT_MIRROR%/}/${UBUNTU_SNAPSHOT}"; \
+    fi \
+ && printf 'Types: deb\nURIs: %s\nSuites: %s %s-updates %s-backports %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
+      "${UBUNTU_URI}" \
+      "${VERSION_CODENAME}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" \
       "${VERSION_CODENAME}" > /etc/apt/sources.list.d/ubuntu.sources \
  && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${ROS_SNAPSHOT_FPR}" \
       | gpg --dearmor -o /usr/share/keyrings/ros-snapshot.gpg \
@@ -136,10 +162,14 @@ RUN . /etc/os-release \
  && echo "deb [signed-by=/usr/share/keyrings/ros-snapshot.gpg] http://snapshots.ros.org/${ROS_DISTRO}/${ROS_SNAPSHOT}/ubuntu ${VERSION_CODENAME} main" \
       > /etc/apt/sources.list.d/ros2.list \
  && apt-get update \
- && if apt-cache policy | grep -E -q "archive\.ubuntu\.com|security\.ubuntu\.com|packages\.ros\.org"; then \
+ && ROLLING="packages\.ros\.org" \
+ && if [ "${UBUNTU_SNAPSHOT}" != none ]; then \
+      ROLLING="archive\.ubuntu\.com|security\.ubuntu\.com|${ROLLING}"; \
+    fi \
+ && if apt-cache policy | grep -E -q "${ROLLING}"; then \
       echo "ERROR: a rolling apt archive survived the snapshot switch, so this build would not" >&2; \
       echo "       be reproducible. Surviving source(s):" >&2; \
-      apt-cache policy | grep -E "archive\.ubuntu\.com|security\.ubuntu\.com|packages\.ros\.org" >&2; \
+      apt-cache policy | grep -E "${ROLLING}" >&2; \
       exit 1; \
     fi
 
@@ -341,6 +371,21 @@ ARG SCENARIO_EXECUTION_REF
 LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
 ARG SCENARIO_EXECUTION_SERVER_REF
 LABEL org.robovast.scenario-execution-server-ref="${SCENARIO_EXECUTION_SERVER_REF}"
+
+# A mirror is a fetch path, not a property of the image, so whatever this build downloaded from,
+# the shipped apt source names an archive anyone can reach: the dated snapshot this installed
+# from, or -- for an unpinned build, which has no dated archive to name -- the rolling one. An
+# image that kept a site's mirror would carry a host nobody outside that network can resolve,
+# every `apt-get update` in a campaign container failing on it, while the labels below name an
+# archive that image cannot reach.
+# The result is asserted rather than assumed: an unrewritten source is invisible until a pull.
+RUN if [ "${UBUNTU_SNAPSHOT}" = none ]; then \
+      CANONICAL="http://archive.ubuntu.com/ubuntu"; \
+    else \
+      CANONICAL="https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}"; \
+    fi \
+ && sed -i "s|^URIs: .*|URIs: ${CANONICAL}|" /etc/apt/sources.list.d/ubuntu.sources \
+ && grep -qx "URIs: ${CANONICAL}" /etc/apt/sources.list.d/ubuntu.sources
 
 # What a rebuild would have to start FROM, as opposed to which bytes this is. A digest is
 # reproducible exactly as long as the registry keeps it; these are what survive that.

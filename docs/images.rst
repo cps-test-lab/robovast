@@ -230,6 +230,37 @@ configure them; it does not change any configuration on its own. Pass ``CONFIG_W
 into ``~/.config/robovast/env`` — that switches every ``vast`` on the machine to this image
 set, which is why it is opt-in.
 
+A build on a network with a slow or blocked path to ``snapshot.ubuntu.com`` can fetch the
+dated Ubuntu archive from a mirror of that service instead:
+
+.. code-block:: bash
+
+   make release-images PROJECT=docker.io/<ns> UBUNTU_MIRROR=https://<mirror>/ubuntu-snapshot
+
+It swaps the host and nothing else. The stamp pinned in the Dockerfile is appended to the URL,
+so the same package versions are installed — which also means the mirror has to mirror the
+*snapshot* service. Pointed at a rolling archive the build stops before it starts, naming the
+404 and what to do about it, rather than spending four layers to fail inside apt. The two ROS
+images are the only ones it reaches (the controller is Debian, the sidecar Alpine), and the
+images they produce ship a canonical URI in their apt sources, so a published image never
+carries the mirror. A site with a mirror can export ``UBUNTU_SNAPSHOT_MIRROR`` in a shell
+profile instead of passing it each time.
+
+Most sites mirror the rolling archive rather than the snapshot service, and that is usable —
+by saying so:
+
+.. code-block:: bash
+
+   make release-images PROJECT=docker.io/<ns> \
+        UBUNTU_MIRROR=https://<mirror>/ubuntu UBUNTU_SNAPSHOT=none
+
+``UBUNTU_SNAPSHOT=none`` drops the dated path, installs whatever that archive serves today, and
+labels the images ``org.robovast.ubuntu-snapshot=none``. That label is the point: a campaign
+built on such an image records that it cannot be rebuilt to the same package versions, and
+``check-recipe`` and ``rebuild_from_recipe`` say so rather than reporting a pruned snapshot.
+It is a trade, not a speed-up — a dated archive is what makes a year-old campaign rebuildable,
+so keep it for anything a result depends on.
+
 To check a project before pointing a cluster at it:
 
 .. code-block:: bash

@@ -217,6 +217,16 @@ def main() -> int:
             print(f"::error::{label} is missing, so a rebuild would not be given that pin")
         return 1
 
+    # `none` is a recorded answer, not a missing one: the image was built against a rolling
+    # archive on purpose (UBUNTU_SNAPSHOT=none). It still cannot be rebuilt -- that archive has
+    # moved on, and which mirror served it is deliberately not recorded -- so the comparison this
+    # script exists to make would report drift that says nothing about the recipe.
+    if recipe.get("org.robovast.ubuntu-snapshot") == "none":
+        print("::error::this image was built with UBUNTU_SNAPSHOT=none, from a rolling archive. "
+              "There is no dated archive to rebuild it from, so its packages cannot be "
+              "reproduced -- only the image itself preserves them.")
+        return 1
+
     # The Dockerfile is an input too, and the recipe does not carry it -- it carries the commit
     # it came from. Rebuilding today's Dockerfile with an old image's pins tests a combination
     # that never existed, and any difference it found would be a fact about the drift rather

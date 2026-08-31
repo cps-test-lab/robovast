@@ -101,6 +101,29 @@ SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 USER root
 
 ##############################################################
+####          Point-in-time apt archives, mirrored        ####
+##############################################################
+# The base image already carries the dated Ubuntu and ROS sources every apt-get below installs
+# from, so there is nothing to pin here. What this does is repoint the Ubuntu one at a mirror of
+# the snapshot service for the duration of this build, the same knob and the same reason as in the
+# base image: a network with a slow or blocked path to the snapshot service would otherwise have a
+# mirror for the base image's installs and none for this image's, which are the heavier half.
+#
+# Only the host is replaced. The dated stamp is read back out of the source the base wrote rather
+# than pinned again here, which keeps one pin in one file: two ARGs to keep in agreement is how
+# the flavour ends up installing from a different day than the image it is FROM. A base built
+# unpinned (UBUNTU_SNAPSHOT=none) has no stamp in its URI, and then neither does this.
+#
+# The original file is kept and moved back at the end -- see there for why the shipped image must
+# not name the mirror.
+ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
+RUN cp -a /etc/apt/sources.list.d/ubuntu.sources /etc/apt/ubuntu.sources.canonical \
+ && STAMP=$(sed -n 's|^URIs: .*/\([0-9]\{8\}T[0-9]\{6\}Z\)$|\1|p' \
+      /etc/apt/sources.list.d/ubuntu.sources) \
+ && sed -i "s|^URIs: .*|URIs: ${UBUNTU_SNAPSHOT_MIRROR%/}${STAMP:+/${STAMP}}|" \
+      /etc/apt/sources.list.d/ubuntu.sources
+
+##############################################################
 ####            MuJoCo's runtime GL libraries             ####
 ##############################################################
 # `import mujoco` links against libGL even for a trial that renders nothing, so these are
@@ -249,6 +272,17 @@ RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge &&
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
     colcon build --packages-select roqsim_ros_bridge roqsim_nav2_example
+
+# Back to the archive the base image shipped, whatever this build fetched through. An image that
+# kept a site's mirror would carry a host nobody outside that network can resolve, so every
+# `apt-get update` in a campaign container would fail on it -- while the inherited
+# org.robovast.ubuntu-snapshot label still claims the base's own archive. Restoring the saved file
+# rather than rewriting the URI keeps this correct for a pinned and an unpinned base alike.
+# Asserted against both canonical forms, because an unrewritten source shows up only on a pull.
+# Before the switch to the unprivileged user below: /etc/apt is root-owned.
+RUN mv /etc/apt/ubuntu.sources.canonical /etc/apt/sources.list.d/ubuntu.sources \
+ && grep -Eq "^URIs: https?://(snapshot|archive)\.ubuntu\.com/ubuntu" \
+      /etc/apt/sources.list.d/ubuntu.sources
 
 USER ubuntu:ubuntu
 
