@@ -62,9 +62,16 @@ from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
 
 logger = logging.getLogger(__name__)
 
-#: Every ingested table carries these, prepended, so one table holds the whole corpus and
-#: a campaign is a ``WHERE`` clause rather than an attached database.
+#: What scopes a metric row: which campaign, which configuration, which run. Prepended to
+#: every metric table so one table holds the whole corpus and a campaign is a ``WHERE``
+#: clause rather than an attached database.
 CONTEXT_COLUMNS = (("campaign_id", TEXT), ("config_name", TEXT), ("run_id", INTEGER))
+
+#: What scopes a *dimension* row -- the campaign record mirrored from ``campaign.db``.
+#: Only the campaign, because a batch or a node belongs to no configuration and no run;
+#: prepending the metric context there would add two columns that are NULL forever and
+#: read, to anyone browsing the schema, as data that failed to arrive.
+CAMPAIGN_CONTEXT = (("campaign_id", TEXT),)
 
 #: The logical verdict per column -- see the module docstring on why ``information_schema``
 #: cannot answer this.
@@ -137,12 +144,14 @@ def record_note(conn, table: str, column: str, note: str, kind: str = NOTE_DOC) 
         (table, column, kind, note))
 
 
-def ensure_table(conn, table: str, types: dict, *, source: str = "") -> list:
+def ensure_table(conn, table: str, types: dict, *, source: str = "",
+                 context=CONTEXT_COLUMNS) -> list:
     """Make *table* able to hold columns *types*; return the widenings that happened.
 
     *types* maps column name to a :mod:`csv_types` verdict, as
     :func:`~robovast.results_processing.csv_types.infer_column_types` returns. The table
-    is created on first sight with :data:`CONTEXT_COLUMNS` first; later calls add columns
+    is created on first sight with *context* first (:data:`CONTEXT_COLUMNS` for a metric
+    table, :data:`CAMPAIGN_CONTEXT` for a dimension one); later calls add columns
     and widen existing ones. Idempotent, and cheap when nothing changed -- the common
     case, since a campaign's runs mostly agree.
 
@@ -157,15 +166,15 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "") -> list:
     widened = []
 
     if not known:
-        columns = list(CONTEXT_COLUMNS) + [(c, types[c]) for c in types
-                                           if c not in dict(CONTEXT_COLUMNS)]
+        columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
         defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
         conn.execute(f"CREATE TABLE IF NOT EXISTS {_quote(table)} ({defs})")
         # The one index data.db also built: every read is scoped to a run or a campaign,
         # and a sequential scan of a pose table is the difference between a plot and a
         # timeout.
+        index_cols = ", ".join(_quote(name) for name, _ in context)
         conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
-                     f"ON {_quote(table)} (campaign_id, config_name, run_id)")
+                     f"ON {_quote(table)} ({index_cols})")
         for name, verdict in columns:
             _record_verdict(conn, table, name, verdict)
         return widened
