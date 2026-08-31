@@ -107,3 +107,86 @@ def test_per_role_digests_are_still_read_when_the_pods_are_there():
     runner._capture_image_digest("job-name=x")
     assert runner._resolved_image_digest == PINNED
     assert (runner._resolved_image_digests or {}).get("sut") == PINNED
+
+
+# -- the per-container half, which the pod read alone could not deliver -------------
+
+SIM_PINNED = "harbor.example.com/robovast/robovast-sim@sha256:" + "c" * 64
+
+
+def _planned(**images):
+    """A pinned container plan, as ``_pin_image_refs`` leaves it before pods are written."""
+    containers = tuple(type("C", (), {"name": name, "image": image})()
+                       for name, image in images.items())
+    return type("Plan", (), {"containers": containers})()
+
+
+def _empty_cluster(runner):
+    class _Empty:
+        def list_namespaced_pod(self, *a, **kw):
+            return type("R", (), {"items": []})()
+
+    runner.k8s_client = _Empty()
+    return runner
+
+
+def test_per_role_digests_come_from_the_pinned_plan_with_no_pods_at_all():
+    """The resume case, and the one that produced this test.
+
+    A resumed campaign's pods were reaped long before it started, so the pod read has nothing
+    to say. The plan was pinned anyway. Recording only the campaign-level digest here is what
+    left real campaigns with ``image_revision`` set and ``image_revisions`` absent -- and a
+    retrigger then had no per-container ref to start from.
+    """
+    runner = _empty_cluster(_runner(PINNED))
+    runner.plan = _planned(scenario=PINNED, simulation=SIM_PINNED)
+    runner._capture_image_digest("job-name=x")
+    assert runner._resolved_image_digests == {"scenario": PINNED, "simulation": SIM_PINNED}
+
+
+def test_an_unreachable_cluster_still_records_the_planned_digests():
+    """Best-effort applies to the pod read, not to what the plan already established."""
+    runner = _runner(PINNED)
+    runner.plan = _planned(scenario=PINNED)
+
+    class _Down:
+        def list_namespaced_pod(self, *a, **kw):
+            raise RuntimeError("apiserver unreachable")
+
+    runner.k8s_client = _Down()
+    runner._capture_image_digest("job-name=x")
+    assert runner._resolved_image_digests == {"scenario": PINNED}
+
+
+def test_what_the_kubelet_pulled_wins_over_the_plan():
+    """The pod read is the stronger claim where both speak: it is what actually ran."""
+    actually_ran = "harbor.example.com/robovast/robovast@sha256:" + "e" * 64
+    runner = _runner(PINNED)
+    runner.plan = _planned(sut=PINNED)
+
+    def _status(name, image_id):
+        return type("CS", (), {"name": name, "image_id": image_id})()
+
+    pod = type("P", (), {"status": type("S", (), {
+        "container_statuses": [_status("sut", f"docker-pullable://{actually_ran}")],
+        "init_container_statuses": [],
+    })()})()
+
+    class _Pods:
+        def list_namespaced_pod(self, *a, **kw):
+            return type("R", (), {"items": [pod]})()
+
+    runner.k8s_client = _Pods()
+    runner._capture_image_digest("job-name=x")
+    assert runner._resolved_image_digests["sut"] == actually_ran
+
+
+def test_a_later_batch_fills_a_per_role_digest_the_first_one_missed():
+    """Guarding the early return on the campaign-level digest alone made this impossible:
+    up-front pinning fills it on batch 1, so every later batch returned immediately."""
+    runner = _empty_cluster(_runner(PINNED))
+    runner.plan = _planned(scenario=PINNED)
+    runner._resolved_image_digest = PINNED      # as batch 1 left it
+    runner._resolved_image_digests = None       # ...with nothing per-role
+    runner._capture_image_digest("job-name=x")
+    assert runner._resolved_image_digests == {"scenario": PINNED}

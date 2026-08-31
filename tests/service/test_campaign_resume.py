@@ -28,6 +28,7 @@ class _FakeService:
         self._endings = set(endings)
         self.launched = []
         self.fetched = []
+        self.includes = []
 
     # -- what campaign_resume reads
     def _campaign_index(self):
@@ -40,8 +41,11 @@ class _FakeService:
     def _campaign_dir(self, campaign_id):
         return self.root / campaign_id
 
-    def fetch_campaign(self, campaign_id, force=False, dest=None):
+    def fetch_campaign(self, campaign_id, force=False, dest=None, include=None):
+        # The predicate is recorded, not just accepted: what resume declines to fetch is the
+        # difference between a restart that takes seconds and one the liveness probe kills.
         self.fetched.append((campaign_id, str(dest)))
+        self.includes.append(include)
         return dest
 
     def _launch_campaign(self, request, target):
@@ -259,3 +263,37 @@ def test_a_config_this_service_cannot_read_is_a_refusal_not_a_crash(tmp_path):
     _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
 
     assert refusal is not None and "different experiment" in refusal
+
+
+# --- what a restore actually takes -----------------------------------------------------
+
+
+def test_only_the_control_plane_is_restored(tmp_path, no_store):
+    """Resume fetches what it needs to RE-ENTER a campaign, not what it needs to analyse one.
+
+    This runs inside ``ClusterService.__init__``, before ``vast serve`` binds its port, so
+    every object fetched here is time the service spends unreachable. Taking the whole prefix
+    made a restart with live campaigns impossible: a campaign's artifacts are gigabytes, the
+    liveness probe allows ~75 s, and each killed attempt began again from an empty directory.
+
+    The rest arrives at ``ExecutionBackend.ensure_campaign_root_complete``, which runs where
+    it is first read.
+    """
+    _campaign(tmp_path, "camp-a", launch={"runs": 1})
+    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
+
+    campaign_resume.resume_all(svc)
+
+    include = svc.includes[0]
+    assert include is not None, "a whole-prefix restore is what made restarts unsurvivable"
+    # Everything plan_for reads, the store a resumed search replays out of, and the verdict
+    # the batch runner adopts finished jobs on.
+    assert include("launch.yaml")
+    assert include("campaign.db")
+    assert include("_config/campaign.vast")
+    assert include("_execution/outcome.json")
+    assert include("cfg-abc/0/test.xml")
+    # ...and none of the bulk it does not read until postprocessing.
+    assert not include("cfg-abc/0/run.npz")
+    assert not include("cfg-abc/0/poses.csv")
+    assert not include("cfg-abc/0/rosbag2_0.mcap")
