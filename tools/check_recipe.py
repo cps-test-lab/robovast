@@ -42,6 +42,13 @@ _RECIPE = {
     "org.robovast.ros-snapshot": "ROS_SNAPSHOT",
 }
 
+#: Checked only when reading a built IMAGE. The Dockerfile cannot declare it -- CI passes the
+#: revision as a build arg -- but an image that does not carry it is missing a recipe input all
+#: the same: the Dockerfile is an input to a rebuild, and this is the only record of which one.
+#: The base image shipped with this empty for a long time, because that job passed neither the
+#: build arg nor metadata-action's labels.
+_IMAGE_ONLY = ("org.opencontainers.image.revision",)
+
 #: Ubuntu release the pinned ROS distro sits on. Named here because the Dockerfile reads it from
 #: the base image's /etc/os-release at build time, which is not answerable from outside a build.
 _CODENAME = "noble"
@@ -88,6 +95,7 @@ def _from_image(ref: str) -> dict:
     if base.startswith("ros:") and "-ros-base@" in base:
         distro = base[len("ros:"):].split("-ros-base@", 1)[0]
     out = {key: labels.get(key, "") for key in _RECIPE}
+    out.update({key: labels.get(key, "") for key in _IMAGE_ONLY})
     out["_ros_distro"] = distro
     return out
 
@@ -124,8 +132,9 @@ def main() -> int:
         where = args.image
 
     problems = []
+    expected = tuple(_RECIPE) + (_IMAGE_ONLY if args.image else ())
     print(f"Recipe recorded by {where}:")
-    for key in _RECIPE:
+    for key in expected:
         value = recipe.get(key, "")
         print(f"  {key} = {value or '<empty>'}")
         if not value:
