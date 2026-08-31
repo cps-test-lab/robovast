@@ -6,6 +6,7 @@ Set ``ROBOVAST_TEST_PG_DSN`` to run these; without it they skip.
 """
 
 import os
+import sqlite3
 
 import pytest
 
@@ -35,19 +36,41 @@ def _index(monkeypatch):
         teardown.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
 
 
-def _campaign(tmp_path, name):
+def _campaign(tmp_path, name, *, with_record=False):
+    """A results tree; *with_record* adds the campaign.db the flat views are built from.
+
+    Without it ``create_views`` correctly builds no ``run_view`` -- a view is created only
+    for tables that exist, so that a view over a missing table cannot fail at query time.
+    """
     root = tmp_path / name
     run = root / "goal-1" / "0"
     run.mkdir(parents=True)
     (run / "poses.csv").write_text(
         "timestamp,frame,x\n0.5,base_link,1.0\n1.5,base_link,2.0\n2.5,base_link,3.0\n")
+    if with_record:
+        db = sqlite3.connect(root / "campaign.db")
+        db.executescript(
+            "CREATE TABLE campaign (id INTEGER PRIMARY KEY, name TEXT, config_json TEXT);"
+            "CREATE TABLE unit (id INTEGER PRIMARY KEY, batch_id INTEGER, config_name TEXT,"
+            "                   paramset_id TEXT, params_json TEXT, objective REAL,"
+            "                   status TEXT);"
+            "CREATE TABLE run (id INTEGER PRIMARY KEY, unit_id INTEGER, run_id INTEGER,"
+            "                  status TEXT, passed INTEGER, duration_s REAL, errors INTEGER,"
+            "                  failures INTEGER, tests INTEGER, start_time TEXT,"
+            "                  failure_message TEXT, job_id INTEGER);")
+        db.execute("INSERT INTO campaign VALUES (1, ?, '{}')", (name,))
+        db.execute("INSERT INTO unit VALUES (1, 1, 'goal-1', 'ps', '{}', 0.5, 'evaluated')")
+        db.execute("INSERT INTO run VALUES (1, 1, 0, 'passed', 1, 1.0, 0, 0, 1, 't', NULL, NULL)")
+        db.commit()
+        db.close()
     return str(root)
 
 
-def _ingest(tmp_path, *campaign_ids):
+def _ingest(tmp_path, *campaign_ids, with_record=False):
     with index_query.open_index(readonly=False) as conn:
         for cid in campaign_ids:
-            campaign_ingest.ingest_campaign(conn, _campaign(tmp_path / cid, cid), cid)
+            campaign_ingest.ingest_campaign(
+                conn, _campaign(tmp_path / cid, cid, with_record=with_record), cid)
 
 
 def test_a_scoped_query_returns_the_documented_shape(index, tmp_path):
@@ -174,3 +197,69 @@ def test_table_row_counts_are_scoped_to_the_campaign_asked_about(index, tmp_path
         by_name = {t["table"]: t["rows"] for t in index_query.list_tables(conn, "camp-a")}
 
     assert by_name["poses"] == 3, "camp-a's rows, not both campaigns'"
+
+
+# -- describe ---------------------------------------------------------------
+
+def test_describe_lists_the_views_first(index, tmp_path):
+    """A schema dump is read top-down and the views are where a caller should start."""
+    _ingest(tmp_path, "camp-a", with_record=True)
+    with index_query.open_index(readonly=False) as conn:
+        from robovast.results_processing import index_views
+        index_views.create_views(conn)
+
+    described = index_query.describe_index("camp-a")
+    names = [t["table"] for t in described["tables"]]
+
+    assert names[0] == "run_view"
+    assert names.index("run_view") < names.index("poses")
+
+
+def test_describe_renders_types_in_the_vocabulary_its_own_note_uses(index, tmp_path):
+    """The note says numeric columns are INTEGER/REAL and that TEXT needs a CAST.
+
+    Emitting `double precision` and `bigint` would make the note's own instructions
+    unreadable against its own output -- and the note is what an agent writes queries from.
+    """
+    _ingest(tmp_path, "camp-a")
+
+    described = index_query.describe_index("camp-a")
+    poses = next(t for t in described["tables"] if t["table"] == "poses")
+
+    assert "timestamp REAL" in poses["columns"]
+    assert "frame TEXT" in poses["columns"]
+    assert "run_id INTEGER" in poses["columns"]
+    assert not any("double precision" in c for c in poses["columns"])
+
+
+def test_describe_carries_the_curated_prose(index, tmp_path):
+    """The descriptions are a documented contract, reused rather than retyped."""
+    _ingest(tmp_path, "camp-a", with_record=True)
+    with index_query.open_index(readonly=False) as conn:
+        from robovast.results_processing import index_views
+        index_views.create_views(conn)
+
+    described = index_query.describe_index("camp-a")
+    run_view = next(t for t in described["tables"] if t["table"] == "run_view")
+
+    assert "START HERE" in run_view["description"]
+    assert "run_id restarts at 0" in run_view["description"]
+    assert "Start with the views" in described["note"]
+
+
+def test_describe_counts_are_scoped_to_the_campaign(index, tmp_path):
+    _ingest(tmp_path, "camp-a", "camp-b")
+
+    described = index_query.describe_index("camp-a")
+    poses = next(t for t in described["tables"] if t["table"] == "poses")
+
+    assert poses["rows"] == 3, "one campaign's rows, not the index's size"
+
+
+def test_describe_says_when_the_campaign_is_not_in_the_index(index, tmp_path):
+    """Otherwise a full schema with every count at zero reads as an empty campaign."""
+    _ingest(tmp_path, "camp-a")
+
+    described = index_query.describe_index("never-ran")
+
+    assert "not in the index" in described["note"]

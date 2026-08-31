@@ -233,6 +233,99 @@ def list_tables(conn, campaign_id: str | None = None) -> list:
     return out
 
 
+#: Postgres' type names mapped back to the vocabulary ``describe``'s note documents.
+#: Not cosmetic: the note tells a reader that numeric columns are ``INTEGER``/``REAL`` and
+#: that a ``TEXT`` column needs ``CAST(col AS REAL)`` before ordering. Emitting
+#: ``double precision`` and ``bigint`` would make its own instructions unreadable against
+#: its own output -- and that note is what an agent writes queries from.
+_SQLITE_TYPE_NAMES = {
+    "bigint": "INTEGER", "integer": "INTEGER", "smallint": "INTEGER",
+    "double precision": "REAL", "real": "REAL", "numeric": "REAL",
+    "text": "TEXT", "character varying": "TEXT", "character": "TEXT",
+    "boolean": "INTEGER", "timestamp with time zone": "TEXT",
+}
+
+
+def _described_type(pg_type: str) -> str:
+    """A Postgres type in the vocabulary the describe note uses.
+
+    An unrecognised type keeps its Postgres name rather than being forced into one of the
+    three: a reader seeing ``jsonb`` learns something true, where seeing ``TEXT`` would be
+    told it can be ordered lexicographically when it cannot.
+    """
+    return _SQLITE_TYPE_NAMES.get(pg_type.lower(), pg_type)
+
+
+def _entries_for(conn, relations, campaign_id, notes, kind) -> list:
+    """Describe entries for ``[(schema, name)]``, in the order given."""
+    from robovast.results_processing.data_query import (  # pylint: disable=import-outside-toplevel
+        _TABLE_DESCRIPTIONS)
+
+    out = []
+    for schema, name in relations:
+        columns = conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+            (schema, name)).fetchall()
+        cols = [f"{c} {_described_type(d)}".strip() for c, d in columns]
+        names = {c for c, _ in columns}
+        qualified = index_schema.qualified(name, "" if kind == "view" else schema)
+        if campaign_id and "campaign_id" in names:
+            count = conn.execute(f"SELECT COUNT(*) FROM {qualified} WHERE campaign_id = %s",
+                                 (campaign_id,)).fetchone()[0]
+        else:
+            count = conn.execute(f"SELECT COUNT(*) FROM {qualified}").fetchone()[0]
+        # The descriptions are keyed by where the relation used to live: the flat views
+        # were TEMP views and the record was the attached `campaign` schema. Looked up
+        # under both so the prose survives the move rather than being retyped.
+        entry = {"schema_": "temp" if kind == "view" else (schema or "main"),
+                 "table": name, "columns": cols, "rows": count}
+        description = (_TABLE_DESCRIPTIONS.get(("temp", name))
+                       or _TABLE_DESCRIPTIONS.get((schema, name))
+                       or _TABLE_DESCRIPTIONS.get(("main", name)))
+        if description:
+            entry["description"] = description
+        if name in notes:
+            entry["column_notes"] = notes[name]
+        out.append(entry)
+    return out
+
+
+def describe_index(campaign_id: str | None = None) -> dict:
+    """``{tables: [...], note}`` -- the schema to write SQL against.
+
+    The views come first because that is where a caller should start and a schema dump is
+    read top-down; the note carries the ready-made queries. Both are the same prose
+    ``data.db`` served, reused rather than retyped, because it is a documented contract
+    that agents write queries from.
+    """
+    from robovast.results_processing.data_query import (  # pylint: disable=import-outside-toplevel
+        _DESCRIBE_NOTE)
+    from robovast.results_processing import index_views  # pylint: disable=import-outside-toplevel
+
+    conn = open_index(readonly=True)
+    try:
+        notes = column_notes(conn)
+        current = index_schemas(conn)[0]
+        view_order = index_views.CAMPAIGN_VIEW_NAMES + index_views.METRIC_VIEW_NAMES
+        present_views = {r[0] for r in conn.execute(  # pylint: disable=no-member
+            "SELECT table_name FROM information_schema.views WHERE table_schema = %s",
+            (current,)).fetchall()}
+        views = [(current, v) for v in view_order if v in present_views]
+
+        tables = [(t["schema_"] if t["schema_"] != "main" else current, t["table"])
+                  for t in list_tables(conn, campaign_id)]
+
+        entries = (_entries_for(conn, views, campaign_id, notes, "view")
+                   + _entries_for(conn, tables, campaign_id, notes, "table"))
+        result = {"tables": entries, "note": _DESCRIBE_NOTE}
+        if campaign_id and not _campaign_exists(conn, campaign_id):
+            result["note"] = missing_campaign_note(campaign_id) + " " + _DESCRIBE_NOTE
+        return result
+    finally:
+        conn.close()  # pylint: disable=no-member
+
+
 def column_notes(conn) -> dict:
     """``{table: {column: note}}``, both kinds folded together.
 
