@@ -467,7 +467,8 @@ class DocsPlugin:
         def get_doc(name: str) -> str:
             """Retrieve a RoboVAST documentation page by name.
 
-            Use list_docs() to discover available page names.
+            ``search_docs()`` lists the page names, and reads one for a client with no
+            way to fetch a resource URI.
             """
             if name not in _doc_files:
                 available = ", ".join(sorted(_doc_files))
@@ -477,7 +478,7 @@ class DocsPlugin:
             return _doc_content[name]
 
         # Register each page as a static resource so clients can discover them
-        # without calling the list_docs tool first.
+        # without calling the search_docs tool first.
         for _page_name, _page_content in _doc_content.items():
             _uri = f"docs://{_page_name}"
             _title = _doc_meta.get(_page_name, _page_name)
