@@ -52,8 +52,8 @@ _RECIPE = {
 #: Checked only when reading a built IMAGE. The Dockerfile cannot declare it -- CI passes the
 #: revision as a build arg -- but an image that does not carry it is missing a recipe input all
 #: the same: the Dockerfile is an input to a rebuild, and this is the only record of which one.
-#: The base image shipped with this empty for a long time, because that job passed neither the
-#: build arg nor metadata-action's labels.
+#: It is empty on any image whose build passed neither the build arg nor metadata-action's
+#: labels, which is exactly the case this catches.
 _IMAGE_ONLY = ("org.opencontainers.image.revision",)
 
 #: Ubuntu release the pinned ROS distro sits on. Named here because the Dockerfile reads it from

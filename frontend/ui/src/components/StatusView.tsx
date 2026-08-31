@@ -304,8 +304,8 @@ function budgetFactLabel(b: BudgetItem): string {
  *  never on a page of collapsed cards nobody pointed at. Same query key and staleTime as the open
  *  card's objective section, so hovering a card you later expand costs one request between them.
  *
- *  The ROUNDS lead, and they are here unconditionally. They used to live in the ring's hole, which
- *  now carries the budget share -- and rounds remain the fact the ring exists to surface, since a
+ *  The ROUNDS lead, and they are here unconditionally rather than in the ring's hole, which
+ *  carries the budget share -- rounds are the fact the ring exists to surface, since a
  *  search's run counters describe one batch. Below them, the binding criterion first (it is what
  *  the arc measures), then every other declared criterion including the `stopping` ones: any of
  *  them may be what actually ends this campaign, and the arc can only show one.

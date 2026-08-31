@@ -105,9 +105,9 @@ def cache_image_ref(registry_prefix: str, tag: str, scope: str) -> str:
     ``scope`` is what keeps that sharing from reaching *too* far. The tag is the container's
     name, which is ``sut``/``simulation``/``scenario`` for nearly every project there is, so
     keying on it alone put every project in a deployment on the same three tags — each
-    exporting ``mode=max``, overwritten in place, evicting the others' layers. A campaign
-    whose large stable group had been built an hour ago found it gone because an unrelated
-    campaign with a container of the same name had built in between. Pass
+    exporting ``mode=max``, overwritten in place, evicting the others' layers -- so a campaign
+    whose large stable group was built an hour ago finds it gone because an unrelated campaign
+    with a container of the same name built in between. Pass
     :func:`~robovast.service.image_build.cache_scope`, which hashes the chain's *shape* and
     so stays equal across exactly the iterations that should reuse each other.
 
@@ -335,10 +335,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     Secret provisioned at ``vast cluster setup`` — the only place registry
     credentials live.
 
-    ``pull_secret_name`` authenticates the *pod's own* image pulls, which is the opposite
-    direction from the push above and was missing entirely: the init container is
-    ``robovast-sidecar``, which on a private-registry deployment needs credentials the
-    kubelet does not otherwise have. Without it the Job's pod sat in ``ImagePullBackOff``
+    ``pull_secret_name`` authenticates the *pod's own* image pulls, the opposite direction from
+    the push above: the init container is ``robovast-sidecar``, which on a private-registry
+    deployment needs credentials the kubelet does not otherwise have. Without it the Job's pod
+    sits in ``ImagePullBackOff``
     ("no basic auth credentials") while the Job stayed ``active`` — so nothing ever failed
     and ``vast image wait`` never returned. Campaign pods have always carried this (see
     ``kubernetes_backend``); one Secret covers both containers of this pod.

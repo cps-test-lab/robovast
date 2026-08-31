@@ -462,8 +462,8 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
 
             # Step 5: re-run postprocessing through the service. Inside the service
             # block, because postprocessing acts on a campaign, on whichever lane its runs
-            # executed -- it used to be `vast results postprocess` against the results
-            # tree, which is why this step used to sit after the shutdown.
+            # executed. Running it as `vast results postprocess` against the results tree
+            # instead would force this step after the shutdown.
             #
             # Dispatched, not awaited, exactly like a launch: the campaign re-enters its
             # postprocessing phase, so the wait is what says it worked.

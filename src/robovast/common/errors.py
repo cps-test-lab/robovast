@@ -135,9 +135,9 @@ class AuxContainerUnavailable(ActionableError):
     backend and no ``docker``, or a caller that composed without arranging anything.
 
     So the reason is always the *caller's context*, never the ``.vast``: the same file
-    composes wherever a runner is arranged. This class used to say a runner exists only
-    inside a campaign's composition, which was already false when it was written -- the
-    scene cache had been opening an aux pod outside one for the cache fills -- and reading
+    composes wherever a runner is arranged. A runner is **not** confined to a campaign's
+    composition -- the scene cache opens an aux pod outside one for its cache fills -- and
+    reading
     it as a rule is what left ``preview_configurations`` refusing a perfectly good sweep.
 
     What this does *not* extend to is the exec lane's **query slot**: that runs a read-only
