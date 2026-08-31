@@ -779,9 +779,8 @@ class VersionInfo(BaseModel):
     #: its code once at startup makes a real question.
     #:
     #: ``""`` is information, not a gap: it means the answer is unavailable here, so a
-    #: caller must not read it as "a revision that does not match". Reporting the version
-    #: in its place was the previous behaviour and is precisely what made the field unable
-    #: to detect the staleness it exists for.
+    #: caller must not read it as "a revision that does not match". Reporting the version in
+    #: its place would leave the field unable to detect the staleness it exists for.
     code_revision: str = ""
     #: The packaged semver of the running code (``2.1.0``), or ``""`` when there is no
     #: package metadata to read. The stable one of the three: it moves on a release, so it
@@ -2769,8 +2768,8 @@ class RobovastInterface(ABC):
         in the campaign view while it is still arriving, and ``vast campaign wait`` follows it like
         any other work.
 
-        A failed import is **kept**, as a failed campaign: registering it is what made it
-        visible while it was arriving, so deleting the tree afterwards would leave it listed
+        A failed import is **kept**, as a failed campaign: registering it is what makes it
+        visible while it is arriving, so deleting the tree afterwards would leave it listed
         with nothing behind it to explain why. Its ``import.log`` and ``import.json`` stay
         where they are, and it is removed like any other campaign. The archive is untouched,
         so a retry with ``force`` costs only the transfer.

@@ -303,10 +303,10 @@ class ClusterService(LocalTransport):
         resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
         "not now", the other is "not here".
 
-        It now refuses only for the campaigns that would actually be lost. A live campaign
-        used to be reason enough, because the pod being replaced was the only thing driving
-        it; a replacement now picks it back up (see :meth:`resume_interrupted_campaigns`).
-        What is left is the campaigns that cannot be picked back up, and the refusal names
+        It refuses only for the campaigns that would actually be lost. A live campaign is not
+        itself a reason: a replacement pod picks one back up (see
+        :meth:`resume_interrupted_campaigns`). What is left is the campaigns that cannot be
+        picked back up, and the refusal names
         each one's reason rather than its phase -- because the reason is what the operator
         would have to change.
         """
@@ -3247,10 +3247,9 @@ class ClusterService(LocalTransport):
         copy then no longer matches the object it mirrors in size, and size is exactly how
         :meth:`_materialize` decides a cached object is stale. The next listing pass
         re-fetches it, the read migrates it again, and the pod re-downloads that campaign's
-        records once per pass for as long as a browser tab is open -- one log line each
-        time, which is how this was found. Only a campaign with **no runs recorded** reaches
-        the backfill at all, which is why it surfaced as a few rows cycling in the log
-        rather than as the whole listing.
+        records once per pass for as long as a browser tab is open, one log line each time.
+        Only a campaign with **no runs recorded** reaches the backfill at all, so this shows
+        as a few rows cycling in the log rather than as the whole listing.
         """
         if not self._is_record_cache(campaign_dir):
             return super()._run_counts(campaign_dir, live=live)

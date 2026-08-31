@@ -278,7 +278,7 @@ def _resume_one(service, campaign_id: str) -> "str | None":
     # here the controller and the batch runner read it as the campaign's working directory,
     # which is what lets them adopt the finished jobs instead of re-running them.
     #
-    # NOT the whole prefix, which is what this used to take. Resume runs inside
+    # NOT the whole prefix. Resume runs inside
     # `ClusterService.__init__`, before `vast serve` binds its port, so every byte fetched here
     # is a byte the service spends being unreachable -- and a campaign's artifacts run to
     # gigabytes against a few hundred kilobytes of control plane. A service with live campaigns

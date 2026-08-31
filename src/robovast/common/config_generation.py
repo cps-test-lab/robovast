@@ -501,7 +501,7 @@ class WorldQueryUnavailable(RuntimeError):
 
     Not "this campaign is wrong": it is unverifiable from here. Kept distinct from a plain
     ``ValueError`` so a caller pre-*checking* can carry on (and warn) while a caller *asking*
-    can report why -- collapsing the two is what made a failed lookup look like a clean check.
+    can report why. Collapsing the two makes a failed lookup indistinguishable from a clean one.
     """
 
 
@@ -1265,7 +1265,7 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # byte-identically and would otherwise replay the gap.
 # 9: _run_files now also carries the local plugin modules the config references, so a cached
 # entry from 8 describes both a different input set and a different config identity -- the
-# modules are content-hashed, and were previously not carried at all.
+# modules are content-hashed, and earlier formats do not carry them.
 _CACHE_FORMAT_VERSION = 9
 
 
@@ -1550,8 +1550,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # Every path this function derives (`vast`, `scenario_file`, run/config files) hangs off this one,
     # and they outlive the call: they are cached under a key that is already abspath-normalized, and
     # written into the campaign's configurations.yaml. Left relative, a cache entry written by a
-    # caller in one directory is replayed by a caller in another -- which is how a `vast` CLI run from
-    # the repo root handed the service a project-relative `scenario.osc` to resolve again.
+    # caller in one directory is replayed by a caller in another -- so a `vast` CLI run from the
+    # repo root hands the service a project-relative `scenario.osc` to resolve again.
     variation_file = os.path.abspath(variation_file)
 
     parameters = load_config(variation_file)
@@ -1961,9 +1961,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         **{key: value for key, value in execution_section.items()
            if key not in COMPOSITION_ONLY_EXECUTION_KEYS},
         # `runs` is what the campaign's size is reported in (validate, `config info`,
-        # preview_configurations all read it here). It was missing, so every campaign was reported as
-        # one run per configuration -- a 25-trial sweep looked like 5 -- right where an agent decides
-        # whether it can afford to start.
+        # preview_configurations all read it here). Without it every campaign reports one run per
+        # configuration -- a 25-trial sweep looks like 5 -- right where an agent decides whether
+        # it can afford to start.
         "runs": execution_section.get('runs', 1),
         "runs_per_job": execution_section.get('runs_per_job', 1),
         # Defaulted here as well as on the model, because the two are reached by different

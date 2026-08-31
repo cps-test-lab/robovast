@@ -2180,14 +2180,11 @@ class BatchJobRunner:
         """Refuse the campaign here if this host cannot drive the image its pods will run.
 
         Asked at **submission**, host-side, which is where a workload's admission is decided
-        everywhere else. It used to be asked by an initContainer inside the image itself,
-        reading a file the image carried -- a workload inspecting its own image, which is not a
-        shape anything else here uses, and which could only report by failing N pods.
+        everywhere else -- rather than by the workload inspecting its own image, which can only
+        report a mismatch by failing one init container per job in the batch.
 
-        Two things make the host-side version strictly better. The refs were pinned to digests
-        just above, so this binds to the exact bytes the pods will run -- the initContainer's
-        one real claim over an up-front check. And a refusal now costs no pods at all, instead
-        of one crash-looping init per job in the batch.
+        The refs are pinned to digests immediately above, so this binds to the exact bytes the
+        pods will run, and a refusal costs no pods at all.
 
         **Fail closed.** Unlike pinning, which is an optimisation and is right to shrug, a
         compat check that cannot read the image has not established anything -- and running
@@ -2881,8 +2878,8 @@ class BatchJobRunner:
             # still being reported long after.
             waiting = all_jobs_waiting_for_capacity(remaining, contended)
             if admission is not None and planned_count and not remaining:
-                # A fact the queue holds, not something inferred from pods that do not exist.
-                # Inferring it is what made a merely-queued campaign report as stalled.
+                # A fact the queue holds, not something inferred from pods that do not exist:
+                # inferring it reports a merely-queued campaign as stalled.
                 waiting = True
             self._publish_capacity_wait(waiting)
             if blocked:

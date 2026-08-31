@@ -119,8 +119,7 @@ class ImageBuildStore(ABC):
     Two rules every implementation owes its callers:
 
     * :meth:`present` **raises** when it cannot tell. Returning ``False`` for "I could not
-      check" is how a service with no docker CLI came to report every built image as
-      unbuilt.
+      check" leaves a service with no docker CLI reporting every built image as unbuilt.
     * :attr:`ImageRef.ref` stays inside the service; :attr:`ImageRef.identity` is the only
       form handed to a client.
     """

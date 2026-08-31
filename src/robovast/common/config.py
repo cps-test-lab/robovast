@@ -111,10 +111,9 @@ class ResourcesConfig(BaseModel):
     **Unknown keys are refused.** Pydantic's default is to ignore them, and for this block
     that is the worst of the options: a resource a deployment does not understand is dropped
     in silence, and the campaign runs with a different allocation than its file asks for.
-    That is not hypothetical -- ``cpu_limit`` was added to a tree whose deployed service did
-    not have it yet, and the effect there was a container capped BELOW the figure it had been
-    running at, which no error and no log would have mentioned. A typo (``cpu_limits``) has
-    the same shape and is more likely.
+    Not hypothetical: a key added to a tree whose deployed service does not have it yet caps
+    the container BELOW the figure it was running at, and no error and no log mentions it. A
+    typo (``cpu_limits``) has the same shape and is more likely.
 
     The cost is that a ``.vast`` using a field a deployment predates now fails to launch
     instead of quietly running differently -- which is the correct trade for a block whose

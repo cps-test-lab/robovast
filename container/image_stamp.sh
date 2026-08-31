@@ -51,9 +51,8 @@ image_stamp_args() {
   BUILD_DATE_ARGS=(--build-arg "ROBOVAST_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
 
   # The host<->container protocol version, read from the one place that defines it instead of
-  # being written into each Dockerfile by hand. It used to be a literal in three files kept in
-  # step by a CI gate -- which is a gate precisely because a hand-copied constant drifts.
-  # Derived like the two above, it cannot.
+  # being written into each Dockerfile by hand, where a copied constant drifts. Derived like
+  # the two above, it cannot.
   #
   # FATAL when it cannot be read, unlike an absent revision. An empty revision is a real answer
   # ("this deployment cannot tell you"); an empty protocol version produces an image whose label

@@ -113,20 +113,17 @@ def _classify_robovast(execution: dict) -> list:
 def _classify_images(record) -> list:
     """Each container image: could somebody else obtain these bytes, or rebuild them?
 
-    One policy over :func:`~robovast.common.campaign_data.campaign_image_record`, so this and
-    the retrigger pre-flight can no longer disagree about one file on one disk -- which they
-    did, and visibly: a campaign the pre-flight called pinnable this called opaque, because the
-    two re-derived the same fields with their own precedence.
+    One policy over :func:`~robovast.common.campaign_data.campaign_image_record`, which is what
+    keeps this and the retrigger pre-flight from disagreeing about one file on one disk.
 
-    Two ways to be reproducible, and the second one was missing:
+    Two ways to be reproducible:
 
     * **a digest** identifies bytes exactly. Whether they are *fetchable* is an access question,
       which is what ``private`` is for.
     * **a recipe** -- the base it was built FROM and the dated archives it installed from --
       rebuilds them. It outlives the digest: a registry keeps a manifest for as long as it keeps
-      it, and the recipe is what still answers afterwards. Reading only the digest fields
-      classified a campaign carrying a complete recipe *and* its build lock as opaque and
-      refused to publish it, which is the opposite of the truth.
+      it, and the recipe is what still answers afterwards. A campaign carrying a complete
+      recipe and its build lock is reproducible even when its digest is gone.
     """
     roles = sorted(record.roles)
     if not roles:

@@ -251,8 +251,8 @@ if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
 fi
 
 # Container protocol check, off the image's label -- `docker inspect` reads it without starting
-# anything. There used to be a second marker, a file inside the image read by starting a
-# container to `cat` one integer; it is gone, and one marker read one way is the point.
+# anything. One marker, read one way: a file inside the image would cost a container start
+# to read, and could not be read at all for an image this machine does not hold.
 IMAGE_COMPAT=$(docker inspect --format '{{index .Config.Labels "@@COMPAT_LABEL@@"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
 COMPAT_SOURCE="label"
 if [ "$IMAGE_COMPAT" = "<no value>" ]; then

@@ -366,8 +366,8 @@ def _main_view_sql(schema: str, have: set, columns: set = frozenset()) -> dict:
     ``quota_bound`` rather than a name suggesting it was starved by other work: the remedy
     is a larger limit, not a quieter cluster.
 
-    **``contended`` is the other half, and it exists because that latency used to be
-    unmeasured.** Once a container may reserve less than its limit, "slow because of what it
+    **``contended`` is the other half, and it is what makes that latency measurable.** Once a
+    container may reserve less than its limit, "slow because of what it
     asked for" and "slow because of what else was on the node" are different diagnoses with
     different remedies, and the throttle counter answers only the first -- so a campaign could
     report every container clean while the system under test was being crowded out. PSI
