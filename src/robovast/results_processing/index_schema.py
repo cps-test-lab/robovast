@@ -144,6 +144,33 @@ def record_note(conn, table: str, column: str, note: str, kind: str = NOTE_DOC) 
         (table, column, kind, note))
 
 
+def known_tables(conn) -> list:
+    """Every table the index has ingested into, from the verdict registry."""
+    ensure_metadata_tables(conn)
+    return [r[0] for r in conn.execute(
+        f"SELECT DISTINCT table_name FROM {_quote(COLUMN_TYPES_TABLE)} ORDER BY 1").fetchall()]
+
+
+def clear_campaign(conn, campaign_id: str) -> dict:
+    """Remove one campaign's rows from every table; return rows deleted per table.
+
+    What makes re-ingest idempotent, and therefore what makes the reproducibility invariant
+    checkable: a campaign re-postprocessed, or re-read after the index was dropped, must
+    land the same rows rather than a second copy of them.
+
+    Scoped to the one campaign on purpose. Truncating a table would be faster and would take
+    every other campaign with it -- the difference between re-running one postprocess and
+    re-ingesting the whole corpus.
+    """
+    deleted = {}
+    for table in known_tables(conn):
+        cursor = conn.execute(
+            f"DELETE FROM {_quote(table)} WHERE campaign_id = %s", (campaign_id,))
+        if cursor.rowcount:
+            deleted[table] = cursor.rowcount
+    return deleted
+
+
 def ensure_table(conn, table: str, types: dict, *, source: str = "",
                  context=CONTEXT_COLUMNS) -> list:
     """Make *table* able to hold columns *types*; return the widenings that happened.
