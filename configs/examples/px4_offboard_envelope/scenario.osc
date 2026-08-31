@@ -1,0 +1,218 @@
+import osc.helpers
+import osc.ros
+
+# The trial: bring PX4 up, switch it to Offboard, arm it, fly a 10 x 10 m square at 3 m, land and
+# disarm -- all of it over px4_msgs, the way a ROS 2 drone is actually flown.
+#
+# THE BIG CHANGE FROM ../drone_flight_envelope/scenario.osc. That trial published one
+# geometry_msgs/PoseStamped per leg into a controller running inside the simulator, and that was
+# the whole protocol. Here the aircraft is flown by PX4, and PX4's Offboard mode is a *streaming*
+# protocol with a mode machine in front of it. Three things follow:
+#
+#   1. Nothing may be commanded before PX4 exists. Not "before the simulator exists" -- before the
+#      uXRCE-DDS bridge has PX4's topics on the ROS graph. A command published into an unmatched
+#      topic is dropped in silence and the aircraft simply never arms.
+#   2. OffboardControlMode and TrajectorySetpoint must stream continuously at better than 2 Hz, and
+#      must ALREADY be streaming before the mode switch -- PX4 refuses to enter (and leaves)
+#      Offboard otherwise. A hard protocol requirement, not a nicety.
+#   3. TrajectorySetpoint is in NED. Altitude is NEGATIVE z, and a sign error here does not produce
+#      a mediocre flight: it commands the aircraft into the floor at full thrust.
+#
+# WHERE THE LINE IS DRAWN, AND WHY.
+#
+#   this file      owns WHEN.  The order of the phases, the course, and how long each leg gets.
+#   offboard_stream.py owns WHAT PX4 REQUIRES.  Every px4_msgs message -- the two streams and all
+#                      four VehicleCommands -- is formed and sent there.
+#
+# The line is the protocol's own, not a taste. scenario-execution has no action that publishes at a
+# rate (its ROS library offers topic_publish, topic_monitor, service_call, action_call, the
+# wait_for_* family, bag_record, ros_launch and ros_run; the only repetition in the language is
+# osc.helpers' `repeat` modifier, whose period is whatever the tree costs that tick rather than a
+# control loop's), so the streams had to live in a node whatever else happened. The COMMANDS
+# followed them for a sharper reason: VehicleCommand carries a timestamp in microseconds, and a
+# topic_publish cannot ask the ROS clock -- it can only send a literal. A literal timestamp is
+# either wrong or a bet that PX4 ignores the field, and in a thrust-margin campaign that bet has
+# the worst possible failure: if PX4 rejects a stale command the aircraft never arms, which is
+# exactly what a run at T/W <= 1 looks like. The campaign would report the result it was built to
+# measure, from a bug. So one component owns the protocol and the question does not arise.
+#
+# What this file gives up is that the VehicleCommand ids are no longer literally here. They are in
+# files/offboard_stream.py's PHASES table, one line each, with the same citation.
+#
+# Timings are stated as constants rather than as "wait until arrived" checks, on purpose: a run
+# that cannot hold its altitude must still fly the same schedule as one that can, or the cells of
+# the campaign would not be comparable. A drone that never reaches a waypoint is a *result*, not a
+# reason to wait longer.
+
+scenario test_scenario:
+    # Bound the whole trial. Anything unfinished by here is a failed run, which is a legitimate
+    # outcome in a campaign that deliberately flies past the edge of the envelope. The schedule
+    # below is ~95 s of sim time; the rest is PX4 bringup, which is not free.
+    timeout(180s)
+
+    do serial:
+        # -- bringup ------------------------------------------------------------------------
+        # Three gates, in the order the stack comes up: the simulator, then PX4 behind it, then
+        # our own streams. Bounded, so a layer that never comes up fails the trial instead of
+        # hanging it -- and the layer that failed is named by which gate timed out.
+        serial:
+            timeout(120s)
+            # roqsim is up and publishing time.
+            wait_for_topics(topics: ['/clock'])
+
+            # The uXRCE-DDS agent, in this container. It bridges PX4's uORB topics onto the ROS 2
+            # graph over UDP 8888; PX4 is the client and dials in. Built from source by this
+            # campaign's `ros_packages:` (px4_envelope.vast, the `scenario` container) because
+            # eProsima publishes no Docker image for it any more and there is no Debian for it on
+            # any ROS distribution. It runs here rather than in a container of its own because
+            # this is where the ROS 2 graph is.
+            run_process(command: 'MicroXRCEAgent udp4 -p 8888', wait_for_shutdown: false)
+
+            # PX4 is alive on the DDS side. This is the gate that distinguishes "the simulator is
+            # running" from "there is a flight stack attached to it", and only the second one can
+            # be commanded.
+            #
+            # ON THE TOPIC NAME -- read this before changing the PX4 image tag. PX4's
+            # dds_topics.yaml has always said `/fmu/out/vehicle_local_position`; the `_vN` suffix
+            # is appended AT RUNTIME by the uXRCE-DDS client from each message's MESSAGE_VERSION
+            # constant, and message versioning was introduced in PX4 v1.16. So the name is a
+            # property of the PX4 RELEASE:
+            #   v1.15 and earlier  /fmu/out/vehicle_local_position    (no versioning at all)
+            #   v1.16              /fmu/out/vehicle_local_position    (MESSAGE_VERSION 0)
+            #   v1.18 / main       /fmu/out/vehicle_local_position_v1 (MESSAGE_VERSION 1)
+            # VERIFIED against the pinned image (v1.18.0-beta2) by running PX4, the DDS agent and
+            # `ros2 topic list` together, rather than inferred from the sources:
+            #   /fmu/out/vehicle_local_position_v1     <- what this gate waits on
+            #   /fmu/out/vehicle_status_v4             <- NOT _v1
+            #   /fmu/in/offboard_control_mode          <- unsuffixed
+            #   /fmu/in/trajectory_setpoint            <- unsuffixed
+            #   /fmu/in/vehicle_command                <- unsuffixed
+            # VehicleStatus is already at `_v4` on this release while local position is still at
+            # `_v1`, and the two move independently -- which is exactly why this gate is on local
+            # position and why `_v1` is not a safe default to assume for any other topic. It is
+            # also why px4_msgs is pinned to release/1.18 in the image: interfaces from the wrong
+            # branch produce topic names that do not match the running autopilot.
+            #
+            # Re-check with one line after any PX4 image bump:
+            #   exec_in_container(container='scenario', command='ros2 topic list | grep fmu/')
+            # If a name changes, this gate, files/metrics.py and the .vast's bag topics change
+            # together -- they are the same fact stated three times, and there is no fourth place.
+            wait_for_data(topic_name: '/fmu/out/vehicle_local_position_v1',
+                          topic_type: 'px4_msgs.msg.VehicleLocalPosition',
+                          qos_profile: qos_preset_profiles!sensor_data)
+
+            # The offboard streams. Started BEFORE the mode switch below, because PX4 requires an
+            # already-running setpoint stream to accept Offboard at all. Until the first leg is
+            # published the node streams the pad itself -- "nothing to fly to yet" has to be
+            # expressed as a setpoint, not as silence.
+            run_process(command: 'python3 /config/files/offboard_stream.py',
+                        wait_for_shutdown: false)
+
+        # use_sim_time so every derived table is stamped with the simulator's clock: cells run at
+        # different real-time factors, and comparing them in wall seconds would be comparing the
+        # host's load. /clock is recorded so anything wall-stamped can be mapped back.
+        #
+        # BOTH position sources are recorded, and that is a deliberate measurement choice rather
+        # than belt and braces: /fmu/out/... is what PX4's EKF2 BELIEVED, /drone/odom is where the
+        # aircraft actually was. The difference between them is estimator error, and it is a real
+        # observable of this campaign -- see files/metrics.py.
+        bag_record([
+                '/clock',
+                '/fmu/out/vehicle_local_position_v1',
+                '/drone/odom'
+            ],
+            use_sim_time: true)
+
+        # -- take control -------------------------------------------------------------------
+        # Two phase words. Mode first, then arm: PX4 will not fly an armed aircraft in a mode it is
+        # not in, and arming into a mode that is then rejected leaves a live aircraft under no
+        # command. The short settles are the trial's, not the protocol's -- PX4 acknowledges
+        # asynchronously, and firing both in one tick races the acknowledgement.
+        serial:
+            log(msg: 'switch to offboard')
+            topic_publish(topic_name: '/course/phase',
+                          topic_type: 'std_msgs.msg.String',
+                          value: '{\"data\": \"offboard\"}')
+            wait elapsed(2s)
+
+            log(msg: 'arm')
+            topic_publish(topic_name: '/course/phase',
+                          topic_type: 'std_msgs.msg.String',
+                          value: '{\"data\": \"arm\"}')
+            wait elapsed(3s)
+
+        # -- the course ---------------------------------------------------------------------
+        # A 10 x 10 m square at 3 m, flown corner to corner, then home over the pad. Each leg is a
+        # step command, not a trajectory: a step is what exposes PX4's own velocity and
+        # acceleration limits and the thrust margin, which is what this campaign varies.
+        #
+        # ***** NED. NED. NED. *****
+        # These points are [north, east, DOWN] in metres, which is what px4_msgs/TrajectorySetpoint
+        # takes. z = -3.0 is THREE METRES UP. This is the single most common mistake when moving
+        # from a roqsim-internal ENU pose topic (../drone_flight_envelope, where z = +1.2 meant up)
+        # to PX4, and getting it wrong does not degrade the flight -- it commands the aircraft into
+        # the floor under full thrust and every cell of the campaign reads as a crash.
+        #
+        # The world's waypoint markers are the same three corners in ENU (world/px4_envelope.yaml):
+        #   NED (5, 5) = ENU (5, 5)   NED (5, -5) = ENU (-5, 5)   NED (-5, -5) = ENU (-5, -5)
+        # If the markers and these ever disagree, the markers are the lie.
+        #
+        # files/offboard_stream.py restates the current point at 20 Hz and does NO conversion --
+        # deliberately, because a frame flip hidden inside a relay is how a sign error survives
+        # review.
+        serial:
+            log(msg: 'climb to 3 m over the pad and settle')
+            topic_publish(
+                topic_name: '/course/ned_setpoint',
+                topic_type: 'geometry_msgs.msg.PointStamped',
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}')
+            wait elapsed(12s)
+
+            log(msg: 'leg 1 -> N=5 E=5 D=-3')
+            topic_publish(
+                topic_name: '/course/ned_setpoint',
+                topic_type: 'geometry_msgs.msg.PointStamped',
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": 5.0, \"z\": -3.0}}')
+            wait elapsed(12s)
+
+            log(msg: 'leg 2 -> N=5 E=-5 D=-3')
+            topic_publish(
+                topic_name: '/course/ned_setpoint',
+                topic_type: 'geometry_msgs.msg.PointStamped',
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": -5.0, \"z\": -3.0}}')
+            wait elapsed(12s)
+
+            log(msg: 'leg 3 -> N=-5 E=-5 D=-3')
+            topic_publish(
+                topic_name: '/course/ned_setpoint',
+                topic_type: 'geometry_msgs.msg.PointStamped',
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": -5.0, \"y\": -5.0, \"z\": -3.0}}')
+            wait elapsed(12s)
+
+            log(msg: 'return over the pad')
+            topic_publish(
+                topic_name: '/course/ned_setpoint',
+                topic_type: 'geometry_msgs.msg.PointStamped',
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}')
+            wait elapsed(12s)
+
+        # -- land and disarm ----------------------------------------------------------------
+        # `land` is PX4's landing mode, not a descending setpoint: it has a descent profile, ground
+        # detection and auto-disarm, so touchdown is flown by the same logic that flies it on the
+        # vehicle. That is the other half of what a real flight stack buys. The explicit disarm
+        # afterwards is a backstop for the aircraft that never got airborne (T/W <= 1), where PX4's
+        # land detector has nothing to detect.
+        serial:
+            log(msg: 'land')
+            topic_publish(topic_name: '/course/phase',
+                          topic_type: 'std_msgs.msg.String',
+                          value: '{\"data\": \"land\"}')
+            wait elapsed(25s)
+
+            log(msg: 'disarm')
+            topic_publish(topic_name: '/course/phase',
+                          topic_type: 'std_msgs.msg.String',
+                          value: '{\"data\": \"disarm\"}')
+            wait elapsed(3s)
+
+            log(msg: 'trial complete')
