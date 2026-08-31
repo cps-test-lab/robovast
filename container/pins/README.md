@@ -115,6 +115,58 @@ than the tag it was asked for (`ImageBuildStore._base_identity`). Hashing the ta
 `ghcr.io/cps-test-lab/robovast:latest` names different bytes before and after a refresh, so a
 campaign image would have been served from cache against the old archives.
 
+## Fetching them from a mirror
+
+The pins say *which* bytes; `ARG UBUNTU_SNAPSHOT_MIRROR` says whose copy of them is downloaded,
+for a network with a slow or blocked path to the snapshot service:
+
+```sh
+make release-images PROJECT=... UBUNTU_MIRROR=https://<mirror>/ubuntu-snapshot
+./container/robovast/build.sh --image all --ubuntu-mirror https://<mirror>/ubuntu-snapshot
+```
+
+Three properties make it safe to use on a release:
+
+- **It must mirror the snapshot service**, not a rolling archive. The stamp is appended to the
+  URL, so a rolling mirror answers 404 instead of installing today's packages into an image whose
+  labels claim a dated archive. `build.sh` rejects a URL that already ends in a stamp, which is
+  the other half of the same mistake.
+- **Both ROS images use it.** `Dockerfile.roqsim` inherits the base image's sources and repoints
+  them for its own installs — the heavier half, so a mirror covering only the base would leave
+  most of the download on the slow path.
+- **It never reaches the image.** Each Dockerfile restores the canonical URI after its last
+  install, because an image carrying a site's mirror ships a host nobody outside that network
+  resolves, and `org.robovast.ubuntu-snapshot` would then record an archive that image cannot
+  reach. `tests/service/test_build_pins.py` checks the restore, and that the committed default is
+  the snapshot service itself.
+
+`build.sh` probes the mirror before building — one request for the dated path — so a mirror of the
+rolling archive is refused in a second, with the two ways forward, instead of failing inside apt
+four layers in.
+
+## Building without a pin
+
+The mirror most sites have is a mirror of the *rolling* archive, which has no dated paths at all.
+That is usable, but only by saying so:
+
+```sh
+make release-images PROJECT=... UBUNTU_MIRROR=https://<mirror>/ubuntu UBUNTU_SNAPSHOT=none
+```
+
+`none` drops the stamp from the source line, installs whatever that archive serves today, and
+records `org.robovast.ubuntu-snapshot=none` on the image. Everything downstream reads that:
+`check_recipe.py` reports the recipe as unable to reinstall those versions, and
+`rebuild_from_recipe.py` refuses rather than "rebuilding" against an archive that has moved on.
+The image ships `http://archive.ubuntu.com/ubuntu`, since there is no dated archive for it to name.
+
+It cannot happen by accident — `none` is spelled out by the caller, it is refused without a
+mirror (the snapshot service has nothing to serve without a stamp), and the committed default in
+the Dockerfile is always a real stamp. Use it for a dev registry; for a family a published result
+depends on, the pin is the whole point.
+
+ROS has no equivalent knob: `snapshots.ros.org` is written into the same step, and nothing has
+needed a mirror of it.
+
 ## Re-verifying
 
 ```sh
