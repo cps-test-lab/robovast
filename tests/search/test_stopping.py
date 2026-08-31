@@ -230,3 +230,34 @@ def test_the_op_reaches_the_wire():
     item = CampaignController._budget_item(
         CriterionProgress('coverage', 0.1, 0.8, True, kind='metric', op='<='))
     assert item['op'] == '<=' and item['kind'] == 'metric' and item['done'] is True
+
+
+def test_the_stale_row_measures_the_window_the_criterion_fires_on():
+    """A gain under min_delta every round, and over it across the window.
+
+    The criterion asks whether the WHOLE window improved, so a search gaining 0.05 a round
+    against a min_delta of 0.1 has improved by 0.15 over three rounds and must not stop.
+    Counting consecutive rounds that each failed to clear min_delta answers a different
+    question and reaches 3/3, so the row said the criterion had fired while the search ran
+    on -- and kept saying it for as long as the search kept improving.
+    """
+    sc = _sc(stopping=[NoImprovementStop(type='no_improvement', patience=3, min_delta=0.1)])
+    rows = []
+    for i, best in enumerate([0.0, 0.05, 0.10, 0.15], start=1):
+        snap = _snap(batch=i, best=best)
+        assert sc.should_stop(snap) is None, f"batch {i} must not stop while improving"
+        rows.append(_rows(sc, snap)['stale_batches'])
+    assert [r.current for r in rows] == [0, 1, 2, 2]
+    assert not any(r.done for r in rows)
+
+
+def test_the_stale_row_and_the_stop_agree_when_the_search_is_flat():
+    """The other direction of the same rule: the row must reach its limit exactly when the
+    criterion fires, so a reader is never told the search will run on after it has stopped."""
+    sc = _sc(stopping=[NoImprovementStop(type='no_improvement', patience=2)])
+    seen = []
+    for i, best in enumerate([0.3, 0.5, 0.5, 0.5], start=1):
+        snap = _snap(batch=i, best=best)
+        fired = sc.should_stop(snap) is not None
+        seen.append((fired, _rows(sc, snap)['stale_batches'].done))
+    assert seen == [(False, False), (False, False), (False, False), (True, True)]
