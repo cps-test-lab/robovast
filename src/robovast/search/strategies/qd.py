@@ -285,7 +285,12 @@ class QDStrategy(SearchStrategy):
             "elites": elites,
             "measure_names": self.measure_names,
         }
-        best = max(elites, key=lambda e: e["objective"], default=None)
+        # The elites carry RAW objective values -- the sign flip that made the archive
+        # maximize was undone two lines up -- so which end is best is the campaign's
+        # direction again. `max` alone returned the archive's WORST cell for every
+        # minimizing search, and returned it as the answer.
+        pick = min if self._direction == 'minimize' else max
+        best = pick(elites, key=lambda e: e["objective"], default=None)
         report = SearchReport(extra=extra)
         if best is not None:
             # Surface the best elite as a (params-only) Evaluation-like marker.

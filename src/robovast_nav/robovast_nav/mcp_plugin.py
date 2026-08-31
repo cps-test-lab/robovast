@@ -637,9 +637,11 @@ def nav_get_map_info(campaign_id: str, config_name: str,
     Args:
         campaign_id: Campaign identifier.
         config_name: Configuration directory name.
-        occupancy: Also read the image and count occupied / free / unknown cells against
-            the YAML's thresholds. Costs a transfer of the raster; the metadata alone
-            does not.
+        occupancy: Also read the image and count occupied / free / unknown cells the way
+            the map server classifies them: occupancy is ``1 - pixel/255`` (the raster
+            inverted, or not, per the YAML's ``negate``), occupied above
+            ``occupied_thresh``, free below ``free_thresh``, and everything between
+            unknown. Costs a transfer of the raster; the metadata alone does not.
 
     Returns:
         ``{map_name, resolution, origin, occupied_thresh, free_thresh, negate,
@@ -677,7 +679,12 @@ def nav_get_map_info(campaign_id: str, config_name: str,
     with _materialized(campaign_id, prefix, [image_name]) as root:
         with PILImage.open(root / image_name) as img:
             width, height = img.size
-            arr = np.array(img, dtype=float) / 255.0 if occupancy else None
+            # Converted to grayscale before anything is read off it, as map_loader does:
+            # a palette PNG's raw array holds palette *indices* and an RGB one holds
+            # three planes, so an unconverted array is neither a shade nor even the
+            # right number of cells.
+            arr = (np.array(img.convert("L"), dtype=float) / 255.0
+                   if occupancy else None)
 
     result["width_px"] = width
     result["height_px"] = height
@@ -688,9 +695,16 @@ def nav_get_map_info(campaign_id: str, config_name: str,
     if occupancy:
         occupied_thresh = map_config.get("occupied_thresh", 0.65)
         free_thresh = map_config.get("free_thresh", 0.196)
-        total = arr.size
-        occupied = int(np.sum(arr < free_thresh))
-        free_cells = int(np.sum(arr > occupied_thresh))
+        # The thresholds are on the OCCUPANCY the map server derives, not on the shade
+        # stored in the raster: `occ = 1 - shade`, inverted by `negate`. Comparing them
+        # against the shade instead reads the pair backwards -- with the usual defaults
+        # it calls a clearly-occupied cell unknown and an unknown cell free -- and the
+        # counts stay plausible, so nothing downstream can detect it. Same rule as
+        # nav2's map_io, which is what the campaign's own stack applied to this file.
+        occ = arr if map_config.get("negate") else 1.0 - arr
+        total = occ.size
+        occupied = int(np.sum(occ > occupied_thresh))
+        free_cells = int(np.sum(occ < free_thresh))
         unknown = total - occupied - free_cells
         result.update({
             "total_cells": total,

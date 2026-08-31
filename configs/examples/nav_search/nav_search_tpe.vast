@@ -47,23 +47,12 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  - batches: 6
-  stopping:
-  # `no_improvement`, not `target_objective`, and the difference is the landscape rather
-  # than the number. About half of this space collides, so "find a crossing at least this
-  # bad" is satisfied by the FIRST batch at any level above the floor -- which measures
-  # nothing about TPE, whose first batch is random startup sampling. Any threshold above the
-  # floor therefore stops in batch 1, leaving the campaign's "how few evaluations found it"
-  # claim unearned -- random sampling would have done the same.
-  #
-  # `target_objective` is not broken; it is unsuited here. It suits a space where the target
-  # is rare, and it stays the right criterion for one.
-  #
-  # Ending when the search stops LEARNING is the version of "how few evaluations" this
-  # landscape can support, and it is what makes the pairing the README promises readable:
-  # cmaes carries the identical rule, so "does an evolution strategy beat a model here"
-  # compares two searches stopped by the same standard rather than two different clocks.
-  - no_improvement: {patience: 3, min_delta: 0.02}
+  # Bounded by RUNS and identical to nav_search_cmaes.vast, because the README pairs these
+  # two and a pair must share a budget. `batches:` cannot express that -- equal batches are
+  # equal simulator only while repetitions are constant -- and a `no_improvement` stop makes
+  # it worse still, since each strategy then stops when its own convergence rule fires and
+  # the comparison measures the rule rather than the sampler.
+  - runs: 240
   seed: 1
 
 visualization:
@@ -103,7 +92,24 @@ execution:
   # it between 0.5 and 1.1 cores depending on the node.
   sizing: calibrated
   mode: ros2
-  runs: 3
+  # 8, not 3. A cell's outcome here is BIMODAL, not noisy-around-a-value: measured over 15
+  # repeats of each of 16 cells, 14 of them produced both a clean crossing and a hard failure
+  # from identical parameters, because lidar noise and the walker's timing decide whether the
+  # encounter happens at all. A cell therefore has no single robustness, it has a probability
+  # of failing, and `aggregate: worst` asks "can this cell fail?" -- a question answered by
+  # sampling the bad mode at least once.
+  #
+  # At 3 repeats that question is close to a coin flip: a cell that fails a fifth of the time
+  # is caught 49% of the time, so the score a search sees is decided by whether the bad mode
+  # happened to be drawn rather than by where the cell is. Resampled from those 240 runs, the
+  # standard deviation of worst-of-k is 0.343 at k=1, 0.288 at k=3, 0.178 at k=8, against an
+  # objective spanning ~1.6 -- so three repeats buy almost nothing over one, and eight give a
+  # search a gradient it can actually follow.
+  #
+  # The cost is cells: runs are reps x cells, so this trades 60 badly-measured cells for ~30
+  # well-measured ones. For a search that has to RANK cells, that is the better half of the
+  # trade. The coverage campaigns make the opposite one -- see nav_search_random.vast.
+  runs: 8
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
   # verdict about a wedged run is possible, and `vast campaign wait` cannot exit on one.
   # The trial bounds itself at 120 s; this is the outer backstop for a run that wedges

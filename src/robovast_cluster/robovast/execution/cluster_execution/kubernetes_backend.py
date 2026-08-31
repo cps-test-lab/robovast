@@ -2210,11 +2210,20 @@ class BatchJobRunner:
                 self.campaign, self.image)
             return
         labels = self._image_labels(self.image)
-        raw = (labels.get(COMPAT_VERSION_LABEL) or "").strip()
+        # `None` is "the registry could not be asked", `{}` is "asked, and it carries no
+        # labels". Only the second says anything about the image, so only the second may be
+        # answered with "rebuild it" -- see check_image_compat's `unreadable`.
+        unreadable = labels is None
+        raw = ((labels or {}).get(COMPAT_VERSION_LABEL) or "").strip()
         version = int(raw) if raw.isdigit() else None
-        source = "registry label" if version is not None else (
-            f"no {COMPAT_VERSION_LABEL} label, and the registry would not say")
-        problem = check_image_compat(self.image, version=version, source=source)
+        if version is not None:
+            source = "registry label"
+        elif unreadable:
+            source = "the registry would not answer for it"
+        else:
+            source = f"the registry reports no {COMPAT_VERSION_LABEL} label on it"
+        problem = check_image_compat(self.image, version=version, source=source,
+                                    unreadable=unreadable)
         if problem:
             raise CampaignConfigError(
                 f"{problem}\n"
@@ -2222,20 +2231,31 @@ class BatchJobRunner:
                 f"run. Set ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1 to run anyway -- which is the "
                 f"right move only when the registry is unreachable and you know the image.")
 
-    def _image_labels(self, ref: str) -> dict:
-        """Every label *ref* carries per the registry, or ``{}`` when it will not say."""
+    def _image_labels(self, ref: str):
+        """Every label *ref* carries per the registry, or ``None`` if it could not be asked.
+
+        The three states `manifest_labels` reports, passed through rather than flattened: a
+        caller deciding whether to RUN *ref* must not read "could not ask" as "carries no
+        labels". Anything raised on the way is `None` too -- it is another way of not having
+        asked.
+        """
         from .registry_client import manifest_labels  # noqa: PLC0415 - optional path
         if ref in self._image_label_cache:
             return self._image_label_cache[ref]
-        labels: dict = {}
+        labels = None
         try:
             registry = self.cluster_config.get_registry_config()
             labels = manifest_labels(
                 ref, dockerconfigjson=self._registry_dockerconfig(registry),
                 insecure=getattr(registry, "insecure", False),
                 ca_path=self._registry_ca_path(registry))
-        except Exception:  # noqa: BLE001 - absence is the answer; the caller decides
-            logger.debug("could not read labels for %s", ref, exc_info=True)
+        except Exception:  # noqa: BLE001 - "could not ask" is an answer; the caller decides
+            # Warning, not debug. This path makes the compat check refuse the campaign, and a
+            # refusal whose cause is only visible at debug level is one nobody can act on: the
+            # incident that motivated this was diagnosable solely because registry_client
+            # happened to log its own warning a line earlier.
+            logger.warning("could not read the labels of %s, so this campaign cannot be "
+                           "checked against it", ref, exc_info=True)
         self._image_label_cache[ref] = labels
         return labels
 

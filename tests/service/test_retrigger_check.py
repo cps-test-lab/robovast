@@ -133,6 +133,11 @@ def test_the_check_never_starts_or_pulls_a_container(tmp_path, monkeypatch):
     The first implementation read the legacy marker with ``docker run``, which pulls an absent
     image -- so checking a year-old campaign fetched gigabytes, or hung against a registry that
     could not serve it. Asserting on the argv is the only way to keep that from coming back.
+
+    "Costs nothing" is about starting containers and moving layers, not about touching the
+    network at all: a registry metadata read is how this question gets answered for an image
+    that is not on this machine, and refusing it would leave the pre-flight unable to answer in
+    exactly the case it exists for.
     """
     from robovast.common import execution
     from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
@@ -156,7 +161,11 @@ def test_the_check_never_starts_or_pulls_a_container(tmp_path, monkeypatch):
     for args in calls:
         if args[:2] == ["docker", "run"]:
             assert "--pull=never" in args, f"a probe may not pull: {args}"
-    assert all(args[1] in ("inspect", "image", "run") for args in calls), calls
+    # `buildx` is allowed, and is the point: `buildx imagetools inspect` reads an image's
+    # config from the registry, starting nothing and fetching no layer. That is how a
+    # pre-flight answers for an image this machine does not have -- which is the whole case
+    # a year-old campaign presents, and what the local-daemon-only probe could not do.
+    assert all(args[1] in ("inspect", "image", "run", "buildx") for args in calls), calls
 
 
 def test_every_axis_is_reported_even_when_one_blocks(tmp_path):

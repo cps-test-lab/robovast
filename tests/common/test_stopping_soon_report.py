@@ -110,3 +110,29 @@ def test_the_verdict_is_served_but_never_stored():
     served = status_response(st)
     assert served.stopping_soon is True and served.stopping_reason
     assert not hasattr(st, "stopping_soon")
+
+
+def test_the_verdict_never_announces_a_search_that_has_not_stopped():
+    """End to end over the seam: the rows this reads come from ``StopConditions.progress``.
+
+    A stale count measured on a different comparison from the one ``should_stop`` uses arrives
+    here as a verdict about a search that is not going to stop. With a min_delta the search
+    gains less than each round and more than across the window, the row reached its patience
+    and stayed there -- so the reader was told the search had converged, and then told that
+    "0 more rounds without an improvement" would end it, for as long as it kept improving.
+    """
+    from robovast.common.config import NoImprovementStop
+    from robovast.execution.controller import CampaignController
+    from robovast.search.stopping import StopConditions, StopSnapshot
+
+    stop = StopConditions([], [NoImprovementStop(type='no_improvement', patience=3,
+                                                 min_delta=0.1)],
+                          'margin', 'maximize')
+    for i, best in enumerate([0.0, 0.05, 0.10, 0.15], start=1):
+        snap = StopSnapshot(batch=i, elapsed=1.0, best_objective=best)
+        fired = stop.should_stop(snap) is not None
+        rows = [CampaignController._budget_item(p) for p in stop.progress(snap)]
+        stale = next(r for r in rows if r["kind"] == "no_improvement")
+        assert stale["done"] is fired, f"batch {i}: the row and the stop must agree"
+        verdict = stopping_soon_report(_search(budget=[BudgetItem(**r) for r in rows]))
+        assert "0 more round" not in verdict.get("stopping_reason", "")
