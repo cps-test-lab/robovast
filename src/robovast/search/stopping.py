@@ -130,6 +130,31 @@ class StopConditions:
     def _meets_target(self, best: float, target: float) -> bool:
         return best <= target if self.direction == 'minimize' else best >= target
 
+    def _stale_batches(self, min_delta: float) -> int:
+        """How many batches back the best objective still has not improved on.
+
+        The largest ``k`` for which the best after the newest batch does not beat the best
+        ``k`` batches earlier by *min_delta* -- which is the distance ``no_improvement``
+        fires at, so :meth:`_fired` and :meth:`_progress` read it from here rather than each
+        deciding what "stale" means.
+
+        They did decide separately, and the two answers are not the same one: counting
+        *consecutive* batches that failed to improve asks whether each single round cleared
+        min_delta, while the criterion asks whether the whole window did. A search improving
+        by less than min_delta every round but by more than it across the window is stale by
+        the first reading and improving by the second -- so the progress row reported the
+        criterion fired, permanently, while the search ran on. That row is what
+        ``stopping_soon`` is derived from, so a reader was told the search was one round from
+        ending for as long as it kept improving.
+        """
+        history = self._best_history
+        stale = 0
+        for k in range(1, len(history)):
+            if self._improved_by(history[-1], history[-1 - k], min_delta):
+                break
+            stale = k
+        return stale
+
     def _record(self, snap: StopSnapshot) -> None:
         """Append this batch's best-so-far (carry forward when absent) — keeps the
         no_improvement window aligned with batch indices. Idempotent per batch:
@@ -179,8 +204,7 @@ class StopConditions:
                 return (f"target_objective reached ({self.objective_name}="
                         f"{_fmt(snap.best_objective)}, target {_fmt(crit.value)})")
         elif t == 'no_improvement':
-            h = self._best_history
-            if len(h) > crit.patience and not self._improved_by(h[-1], h[-1 - crit.patience], crit.min_delta):
+            if self._stale_batches(crit.min_delta) >= crit.patience:
                 return (f"no_improvement over {crit.patience} batch(es) "
                         f"(min_delta={_fmt(crit.min_delta)})")
         elif t == 'metric':
@@ -216,13 +240,7 @@ class StopConditions:
             op = '<=' if self.direction == 'minimize' else '>='
             return CriterionProgress(self.objective_name, cur, crit.value, done, kind=t, op=op)
         if t == 'no_improvement':
-            h = self._best_history
-            stale = 0
-            # consecutive trailing batches with no improvement (vs min_delta)
-            for k in range(1, len(h)):
-                if self._improved_by(h[-k], h[-k - 1], crit.min_delta):
-                    break
-                stale += 1
+            stale = self._stale_batches(crit.min_delta)
             return CriterionProgress('stale_batches', stale, crit.patience,
                                     stale >= crit.patience, kind=t)
         if t == 'metric':
