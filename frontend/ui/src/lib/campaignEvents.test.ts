@@ -95,7 +95,7 @@ describe('describeCampaignEvent', () => {
 
   it('still names the campaign when no reason was recorded', () => {
     // An older campaign, or one whose Status was reconstructed without an error: the notice
-    // must degrade to what it used to say rather than to a dangling separator.
+    // must degrade to naming the campaign rather than to a dangling separator.
     expect(describeCampaignEvent(evt('failed')).note).toBe('nav-2026-08-30-1916')
   })
 

@@ -26,9 +26,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /**
  * Import with retries.
  *
- * Every attempt requests the same URL. A cache-busting query used to be passed here, but it
- * could never arrive: the callers below are zero-argument arrows around a static `import()`
- * specifier, which Vite rewrites to a fixed chunk URL at build time. So the retries buy a
+ * Every attempt requests the same URL, and a cache-busting query cannot change that: the
+ * callers below are zero-argument arrows around a static `import()` specifier, which Vite
+ * rewrites to a fixed chunk URL at build time. So the retries buy a
  * second and third chance at the network, nothing more — which is what a dropped
  * port-forward needs. A chunk that is genuinely gone exhausts them, and the boundary's
  * Reload is the way out of that one.

@@ -228,6 +228,15 @@ Marker rules:
    — a short generation again. What was proposed is kept in the batch row's ``asked``
    count, which is what a resume replays.
 
+   **Across batches the same rule holds, and there it also saves the compute.** A cell an
+   earlier batch measured is not measured again: there is one place to put its results and
+   it already holds the answer, so re-running would spend a batch's simulation to re-answer
+   a question the campaign has answered. The strategy is told what that cell scored, so the
+   generation is *not* short in this case — a recalled evaluation is a real answer to a real
+   proposal. A recalled cell costs no runs and is not counted as a new evaluation, so
+   neither a ``runs`` nor an ``evaluations`` budget is spent on it; ``batches`` still
+   advances, which is what ends a search that has stopped finding anything new.
+
 Strategies
 ----------
 

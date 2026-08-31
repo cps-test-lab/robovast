@@ -131,7 +131,7 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
           : null
 
   // Stick to the bottom only while following, and never out from under a selection: a scroll
-  // mid-drag loses the anchor, which is what made a live log impossible to copy from. Holding a
+  // mid-drag loses the anchor, which makes a live log impossible to copy from. Holding a
   // selection does not clear `following` either, so dropping it resumes the tail by itself —
   // same contract as RunLogView's follow mode.
   //

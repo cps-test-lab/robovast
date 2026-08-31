@@ -350,8 +350,8 @@ export function DetailsBox({
    *  cached for the session and the columns never filled in. */
   postprocessed?: boolean
   /** Whether the Details tab is the one showing. This panel has no frame of its own any more --
-   *  the tab IS its open state -- but the gate it used to get from that frame still matters and
-   *  is now this prop: the queries below include one that scans every 1 Hz sample of every run,
+   *  the tab IS its open state -- so the gate a frame would provide is this prop instead: the
+   *  queries below include one that scans every 1 Hz sample of every run,
    *  and a card opened straight onto its Log tab must not pay for them. */
   selected?: boolean
 }) {
@@ -396,11 +396,10 @@ export function DetailsBox({
   const inFlightNow = jobsInFlight(model?.cpu?.declaredPod ?? null, quotaCpu ?? null)
   const inFlightThen = jobsInFlight(model?.cpu?.suggestedPod ?? null, quotaCpu ?? null)
 
-  // No frame and no title. This used to be a foldable box inside an already-folded card, so what
-  // a campaign cost took two clicks to reach; it is the content of a tab now, and the tab is both
-  // the label and the open state. The cpu headline that the old collapsed header carried is not
-  // reinstated here: it is a RECOMMENDATION, and it belongs beside the evidence for it in the CPU
-  // column rather than at the top of the panel.
+  // No frame and no title: this is the content of a tab, and the tab is both the label and the
+  // open state. A foldable box inside an already-folded card would put what a campaign cost two
+  // clicks away. No cpu headline at the top either -- it is a RECOMMENDATION, and it belongs
+  // beside the evidence for it in the CPU column.
   return (
       <Box sx={{ p: 1 }}>
         {!postprocessed && !data ? (

@@ -19,8 +19,8 @@
 Every live log this service serves is the same shape -- ``fetch(offset) -> LogChunk``,
 where ``next_offset`` says where to resume and ``eof`` says there will be no more. The
 browser tails them over SSE (``app.py``'s ``_sse_log_stream``); a terminal polls. That poll
-had been written once per command, and the copies had already drifted: different cadences,
-and one advanced the offset only when a chunk carried text -- which stalls forever on a
+is one loop, not one per command: separate copies drift into different cadences, and one that
+advances the offset only when a chunk carries text stalls forever on a
 server that reports progress with an empty delta, exactly the case ``next_offset`` exists
 to express.
 """

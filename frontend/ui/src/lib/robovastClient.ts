@@ -2,9 +2,9 @@
 // the Python HTTPTransport binds. The UI never talks to anything but the service.
 //
 // The **types** are generated from the service's own OpenAPI schema
-// (`npm run generate:api` → api.generated.ts) and re-exported below. They used to be
-// hand-written: 41 interfaces mirroring pydantic models with nothing tying them together,
-// so a field renamed in interface.py stayed "correct" here until something broke at
+// (`npm run generate:api` → api.generated.ts) and re-exported below, rather than
+// hand-written: interfaces mirroring pydantic models with nothing tying them together leave
+// a field renamed in interface.py looking "correct" here until something breaks at
 // runtime. The **functions** stay hand-written — they carry real behaviour (SSE URLs, the
 // upload side channel, error mapping) that codegen has no opinion about.
 //

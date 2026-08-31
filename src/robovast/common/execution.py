@@ -78,10 +78,10 @@ MIN_IMAGE_COMPAT = 2
 #: all, which is the case the marker most needs to answer -- whether this host can still drive
 #: the image a year-old campaign recorded, asked from a machine that does not have it.
 #:
-#: The cost of dropping the file, recorded because it is real: an image built before this label
-#: existed reports nothing, and `check_image_compat` refuses rather than guessing. Those images
-#: predate protocol 2, which is also `MIN_IMAGE_COMPAT`, so a refusal is the right answer for
-#: them anyway -- but the message has to say what to do, not merely that it cannot tell.
+#: An image built before this label existed reports nothing, and `check_image_compat` refuses
+#: rather than guessing. Those images predate protocol 2, which is also `MIN_IMAGE_COMPAT`, so a
+#: refusal is the right answer for them anyway -- but the message has to say what to do about it,
+#: not merely that it cannot tell.
 COMPAT_VERSION_LABEL = "org.robovast.compat-version"
 
 # The unprivileged user a robovast execution image runs as (fixuid is configured for it). Experiment
@@ -93,8 +93,8 @@ DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
 
 # -- the RoboVAST image family ---------------------------------------------------------
 #
-# A family image ref glues three independent facts into one string, and authoring all
-# three in one place is what made image configuration a five-variable problem:
+# A family image ref glues three independent facts into one string. Authoring all three in
+# one place turns image configuration into a five-variable problem:
 #
 #   harbor.example.org/robovast / robovast-roqsim : latest
 #   \_______ WHERE ____________/   \____ WHAT ___/   \ WHICH /
@@ -555,10 +555,9 @@ def image_compat_version(image: str) -> "tuple[int | None, str]":
     The label, read the standard way: ``docker inspect`` locally, and the registry's config
     blob for an image this machine does not have. One marker, both ways of reading it.
 
-    There used to be a second marker -- a file inside the image, read by starting a container
-    to ``cat`` one integer. It is gone. It could not be read remotely at all, which is the case
-    that matters (a year-old campaign's image is not on the machine asking about it), and a
-    workload inspecting its own image is not how this question is answered anywhere else.
+    A label rather than a file inside the image: a file cannot be read without starting a
+    container, and cannot be read at all for an image this machine does not have -- which is
+    the case that matters, since a year-old campaign's image is rarely local.
 
     ``source`` is returned so a caller can say what answered.
     """
@@ -1252,19 +1251,19 @@ _NO_INSTANCE_TYPE = 'INSTANCE_TYPE=""'
 #:
 #: ROS-optional by the same guards the entrypoint uses, so an image with no ROS in it runs the
 #: command unchanged rather than failing on a missing file.
-#: ``--`` on both, which the secondary entrypoint's own copy was missing: ROS's ``setup.bash``
-#: reads the *caller's* positional parameters when it is given none of its own, so sourcing it from
-#: a script that has any is how a sidecar's arguments end up interpreted by the ROS setup.
+#: ``--`` on both, and on the secondary entrypoint's own copy: ROS's ``setup.bash`` reads the
+#: *caller's* positional parameters when it is given none of its own, so sourcing it from a script
+#: that has any leaves a sidecar's arguments interpreted by the ROS setup.
 #:
 #: ``ROS_SETUP_ANNOUNCE`` is the one thing the copies legitimately differed in: an entrypoint logs
 #: the step into the run's log, and a live exec has no ``log`` function to call. Defaulted to the
 #: shell's no-op so the block runs anywhere, rather than each caller keeping its own copy for the
 #: sake of one line.
-#: **Every branch announces itself, including the ones that do nothing.** A setup that silently
-#: skips is what made "No module named 'scenario_execution'" unreadable: that message is what a
-#: missing overlay and a genuinely absent module both produce, so a reader could not tell an image
-#: problem from a plumbing one and each guess cost a campaign to test. Saying which branch ran
-#: turns the next occurrence into an answer instead of a fourth round.
+#: **Every branch announces itself, including the ones that do nothing.** A setup that skips
+#: silently makes "No module named 'scenario_execution'" unreadable: a missing overlay and a
+#: genuinely absent module produce the same message, so a reader cannot tell an image problem
+#: from a plumbing one, and each guess costs a campaign to test. Saying which branch ran makes
+#: that message an answer rather than another round.
 ROS_SETUP_BLOCK = """\
 if [ -z "${ROS_DISTRO:-}" ]; then
     ${ROS_SETUP_ANNOUNCE:-:} "no ROS_DISTRO set, so no ROS overlay was sourced"
@@ -1480,9 +1479,9 @@ echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
 # differs ("Overwrite not allowed ... (size)") -- and it is always the LATER, more
 # complete copy that gets refused: the main container uploads logs/system*.log and
 # resource_usage_*.csv while they are still being appended, so every sidecar's upload of
-# the finished file is rejected and the store keeps the earliest truncated snapshot. That
-# is how an archived system.log came to end mid-sentence on its own "Mirroring /out/..."
-# line. Later is strictly more complete here (a container only uploads after its workload
+# the finished file is rejected and the store keeps the earliest truncated snapshot -- an
+# archived system.log then ends mid-sentence on its own "Mirroring /out/..." line.
+# Later is strictly more complete here (a container only uploads after its workload
 # and its resource monitor have stopped), so last-writer-wins is the correct resolution
 # and not a race. Payload each container uniquely owns was never affected -- mc skips
 # same-size objects, so this costs no extra transfer for the bag or the capture.
@@ -1799,8 +1798,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # What the declared plugin specs resolved to. Recorded HERE because this is where the
     # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the
     # execution.yaml writers run later and from places that have neither. A `plugins:` entry
-    # is usually not a pin ("pkg @ git+...@main"), and the only thing recorded before this
-    # was a hash of the specs, which is identical across every resolution of them.
+    # is usually not a pin ("pkg @ git+...@main"), and a hash of the specs -- the only other
+    # thing available here -- is identical across every resolution of them.
     _record_resolved_plugins(out_dir, vast_file_path, campaign_data)
 
     # Copy run files
@@ -1938,9 +1937,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         # configuration it belongs to -- greppable, diffable, and directly replayable, its
         # two values being the arguments that reproduce the cell by hand.
         #
-        # Written for every configuration that HAS one. (The text here previously claimed
-        # every configuration without exception, which the guard below has never done; the
-        # code is the honest half -- a campaign with no simulator has nothing to record.)
+        # Written for every configuration that HAS one: a campaign with no simulator has
+        # nothing to record, which is what the guard below enforces.
         sim_block = config_data.get("sim")
         if sim_block:
             os.makedirs(run_config_dir, exist_ok=True)
@@ -2348,11 +2346,11 @@ def _carry_forward_provenance(path, execution_data: dict) -> None:
     """Keep image provenance a rewrite cannot re-derive, instead of blanking it.
 
     ``execution.yaml`` is rewritten, not appended to, and a rewrite can know strictly less than
-    the one before it: a RESUME starts after its campaign's pods have been reaped, so the
-    per-container digests it would read are simply gone. Emitting those keys only when there is
-    something to put in them then means the rewrite *deletes* what the first run recorded --
-    which is how real campaigns ended up with ``image_revision`` present and ``image_revisions``
-    absent, and therefore not re-runnable.
+    the one before it: a resume starts after its campaign's pods have been reaped, so the
+    per-container digests it would read are gone. Emitting those keys only when there is
+    something to put in them would make the rewrite *delete* what the first run recorded,
+    leaving a campaign with ``image_revision`` present, ``image_revisions`` absent, and no way
+    to re-run it.
 
     Best-effort and never fatal: an unreadable previous record leaves the new one exactly as
     composed. Only *missing or empty* fields are filled, so a rewrite that does know better

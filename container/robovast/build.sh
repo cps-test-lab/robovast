@@ -12,8 +12,8 @@
 #
 # The names are the family members robovast.common.execution.FAMILY_MEMBERS resolves
 # ``family:<member>`` to, and the repositories .github/workflows/image.yml publishes. They
-# used to carry the ROS distro (``robovast_jazzy``), which meant a local build produced
-# repositories no default, doc or .vast ever named; the distro is a --tag now.
+# do not carry the ROS distro (``robovast_jazzy``): that produces repositories no default, doc
+# or .vast ever names. The distro is a --tag.
 #
 # Usage:
 #   ./container/robovast/build.sh [--image robovast|roqsim|all] [--project <prefix>] \
@@ -220,8 +220,8 @@ git_secret() {
 # ``--build-context <stage>=<dir>`` replaces that stage with a local tree, which is buildx's
 # own mechanism for exactly this and leaves the Dockerfile with ONE code path: the default
 # clone and a working checkout arrive at the same COPY. The alternative -- staging a directory
-# into a temp context and branching on whether it is empty -- is what used to be here, and it
-# made the Dockerfiles unbuildable by anything but this script, CI included.
+# into a temp context and branching on whether it is empty -- makes the Dockerfiles unbuildable
+# by anything but this script, CI included.
 #
 # rsync rather than passing the path straight through, because the excludes matter: a .git of
 # several hundred MB, a host venv whose binaries are wrong for the image, colcon build/ and

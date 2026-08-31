@@ -17,10 +17,9 @@
 """The one way to load Kubernetes client configuration.
 
 Every cluster-touching path needs the same decision — use the in-pod service
-account when running inside the cluster, otherwise the host kubeconfig — and it
-had been copy-pasted ~10 times with subtly different exception handling: some
-caught ``ConfigException``, some a bare ``Exception``; some threaded a context,
-some dropped it. This is the single implementation.
+account when running inside the cluster, otherwise the host kubeconfig. Copied per
+call site it drifts — some catching ``ConfigException``, some a bare ``Exception``;
+some threading a context, some dropping it. This is the single implementation.
 
 It also owns the two client-wide policies that only make sense in one place: every API
 call gets a connect timeout (so an unreachable cluster fails in seconds, not minutes),
