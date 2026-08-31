@@ -58,14 +58,14 @@ def _binding_budget(st):
     units where "fires first" is the *smaller* duration -- a change to any of the three must
     be made looking at the other two.
     """
-    best = None
+    best, best_share = None, -1.0
     for b in budget_positions(st):
         if b.current is None or not b.limit:
             continue
         share = max(0.0, min(1.0, b.current / b.limit))
-        if best is None or share > best[1]:
-            best = (b, share)
-    return best
+        if share > best_share:
+            best, best_share = b, share
+    return None if best is None else (best, best_share)
 
 
 def _progress_from_status(st) -> float | None:
