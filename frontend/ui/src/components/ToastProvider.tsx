@@ -6,11 +6,13 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Collapse from '@mui/material/Collapse'
 import Typography from '@mui/material/Typography'
+import { ErrorText } from '@/components/StatusView'
 import {
   addToast,
   dismissToast,
   expireToasts,
   extendDeadlines,
+  isSticky,
   type Toast,
   type ToastSpec,
 } from '@/lib/toasts'
@@ -166,7 +168,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           '& > *': { pointerEvents: 'auto' },
         }}
       >
-        {toasts.map((t) => (
+        {orderedForDisplay(toasts).map((t) => (
           <Collapse
             key={t.id}
             in={!leaving.has(t.id)}
@@ -180,6 +182,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </Box>
     </ToastsContext.Provider>
   )
+}
+
+/**
+ * Transient first, sticky last -- so sticky toasts sit nearest the corner.
+ *
+ * The column grows upward from the bottom, so the last child is the one closest to the corner
+ * and the most stable position on screen. Putting the sticky ones there means an arriving notice
+ * pushes the stack up *above* them, instead of shifting an error out from under the cursor of
+ * someone reaching for its close button. A stable sort, so age still orders within each group.
+ */
+function orderedForDisplay(list: Toast[]): Toast[] {
+  return [...list].sort((a, b) => Number(isSticky(a)) - Number(isSticky(b)))
 }
 
 function ToastRow({ toast, onClose }: { toast: Toast; onClose: () => void }) {
@@ -203,9 +217,16 @@ function ToastRow({ toast, onClose }: { toast: Toast; onClose: () => void }) {
         {toast.message}
       </AlertTitle>
       {toast.note ? (
-        <Typography variant="body2" color="text.secondary">
-          {toast.note}
-        </Typography>
+        // A failure's note is the backend's own words -- often a paragraph, sometimes with a
+        // ref or a path in it -- so it gets the same monospace, wrapped, scrolling treatment the
+        // inline Alert on the campaign card gave it. Anything else is prose and reads as prose.
+        isSticky(toast) ? (
+          <ErrorText>{toast.note}</ErrorText>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            {toast.note}
+          </Typography>
+        )
       ) : null}
       {toast.action ? (
         <Button

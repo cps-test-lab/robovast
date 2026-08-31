@@ -245,11 +245,31 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     if (terminal) qc.invalidateQueries({ queryKey: ['jobs', id] })
   }, [terminal, id, qc])
 
+  // Declared above the mutations because their onError/onSuccess handlers report through it.
+  const { confirm, prompt } = useDialogs()
+  const { notify } = useToasts()
+
+  // Every action below reports its own outcome. A failure goes to a STICKY toast rather than an
+  // Alert on this card: the card's Alert had nothing that ever cleared it -- no mutation is
+  // reset and the card does not unmount -- so a refusal sat there until the tab was reloaded,
+  // outliving the thing it was about. A sticky toast still waits for the reader; it just does
+  // not become part of the campaign.
+  const failed = (what: string, key: string) => (e: unknown) => notify({
+    severity: 'error', key, message: what, note: (e as Error).message,
+  })
+
   const stop = useMutation({
     mutationFn: () => robovast.stop(id),
-    onSuccess: () => {
+    onError: failed('Stop failed.', `stop:${id}`),
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['status', id] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
+      // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
+      // warning, as it was on the card: it is an expected answer, not a fault.
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
+                 note: res.message || undefined })
+      }
     },
   })
 
@@ -259,14 +279,24 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const stopJob = useMutation({
     mutationFn: ({ jobName, reason }: { jobName: string; reason?: string }) =>
       robovast.stopJob(id, jobName, reason),
-    onSuccess: () => {
+    // A warning, not an error, and therefore not sticky: this refusal is the EXPECTED outcome
+    // when the job finished between the poll that drew the button and the click, and the
+    // server's message (which names the phase) is the whole explanation. That judgement was
+    // already in the card it is replacing; only the place it appears has changed.
+    onError: (e: unknown) => notify({
+      severity: 'warning', key: `stopjob:${id}`, message: 'Could not stop that job.',
+      note: (e as Error).message,
+    }),
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['jobs', id] })
       qc.invalidateQueries({ queryKey: ['status', id] })
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `stopjob:${id}`,
+                 message: 'Stopping the job had no effect.', note: res.message || undefined })
+      }
     },
   })
 
-  const { confirm, prompt } = useDialogs()
-  const { notify } = useToasts()
 
   // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
   // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
@@ -329,6 +359,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const del = useMutation({
     mutationFn: () => robovast.deleteCampaign(id),
+    onError: failed('Delete failed.', `delete:${id}`),
     // The row (and every cached query for this campaign) is gone on success — which is also why
     // the toast is the only thing left that can say what went.
     onSuccess: () => {
@@ -346,6 +377,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // invalidates the listing (where the new card appears) and nothing about this one.
   const retrigger = useMutation({
     mutationFn: () => robovast.retriggerCampaign(id),
+    // The same key its success uses: retrying replaces the refusal in place rather than leaving
+    // a stale one above the notice that supersedes it.
+    onError: failed('Retrigger failed — this campaign was not modified.', `retrigger:${id}`),
     onSuccess: (ref) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // The new campaign's card appears at the top of the list — it is the live one — which is
@@ -367,9 +401,16 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const share = useMutation({
     mutationFn: () => robovast.runShare(id),
-    onSuccess: () => {
+    onError: failed('Upload-to-share failed.', `share:${id}`),
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['status', id] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
+      // Accepting the export says nothing this page does not already show — the phase chip is
+      // live — so only a refusal is worth saying.
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `share:${id}`,
+                 message: 'Upload-to-share had no effect.', note: res.message || undefined })
+      }
     },
   })
 
@@ -856,6 +897,13 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 aria-haspopup="menu"
                 onClick={(e) => {
                   e.stopPropagation()
+                  // Opening the menu is the moment someone is about to try again, so the last
+                  // attempt's state stops being about anything. The toast it raised stays --
+                  // it is theirs to dismiss — but `isPending`/`isError` here are cleared so a
+                  // stale one cannot resurface or disable an entry.
+                  for (const m of [stop, stopJob, del, retrigger, share]) {
+                    if (!m.isPending) m.reset()   // in flight: its spinner is still true
+                  }
                   setMenuAnchor(e.currentTarget)
                 }}
                 disabled={del.isPending}
@@ -909,64 +957,9 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         </Typography>
       ) : null}
 
-      {/* The headline stays one line and the backend's own text goes below it in ErrorText — a
-          traceback spliced into the middle of a sentence buries the advice that follows it. */}
-      {stop.isError ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Stop failed.
-          <ErrorText>{(stop.error as Error).message}</ErrorText>
-        </Alert>
-      ) : stop.data && !stop.data.ok ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          <ErrorText>{stop.data.message ?? 'Stop had no effect.'}</ErrorText>
-        </Alert>
-      ) : null}
-
-      {/* A refusal is the expected outcome when the job finished between the poll that drew the
-          button and the click — so the server's own message (which names the phase it is in) is
-          the whole explanation, and it is a warning rather than an error. */}
-      {stopJob.isError ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          Could not stop that job.
-          <ErrorText>{(stopJob.error as Error).message}</ErrorText>
-        </Alert>
-      ) : stopJob.data && !stopJob.data.ok ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          <ErrorText>{stopJob.data.message ?? 'Stopping the job had no effect.'}</ErrorText>
-        </Alert>
-      ) : null}
-
-      {del.isError ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Delete failed.
-          <ErrorText>{(del.error as Error).message}</ErrorText>
-        </Alert>
-      ) : null}
-
-      {/* Only the failure stays on the card. A refusal names what was not done and carries the
-          backend's own text, which a notice that erases itself would take with it; the success
-          is a passing fact and goes to a toast (see the mutation above). */}
-      {retrigger.isError ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Retrigger failed — this campaign was not modified.
-          <ErrorText>{(retrigger.error as Error).message}</ErrorText>
-        </Alert>
-      ) : null}
-
-      {/* Accepting the export says nothing this page does not already show: the service only
-          acknowledges that the background upload started, and its phase is live in the chip
-          below. Only a refusal (ok=false, e.g. the busy guard) or a failed request needs
-          saying. */}
-      {share.isError ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Upload-to-share failed.
-          <ErrorText>{(share.error as Error).message}</ErrorText>
-        </Alert>
-      ) : share.data && !share.data.ok ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          <ErrorText>{share.data.message ?? 'Upload-to-share had no effect.'}</ErrorText>
-        </Alert>
-      ) : null}
+      {/* Every action's outcome — refusal included — is reported by its mutation, as a toast.
+          Nothing about an action lives on this card: an Alert here had nothing that cleared it,
+          so it outlived what it was about by as long as the tab stayed open. */}
 
       {!running && postprocError ? (
         <StepFailure

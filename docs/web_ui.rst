@@ -387,9 +387,20 @@ four are shown at once, and the oldest give way — a batch of campaigns ending 
 not bury the list they are about. Repeating an action refreshes its own notice rather than
 stacking a second copy of it, so leaning on a menu entry does not build a tower.
 
-**A failure stays put.** A refusal or an error keeps its place in the card or panel that
-raised it, with the service's own message under it, because that text is worth reading twice
-and often worth copying. Nothing that carries a reason is put somewhere it will erase itself.
+**A failure waits for you.** A refusal or an error from something *you* did appears in the same
+bottom-right stack, with the service's own message under it in monospace — but it has **no
+countdown**. It sits there until you dismiss it, because that text is worth reading twice and
+often worth copying, and nothing that carries a reason may put itself somewhere it will erase
+itself. Failures are counted separately from passing notices and shown nearest the corner, so a
+burst of campaigns ending can neither push one out of the stack nor shift it out from under the
+pointer reaching for its ✕.
+
+This is why they are no longer kept on the card that raised them: nothing there ever cleared
+one. The card does not unmount and the action's state was never reset, so a refusal stayed
+visible until the tab was reloaded — long after the campaign it was about had moved on, and
+sometimes next to a later attempt that had succeeded. A notice that waits is not the same as
+one that never leaves. (A refusal the service *expects* — stopping a job that finished a moment
+earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
 
 **Campaigns announce themselves.** Starting and ending is reported wherever you are in the
 app, not only on the Campaigns page — a campaign that ends while you are reading results says

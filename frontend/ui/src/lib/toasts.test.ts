@@ -4,7 +4,9 @@ import {
   dismissToast,
   expireToasts,
   extendDeadlines,
+  isSticky,
   MAX_VISIBLE,
+  MAX_VISIBLE_ERRORS,
   DEFAULT_DURATION_MS,
   type Toast,
   type ToastSpec,
@@ -115,5 +117,74 @@ describe('extendDeadlines', () => {
     const list = build(1)
     expect(extendDeadlines(list, 0)).toBe(list)
     expect(extendDeadlines([], 100)).toEqual([])
+  })
+})
+
+// A failure is the one thing that must not erase itself. These pin the three ways that could
+// break: the sweep taking it, the hover clock taking it, or an unrelated success evicting it.
+describe('a failure waits for the reader', () => {
+  const boom = (over: Partial<ToastSpec> = {}): ToastSpec =>
+    ({ severity: 'error', message: 'Retrigger failed.', ...over })
+
+  it('is stamped with no deadline at all', () => {
+    const [t] = addToast([], boom(), 1_000, 1)
+    expect(t.deadline).toBe(Infinity)
+    expect(isSticky(t)).toBe(true)
+  })
+
+  it('survives a sweep arbitrarily far in the future', () => {
+    const list = addToast([], boom(), 0, 1)
+    expect(expireToasts(list, Number.MAX_SAFE_INTEGER)).toHaveLength(1)
+  })
+
+  it('goes when dismissed, and only then', () => {
+    const list = addToast([], boom(), 0, 1)
+    expect(dismissToast(list, 1)).toHaveLength(0)
+  })
+
+  it('is unaffected by the hover pause', () => {
+    const list = extendDeadlines(addToast([], boom(), 0, 1), 250)
+    expect(list[0].deadline).toBe(Infinity)
+  })
+
+  it('is not evicted by a burst of transient notices', () => {
+    // The failure mode worth naming: one shared cap means a handful of campaigns ending can
+    // silently carry off the refusal someone has not read yet.
+    let list = addToast([], boom(), 0, 1)
+    for (let i = 0; i < MAX_VISIBLE * 3; i++) {
+      list = addToast(list, spec({ message: `m${i}` }), 0, 100 + i)
+    }
+    expect(list.filter(isSticky)).toHaveLength(1)
+    expect(list.filter((t) => !isSticky(t))).toHaveLength(MAX_VISIBLE)
+  })
+
+  it('does not crowd out transient notices either, having its own cap', () => {
+    let list: Toast[] = []
+    for (let i = 0; i < MAX_VISIBLE_ERRORS + 2; i++) {
+      list = addToast(list, boom({ message: `e${i}` }), 0, i + 1)
+    }
+    expect(list).toHaveLength(MAX_VISIBLE_ERRORS)
+    expect(list.map((t) => t.message)).toEqual(['e2', 'e3', 'e4'])   // oldest dropped
+  })
+
+  it('is replaced in place when the same action fails again', () => {
+    const first = addToast([], boom({ key: 'retrigger:c1' }), 0, 1)
+    const again = addToast(first, boom({ key: 'retrigger:c1', message: 'again' }), 5_000, 2)
+    expect(again).toHaveLength(1)
+    expect(again[0].message).toBe('again')
+    expect(again[0].deadline).toBe(Infinity)
+  })
+
+  it('re-caps when a key changes a toast from transient to sticky', () => {
+    // A retry reuses the key its success used, so a replacement can move a toast between the
+    // two groups — and the group it lands in can then be over its cap.
+    let list: Toast[] = []
+    for (let i = 0; i < MAX_VISIBLE_ERRORS; i++) {
+      list = addToast(list, boom({ message: `e${i}` }), 0, i + 1)
+    }
+    list = addToast(list, spec({ key: 'k', message: 'ok' }), 0, 90)
+    list = addToast(list, boom({ key: 'k', message: 'now failed' }), 0, 91)
+    expect(list.filter(isSticky)).toHaveLength(MAX_VISIBLE_ERRORS)
+    expect(list.some((t) => t.message === 'now failed')).toBe(true)
   })
 })
