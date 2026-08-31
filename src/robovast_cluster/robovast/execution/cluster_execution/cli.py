@@ -892,8 +892,11 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
               help='Namespace the robovast-service runs in')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-@click.option('--timeout', default=180.0, show_default=True, metavar='SECONDS',
-              help='How long to wait for the new pod to take over before failing')
+@click.option('--timeout', default=1800.0, show_default=True, metavar='SECONDS',
+              help='How long to wait for the new pod to take over before failing. Generous '
+                   'because a service that comes up owing campaigns restores them before it '
+                   'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
+                   'loop) still fails fast on its own, without spending this.')
 @click.option('--buildkit-cache-max', default='', metavar='SIZE',
               help='Resize the build cache ceiling. Without this the daemon keeps whatever '
                    'it was set up with -- an upgrade is not the place to quietly re-size a '

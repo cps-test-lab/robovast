@@ -176,3 +176,53 @@ def test_download_prefix_lists_once_per_transfer(tmp_path):
 
     assert attempts == [1]
     assert listings == ["camp"]
+
+
+# --- selective fetch -------------------------------------------------------------------
+#
+# Resume runs inside ``ClusterService.__init__``, before ``vast serve`` binds its port, so a
+# service that comes up owing campaigns is unreachable for as long as it is fetching. Taking
+# the whole prefix there made a restart with live campaigns impossible: gigabytes of run
+# artifacts, killed partway through by the liveness probe, restarted from nothing.
+
+
+def test_download_prefix_fetches_only_what_include_selects(tmp_path):
+    listings = []
+    client = _s3_client({"camp/0/test.xml": b"verdict",
+                         "camp/0/run.npz": b"megabytes-of-samples",
+                         "camp/campaign.db": b"store"}, listings)
+
+    n = client.download_prefix("bucket", "camp", str(tmp_path),
+                               include=lambda rel: not rel.endswith(".npz"))
+
+    assert n == 2
+    assert (tmp_path / "0" / "test.xml").read_bytes() == b"verdict"
+    assert (tmp_path / "campaign.db").exists()
+    assert not (tmp_path / "0" / "run.npz").exists()
+
+
+def test_the_progress_denominator_describes_the_filtered_transfer(tmp_path):
+    """``count_pending`` must apply the same predicate, or the bar measures another transfer.
+
+    Without it the total counts objects the download is about to skip: the bar stops short of
+    full on a transfer that in fact completed, which reads as a hang.
+    """
+    listings = []
+    objects = {"camp/0/test.xml": b"1234", "camp/0/run.npz": b"12345678"}
+    client = _s3_client(objects, listings)
+    include = (lambda rel: rel.endswith("test.xml"))
+    seen = []
+
+    n = client.download_prefix("bucket", "camp", str(tmp_path), include=include,
+                               on_progress=lambda *args: seen.append(args))
+
+    assert n == 1
+    # (done, total, bytes_done, bytes_total) -- totals from the filtered pre-pass, so the
+    # last callback lands exactly on the denominator.
+    assert seen == [(1, 1, 4, 4)]
+
+
+def test_count_pending_without_a_predicate_still_counts_everything(tmp_path):
+    """``include=None`` is the default for every caller but resume, and must not narrow."""
+    storage = _FakeStorage({"camp/a.txt": b"1234", "camp/b.bin": b"12345678"})
+    assert storage.count_pending("bucket", "camp", str(tmp_path)) == (2, 12)

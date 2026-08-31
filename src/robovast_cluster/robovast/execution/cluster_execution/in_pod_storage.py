@@ -207,7 +207,8 @@ class StorageClient:
         raise NotImplementedError
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None, on_progress=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None,
+                        include=None) -> int:
         """Download every object under *prefix* into *local_dir*.
 
         Objects in the durable home are immutable, so by default a file that
@@ -227,6 +228,15 @@ class StorageClient:
         :meth:`count_pending` pre-pass. It is separate from *on_file* because that pre-pass
         is an extra listing: a caller that only wants a running count in a log should not
         pay for a denominator nobody displays.
+
+        *include*, if given, is called with each object's key **relative to the prefix** and
+        selects what is fetched; ``None`` fetches everything, which is what every caller but
+        one wants. It exists for campaign resume, which needs a campaign's control plane
+        (records, config, verdicts) to re-enter it but not the run artifacts, and which runs
+        before the service binds its port -- so the difference is between a restart that takes
+        seconds and one the liveness probe kills. Pass the same predicate to
+        :meth:`count_pending` or the progress denominator describes a different transfer from
+        the one running.
         """
         raise NotImplementedError
 
@@ -278,7 +288,7 @@ class StorageClient:
         raise NotImplementedError
 
     def count_pending(self, bucket: str, prefix: str, local_dir: str,
-                      force: bool = False) -> "tuple[int, int]":
+                      force: bool = False, include=None) -> "tuple[int, int]":
         """Return ``(files, bytes)`` that :meth:`download_prefix` would actually fetch.
 
         The denominator behind a determinate progress bar. Written once here, against
@@ -301,6 +311,8 @@ class StorageClient:
         for key, size in objects:
             rel = key[len(key_prefix):] if key_prefix else key
             if not rel or key.endswith("/"):
+                continue
+            if include is not None and not include(rel):
                 continue
             if not force and _same_size(os.path.join(local_dir, *rel.split("/")), size):
                 continue
@@ -533,12 +545,13 @@ class _S3StorageClient(StorageClient):
         self._resilient(op, f"uploading {local_path} to s3://{bucket}/{key}")
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None, on_progress=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None,
+                        include=None) -> int:
         clean = prefix.rstrip("/")
         key_prefix = f"{clean}/" if clean else ""
         # Outside ``op``: the denominator describes the whole transfer, so a reconnect retry
         # must not pay for a second listing.
-        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force)
+        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force, include)
                             if on_progress is not None else (None, None))
 
         def op():
@@ -550,6 +563,8 @@ class _S3StorageClient(StorageClient):
                     key = obj["Key"]
                     rel = key[len(key_prefix):] if key_prefix else key
                     if not rel or key.endswith("/"):
+                        continue
+                    if include is not None and not include(rel):
                         continue
                     dst = os.path.join(local_dir, *rel.split("/"))
                     if not force and _same_size(dst, obj.get("Size")):
@@ -697,17 +712,20 @@ class _GcsStorageClient(StorageClient):
         blob.upload_from_filename(local_path)
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None, on_progress=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None,
+                        include=None) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
-        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force)
+        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force, include)
                             if on_progress is not None else (None, None))
         count = 0
         fetched_bytes = 0
         for blob in self._client.list_blobs(gbucket, prefix=key_prefix):
             rel = blob.name[len(key_prefix):] if key_prefix else blob.name
             if not rel or blob.name.endswith("/"):
+                continue
+            if include is not None and not include(rel):
                 continue
             dst = os.path.join(local_dir, *rel.split("/"))
             if not force and _same_size(dst, blob.size):

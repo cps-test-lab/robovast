@@ -53,6 +53,23 @@ SERVICE_ACCOUNT = "robovast-service"
 #: address space in ``service/interface.py``.
 SERVICE_PORT = DEFAULT_PORT
 
+#: How long the service may take to bind its port before Kubernetes calls it dead, as
+#: ``(periodSeconds, failureThreshold)`` for the startupProbe.
+#:
+#: Large on purpose, and not a value to tidy down. ``ClusterService.__init__`` resumes every
+#: interrupted campaign *before* ``vast serve`` binds the port (see
+#: ``ClusterService.resume_interrupted_campaigns``), so a service that comes up owing work does
+#: not answer ``/healthz`` until that resume returns. Under the liveness probe alone -- 15 s of
+#: grace, then three 20 s strikes -- a restart with live campaigns was SIGKILLed at ~75 s, every
+#: time, forever: each attempt was killed mid-restore and the next one started over.
+#:
+#: A startupProbe is the mechanism that fits: Kubernetes suspends BOTH liveness and readiness
+#: until it passes, so a slow start stops reading as a hung one without weakening the
+#: steady-state checks by a single second. The remaining wait is a prefix listing, which scales
+#: with the campaign's object count even when no bytes move.
+STARTUP_PROBE_PERIOD_SECONDS = 10
+STARTUP_PROBE_FAILURE_THRESHOLD = 180  # 30 minutes
+
 #: Pod-template annotation stamped on every deploy, so the Deployment spec this run
 #: submits always differs from the one already in the cluster and Kubernetes has to roll.
 #:
@@ -73,9 +90,11 @@ RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 #: Mounted rather than left on the container's writable layer for the same reason the
 #: registry is (see ``registry_deploy.registry_volume``): every upgrade restarts the pod,
 #: so an unmounted workspace store is discarded on each version bump — every project a
-#: user had pushed, gone, while the upgrade reports success. Campaign *results* live in
-#: the object store and are unaffected, which is what made the loss easy to miss: the
-#: data survives and the sources it was produced from do not.
+#: user had pushed, gone, while the upgrade reports success.
+#:
+#: The campaign results root needed the same treatment and did not get it for longer, because
+#: it was believed to be a cache of the object store. It is not, for a campaign the service is
+#: *driving* — see :data:`RESULTS_VOLUME_NAME`.
 #:
 #: An explicit path plus ``ROBOVAST_WORKSPACES_ROOT`` rather than mounting over the
 #: default ``~/.robovast/workspaces``: the default is resolved from ``HOME`` inside the
@@ -86,6 +105,27 @@ WORKSPACES_VOLUME_NAME = "workspaces-data"
 WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
 DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
+
+#: Where the service keeps the working root of the campaigns it drives, and the volume
+#: backing it.
+#:
+#: Not a cache, which is what made this one expensive to get wrong. A cluster campaign's
+#: *durable* home is the object store, but the one being driven has a local tree all the
+#: same: each batch downloads its own results into it, per-run extraction reads it through a
+#: path (``search.extractor.Extractor.extract``), and postprocessing derives ``data.db``
+#: from it. Unmounted it landed on the container's writable layer — as ``/var/lib/results``,
+#: the *sibling* of the workspaces mount, one directory outside what was covered — so every
+#: restart discarded it. Combined with a resume that rebuilds it before the port is bound,
+#: that was a restart loop no ``startupProbe`` could have saved: each attempt was killed
+#: mid-restore and the next began again from an empty directory.
+#:
+#: Named on the command line via ``vast serve --results-dir`` rather than left to
+#: ``local_results_root``'s ``<workspaces_root>/../results``, for the reason
+#: :data:`WORKSPACES_ROOT_ENV` gives: a manifest must name the path it mounts, or a later
+#: change to the workspaces mount silently un-mounts this one again.
+RESULTS_VOLUME_NAME = "results-data"
+RESULTS_DATA_DIR = "/var/lib/robovast-results"
+DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
 
 #: The origin clients reach this service on, which the service reports as
 #: ``VersionInfo.web_base`` so a caller that cannot be handed bytes can be handed a link.
@@ -125,6 +165,71 @@ def workspaces_pvc_manifest(namespace, storage_class, size="20Gi"):
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {"name": WORKSPACES_VOLUME_NAME, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME}},
+        "spec": {"accessModes": ["ReadWriteOnce"],
+                 "storageClassName": storage_class,
+                 "resources": {"requests": {"storage": size}}},
+    }
+
+
+def _results_host_path(workspaces_storage_path=""):
+    """Where the results hostPath goes: literally beside the workspaces one.
+
+    A deployer who moved the workspaces store to another disk meant to move the service's
+    node-local data, and results is the larger half of it. Pinning results to
+    :data:`DEFAULT_RESULTS_HOST_PATH` regardless would quietly leave it on the node's root
+    filesystem — the disk they were moving off.
+    """
+    if not workspaces_storage_path:
+        return DEFAULT_RESULTS_HOST_PATH
+    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-results")
+
+
+def results_volume(storage_path="", storage_class=""):
+    """The volume backing the campaign results root.
+
+    Deliberately takes no configuration of its own: the caller passes the *workspaces*
+    volume's backing, so results is a PVC exactly where workspaces is one and a hostPath
+    beside it otherwise. Three reasons that is right rather than merely smaller.
+
+    It stays portable with no new flags: a stock RKE2 cluster ships no StorageClass and gets
+    a hostPath (a PVC there would sit Pending forever); a cluster that can provision gets a
+    dynamically-provisioned claim.
+
+    It keeps :func:`_resolve_data_node` correct for free. That function pins the pod to a node
+    whenever a volume it carries is a hostPath; because this volume's backing is a function of
+    one it already tests, results cannot become node-local behind its back and be abandoned by
+    a pod that was free to move.
+
+    And it commits no public API to an arrangement that may not last. The driver mirrors a
+    campaign whose durable home is the object store -- it downloads Job output it did not
+    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what keeps
+    that necessary is only that per-run extraction runs driver-side against a local path
+    (``search.extractor.Extractor.extract``). Move extraction into a Job, as rosbag conversion
+    already is, and this volume stops being needed. Give it its own ``--results-storage-*``
+    flags when someone actually needs to split it from the workspaces store, not before.
+    """
+    if storage_class:
+        return {"name": RESULTS_VOLUME_NAME,
+                "persistentVolumeClaim": {"claimName": RESULTS_VOLUME_NAME}}
+    return {"name": RESULTS_VOLUME_NAME,
+            "hostPath": {"path": storage_path or DEFAULT_RESULTS_HOST_PATH,
+                         "type": "DirectoryOrCreate"}}
+
+
+def results_pvc_manifest(namespace, storage_class, size="500Gi"):
+    """The PVC for :func:`results_volume`, or ``None`` when backed by hostPath.
+
+    An order of magnitude larger than the workspaces claim's default, because this is the
+    largest store the service keeps: one measured campaign held 4.0 GB of run artifacts
+    against 0.4 MB of anything the driver itself produced, and a service drives many at once.
+    """
+    if not storage_class:
+        return None
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": RESULTS_VOLUME_NAME, "namespace": namespace,
                      "labels": {"app": SERVICE_NAME}},
         "spec": {"accessModes": ["ReadWriteOnce"],
                  "storageClassName": storage_class,
@@ -264,7 +369,7 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                          registry_storage_path="", registry_storage_class="",
                          workspaces_storage_path="", workspaces_storage_class="",
                          node_selector=None):
-    """The robovast-service Deployment (1 replica, stateless — no PVC).
+    """The robovast-service Deployment (1 replica).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
     port-forward/Ingress — the pod network is the boundary). Runs ``vast serve``.
@@ -304,8 +409,12 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         "name": SERVICE_NAME,
         "image": image,
         "imagePullPolicy": "Always",
+        # --results-dir names the mount below rather than letting local_results_root derive
+        # <workspaces_root>/../results, which resolved one directory OUTSIDE the only mount
+        # this pod had. See RESULTS_VOLUME_NAME.
         "command": ["vast", "serve",
-                    "--host", "0.0.0.0", "--port", str(SERVICE_PORT)],
+                    "--host", "0.0.0.0", "--port", str(SERVICE_PORT),
+                    "--results-dir", RESULTS_DATA_DIR],
         "ports": [{"containerPort": SERVICE_PORT, "name": "http"}],
         "env": list(env or []),
         "readinessProbe": {
@@ -314,6 +423,13 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         "livenessProbe": {
             "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
             "initialDelaySeconds": 15, "periodSeconds": 20},
+        # Holds the two probes above off until the service actually answers; see
+        # STARTUP_PROBE_PERIOD_SECONDS for why the budget is measured in minutes.
+        "startupProbe": {
+            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            "initialDelaySeconds": 5,
+            "periodSeconds": STARTUP_PROBE_PERIOD_SECONDS,
+            "failureThreshold": STARTUP_PROBE_FAILURE_THRESHOLD},
     }
     if env_secret_names:
         container["envFrom"] = [{"secretRef": {"name": n}} for n in env_secret_names]
@@ -322,13 +438,18 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         container["env"].append({"name": WORKSPACES_ROOT_ENV,
                                  "value": WORKSPACES_DATA_DIR})
     container["volumeMounts"] = [{"name": WORKSPACES_VOLUME_NAME,
-                                  "mountPath": WORKSPACES_DATA_DIR}]
+                                  "mountPath": WORKSPACES_DATA_DIR},
+                                 {"name": RESULTS_VOLUME_NAME,
+                                  "mountPath": RESULTS_DATA_DIR}]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
         "containers": [container, registry_deploy.registry_container()],
         "volumes": [registry_deploy.registry_volume(
             registry_storage_path, registry_storage_class),
-            workspaces_volume(workspaces_storage_path, workspaces_storage_class)],
+            workspaces_volume(workspaces_storage_path, workspaces_storage_class),
+            # Backed like the workspaces store, deliberately -- see results_volume().
+            results_volume(_results_host_path(workspaces_storage_path),
+                           workspaces_storage_class)],
     }
     if node_selector:
         pod_spec["nodeSelector"] = dict(node_selector)
@@ -1641,6 +1762,14 @@ def service_manifests(namespace="default", image=None, env=None,
     registry_pvc = registry_deploy.registry_pvc_manifest(namespace, registry_storage_class)
     if registry_pvc:
         extra.append(registry_pvc)
+    # Both node-local stores claim through the same class. `workspaces_pvc_manifest` existed
+    # but was never emitted, so passing --workspaces-storage-class produced a Deployment
+    # referencing a PVC nothing created and a pod that stayed Pending with no explanation.
+    # `results_volume` is backed by that same class, so it would have inherited the fault.
+    for pvc in (workspaces_pvc_manifest(namespace, workspaces_storage_class),
+                results_pvc_manifest(namespace, workspaces_storage_class)):
+        if pvc:
+            extra.append(pvc)
 
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
@@ -1778,7 +1907,8 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
                 raise RuntimeError(
                     f"the {prefix} volume is a PersistentVolumeClaim whose StorageClass "
                     f"cannot be determined, so re-rendering it would silently fall back to "
-                    f"a hostPath and abandon the claim. Pass --{prefix}-storage-class.")
+                    f"a hostPath and abandon the claim. Set its StorageClass explicitly on "
+                    f"the claim, or re-run 'vast cluster setup' with the storage flags.")
             settings[f"{prefix}_storage_class"] = storage_class
     if pod_spec.node_selector:
         settings["node_selector"] = dict(pod_spec.node_selector)
