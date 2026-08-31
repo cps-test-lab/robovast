@@ -34,11 +34,17 @@ search:
   # THE STACK. Both costmaps inflate by the same figure -- one factor, two destinations,
   # one value. Writing them as a list is what keeps them from drifting apart: two separate
   # variations would be two factors, and the sweep would explore combinations nobody means.
+  #
+  # The marker is repeated because ParameterVariationList pairs destinations with values
+  # POSITIONALLY: a multi-destination entry carries one value per destination, so that the
+  # form which sets several *different* values at one level stays unambiguous. It does not
+  # broadcast, and a single scalar against two destinations is refused -- which is how this
+  # was caught. One search dimension still, written into two places.
   - ParameterVariationList:
       sut:
       - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
       - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
-      values: [$inflation_radius]
+      values: [[$inflation_radius, $inflation_radius]]
   # nav2 takes a velocity triple; the search varies its linear component and the rest stays
   # what nav2_params.yaml declares.
   - ParameterVariationList:

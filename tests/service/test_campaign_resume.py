@@ -10,6 +10,7 @@ idempotent campaign row, ``WorkspaceTarget.campaign_id``). What is left is findi
 campaigns owed work, and deciding which of them can be picked up at all.
 """
 
+import logging
 import types
 
 import pytest
@@ -30,7 +31,11 @@ class _FakeService:
 
     # -- what campaign_resume reads
     def _campaign_index(self):
-        return self._index
+        # The pair ClusterService._campaign_index returns, not the bare map: a stub that
+        # answers a shape the real collaborator never returns tests nothing. This one
+        # returned a plain dict, so every test here passed while the deployed service
+        # raised TypeError on its first candidate and resumed nothing.
+        return dict(self._index), {cid: "ended" for cid in self._endings}
 
     def _campaign_dir(self, campaign_id):
         return self.root / campaign_id
@@ -102,11 +107,38 @@ def test_one_unreadable_campaign_does_not_hide_the_others(tmp_path, monkeypatch)
     assert campaign_resume.owed_work(svc) == ["good"]
 
 
-def test_an_unreachable_store_does_not_block_startup(tmp_path, monkeypatch):
+def test_a_fault_in_discovery_does_not_block_startup(tmp_path, monkeypatch):
     svc = _FakeService(tmp_path, {})
     monkeypatch.setattr(campaign_resume, "owed_work",
                         lambda s: (_ for _ in ()).throw(RuntimeError("no store")))
     assert campaign_resume.resume_all(svc) == {}
+
+
+def test_a_fault_in_discovery_is_reported_as_an_error(tmp_path, monkeypatch, caplog):
+    """Starting anyway is right; starting *quietly* is what cost a campaign.
+
+    A bug in discovery resumed nothing and said so once, at warning level, in the voice of
+    a routine store outage -- so a service that had picked up no campaign at all looked
+    like a service that had come back clean.
+    """
+    svc = _FakeService(tmp_path, {})
+    monkeypatch.setattr(campaign_resume, "owed_work",
+                        lambda s: (_ for _ in ()).throw(TypeError("wrong shape")))
+    with caplog.at_level(logging.ERROR, logger=campaign_resume.__name__):
+        assert campaign_resume.resume_all(svc) == {}
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR and r.exc_info]
+
+
+def test_discovery_reads_the_index_pair_the_service_returns(tmp_path, no_store):
+    """Pins ``owed_work`` to ClusterService._campaign_index's real ``(created, finished)``.
+
+    The regression this file missed: iterating that pair as if it were one map raises
+    TypeError on the first candidate, and resume_all swallowed it into a start that picked
+    up nothing.
+    """
+    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
+    assert isinstance(svc._campaign_index(), tuple)
+    assert campaign_resume.owed_work(svc) == ["camp-a"]
 
 
 # -- the decision -----------------------------------------------------------------------

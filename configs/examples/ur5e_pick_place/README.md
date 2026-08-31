@@ -68,7 +68,7 @@ wider noise levels failing is the measurement.
 
 ## How it is put together
 
-```
+```text
 ur5e_pick_place.vast      the campaign: the sweep, three containers, the generate step
 scenario.osc              the ORDER: clock -> stack -> record -> trial -> end
 world/ur5e_pick_place.yaml   the cell; world/drop_bin.xml is its own prop
