@@ -218,6 +218,16 @@ Marker rules:
    would have to be invented too, and an invented measure vector lands the fabrication
    in a real archive cell where the search then chases it.
 
+   **A repeated draw is the third case, and it is absorbed.** ``ParamSet.id`` is derived
+   from the values, and the config's name, its result directory and its ``unit`` row are
+   all addressed by it — so two draws with the same values are one cell with one place to
+   put its results, not two. On a discrete space a strategy proposes exactly that
+   routinely: TPE re-proposes a category it likes, and a random or low-discrepancy draw
+   collides as soon as the space has few enough levels. The repeat is collapsed before
+   composition, the cell is evaluated once, and ``tell()`` is handed one evaluation for it
+   — a short generation again. What was proposed is kept in the batch row's ``asked``
+   count, which is what a resume replays.
+
 Strategies
 ----------
 
@@ -478,9 +488,10 @@ Surviving a service restart
 
 A search whose service process goes away — a pod replacement, an eviction, an OOM — is
 picked back up by the next one, at the batch boundary it reached. **Nothing about the
-strategy is serialized.** The campaign's ``unit`` rows already record every parameter set
-it proposed, so a fresh strategy is re-driven through the exact ``ask``/``tell`` sequence
-the first one saw (``SearchStrategy.resume``), and from there it carries on identically.
+strategy is serialized.** The campaign's ``batch`` and ``unit`` rows already record what it
+proposed and what each proposal scored, so a fresh strategy is re-driven through the exact
+``ask``/``tell`` sequence the first one saw (``SearchStrategy.resume``), and from there it
+carries on identically.
 ``campaign.db`` is published at each batch boundary for this reason: those rows are the
 checkpoint.
 
@@ -489,8 +500,10 @@ advances a strategy's sequence, so one told the evaluations without being asked 
 proposals would resume with its stream rewound and re-draw points it had already spent. And
 a strategy may consult what it has been told *while* proposing — ``boundary`` does — so
 only the original interleaving reproduces the original draws. The count replayed is what
-was **proposed**, not what came back: a draw the variation pipeline could not realize, or
-one whose runs were all lost, costs a proposal and produces no evaluation.
+was **proposed** — the batch row's ``asked`` — not what came back, and not the number of
+``unit`` rows either: a draw the variation pipeline could not realize, or one whose runs
+were all lost, costs a proposal and produces no evaluation, and a repeated draw costs a
+proposal and produces no row of its own.
 
 Two conditions, both checked before the campaign is re-launched:
 

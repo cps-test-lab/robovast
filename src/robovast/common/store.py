@@ -140,7 +140,8 @@ CREATE TABLE IF NOT EXISTS batch (
     campaign_id INTEGER NOT NULL REFERENCES campaign(id),
     idx         INTEGER NOT NULL,
     dir         TEXT,
-    created_at  REAL
+    created_at  REAL,
+    asked       INTEGER          -- parameter sets the strategy PROPOSED for this batch
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -445,8 +446,22 @@ ALTER TABLE job ADD COLUMN node_label TEXT;
 ALTER TABLE container_failure RENAME COLUMN node_name TO node_label;
 """
 
+# 9 -> 10: how many parameter sets a batch PROPOSED, which is not how many it recorded.
+#
+# `search.history.recorded_batches` counted the unit rows and called that the ask size,
+# because until now every draw left one. A repeated draw does not: two draws with the same
+# values are one cell (`ParamSet.id` is derived from them, and results are addressed by
+# it), so the batch composes and records it once. Derived from the rows, the replay would
+# then ask for fewer than the original did and every parameter set after it would differ.
+#
+# NULL on a store written before this, where the row count IS the ask size -- no draw was
+# ever collapsed there, because a repeated one aborted the campaign instead.
+_MIGRATION_ADD_BATCH_ASKED = """
+ALTER TABLE batch ADD COLUMN asked INTEGER;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -465,6 +480,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_ORIGIN,
     _MIGRATION_ADD_CONTAINER_FAILURE,
     _MIGRATION_ADD_NODE,
+    _MIGRATION_ADD_BATCH_ASKED,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -617,10 +633,19 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
-    def open_batch(self, campaign_id: int, idx: int, batch_dir: str) -> int:
+    def open_batch(self, campaign_id: int, idx: int, batch_dir: str,
+                   asked: Optional[int] = None) -> int:
+        """Open a batch row. ``asked`` is how many parameter sets the strategy PROPOSED.
+
+        Recorded because it is not always the number of ``unit`` rows that follow: two
+        draws with the same values are one cell, composed and recorded once, and a replay
+        that asked for the rows would rewind the strategy's stream (see
+        :func:`robovast.search.history.recorded_batches`).
+        """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at) VALUES (?, ?, ?, ?)",
-            (campaign_id, idx, batch_dir, time.time()),
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (campaign_id, idx, batch_dir, time.time(), asked),
         )
         self._conn.commit()
         return cur.lastrowid
