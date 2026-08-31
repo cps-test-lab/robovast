@@ -79,29 +79,55 @@ def test_an_image_below_the_floor_is_refused(_runner):
     assert "no longer supports" in str(e.value)
 
 
-def test_a_registry_that_will_not_say_refuses_rather_than_shrugging(_runner):
+def test_an_image_carrying_no_label_is_refused_and_told_to_rebuild(_runner):
     """The deliberate difference from pinning, which shrugs.
 
     Pinning is an optimisation: not applying it leaves what would have run anyway. A compat
-    check that could not read the image has established *nothing*, and proceeding is how an
-    incompatible image becomes a campaign that fails obscurely halfway through instead of a
+    check that could not establish the version has established *nothing*, and proceeding is how
+    an incompatible image becomes a campaign that fails obscurely halfway through instead of a
     refusal at submission.
+
+    ``{}`` is the registry answering, with an image that carries no such label -- so rebuilding
+    it IS the remedy, and the message says so.
     """
     with pytest.raises(CampaignConfigError) as e:
         _runner({})
     assert "cannot determine the container protocol version" in str(e.value)
+    assert "reports no" in str(e.value), "must say the registry answered"
+    assert "rebuild it from the revision" in str(e.value)
     assert "ROBOVAST_SKIP_IMAGE_COMPAT_CHECK" in str(e.value)
 
 
+def test_a_registry_that_could_not_be_asked_does_not_blame_the_image(_runner):
+    """``None`` is "never asked", and the two must not share a message.
+
+    This is the failure that motivated splitting them. A deployment whose pull credential could
+    not read the registry was told its image carried no compat label and to rebuild it -- so it
+    was rebuilt, correctly, twice, while the message never mentioned the credential that was
+    actually at fault. An image that was never read is not evidence about the image.
+    """
+    with pytest.raises(CampaignConfigError) as e:
+        _runner(None)
+    assert "cannot determine the container protocol version" in str(e.value)
+    assert "never read" in str(e.value)
+    assert "rebuilding it will not change this" in str(e.value)
+    assert "registry credential" in str(e.value)
+    # The remedy for the OTHER case must not appear here: it is the wrong advice, and being
+    # given it is what cost the incident its two rebuilds.
+    assert "rebuild it from the revision" not in str(e.value)
+
+
 def test_the_escape_hatch_lets_an_unreadable_registry_through(_runner, monkeypatch):
-    """For the case the check cannot distinguish: a registry that is briefly unreachable.
+    """For the case no reading can settle: a registry that is briefly unreachable.
 
     A guarantee that halts every campaign when an optional component hiccups is not one anybody
-    keeps, so the way past it is documented rather than discovered.
+    keeps, so the way past it is documented rather than discovered. Asserted for ``None``, the
+    state it is actually for -- the message for that state now names this switch as the way on
+    once the operator knows the image.
     """
     monkeypatch.setenv("ROBOVAST_SKIP_IMAGE_COMPAT_CHECK", "1")
-    runner = _runner({})
-    assert runner.image == _DIGEST
+    assert _runner(None).image == _DIGEST
+    assert _runner({}).image == _DIGEST
 
 
 def test_the_registry_is_asked_once_per_campaign_not_once_per_batch(_runner):

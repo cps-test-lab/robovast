@@ -674,7 +674,7 @@ _REMOTE_LABEL_CACHE: dict = {}
 
 
 def check_image_compat(image: str, *, version: "int | None" = None,
-                       source: str = "") -> "str | None":
+                       source: str = "", unreadable: bool = False) -> "str | None":
     """``None`` when this host can drive *image*, else a message saying what to do.
 
     One function for a decision three call sites each spelled out for themselves, with three
@@ -684,10 +684,26 @@ def check_image_compat(image: str, *, version: "int | None" = None,
     out.
 
     *version* / *source* let a caller that already inspected the image avoid a second probe.
+
+    *unreadable* separates the two ways *version* can be ``None``, which the message must not
+    conflate. An image that was READ and carries no label is a fact about the image, and
+    rebuilding it is the fix. An image that could not be read establishes nothing about the
+    image at all -- and telling that caller to rebuild sends them to do work that cannot
+    possibly help, twice, while the actual fault (a registry credential) goes unmentioned.
     """
     if version is None and not source:
         version, source = image_compat_version(image)
 
+    if version is None and unreadable:
+        return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
+                f"The image itself was never read, so this says NOTHING about the image and "
+                f"rebuilding it will not change this. Check what stopped the read: the "
+                f"deployment's registry credential (the pull Secret the campaign's namespace "
+                f"holds), the registry's reachability from the controller, and its CA if TLS "
+                f"is in play.\n"
+                f"If you already know the image is one this host can drive, "
+                f"ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1 is the documented way past this -- it is "
+                f"exactly the case that switch exists for.")
     if version is None:
         return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
                 f"This host speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION}. An image that reports "
