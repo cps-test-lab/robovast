@@ -236,7 +236,17 @@ function SearchRing({
               transform="rotate(-90 20 20)"
               sx={{
                 fill: 'none',
-                stroke: theme.palette.secondary.main,
+                // The arc's LENGTH is the budget spent; its COLOUR says whether the budget is
+                // what will actually end the campaign. When a stopping criterion is about to
+                // fire, "67% spent" still implies a third left to run, and it will not be run.
+                // The verdict is the service's (`stopping_soon_report`), never re-derived here.
+                //
+                // Colour alone would be a reserved-status violation, and it is not alone: the
+                // time cell in the same row reads "may stop early" whenever this is set, and
+                // the hover carries the criterion's own sentence.
+                stroke: status.stopping_soon === true
+                  ? theme.palette.warning.main
+                  : theme.palette.secondary.main,
                 strokeWidth: 6,
                 strokeDasharray: `${share} ${100 - share}`,
               }}
@@ -325,6 +335,10 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
             label: 'best objective',
             value: status.best_objective != null ? String(status.best_objective) : null,
           },
+          // Why the arc went amber. Dropped when absent, which is HoverFacts' rule and the
+          // right one here: a search that is not near a stopping criterion says nothing about
+          // one rather than reassuring the reader about it.
+          { label: 'stopping soon', value: status.stopping_reason ?? null },
         ]}
       />
       {!bound ? (

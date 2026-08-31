@@ -3058,6 +3058,39 @@
             ],
             "title": "Stop"
           },
+          "stopping_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Reason"
+          },
+          "stopping_soon": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Soon"
+          },
+          "stopping_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopping Verdict"
+          },
           "updated_at": {
             "title": "Updated At",
             "type": "number"
@@ -3095,6 +3128,9 @@
           "stall_verdict",
           "stalled",
           "stop",
+          "stopping_reason",
+          "stopping_soon",
+          "stopping_verdict",
           "updated_at",
           "waiting_for_capacity"
         ],
