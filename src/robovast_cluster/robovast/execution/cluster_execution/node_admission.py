@@ -404,8 +404,8 @@ class AdmissionController:
         a probe runs at the declared sizing while the calibrated jobs behind it run at a
         measured fraction of it -- so skipping it hands its node to the smaller work it
         outranks, every pass, forever. Priority ordered the queue but reserved nothing, and on
-        the smallest node of a mixed cluster that meant a probe was never placed at all: four
-        campaigns ended having measured every node but one.
+        the smallest node of a mixed cluster that means a probe is never placed at all -- the
+        campaign then ends having measured every node but that one.
 
         So a pinned item that does not fit **claims its node** for the rest of the pass:
         nothing further is placed there, the node drains as its work finishes, and the item
@@ -456,8 +456,8 @@ class AdmissionController:
                     need = item.sizing_on(chosen.node_id)
                 if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
                     # **This owner's items, not the queue's.** The count spanned every owner,
-                    # so a campaign with an 8-job batch was told "144 job(s) waiting" -- the
-                    # whole cluster's queue, reported into its log as though it were its own.
+                    # so a campaign with a handful of jobs queued was told the whole cluster's
+                    # queue depth, reported into its own log as though it were its own.
                     # The refusal SLOT was made per owner for exactly this confusion; the
                     # number inside the string was not. `state` is mutated as items are
                     # created, so counting PLANNED here is accurate mid-pass.
@@ -474,9 +474,9 @@ class AdmissionController:
                     usable = [n for n in by_id.values() if item.may_use(n.node_id)]
                     # What it would need on the node it would actually go to. `need` was left
                     # at the DECLARED sizing whenever nothing fit -- so a calibrated campaign
-                    # was told its job needs 5.85 cpu while two nodes had measured figures
-                    # that would have asked for a third less. The fit test already used the
-                    # per-node figure; only the message did not.
+                    # was told its job needs the declared figure while the nodes it was being
+                    # tested against had measured ones asking for substantially less. The fit
+                    # test already used the per-node figure; only the message did not.
                     if usable:
                         emptiest = max(usable, key=lambda n: n.free_cpu)
                         need = item.sizing_on(emptiest.node_id)

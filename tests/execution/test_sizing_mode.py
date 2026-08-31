@@ -793,7 +793,7 @@ def test_a_campaign_calibration_never_applied_to_reports_nothing():
 
 
 def test_a_node_unmeasured_once_is_counted_not_condemned():
-    """The fix for four campaigns that died on a busy minute at their own start.
+    """The fix for a campaign that dies on a busy moment at its own start.
 
     At the end of ONE batch, a probe that could never be placed and a probe that lost a race
     for free capacity look identical -- and the first is already refused before any job exists,
