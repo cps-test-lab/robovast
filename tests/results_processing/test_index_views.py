@@ -174,6 +174,33 @@ def test_run_view_carries_the_campaign_so_it_can_span_them(index):
     assert result["rows"] == [{"campaign_id": "camp-a"}]
 
 
+def test_run_validity_view_measures_the_window_not_a_rounded_constant(index):
+    """The REAL trap, on the view that would have suffered it.
+
+    ``run_validity_view`` divides a stall total by the trial's wall span. Through
+    Postgres' 4-byte ``real`` an epoch span collapses to the same wrong constant whatever
+    the window actually was -- measured on a real campaign, a 73.6-second window read as
+    128.000 for every container -- so every stall ratio would be understated by ~40% and
+    look entirely plausible.
+    """
+    with index_query.open_index(readonly=False) as conn:
+        conn.execute("CREATE TABLE system_usage (campaign_id text, config_name text, "
+                     "run_id bigint, container text, in_window bigint, wall_ts double "
+                     "precision, nr_periods bigint, nr_throttled bigint, "
+                     "throttled_usec bigint, cpu_stall_full_usec bigint)")
+        # Exactly 60 seconds of real epoch stamps.
+        conn.execute(
+            "INSERT INTO system_usage VALUES "
+            "('camp-a','goal-1',0,'sut',1,1787518471.334247,0,0,0,0),"
+            "('camp-a','goal-1',0,'sut',1,1787518531.334247,100,0,0,6000000)")
+        index_views.create_views(conn)
+        span_derived = conn.execute(
+            "SELECT stalled_full_usec / stall_ratio / 1000000.0 FROM run_validity_view"
+        ).fetchone()[0]
+
+    assert abs(span_derived - 60.0) < 1e-3, "the window must be the real one, not 128 s"
+
+
 def test_views_are_created_for_what_the_index_actually_has(index):
     """A view over a missing table is created happily and fails at query time."""
     with index_query.open_index() as conn:

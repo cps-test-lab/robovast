@@ -67,11 +67,24 @@ def _c(table: str) -> str:
     return index_schema.qualified(table, index_schema.CAMPAIGN_SCHEMA)
 
 
+def _resolve(conn, schema: str) -> str:
+    """A schema name, resolving the metric schema's empty string to the live one.
+
+    Not ``public``. Metric tables live wherever the connection's ``search_path`` points,
+    which a deployment sets and the tests set per case -- assuming ``public`` finds no
+    tables and silently produces no views, which reads as "this campaign has no
+    measurements".
+    """
+    if schema:
+        return schema
+    return conn.execute("SELECT current_schema()").fetchone()[0] or "public"
+
+
 def _tables_in(conn, schema: str) -> set:
     """Table names present in *schema*."""
     rows = conn.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
-        (schema or "public",)).fetchall()
+        (_resolve(conn, schema),)).fetchall()
     return {r[0] for r in rows}
 
 
@@ -85,7 +98,8 @@ def _columns_in(conn, schema: str, table: str) -> set:
     """
     rows = conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = %s AND table_name = %s", (schema or "public", table)).fetchall()
+        "WHERE table_schema = %s AND table_name = %s",
+        (_resolve(conn, schema), table)).fetchall()
     return {r[0] for r in rows}
 
 
@@ -213,6 +227,92 @@ def campaign_view_sql(conn) -> dict:
     return views
 
 
+#: The metrics-side view. Its SQL is the SQLite one with the casts spelled for Postgres --
+#: which is not cosmetic here: ``CAST(wall_ts AS REAL)`` through Postgres' 4-byte ``real``
+#: turns a 60-second window into 128 seconds, and this view divides by that window. See
+#: :mod:`robovast.results_processing.index_dialect`.
+def metric_view_sql(conn) -> dict:
+    """``{view: SELECT}`` for the measurement tables that exist.
+
+    ``run_validity_view`` answers the question a reader of a campaign actually has: *was
+    this run a clean observation of the system under test, or partly a measurement of its
+    CPU quota?* It exists because the raw form is a trap three ways and every consumer was
+    re-deriving it -- ``nr_throttled``/``nr_periods`` are monotonic counters, so a ``SUM``
+    is meaningless and a bare ``MAX`` includes whatever happened before the trial window;
+    the *ratio* carries the meaning, not the count; and the threshold separating "binding"
+    from "noise" is calibrated rather than obvious.
+
+    It flags and never filters. A capped run stays in the results with ``quota_bound = 1``
+    beside it, because a run silently dropped is worse than one labelled honestly -- and
+    because throttling is a screen, not a verdict: it says a resource explanation is
+    *available* for a failure, not that the stack misbehaved.
+    """
+    from .advice import (STALL_WARN_RATIO,  # pylint: disable=import-outside-toplevel
+                         THROTTLE_WARN_RATIO)
+
+    views = {}
+    if "system_usage" not in _tables_in(conn, ""):
+        return views
+
+    columns = _columns_in(conn, "", "system_usage")
+    # Selected as NULL when the sampler that recorded this campaign had no PSI probe -- the
+    # same treatment a missing ``job`` table gets, and for the same reason: one column set
+    # whatever the index holds, so an older campaign answers "not measured" rather than
+    # "no contention".
+    if "cpu_stall_full_usec" in columns:
+        stall_full = ("MAX(cpu_stall_full_usec) - MIN(cpu_stall_full_usec) "
+                      "AS stalled_full_usec")
+    else:
+        stall_full = "NULL::bigint AS stalled_full_usec"
+    if "cpu_stall_some_usec" in columns:
+        stall_some = ("MAX(cpu_stall_some_usec) - MIN(cpu_stall_some_usec) "
+                      "AS stalled_some_usec")
+    else:
+        stall_some = "NULL::bigint AS stalled_some_usec"
+
+    views["run_validity_view"] = f"""
+        WITH per_run AS (
+            SELECT campaign_id, config_name, run_id, container,
+                   MAX(nr_periods) - MIN(nr_periods) AS periods,
+                   MAX(nr_throttled) - MIN(nr_throttled) AS throttled,
+                   MAX(throttled_usec) - MIN(throttled_usec) AS throttled_usec,
+                   {stall_some},
+                   {stall_full},
+                   -- The window's own wall span, and the only honest denominator for a
+                   -- stall total: a microsecond count means nothing without the time it
+                   -- was drawn from, exactly as a throttle count means nothing without
+                   -- nr_periods. double precision, NOT real -- see index_dialect.
+                   (MAX(CAST(wall_ts AS double precision))
+                    - MIN(CAST(wall_ts AS double precision))) * 1000000.0 AS span_usec
+            FROM system_usage
+            WHERE in_window = 1 AND nr_periods IS NOT NULL
+            GROUP BY campaign_id, config_name, run_id, container)
+        SELECT campaign_id, config_name, run_id, container, periods, throttled,
+               throttled_usec, stalled_some_usec, stalled_full_usec,
+               CASE WHEN periods > 0
+                    THEN CAST(throttled AS double precision) / periods END AS throttle_ratio,
+               CASE WHEN span_usec > 0 AND stalled_full_usec IS NOT NULL
+                    THEN stalled_full_usec / span_usec END AS stall_ratio,
+               CASE WHEN periods > 0
+                         AND CAST(throttled AS double precision) / periods
+                             >= {THROTTLE_WARN_RATIO}
+                    THEN 1 ELSE 0 END AS quota_bound,
+               -- Contention is what is LEFT once the container's own ceiling is ruled out.
+               -- Throttling raises the stall counter too, so the two cannot be separated
+               -- by subtraction; the ceiling is attributed first because its remedy is a
+               -- line in the campaign's own file. NULL, not 0, where the probe is absent:
+               -- silence is not a pass.
+               CASE WHEN stalled_full_usec IS NULL OR span_usec <= 0 THEN NULL
+                    WHEN stalled_full_usec / span_usec >= {STALL_WARN_RATIO}
+                         AND NOT (periods > 0
+                                  AND CAST(throttled AS double precision) / periods
+                                      >= {THROTTLE_WARN_RATIO})
+                    THEN 1 ELSE 0 END AS contended
+        FROM per_run
+    """
+    return views
+
+
 def create_views(conn) -> list:
     """Create the views this index can support; return their names.
 
@@ -223,7 +323,8 @@ def create_views(conn) -> list:
     open their own.
     """
     created = []
-    for name, body in campaign_view_sql(conn).items():
+    definitions = {**campaign_view_sql(conn), **metric_view_sql(conn)}
+    for name, body in definitions.items():
         conn.execute(f'DROP VIEW IF EXISTS "{name}" CASCADE')
         conn.execute(f'CREATE VIEW "{name}" AS {body}')
         created.append(name)
