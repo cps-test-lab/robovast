@@ -1,0 +1,149 @@
+# PX4 offboard flight envelope -- a Holybro X500 V2 class quadrotor flown by a real PX4 flight
+# stack over the Simulator MAVLink API.
+#
+# Standalone (no campaign, no PX4):
+#   roqsim sim world/px4_envelope.yaml
+#
+# With no PX4 attached the aircraft sits on the pad: `multirotor_motors` receives no normalized
+# commands, so the rotors produce no force. That is the correct behaviour and worth stating,
+# because it is the biggest difference from ../../drone_flight_envelope/world/drone_envelope.yaml.
+# There, `quadrotor_controller` ran INSIDE the simulator and the drone flew as soon as the world
+# loaded. Here the simulator holds only the airframe and its actuators; the stabilising controller,
+# the state estimator, the mixer and the failsafes are all PX4, in a container of its own.
+#
+# What that layering buys is the whole point of this example. The thing under test is no longer a
+# 200-line Python PD loop that we wrote and could therefore tune until the campaign looked good --
+# it is EKF2, PX4's position and attitude controllers, PX4's control allocation and PX4's arming
+# and failsafe logic, running the same code an operator flashes onto the vehicle. A thrust-margin
+# result measured against that is a statement about the flight stack; the same result measured
+# against our own controller is mostly a statement about our gains.
+#
+# The stack attaches over the documented Simulator MAVLink API, which the simulator SERVES on TCP
+# 4560 (`px4_sitl` below) and PX4 connects out to. See README.md for why that interface, and not
+# PX4's default gz-transport bridge, is the one roqsim can implement at all.
+
+sim:
+  name: PX4 offboard flight envelope
+  world: flight_room.xml   # the 20 x 20 m flight room, beside this file
+  pacing: realtime
+
+  # NOT optional for an aerial world, and both fail silently. MuJoCo defaults density and viscosity
+  # to 0 -- a vacuum: the drone still hovers, but nothing damps it, so a lateral step rings forever
+  # and wind does nothing at all. rk4 because a quadrotor's attitude loop is stiff relative to the
+  # timestep. These are world-scoped, which is why they live here and not in the model.
+  #
+  # With PX4 in the loop there is a second reason not to leave them at 0: EKF2 estimates from
+  # sensors this world synthesises, so a vacuum does not merely make the flight wrong, it makes the
+  # ESTIMATE wrong in a way that looks like an estimator bug rather than a missing atmosphere.
+  integrator: rk4
+  density: 1.225        # kg/m^3, air at sea level -- a campaign factor
+  viscosity: 1.8e-5     # Pa*s, air
+  seed: 0               # governs wind_field's turbulence, via ctx.rng_for
+
+  # Framed on the drone, because at this room size a fixed shot loses it. `distance` is set so the
+  # 0.5 m airframe is clearly readable while a 1 m drift is still obviously a drift; `lookat` is
+  # ignored while tracking.
+  view:
+    track: drone
+    follow_heading: false
+    distance: 9.0
+    azimuth: 140
+    elevation: -28
+
+components:
+  # -- the room ---------------------------------------------------------------------------------
+  # A landing pad the drone starts and finishes on. Visual only: it is a marking on the floor, and
+  # giving it collision would make the drone bounce off a lip on touchdown. Sized for the airframe
+  # -- 2 m square against the Crazyflie example's 0.5 m, because a pad the aircraft overhangs tells
+  # you nothing about the landing accuracy.
+  # Each box needs its own `prefix`: the plugin names its material `box_surface`, so two boxes
+  # sharing the default empty prefix collide on that name and MuJoCo refuses the model.
+  - box:
+      prefix: "pad_"
+      pos: [0.0, 0.0, 0.005]
+      size: [2.0, 2.0, 0.01]
+      color: [0.16, 0.42, 0.72, 1.0]
+      collide: false
+    name: landing_pad
+
+  # Waypoint markers, so the commanded course is visible in the scene rather than only in the
+  # scenario. Same reason as the pad: visual only. These are the ENU positions of the course the
+  # scenario flies -- the scenario states them in NED, and these are the same three corners with
+  # the sign convention undone. If the two ever disagree, the markers are the lie.
+  - box: {prefix: "wp1_", pos: [5.0, 5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+    name: marker_wp1
+  - box: {prefix: "wp2_", pos: [-5.0, 5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+    name: marker_wp2
+  - box: {prefix: "wp3_", pos: [-5.0, -5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+    name: marker_wp3
+
+  # Furniture: a fixed scale reference to judge drift against, and something real to hit when the
+  # wind wins. Deliberately built from the parametric `box` prop rather than the modelled `shelf` /
+  # `workbench` ones -- those resolve their meshes from a separately-distributed asset package, and
+  # an example that anyone can clone must not depend on assets they cannot get. The whole room is
+  # therefore readable in this file. Placed clear of the 10 x 10 m course so they are a reference
+  # in normal flight and an obstacle only once the aircraft is off course.
+  - box: {prefix: "pillar_e_", pos: [8.0, 0.0, 2.0], size: [0.8, 3.0, 4.0], color: [0.62, 0.64, 0.67, 1.0]}
+    name: pillar_east
+  - box: {prefix: "container_w_", pos: [-8.0, 2.0, 1.2], size: [1.2, 3.0, 2.4], color: [0.55, 0.42, 0.30, 1.0]}
+    name: container_west
+  - box: {prefix: "crate_", pos: [3.0, -8.0, 0.6], size: [1.0, 0.8, 1.2], color: [0.72, 0.60, 0.44, 1.0]}
+    name: crate
+
+  # -- the aircraft -----------------------------------------------------------------------------
+  # `x500` is PX4's own default SITL airframe (4001_gz_x500, Holybro X500 V2 class, ~2 kg quad-X),
+  # chosen for exactly that reason: PX4's shipped mixer geometry and control gains are valid against
+  # it, so nothing in this example retunes the flight stack. A Crazyflie could not take its place --
+  # that model exposes collective thrust plus three body moments, which is the abstraction a Python
+  # controller wants and cannot accept HIL_ACTUATOR_CONTROLS, which is four per-rotor commands.
+  - spawn_robot:
+      model: x500
+      prefix: "x500_"
+      pos: [0.0, 0.0]           # on the pad; the drone takes off from the floor
+      # Endpoint-producing plugins under this entity inherit the namespace, so the odometry and the
+      # GNSS fix land on /drone/... rather than bare /odom. Note what does NOT come from here: the
+      # /fmu/in and /fmu/out topics are published by the uXRCE-DDS agent against PX4, not by this
+      # bridge, so they are unnamespaced and this key has no effect on them.
+      namespace: drone
+    name: drone
+
+    components:
+      # Owns the four rotor actuators and is what makes the airframe drivable by a flight stack
+      # rather than only by a controller of ours: it turns the normalized 0..1 motor commands PX4
+      # sends into rotor forces, and applies each rotor's reaction torque. Empty config -- the
+      # thrust, motor lag and moment constants belong to the airframe and are defaulted from the
+      # model, not restated per world. `px4_sitl` below fails loudly if this is absent.
+      #
+      # What those defaults are, because they are the campaign's whole thrust axis and they must
+      # agree with the PX4 airframe in files/10020_none_x500 or the aircraft is flown by a mixer
+      # that believes something untrue about it: 8.2 N per rotor (32.7 N total, from PX4's
+      # MPC_THR_HOVER 0.6 against a 2.0 kg aircraft) and moment_constant 0.05 m (PX4's
+      # CA_ROTOR*_KM). Restating them here would give one fact two homes, free to drift.
+      - multirotor_motors: {}
+
+      # The thrust-margin factor, and the headline axis of the campaign. 0 kg is the unloaded
+      # baseline and leaves the model untouched.
+      - payload:
+          mass: 0.0
+
+      # Where the world is, in WGS84. EKF2 needs a GPS fix to fuse and PX4 refuses to arm in
+      # offboard without a valid global or local position, so this is load-bearing rather than
+      # decoration -- which is also why the plugin makes `datum` required instead of defaulting it.
+      #
+      # These are PX4's own documented default SITL home coordinates (Zurich Irchel Park), used
+      # here precisely because they are public, well known, and say nothing about where this
+      # campaign actually runs. Keeping PX4's default also means the geofence and home-position
+      # parameters PX4 ships need no adjustment.
+      - gnss:
+          datum: {lat: 47.397742, lon: 8.545594, alt: 488.0}
+
+      # The MAVLink HIL bridge: serves TCP 4560, sends HIL_SENSOR / HIL_GPS / HIL_STATE_QUATERNION
+      # to PX4 and consumes HIL_ACTUATOR_CONTROLS back, driving lockstep so that neither side runs
+      # ahead of the other. Lockstep is why a run is deterministic and why it can go faster or
+      # slower than realtime without the flight changing.
+      #
+      # The port is bound in the simulation container. Every container of a run shares one network
+      # namespace, so PX4 in its own container reaches it at 127.0.0.1:4560 -- no hostname is
+      # involved anywhere, which is also why nothing site-specific can leak into this file.
+      - px4_sitl:
+          port: 4560
