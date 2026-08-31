@@ -199,6 +199,33 @@ const FRACTIONABLE_KINDS: ReadonlySet<string> = new Set([
   'time',
 ])
 
+/** A budget row with a `time` row's `current` brought up to date from the search's origin.
+ *
+ * The TS mirror of `budget_positions` in `robovast_client/robovast/client/status.py`, which the
+ * Python readers (the MCP's progress figure and status dict, the CLI's budget line) share. A change
+ * to either must be made looking at the other.
+ *
+ * Only `time` is derived, because it is the only criterion whose value is a pure function of
+ * wall-clock: it is published from `stop.progress()`, which runs once per batch, so on the wire it
+ * steps per round instead of ticking. Everything else is a count the controller writes when it
+ * actually changes.
+ *
+ * Deriving it here rather than having the controller republish it is deliberate and is the reason
+ * `search_since` exists: a budget row rewritten from wall-clock would advance the controller's
+ * progress signal on every poll, and no time-budgeted search could ever be reported stalled again.
+ *
+ * Clamped to `limit` (a search stops when the criterion fires, so elapsed past the cap is time it
+ * did not spend) and left untouched when no origin was published — a batch campaign, or a status
+ * recovered from disk. The published `current` is then stale by at most one round, which is better
+ * than derived from an origin nobody wrote.
+ */
+export function budgetPosition(b: BudgetItem, status: Status): BudgetItem {
+  if (b.kind !== 'time' || status.search_since == null || !(b.limit > 0)) return b
+  const elapsed = Date.now() / 1000 - status.search_since
+  if (!(elapsed >= 0)) return b
+  return { ...b, current: Math.min(elapsed, b.limit) }
+}
+
 /** Whether this row is a budget cap whose share of work spent can be drawn.
  *
  * Same `kind`-over-`label` rule, and the same reason, as `isBatchesBudget`: the label is the
@@ -232,7 +259,8 @@ export function ringBudget(
   status: Status,
 ): { item: BudgetItem; share: number } | null {
   let best: { item: BudgetItem; share: number } | null = null
-  for (const item of status.budget) {
+  for (const raw of status.budget) {
+    const item = budgetPosition(raw, status)
     if (!isFractionableBudget(item) || !(item.limit > 0) || item.current == null) continue
     const share = Math.max(0, Math.min(1, item.current / item.limit))
     if (best === null || share > best.share) best = { item, share }

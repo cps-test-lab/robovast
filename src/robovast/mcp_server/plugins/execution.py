@@ -31,14 +31,41 @@ import time
 
 from fastmcp import FastMCP
 
-from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, error_findings,
-                                    stall_report)
+from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
+                                    error_findings, stall_report)
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
 
 logger = logging.getLogger(__name__)
+
+
+def _binding_budget(st):
+    """The budget row closest to exhausting and its share, or ``None`` when none is usable.
+
+    The campaign stops at whichever criterion fires first, so the closest one is the only
+    one describing a moment this campaign will actually reach; any other describes a moment
+    it never will.
+
+    Read through :func:`budget_positions`, so a ``time`` budget reports where the search is
+    now rather than where it was when the last round closed.
+
+    The single implementation of that rule on this side: :func:`_progress_from_status` takes
+    the share from here and the status dict takes the row, so the reported progress and the
+    criterion it is named against cannot disagree. The web UI's ``ringBudget`` (lib/eta.ts)
+    applies the same rule to draw the ring, and ``campaignEtaSeconds`` expresses it in time
+    units where "fires first" is the *smaller* duration -- a change to any of the three must
+    be made looking at the other two.
+    """
+    best = None
+    for b in budget_positions(st):
+        if b.current is None or not b.limit:
+            continue
+        share = max(0.0, min(1.0, b.current / b.limit))
+        if best is None or share > best[1]:
+            best = (b, share)
+    return best
 
 
 def _progress_from_status(st) -> float | None:
@@ -50,13 +77,15 @@ def _progress_from_status(st) -> float | None:
       per-batch run ratio is deliberately **not** used — it would read as overall
       completion when it is only progress through one batch of an open-ended search.
 
+    The search case is :func:`_binding_budget`'s share -- see there for the rule and for the
+    two other readers that must agree with it.
+
     Returns ``None`` (never a misleading number) when a search has no usable budget
     value yet.
     """
     if st.budget:
-        fracs = [max(0.0, min(1.0, b.current / b.limit))
-                 for b in st.budget if b.current is not None and b.limit]
-        return max(fracs) if fracs else None
+        binding = _binding_budget(st)
+        return binding[1] if binding else None
     mode = (st.mode or "").lower()
     if mode in ("", "batch") and st.runs and st.runs.total:
         return max(0.0, min(1.0, st.runs.completed / st.runs.total))
@@ -181,7 +210,16 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     if st.best_objective is not None:
         result["best_objective"] = st.best_objective
     if st.budget:
-        result["budget"] = [b.model_dump() for b in st.budget]
+        # Through budget_positions, so a `time` row reports where the search is now rather than
+        # where it was when the last round closed.
+        result["budget"] = [b.model_dump() for b in budget_positions(st)]
+        # Which criterion `progress` is a share OF. A bare 0.67 does not say whether that is
+        # runs, rounds, evaluations or seconds, and an agent should not have to re-derive the
+        # max to find out -- nor guess, since the answer changes which criterion it should
+        # weigh a stall or a flat objective against.
+        binding = _binding_budget(st)
+        if binding is not None:
+            result["progress_of"] = binding[0].kind or binding[0].label
     if st.stop:
         result["stop"] = st.stop
     if st.error:

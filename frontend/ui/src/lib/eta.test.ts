@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, isFractionableBudget, noResultRuns, ringBudget } from './eta'
+import { batchesBudget, campaignEtaSeconds, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, budgetPosition, isFractionableBudget, noResultRuns, ringBudget } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -285,5 +285,52 @@ describe('ringBudget', () => {
     // rather than guessed at — the same trade isBatchesBudget makes.
     expect(isFractionableBudget(crit('runs', 120, 180, { kind: null }))).toBe(false)
     expect(isFractionableBudget(crit('metric', 2, 3, { kind: null, label: 'coverage' }))).toBe(false)
+  })
+})
+
+// A `time` budget's `current` is published once per round, so the row is derived forward from the
+// search's origin. See budgetPosition / budget_positions -- the origin is published, never the
+// value, because a value rewritten from wall-clock would make the controller's progress signal
+// advance forever and no time-budgeted search could be called stalled again.
+describe('budgetPosition', () => {
+  const timeRow = (current: number, limit = 3600) => crit('time', current, limit)
+
+  it('derives elapsed from the search origin, ignoring the stale published value', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 1800, budget: [] })
+    // Published as 600 at the last batch boundary; 1800s have actually passed.
+    expect(budgetPosition(timeRow(600), st).current).toBe(1800)
+  })
+
+  it('clamps to the limit', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 99_999, budget: [] })
+    // A search stops when the criterion fires, so elapsed past the cap is time it never spent.
+    expect(budgetPosition(timeRow(600), st).current).toBe(3600)
+  })
+
+  it('leaves every other kind alone', () => {
+    freeze()
+    const st = status({}, { search_since: NOW / 1000 - 1800, budget: [] })
+    // Counts are written when they change and are already current; only wall-clock is derived.
+    expect(budgetPosition(crit('runs', 120, 180), st).current).toBe(120)
+    expect(budgetPosition(crit('batches', 4, 10), st).current).toBe(4)
+  })
+
+  it('keeps the published value when no origin was ever written', () => {
+    freeze()
+    // A batch campaign, or a status recovered from disk. Stale by at most one round beats
+    // derived from an origin nobody published.
+    const st = status({}, { budget: [] })
+    expect(budgetPosition(timeRow(600), st).current).toBe(600)
+  })
+
+  it('feeds the ring, so a time-budgeted search fills live', () => {
+    freeze()
+    const st = status({}, {
+      search_since: NOW / 1000 - 900,
+      budget: [timeRow(0)],   // never republished since the search began
+    })
+    expect(ringBudget(st)?.share).toBeCloseTo(0.25)
   })
 })

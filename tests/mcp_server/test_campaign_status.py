@@ -95,3 +95,46 @@ def test_finished_local_search_reads_rich_state_from_outcome(tmp_path):
     assert d["best_objective"] == 0.13
     assert d["stop"]["kind"] == "batches"
     assert d["progress"] == 1.0  # 5/5 budget
+
+
+# -- the binding criterion, and a live `time` budget --------------------------
+
+
+def test_progress_names_the_criterion_it_is_a_share_of():
+    """A bare ``progress: 0.67`` does not say whether that is runs, rounds, evaluations or
+    seconds -- and the answer changes which criterion an agent should weigh a stall or a flat
+    objective against. It must not have to re-derive the max to find out."""
+    st = _status(phase="running", mode="search",
+                 budget=[{"label": "runs", "current": 120, "limit": 180,
+                          "done": False, "kind": "runs"},
+                         {"label": "batches", "current": 1, "limit": 10,
+                          "done": False, "kind": "batches"}])
+    d = cc._status_to_dict("camp", "local", st)
+    assert d["progress_of"] == "runs"          # 120/180 beats 1/10
+    assert d["progress"] == 120 / 180
+
+
+def test_a_time_budget_reports_where_the_search_is_now():
+    """``current`` for a ``time`` row is published from ``stop.progress()``, once per batch, so
+    on the wire it steps per round. Read through ``budget_positions`` it is derived from the
+    search's origin instead -- the reason ``search_since`` is on the status."""
+    import time as _t
+    st = _status(phase="running", mode="search",
+                 search_since=_t.time() - 1800,
+                 budget=[{"label": "time", "current": 0.0, "limit": 3600.0,
+                          "done": False, "kind": "time"}])
+    d = cc._status_to_dict("camp", "local", st)
+    # Published as 0 and never refreshed; half the hour has actually gone.
+    assert 0.49 < d["progress"] < 0.51
+    assert d["progress_of"] == "time"
+    assert d["budget"][0]["current"] > 1700
+
+
+def test_a_time_budget_without_an_origin_keeps_its_published_value():
+    """No origin means a batch campaign or a status recovered from disk. Stale by at most one
+    round beats derived from an origin nobody wrote."""
+    st = _status(phase="running", mode="search",
+                 budget=[{"label": "time", "current": 600.0, "limit": 3600.0,
+                          "done": False, "kind": "time"}])
+    d = cc._status_to_dict("camp", "local", st)
+    assert d["budget"][0]["current"] == 600.0

@@ -2951,6 +2951,17 @@
           "runs": {
             "$ref": "#/components/schemas/RunProgress"
           },
+          "search_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Since"
+          },
           "share_error": {
             "anyOf": [
               {
@@ -3014,6 +3025,7 @@
           "progress_deadline_s",
           "progress_since",
           "runs",
+          "search_since",
           "share_error",
           "stage",
           "stop",
