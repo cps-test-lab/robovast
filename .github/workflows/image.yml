@@ -135,7 +135,10 @@ jobs:
               echo "::error::protocol label cannot be passed in and the image would carry none."
               exit 1
             fi
-            if ! grep -q 'org\.robovast\.compat-version="\${ROBOVAST_COMPAT_VERSION}"' "$file"; then
+            # -F, and the literal is meant: this looks for the ARG reference as written in the
+            # Dockerfile, not for its value.
+            # shellcheck disable=SC2016
+            if ! grep -qF 'org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"' "$file"; then
               echo "::error::$file must label org.robovast.compat-version from the build arg,"
               echo "::error::not from a literal -- a hand-copied constant is what drifts."
               exit 1
