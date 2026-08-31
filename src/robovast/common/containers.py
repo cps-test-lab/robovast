@@ -44,6 +44,7 @@ __all__ = [
     'ContainerPlan',
     'PlannedContainer',
     'plan_containers',
+    'ros_repo_name',
 ]
 
 
@@ -72,11 +73,15 @@ class PlannedContainer:
     system_packages: tuple = ()
     #: Python install groups added on top of :attr:`image`, merged the same way.
     python_packages: tuple = ()
+    #: Git repositories colcon-built into the image's ROS overlay, merged the same way. Order
+    #: is preserved but does not decide build order: every entry lands in one workspace and one
+    #: ``colcon build``, which resolves the order itself from the packages' own dependencies.
+    ros_packages: tuple = ()
 
     @property
     def builds(self) -> bool:
         """Whether an image is built on top of :attr:`image` for this container."""
-        return bool(self.system_packages or self.python_packages)
+        return bool(self.system_packages or self.python_packages or self.ros_packages)
 
     @property
     def is_main(self) -> bool:
@@ -174,6 +179,7 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
         roles=(SCENARIO_CONTAINER, SIMULATION_CONTAINER) if folded else (SCENARIO_CONTAINER,),
         system_packages=_merged(scenario_blocks, 'system_packages'),
         python_packages=_merged(scenario_blocks, 'python_packages'),
+        ros_packages=_merged(scenario_blocks, 'ros_packages'),
     )]
     if folded:
         # The name still resolves -- to the container the simulator runs in.
@@ -193,6 +199,7 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
             roles=(name,) if name in CONTAINER_ROLES else (),
             system_packages=_merged([block], 'system_packages'),
             python_packages=_merged([block], 'python_packages'),
+            ros_packages=_merged([block], 'ros_packages'),
         ))
         if name in CONTAINER_ROLES:
             roles[name] = name
@@ -226,14 +233,15 @@ def containers_without_a_resolvable_image(execution: dict) -> "list[tuple[str, s
         if container.image or container.is_main:
             continue
         block = (execution.get("containers") or {}).get(container.name) or {}
-        if block.get("system_packages") or block.get("python_packages"):
+        if (block.get("system_packages") or block.get("python_packages")
+                or block.get("ros_packages")):
             continue    # robovast builds this one; the build supplies the ref.
         out.append((container.name, (
             f"container {container.name!r} names no 'image' and nothing supplies one. Only the "
             f"main container falls back to the RoboVAST framework image -- inventing one for "
             f"anything else would run something nobody named.\n"
             f"  Set execution.containers.{container.name}.image, or give it "
-            f"'system_packages'/'python_packages' so RoboVAST builds it.")))
+            f"'system_packages'/'python_packages'/'ros_packages' so RoboVAST builds it.")))
     return out
 
 
@@ -261,6 +269,20 @@ def _resolve_image(container: PlannedContainer, images: dict,
         return container
     from dataclasses import replace
     return replace(container, image=resolved)
+
+
+def ros_repo_name(url: str) -> str:
+    """The directory in ``src/`` a repo is cloned into: its basename without ``.git``.
+
+    Derived rather than declared because it is not a choice an author should have to make --
+    and it is what makes duplicates detectable: two entries landing in one directory would
+    have the second clone fail on a non-empty path, at build time, for a reason the message
+    would not explain. Validation refuses them instead.
+    """
+    name = url.rstrip("/").rsplit("/", 1)[-1]
+    if name.endswith(".git"):
+        name = name[:-len(".git")]
+    return name
 
 
 def _merged(blocks: list, key: str) -> tuple:
