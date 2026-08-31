@@ -61,12 +61,21 @@ def classify(base: dict, head: dict) -> "tuple[bool, list[str], list[str]]":
 
     for key in sorted(set(old) - set(new)):
         breaking.append(f"removed {key[0]}.{key[1]}")
+    # A model the base snapshot did not have at all is new, and every field on it is
+    # additive however required it is: no existing config can contain a block of a shape
+    # that did not exist, so nothing old can fail to carry the field. Only a required field
+    # added to a model that was already there rejects configs that used to load. Without
+    # this, introducing any nested block with required keys (a container's `ros_packages`
+    # entry, say) demanded a version bump and a migration step that would migrate nothing.
+    new_models = set(head or {}) - set(base or {})
     for key in sorted(set(new) - set(old)):
         required, _type = new[key]
         if key[1] == "<extra>":
             continue
-        (breaking if required else additive).append(
-            f"added {'required' if required else 'optional'} {key[0]}.{key[1]}")
+        breaks = required and key[0] not in new_models
+        (breaking if breaks else additive).append(
+            f"added {'required' if required else 'optional'} {key[0]}.{key[1]}"
+            + (" (on a new model)" if required and not breaks else ""))
     for key in sorted(set(old) & set(new)):
         was_required, was_type = old[key]
         is_required, is_type = new[key]
