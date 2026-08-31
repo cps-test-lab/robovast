@@ -574,6 +574,11 @@
             "title": "Description",
             "type": "string"
           },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -661,6 +666,7 @@
           "campaign_id",
           "created_by",
           "description",
+          "error",
           "finished_at",
           "mode",
           "num_composition_failed",

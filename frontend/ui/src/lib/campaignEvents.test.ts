@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffCampaignPhases, seedPhases } from './campaignEvents'
+import { describeCampaignEvent, diffCampaignPhases, seedPhases } from './campaignEvents'
 import type { CampaignSummary } from './robovastClient'
 
 const c = (campaign_id: string, phase: string): CampaignSummary =>
@@ -75,5 +75,32 @@ describe('diffCampaignPhases', () => {
     const prev = seedPhases([c('a', 'running')])
     const [evt] = diffCampaignPhases(prev, [c('a', 'finished')])
     expect(evt.summary.campaign_id).toBe('a')
+  })
+})
+
+describe('describeCampaignEvent', () => {
+  const evt = (kind: 'failed' | 'finished', summary: Partial<CampaignSummary> = {}) =>
+    ({ campaignId: 'nav-2026-08-30-1916', kind, phase: kind,
+       summary: { campaign_id: 'nav-2026-08-30-1916', ...summary } as CampaignSummary })
+
+  it('says WHY a campaign failed, not just that it did', () => {
+    // The whole point: without the reason on the listing, every failure anywhere in the app
+    // read "Campaign failed" and nothing else, and the reason was a per-campaign request away.
+    const { message, note } = describeCampaignEvent(
+      evt('failed', { error: 'every job in batch 3 was dropped' }))
+    expect(message).toBe('Campaign failed')
+    expect(note).toContain('every job in batch 3 was dropped')
+    expect(note).toContain('nav-2026-08-30-1916')
+  })
+
+  it('still names the campaign when no reason was recorded', () => {
+    // An older campaign, or one whose Status was reconstructed without an error: the notice
+    // must degrade to what it used to say rather than to a dangling separator.
+    expect(describeCampaignEvent(evt('failed')).note).toBe('nav-2026-08-30-1916')
+  })
+
+  it('leaves a successful ending reporting its size, not an error', () => {
+    const { note } = describeCampaignEvent(evt('finished', { num_runs: 180, num_failed: 75 }))
+    expect(note).toBe('nav-2026-08-30-1916 · 180 runs · 75 failed')
   })
 })
