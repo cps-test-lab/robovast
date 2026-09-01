@@ -37,6 +37,12 @@ So there is no resume mode in the launch path, the batch loop or the controller.
 here is only the part that genuinely has no counterpart in a fresh launch: finding the
 campaigns that are owed work, and deciding whether each one can be picked up.
 
+**That decision is asked twice**: after a restart by :func:`_resume_one`, and before a
+deliberate one by ``ClusterService.upgrade_service``, which refuses to roll over a campaign
+its replacement could not re-enter. Both go through :func:`plan_for` over a restored campaign
+root -- :func:`would_be_lost` is the second caller -- because a warning that reaches a
+different verdict from the behaviour it warns about is worse than no warning at all.
+
 **Discovery has one source**: the object store's campaign index, minus everything with a
 terminal ``_execution/outcome.json``. Listing live Jobs would be a second source for the
 same set — a campaign with live Jobs is indexed and has no outcome — and two sources of
@@ -269,6 +275,48 @@ def _is_control_plane(rel: str) -> bool:
     return (rel.startswith(_CONTROL_PLANE_PREFIXES)
             or rel in _CONTROL_PLANE_FILES
             or rel.endswith("/test.xml"))
+
+
+def _is_plan_input(rel: str) -> bool:
+    """Whether the object at *rel* is read while *deciding* whether to re-enter a campaign.
+
+    Narrower than :func:`_is_control_plane`, and narrower on purpose. ``campaign.db`` and the
+    per-run ``test.xml`` are what a re-launch runs *from* -- the recorded ask/tell sequence, the
+    verdicts finished jobs are adopted on -- not what :func:`plan_for` reads to reach a verdict.
+    That distinction is load-bearing for :func:`would_be_lost`, which asks the question while the
+    campaign is still being driven: fetching ``campaign.db`` there would write the store's copy
+    over the SQLite file that campaign's own controller holds open.
+    """
+    return rel.startswith(_CONTROL_PLANE_PREFIXES)
+
+
+def would_be_lost(service, campaign_id: str) -> "str | None":
+    """Why rolling now would lose *campaign_id*, or ``None`` when its successor picks it up.
+
+    The question ``ClusterService.upgrade_service`` puts before it rolls the pod. It has to
+    reach the verdict :func:`_resume_one` will reach afterwards, so it plans with the same
+    :func:`plan_for` -- and, because that function reads a campaign root and nothing else, it
+    has to restore that root the same way first.
+
+    Restoring it is the whole of this function, and skipping it is not a shortcut but a
+    different question. While a campaign runs, the records planning needs are split across two
+    places: ``_execution/launch.yaml`` is written into the campaign root at launch, while the
+    frozen ``_config/`` is staged into a temporary directory, uploaded to the object store and
+    dropped (``KubernetesBackend.run_batch_in_pod``) -- it does not reach the root until the
+    first batch's results are downloaded. Planning against either half alone refuses a campaign
+    that nothing is wrong with: against the root, for a config that is not missing but
+    elsewhere; against the store, for a launch record that has not been published yet.
+
+    So the fetch lands in the campaign root rather than the scratch cache -- the union of the
+    two halves is what planning needs, and the root is where the successor will put its copy
+    anyway. It writes only objects this campaign itself uploaded, which is the same download the
+    driver performs at its own batch boundary, and ``download_prefix`` skips a local file whose
+    size already matches -- so a campaign past its first batch pays a listing and no bytes.
+    """
+    campaign_root = Path(service._campaign_dir(campaign_id))  # noqa: SLF001
+    service.fetch_campaign(campaign_id, dest=campaign_root, include=_is_plan_input)
+    _, _, refusal = plan_for(service, campaign_id, campaign_root)
+    return refusal
 
 
 def _resume_one(service, campaign_id: str) -> "str | None":

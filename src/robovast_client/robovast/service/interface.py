@@ -1874,10 +1874,16 @@ class SceneStatus(BaseModel):
     generation_required: bool = False
     #: Someone is building this exact world right now; a second request joins rather than duplicating.
     in_progress: bool = False
-    #: Which step the wait is on, so a panel can name it instead of spinning: ``queued`` /
-    #: ``pulling`` (a 2 GB image onto a fresh node — the dominant cold cost) / ``compiling`` /
-    #: ``transferring`` / ``""`` when nothing is running.
+    #: Which step the wait is on, so a panel can name it instead of spinning: ``queued`` (no node
+    #: has taken the build yet) / ``pulling`` (a 2 GB image onto a fresh node — the dominant cold
+    #: cost, and where an image this host cannot reach stalls) / ``starting`` / ``compiling`` /
+    #: ``""`` when nothing is running.
     stage: str = ""
+    #: The lane's own words for that step, when it has any — a pod's ``ImagePullBackOff`` message,
+    #: say. Shown beside the stage and never in place of it: the stage is what a client branches on,
+    #: this is what only a human can read. It is why a wait that will never end says so in seconds
+    #: rather than at the build's deadline.
+    stage_detail: str = ""
     #: Size of the cached descriptor, 0 when there is none. A browser fetches this much.
     bytes: int = 0
     #: Where the descriptor's ``scene.json`` is served from, once cached.

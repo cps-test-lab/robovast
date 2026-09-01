@@ -2705,6 +2705,11 @@
             "title": "Stage",
             "type": "string"
           },
+          "stage_detail": {
+            "default": "",
+            "title": "Stage Detail",
+            "type": "string"
+          },
           "url": {
             "default": "",
             "title": "Url",
@@ -2728,6 +2733,7 @@
           "overrides_known",
           "run_id",
           "stage",
+          "stage_detail",
           "url",
           "world"
         ],

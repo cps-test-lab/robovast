@@ -15,9 +15,13 @@ import { eventTone, hasMore, newestFirst } from '@/lib/serviceEvents'
 //
 // Distinct from the Service log above it, and the distinction is the point: that log is this
 // process's recent stderr and dies with the pod, and the usage samples say the same of
-// themselves. These outlive both. What they carry today is REFUSALS -- a campaign's failure is
-// on its card and in its outcome.json, but an action the service would not do was composed in
-// the request that refused it and shown once.
+// themselves. These outlive both. Two things reach it, and both are things this app otherwise
+// shows once and forgets: every REFUSAL a client was sent, composed in the request that
+// refused it; and each campaign's LIFECYCLE, which a toast announces for a few seconds and an
+// OS notification for as long as it is on screen.
+//
+// Rendered by severity and kind rather than by a list of the kinds it knows, so a kind added
+// on the server needs no change here.
 //
 // Newest first here, though the route serves oldest-first from a cursor: a reader resuming a
 // position wants what came after it, and a person opening a panel wants what just happened.
@@ -78,12 +82,12 @@ export function ServiceEventsPanel() {
 
   const rows = newestFirst(events.data?.events ?? [])
   if (rows.length === 0) {
-    // Not an error, and worth saying which: an empty record means nothing has been refused,
-    // not that nothing is being kept.
+    // Not an error, and worth saying which: an empty record means nothing has happened worth
+    // keeping, not that nothing is being kept.
     return (
       <Typography variant="body2" color="text.secondary">
-        Nothing recorded yet. This fills as the service refuses things — it is a record of what
-        did not happen, not a request log.
+        Nothing recorded yet. This fills as campaigns run and as the service refuses things —
+        it is a record of what happened and what would not, not a request log.
       </Typography>
     )
   }

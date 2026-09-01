@@ -158,9 +158,22 @@ than a field on a payload every open tab re-fetches once a second.
 It is also the one durable thing this service keeps about itself. ``/admin/log`` is this
 process's recent stderr and dies with it, and the usage samples say the same about themselves —
 both answer "what is it doing *now*". The events worth keeping are the ones a restart destroys,
-which is why they are in SQLite on a mounted volume rather than a third ring. What it records
-today is **refusals**: a campaign's failure is on its card and in its ``outcome.json``, but a
-refused *action* was composed in the request that refused it, rendered once, and then gone.
+which is why they are in SQLite on a mounted volume rather than a third ring.
+
+What it records is what this service otherwise says once and forgets. **Every refusal a client
+was sent** — composed in the request that refused it, rendered once, and then gone; recorded in
+the exception handlers, so a route that raises its own error, a request that never parsed, and
+a failure nobody caught are all in it rather than only the calls that happen to be wrapped. And
+**each campaign's lifecycle** — started, finished, failed, stopped, uploaded, postprocessed —
+which otherwise reaches a phone over ntfy and a tab as a toast, neither of which anybody can
+read back. What is *not* in it: successful requests, so it stays a record of what happened and
+what would not rather than a request trace; a URL matching no route, which is a caller's
+mistake about the address space and unbounded from anything that scans; and the hourly
+heartbeat, which says a campaign is alive *now* and is worthless once it is over.
+
+Identical refusals inside a one-minute window collapse to one row carrying ``repeated``: a
+panel polling an endpoint that cannot answer it would otherwise push a month of everything
+else past the log's row bound within the hour.
 
 ``GET /admin/mcp-tools``, ``GET /admin/mcp-calls`` and ``GET /admin/mcp-calls.csv`` follow the
 same row for the MCP surface: what the tools were asked and what they answered, its own routes,

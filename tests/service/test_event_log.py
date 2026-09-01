@@ -173,3 +173,180 @@ def test_a_successful_read_records_nothing(tmp_path):
     client = TestClient(build_app(LocalTransport(store=store), mount_mcp=False, auth_token=""))
     client.get("/campaigns")
     assert client.get("/admin/events").json()["events"] == []
+
+
+# -- every refusal a client is sent, not only the ones _guard maps ------------------
+
+def _refusing_client(tmp_path, **kwargs):
+    from starlette.testclient import TestClient
+
+    from robovast.service.app import build_app
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    app = build_app(LocalTransport(store=store), mount_mcp=False, auth_token="")
+    return TestClient(app, **kwargs)
+
+
+def _refusals(client):
+    return [e for e in client.get("/admin/events").json()["events"]
+            if e["kind"] == "request.refused"]
+
+
+def test_a_refusal_no_route_composed_is_recorded_too(tmp_path):
+    """The 422 for a request that never parsed.
+
+    Recording at the call sites that wrap an interface call reached only the refusals those
+    sites raise. This one is composed by FastAPI before any route runs, so there was no site
+    to record it at -- and it reaches the browser looking exactly like every other failure.
+    """
+    client = _refusing_client(tmp_path)
+    refused = client.get("/admin/events", params={"limit": "not-a-number"})
+    assert refused.status_code == 422, refused.text
+
+    recorded = _refusals(client)
+    assert recorded, "a refusal nobody composed is still a refusal"
+    assert recorded[-1]["payload"]["status"] == 422
+    # The field and the reason, flattened: a nested error list is unreadable in a log panel.
+    assert "limit" in recorded[-1]["message"]
+
+
+def test_a_caller_turned_away_at_the_gate_is_recorded(tmp_path):
+    """The auth gate sits in front of the app, so its 401 never becomes an exception.
+
+    Without the hook it reports through, the one refusal that needs no route at all -- and
+    the one a puzzled operator is most likely to ask about -- was the one left unrecorded.
+    """
+    from tests.service.conftest import AUTH_HEADERS
+
+    client = _refusing_client(tmp_path, headers={"Authorization": "Bearer not-the-token"})
+    assert client.get("/campaigns").status_code == 401
+
+    from starlette.testclient import TestClient
+    reader = TestClient(client.app, headers=AUTH_HEADERS)
+    recorded = _refusals(reader)
+    assert [e["payload"]["status"] for e in recorded] == [401]
+    assert "vast login" in recorded[0]["message"], "the record should say what to do about it"
+
+
+def test_an_address_that_matches_no_route_is_not_recorded(tmp_path):
+    """A 404 the router filled in from the status phrase is a caller's mistake about the
+    address space, not an action this service considered and would not do -- and anything
+    that scans produces them without bound."""
+    client = _refusing_client(tmp_path)
+    assert client.get("/no-such-endpoint").status_code == 404
+    assert _refusals(client) == []
+
+
+def test_an_identical_refusal_in_a_loop_is_counted_rather_than_recorded_again(tmp_path,
+                                                                              monkeypatch):
+    """A panel polling an endpoint that cannot answer it must not evict the week's record.
+
+    Counted, not dropped: the next one recorded says how many it stands for, because "and
+    then nine hundred more" is the part of a loop worth keeping.
+    """
+    from robovast.service import app as module
+
+    client = _refusing_client(tmp_path)
+    for _ in range(3):
+        client.post("/campaigns/does-not-exist/retrigger")
+    assert len(_refusals(client)) == 1, "three identical refusals are one thing that happened"
+
+    monkeypatch.setattr(module, "REFUSAL_REPEAT_S", 0.0)
+    client.post("/campaigns/does-not-exist/retrigger")
+    recorded = _refusals(client)
+    assert len(recorded) == 2
+    assert recorded[-1]["payload"]["repeated"] == 2, recorded[-1]
+
+
+def test_a_refusal_records_who_was_refused(tmp_path):
+    """Attribution needs the seam that holds the request, which is why recording moved to it.
+
+    Self-declared and unverified, as everywhere else a shared secret is the only credential:
+    the record says who someone called themselves, which is all anyone can say.
+    """
+    from tests.service.conftest import TEST_TOKEN
+
+    client = _refusing_client(tmp_path, headers={"Authorization": f"Bearer {TEST_TOKEN}",
+                                                 "X-Robovast-User": "fred"})
+    client.post("/campaigns/does-not-exist/retrigger")
+    recorded = _refusals(client)
+    assert recorded and recorded[-1]["actor"] == "fred"
+    assert recorded[-1]["payload"]["path"].endswith("/retrigger")
+
+
+# -- what a campaign did, not only what somebody was refused ------------------------
+
+def test_a_campaigns_lifecycle_is_kept_and_not_only_pushed(tmp_path):
+    """The ntfy push leaves the machine and is gone once read.
+
+    Which made the campaign events the ones a phone announced and nothing held: "why did
+    that campaign stop last week?" was answerable only by whoever happened to see it.
+    """
+    from robovast.execution.notify import Notifier
+
+    log = _log(tmp_path)
+    notifier = Notifier("camp-1", events=log)
+    notifier.started("cluster")
+    notifier.failed("the image build could not resolve")
+
+    events = log.read()
+    assert [e.kind for e in events] == ["campaign.started", "campaign.failed"]
+    assert [e.subject_id for e in events] == ["camp-1", "camp-1"]
+    assert events[0].subject_type == "campaign"
+    # The severity is what the panel colours by, so a failure must not read as routine.
+    assert events[1].severity == "error"
+    assert "could not resolve" in events[1].message
+
+
+def test_a_campaign_records_its_life_even_where_nothing_is_pushed(tmp_path, monkeypatch):
+    """``ROBOVAST_NTFY_TOPIC`` configures a push, not whether the service keeps records.
+
+    Tying the two would make the durable log a thing only users with a phone topic have.
+    """
+    import requests
+
+    from robovast.execution.notify import Notifier
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("a disabled notifier must not reach the network")))
+
+    log = _log(tmp_path)
+    notifier = Notifier("camp-1", events=log)      # no topic -> nothing is pushed
+    assert not notifier.enabled
+    notifier.started("local")
+    assert [e.kind for e in log.read()] == ["campaign.started"]
+
+
+def test_a_campaign_ends_once_in_the_record_too(tmp_path):
+    """More than one scope may legitimately end a campaign; only the first says anything new.
+
+    The guard covers both sinks, so the record agrees with the phone about how a campaign
+    ended instead of carrying every scope's opinion of it.
+    """
+    from robovast.execution.notify import Notifier
+
+    log = _log(tmp_path)
+    notifier = Notifier("camp-1", events=log)
+    notifier.finished("12 runs")
+    notifier.failed("a later scope, ending it again")
+
+    assert [e.kind for e in log.read()] == ["campaign.finished"]
+
+
+def test_a_heartbeat_is_not_kept(tmp_path):
+    """It says the campaign is alive *now* -- worth a push, worthless once it is over."""
+    from robovast.execution.notify import Notifier
+
+    log = _log(tmp_path)
+    notifier = Notifier("camp-1", topic="t", events=log)
+    pushed = []
+    notifier._send = lambda msg, **kw: pushed.append(msg)
+    notifier.start_heartbeat(lambda: (1, 2, 10, 0), interval=0.01)
+    deadline = time.time() + 5
+    while not pushed and time.time() < deadline:
+        time.sleep(0.01)
+    notifier.stop_heartbeat()
+    assert pushed, "the beat never fired, so this proves nothing about what it records"
+    assert log.read() == []

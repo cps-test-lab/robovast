@@ -340,10 +340,16 @@ and fetched only then — is the durable half, and the distinction from the log 
 whole reason it exists separately. That log is this process's recent output and dies with the
 pod; these survive a restart, which is when they are most worth having.
 
-What they carry is **refusals**. A campaign's failure is on its card and in its
-``outcome.json``, but an action the service would not do — a retrigger it could not accept —
-was composed in the request that refused it and shown once. The reason had no home. Each row
-carries the service's own words, the time, and the status the caller got.
+What they carry is the two things this app otherwise shows once and forgets. **Refusals**:
+an action the service would not do — a retrigger it could not accept — was composed in the
+request that refused it and shown for ten seconds. And **campaign lifecycle**: the same
+starts, endings and failures the toasts and the OS notifications announce, which until they
+scrolled away were held by nothing. Each row carries the service's own words, the time, the
+severity, who was refused where they said, and the status the caller got.
+
+Repeats collapse: an identical refusal inside a minute is counted onto the row already there
+(shown as ``repeated``) rather than recorded again, so a panel polling something that cannot
+answer it does not push the rest of the record out.
 
 Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
 a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
@@ -469,11 +475,12 @@ until the tab was reloaded — long after the campaign it was about had moved on
 next to a later attempt that had succeeded.
 
 **What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
-announcing it offers **Open campaign**, which unfolds that card and scrolls to it. The known gap
-is a refused *action* — a retrigger the service would not accept — whose reason exists nowhere
-but its notice; a durable event log is what will close that, and until then the longer duration
-is the whole of the answer. (A refusal the service *expects* — stopping a job that finished a
-moment earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
+announcing it offers **Open campaign**, which unfolds that card and scrolls to it. A refused
+*action* — a retrigger the service would not accept — is in the **Service events** panel on
+Admin, in the service's own words and with the status the caller got, for as long as the record
+holds it; the notice's longer duration is only what carries it until you look. (A refusal the
+service *expects* — stopping a job that finished a moment earlier — stays an ordinary
+ten-second warning; it names a race, not a fault.)
 
 **A campaign is addressable.** ``#/execution?campaign=<id>`` opens the campaign view with that
 campaign's card unfolded and scrolled to; **Copy link to this campaign** in the card's menu
@@ -489,6 +496,11 @@ nothing to open. Two cases are deliberately quiet: a service restart, which leav
 at phase ``unknown`` because their driver was lost rather than because they ended, and which
 would otherwise announce an ending for every campaign at once; and a campaign moving between
 running phases, which is progress rather than news.
+
+The same events are kept. A notice is gone when you scroll past it and an OS notification when
+you dismiss it, so every start and ending is also written to the durable record behind
+**Service events** on Admin — which is where "what happened to that campaign last Tuesday?"
+is answered by something other than whoever happened to be looking.
 
 **An upgrade announces itself the same way.** A service roll keeps running after you navigate
 away from Admin, and the handover starts a short countdown that reloads the tab — so the notice
@@ -513,6 +525,18 @@ it.
 This is separate from the push notifications a campaign sends to a phone, which come from the
 service rather than the browser and arrive whether or not anything is open; see
 :doc:`cluster_execution`.
+
+**The list can be searched.** The magnifier at the right-hand end of the heading row opens a
+field under it, hidden until asked for, that narrows the list to the campaigns whose id,
+description or launcher contains what you type — several words narrow further, wherever in the
+row each one sits. The heading says *showing N of M* while it is narrowed, and an empty result
+says which search emptied it, because a short list with nothing explaining it reads as a
+deployment with nothing in it. Closing the field, or *Esc*, restores the whole list: a filter
+that outlived its own field would hide campaigns with nothing on screen saying why.
+
+The phase is deliberately not matched. It is one value out of a known set, which is a control
+of its own rather than something to spell out in a free-text box — and matching it there would
+make a typed ``failed`` quietly mean two different things once that control exists.
 
 .. _web-ui-import:
 
@@ -1720,9 +1744,21 @@ the first view of **every other run, and every other campaign that used the same
 compiles once, not 25 times.
 
 Because a build is seconds (≈8 s on a warm cluster node) and can be a couple of minutes when the node
-must first pull the image, the panel **names what it is waiting for** rather than spinning: *Fetching the
-simulation image onto the node*, *Compiling the world geometry*, *Copying the scene back from the
-container*. The rest of the run view stays usable meanwhile — the capture, the timeline and the
+must first pull the image, the panel **names what it is waiting for** rather than spinning: *Waiting for
+a node to build on*, *Fetching the simulation image onto the node*, *Starting the build container*,
+*Compiling the world geometry*. Each is reported by whoever performs it — on a cluster the build runs in
+a pod on the campaign's own image, and the pod is the only thing that knows which of those it is on — so
+the stage is read rather than assumed.
+
+Under the stage, when the lane has one, comes **its own words for the wait**: the pod's
+``ImagePullBackOff`` and the registry's message, say. That is the difference between a cold start and a
+wait that will never end, and it is the case to know about for a campaign **imported from another
+cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the
+registry it ran against. Where this host cannot pull that image there is no 3D view for that campaign,
+and the panel now says so in seconds instead of at the build's deadline. Nothing else about the campaign
+is affected — its logs, tables, plots and capture playback need no image.
+
+The rest of the run view stays usable meanwhile — the capture, the timeline and the
 table-fed panels need no geometry, so playback and the costmap keep working — and a failure stops polling
 and shows its reason.
 

@@ -200,7 +200,7 @@ def test_retriggered_is_not_a_terminal_message():
     """A re-run says where it went without spending the source's one end-of-life message.
 
     ``retriggered`` reports on the SOURCE campaign's topic, and the source is unmodified by
-    a re-run -- so it must not go through ``_send_terminal``, which would swallow the real
+    a re-run -- so it must not go through ``_announce_terminal``, which would swallow the real
     "Campaign finished" that is still to come.
     """
     from robovast.execution.notify import Notifier
@@ -238,7 +238,7 @@ def test_upload_failed_is_not_a_terminal_message():
 
     A re-triggered upload runs long after the campaign ended, and it can fail on its own
     (credentials rotated, bucket gone) without anything being wrong with the campaign. Had
-    this gone through ``_send_terminal`` -- or through ``failed`` -- it would claim the
+    this gone through ``_announce_terminal`` -- or through ``failed`` -- it would claim the
     campaign died, and swallow the finish of whatever ends next.
     """
     from robovast.execution.notify import Notifier
