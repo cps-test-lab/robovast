@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runMeterFailed, runMeterSegments, runMeterText, runsFromSummary } from './runMeter'
+import { runMeterFailed, runMeterFailedText, runMeterSegments, runMeterText, runsFromSummary } from './runMeter'
 import type { CampaignSummary, JobCounts, Status } from './robovastClient'
 
 const status = (runs: Partial<Status['runs']>, phase?: string): Status =>
@@ -90,6 +90,44 @@ describe('runMeterFailed', () => {
 
   it('prefers the live job counts for the no-result axis', () => {
     expect(runMeterFailed(status({ total: 10, completed: 5, failed: 1, no_result: 9 }), counts({ failed: 2 }))).toBe(3)
+  })
+})
+
+describe('runMeterFailedText', () => {
+  it('states a running campaign\'s failures as a share, in the label\'s own unit', () => {
+    // 5 of 156, beside a label reading 28.3%: both percentages of the same campaign.
+    expect(runMeterFailedText(status({ total: 156, completed: 44, failed: 5 }, 'running'))).toBe('3.2% \u2717')
+  })
+
+  it('measures that share against the whole campaign, so it equals the red on the bar', () => {
+    const failedShare = runMeterSegments(status({ total: 200, completed: 50, failed: 20 }, 'running'))
+      .filter((s) => s.color === 'error.main')
+      .reduce((sum, s) => sum + s.fraction, 0)
+    expect(runMeterFailedText(status({ total: 200, completed: 50, failed: 20 }, 'running'))).toBe(
+      `${(failedShare * 100).toFixed(1)}% \u2717`,
+    )
+  })
+
+  it('never rounds a real failure away to 0.0%', () => {
+    expect(runMeterFailedText(status({ total: 5000, completed: 100, failed: 1 }, 'running'))).toBe('<0.1% \u2717')
+  })
+
+  it('counts runs once the campaign is over, because the label beside it is a count too', () => {
+    expect(runMeterFailedText(status({ total: 40, completed: 40, failed: 5 }, 'completed'))).toBe('5 failed')
+  })
+
+  it('falls back to the count while there is no denominator to take a share of', () => {
+    expect(runMeterFailedText(status({ total: 0, completed: 0, failed: 2 }, 'running'))).toBe('2 failed')
+  })
+
+  it('is empty on a clean campaign, so the label carries no reassuring zero', () => {
+    expect(runMeterFailedText(status({ total: 10, completed: 4 }, 'running'))).toBe('')
+  })
+
+  it('includes the no-result axis, like the number it formats', () => {
+    expect(runMeterFailedText(status({ total: 100, completed: 20, failed: 2, no_result: 3 }, 'running'))).toBe(
+      '5.0% \u2717',
+    )
   })
 })
 
