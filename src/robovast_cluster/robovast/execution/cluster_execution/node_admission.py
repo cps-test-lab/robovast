@@ -155,16 +155,27 @@ class NodeBudget:
     ``Unschedulable``: the free cores are spread across nodes and no single node
     holding the 4.75 a pod needed.
 
-    *node_id* is the value of ``robovast.io/node-id`` -- the same hash ``runs.node_label``
-    records -- so it can be used directly as a ``nodeSelector`` and appears in no manifest as
-    a hostname. ``None`` for a node that has not been labelled yet (one that joined after the
-    last ``setup``): such a node is still *counted*, because its pods are real and its
-    capacity is real, but nothing can be pinned to it.
+    *node_id* is which node this is -- the same hash ``runs.node_label`` records, and the
+    value ``robovast.io/node-id`` carries where the node has been labelled. **It is this
+    object's identity**, and every dict in the controller is keyed on it, so a provider must
+    give a distinct one to every node it reports. Two nodes sharing an id are one node to the
+    accounting: their free capacity collides in a single slot and whatever the other node had
+    is simply not offered to anybody. That is what ``None`` for every unlabelled node did --
+    a cluster whose nodes predate the label ran on one node's worth of capacity, quietly, and
+    the bigger the cluster the more of it disappeared.
+
+    *pinnable* is the separate question: whether that identity is on the node as a label, and
+    so whether a ``nodeSelector`` can name it. A node that joined since the last ``setup``
+    still has an identity and still holds work -- it simply cannot be *selected*, so a job
+    placed there is created unpinned and kube-scheduler settles it. Splitting the two is the
+    whole point: "which node is this" and "can I name it" are different facts, and one field
+    answering both is what let `None` mean a node and no node at once.
     """
     node_id: "str | None"
     free_cpu: float
     free_memory: int
     free_gpu: int = 0
+    pinnable: bool = True
 
     def holds(self, sizing: "JobSizing") -> bool:
         return (self.free_cpu >= sizing.cpu
@@ -264,12 +275,17 @@ class WorkItem:
     #: leaves it unset and is placed wherever it fits.
     pin: "str | None" = None
 
-    def may_use(self, node_id) -> bool:
+    def may_use(self, node: "NodeBudget") -> bool:
         if self.pin is not None:
-            return node_id == self.pin
-        # An unlabelled node is allowed: it cannot be measured, so there is nothing for the
-        # gate to wait for, and refusing it would make an unlabelled cluster unusable.
-        return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
+            # A pin is a ``nodeSelector`` value, so it can only ever be honoured on a node
+            # that carries the label: matching an unpinnable node's identity would create a
+            # pod whose selector names nothing, and it would sit Pending forever.
+            return node.pinnable and node.node_id == self.pin
+        # An unpinnable node is allowed unconditionally: nothing can be pinned there, so
+        # nothing measures it, so there is nothing for the gate to wait for -- and refusing
+        # it would make an unlabelled cluster unusable.
+        return (self.accepts_node is None or not node.pinnable
+                or node.node_id is None or self.accepts_node(node.node_id))
 
     def sizing_on(self, node_id) -> "JobSizing":
         """What this job needs *on that node*, falling back to what it declared."""
@@ -282,10 +298,17 @@ class WorkItem:
 class _Held:
     """A granted reservation: charged against free capacity until its pod is observed.
 
-    *node_id* is where it was granted, so the charge lands on the node that will carry it.
-    ``None`` for a job created unpinned on a growable cluster: it is charged nowhere, because
-    it is going to a node that does not exist yet and charging an existing one would refuse
-    work that node could still take.
+    *node_id* is where it was granted, so the charge lands on the node that will carry it --
+    including a node that could not be *pinned* to, where the grant is still the answer to
+    "which node did we decide had room" even though kube-scheduler makes the final placement.
+    The guess costs at most one budget TTL: the moment the pod is bound the reading counts it
+    on its real node and this reservation stops being subtracted at all.
+
+    ``None`` **only** for a job created unpinned on a growable cluster: it is charged nowhere,
+    because it is going to a node that does not exist yet and charging an existing one would
+    refuse work that node could still take. That is also what
+    :meth:`AdmissionController._unpinned_outstanding_locked` counts, so anything else landing
+    here would be read as work in flight towards a node the autoscaler has not produced.
     """
     owner: str
     cpu: float
@@ -448,8 +471,8 @@ class AdmissionController:
                 # forever reporting "queued for capacity" on an idle cluster. Observed exactly
                 # that way. A missing label now costs the pin, never the run.
                 fits = [n for n in by_id.values()
-                        if item.may_use(n.node_id)
-                        and n.node_id not in held_for_pin
+                        if item.may_use(n)
+                        and (not n.pinnable or n.node_id not in held_for_pin)
                         and n.holds(item.sizing_on(n.node_id))]
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
@@ -471,7 +494,7 @@ class AdmissionController:
                     # reader to look for capacity that was never the problem. Observed saying
                     # "no node has that free (most free: 89 cpu)" for a job needing 4.25,
                     # while all four nodes were simply out for calibration.
-                    usable = [n for n in by_id.values() if item.may_use(n.node_id)]
+                    usable = [n for n in by_id.values() if item.may_use(n)]
                     # What it would need on the node it would actually go to. `need` was left
                     # at the DECLARED sizing whenever nothing fit -- so a calibrated campaign
                     # was told its job needs the declared figure while the nodes it was being
@@ -514,7 +537,7 @@ class AdmissionController:
                     # no identity label to select it by. Both are "we know there is room, we
                     # cannot name where" -- and in both the scheduler places it, which is
                     # exactly what happened before per-node admission existed.
-                    item.create(chosen.node_id if chosen else None)
+                    item.create(chosen.node_id if chosen and chosen.pinnable else None)
                 except Exception as exc:  # noqa: BLE001 - see CREATE_ATTEMPT_LIMIT
                     # The caller owns the failure; leave the item PLANNED so a later drain can
                     # retry, and never hold a reservation for a job that was not created --
@@ -536,17 +559,22 @@ class AdmissionController:
                                        CREATE_ATTEMPT_LIMIT, exc_info=True)
                     continue
                 item.state = CREATED
+                # The node the grant is CHARGED to, which is not the same question as the
+                # node the pod was pinned to: an unpinnable node still gets the charge, so
+                # the rest of this pass does not hand its cores out twice. ``None`` here is
+                # reserved for the growable case, where there is genuinely no node yet.
                 node_id = chosen.node_id if chosen else None
                 self._held[item.key] = _Held(item.owner, need.cpu, need.memory, need.gpu,
                                              node_id)
-                if node_id is None:
+                if chosen is None:
                     unpinned += 1
-                if chosen is not None:
+                else:
                     by_id[node_id] = NodeBudget(
                         node_id=node_id,
                         free_cpu=chosen.free_cpu - need.cpu,
                         free_memory=chosen.free_memory - need.memory,
-                        free_gpu=chosen.free_gpu - need.gpu)
+                        free_gpu=chosen.free_gpu - need.gpu,
+                        pinnable=chosen.pinnable)
                 # A create clears the owner's stale reason: a refusal that outlived the wait
                 # it described is the same defect as the capacity-wait flag that outlived
                 # its own, and it reads to an operator as a campaign still stuck.
@@ -614,7 +642,7 @@ class AdmissionController:
         """
         with self._lock:
             nodes, _ = self._effective_free_locked()
-            return sorted(n.node_id for n in nodes if n.node_id)
+            return sorted(n.node_id for n in nodes if n.node_id and n.pinnable)
 
     def growable(self) -> bool:
         """Whether the cluster can add nodes. See :attr:`Budget.growable`."""
@@ -752,7 +780,16 @@ class AdmissionController:
             self._budget = self._provider.budget()
             self._budget_at = now
         budget = self._budget
-        free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu] for n in budget.nodes}
+        free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu, n.pinnable]
+                for n in budget.nodes}
+        if len(free) != len(budget.nodes):
+            # Said out loud rather than absorbed: nodes sharing an id are ONE node to
+            # everything below, so the difference is capacity that is silently never offered.
+            # See :class:`NodeBudget` -- ``None`` for every unlabelled node is how this
+            # happened, and it cost a whole cluster's worth of throughput without a log line.
+            logger.warning("the budget reports %d node(s) under %d distinct id(s); nodes "
+                           "sharing an id are counted once and the rest of their capacity is "
+                           "not offered", len(budget.nodes), len(free))
         for key, held in self._held.items():
             if key in budget.counted_jobs:
                 continue  # the reading already subtracted its real pod
@@ -761,5 +798,6 @@ class AdmissionController:
             free[held.node_id][0] -= held.cpu
             free[held.node_id][1] -= held.memory
             free[held.node_id][2] -= held.gpu
-        return ([NodeBudget(node_id=k, free_cpu=v[0], free_memory=v[1], free_gpu=v[2])
+        return ([NodeBudget(node_id=k, free_cpu=v[0], free_memory=v[1], free_gpu=v[2],
+                            pinnable=v[3])
                  for k, v in free.items()], budget.growable)

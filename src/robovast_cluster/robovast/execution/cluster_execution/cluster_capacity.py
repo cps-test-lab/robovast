@@ -95,7 +95,7 @@ class ClusterBudgetProvider:
         the truth, rather than a negative that would read as room.
         """
         head_cpu, head_mem = _headroom()
-        ids = self._node_ids()
+        ids = self._node_identities()
         # Carrying the node id, so a PINNED item can be asked whether the one node it may use
         # could ever hold it. Without it the only answerable question is the cluster-wide one,
         # and a probe pinned to the smallest machine of a mixed cluster is judged against the
@@ -103,7 +103,7 @@ class ClusterBudgetProvider:
         return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
                          memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
                          gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
-                         node_id=ids.get(name))
+                         node_id=ids.get(name, (None, False))[0])
                 for name, a in self._allocatables().items()]
 
     def _declared_total(self):
@@ -149,14 +149,16 @@ class ClusterBudgetProvider:
         would leave every node but one unprotected.
         """
         alloc = self._allocatables(schedulable_only=True)
-        ids = self._node_ids()
+        ids = self._node_identities()
         per_node, seen = self._committed(set(alloc))
         head_cpu, head_mem = _headroom()
         nodes = []
         for name, a in alloc.items():
             used = per_node.get(name, (0.0, 0, 0))
+            identity, pinnable = ids.get(name, (None, False))
             nodes.append(NodeBudget(
-                node_id=ids.get(name),
+                node_id=identity,
+                pinnable=pinnable,
                 free_cpu=max(0.0, parse_resource(a.get("cpu")) - used[0] - head_cpu),
                 free_memory=max(0, int(parse_resource(a.get("memory"))) - used[1] - head_mem),
                 free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2])))
@@ -186,21 +188,37 @@ class ClusterBudgetProvider:
                         for n in core.list_node().items)
         return declared[0] > total_cpu
 
-    def _node_ids(self) -> dict:
-        """``node name -> robovast.io/node-id``, for the nodes that carry one.
+    def _node_identities(self) -> dict:
+        """``node name -> (identity, pinnable)`` for every node.
 
-        Absent for a node that joined since the last ``setup``. Such a node is still counted
-        -- its pods and its capacity are real -- but nothing can be pinned to it, which is
-        why this is a lookup rather than a required field.
+        **Every node, always.** The identity is what the accounting keys on, so a node
+        without one is not "a node that cannot be pinned" -- it is a node that collides with
+        every other one that has none, and the collision is invisible: two unlabelled nodes
+        are one slot in the controller's dicts, so half the cluster's free capacity is simply
+        never offered. A four-node cluster that has not been re-``setup`` since the label was
+        introduced therefore runs on one node's worth of room, with nothing anywhere saying
+        so.
+
+        So the label is read where it is there, and where it is not the same value is
+        **computed** -- ``node_label`` is a plain digest of the node name with no salt, which
+        is exactly why it can be recomputed rather than looked up. That also makes the
+        identity stable across the ``setup`` that eventually stamps it: a reservation held
+        while the labelling happens keeps its key.
+
+        *pinnable* is the half that genuinely depends on the label: a ``nodeSelector`` can
+        only name an identity a node actually carries, so a node labelled since the last
+        ``setup`` holds work but is never pinned to.
         """
+        from robovast.execution.data.collect_sysinfo import node_label  # noqa: PLC0415
+
         from .node_placement import NODE_ID_LABEL  # noqa: PLC0415
 
         core = self._core_api_factory()
         out = {}
         for node in core.list_node().items:
-            value = (node.metadata.labels or {}).get(NODE_ID_LABEL)
-            if value:
-                out[node.metadata.name] = value
+            name = node.metadata.name
+            labelled = (node.metadata.labels or {}).get(NODE_ID_LABEL)
+            out[name] = (labelled, True) if labelled else (node_label(name), False)
         return out
 
     # -- readings ----------------------------------------------------------------------
