@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { hasResults, robovast, type ListCampaignsResponse } from '@/lib/robovastClient'
 import { useLiveStream } from '@/lib/liveStream'
-import { describeCampaignEvent, diffCampaignPhases, seedPhases } from '@/lib/campaignEvents'
+import { describeCampaignEvent, seedPhases, trackCampaignPhases, type CampaignSpell } from '@/lib/campaignEvents'
 import { openCampaignCard, openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
 import { useToasts } from './ToastProvider'
@@ -76,7 +76,7 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
   const { notify } = useToasts()
   // Survives reconnects on purpose: a new EventSource re-sends the whole list, and a baseline
   // that reset with the socket would re-announce every campaign each time it blinked.
-  const phases = useRef<Map<string, string> | null>(null)
+  const phases = useRef<Map<string, CampaignSpell> | null>(null)
 
   useEffect(() => {
     const campaigns = data?.campaigns
@@ -89,8 +89,8 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
       return
     }
 
-    const events = diffCampaignPhases(phases.current, campaigns)
-    phases.current = seedPhases(campaigns)
+    const { events, baseline } = trackCampaignPhases(phases.current, campaigns)
+    phases.current = baseline
 
     for (const evt of events) {
       const { message, note } = describeCampaignEvent(evt)
