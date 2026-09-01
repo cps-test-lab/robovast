@@ -74,12 +74,21 @@ def _quote(value: str) -> str:
 def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | None,
                        max_campaigns: int) -> tuple[list, str]:
     """The campaigns to search, in the service's order (live first, then newest first),
-    and a note about what was left out."""
-    explicit = [campaign_id] + list(extra or [])
+    and a note about what was left out.
+
+    A campaign the caller **named** is always searched. ``max_campaigns`` bounds how far
+    a *regex* may fan out -- that is the cost nobody can see coming, since a pattern's
+    match count is not knowable when it is written. A list is: dropping the fourth of
+    four ids someone enumerated answers a question they did not ask, and is the same
+    silent narrowing this tool reports by name everywhere else.
+
+    De-duplicated, order preserved: a regex that also matches a named campaign must not
+    make it a second attached schema, which would spend two slots of the query's budget
+    on one campaign.
+    """
+    named = [campaign_id, *(extra or [])]
     if not campaign_regex:
-        return explicit[:max_campaigns], (
-            f"; {len(explicit) - max_campaigns} campaign(s) beyond max_campaigns not searched"
-            if len(explicit) > max_campaigns else "")
+        return list(dict.fromkeys(named)), ""
     try:
         pattern = re.compile(campaign_id, re.IGNORECASE)
     except re.error as e:
@@ -94,12 +103,14 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | Non
         client = LocalTransport()
     page = client.list_campaigns(ListCampaignsRequest(limit=_CAMPAIGN_SCAN, offset=0))
     matched = [c.campaign_id for c in page.campaigns if pattern.search(c.campaign_id)]
-    matched += [c for c in (extra or []) if c not in matched]
     note = ""
     if len(matched) > max_campaigns:
         note = (f"; {len(matched) - max_campaigns} of {len(matched)} matching campaign(s) not "
                 f"searched (max_campaigns={max_campaigns}) -- raise it or narrow the regex")
-    return matched[:max_campaigns], note
+    # The cap is applied to the pattern's matches BEFORE the named ones are added, so a
+    # campaign passed by name survives a fan-out that fills the budget. Appending first
+    # and truncating after dropped exactly the campaigns the caller was surest about.
+    return list(dict.fromkeys([*matched[:max_campaigns], *(extra or [])])), note
 
 
 def _shutdown_term(index: int) -> str:
@@ -258,6 +269,7 @@ async def search_run_logs(
     grep: str = "",
     min_severity: str = "",
     campaign_regex: bool = False,
+    extra_campaign_ids: list | None = None,
     max_campaigns: int = _DEFAULT_MAX_CAMPAIGNS,
     config_filter: str = "",
     run_id: int | None = None,
@@ -280,8 +292,14 @@ async def search_run_logs(
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.
-        max_campaigns: Cap — each cold campaign costs a ``data.db`` transfer on the cluster;
-            what was left out comes back in ``campaigns_skipped``.
+        extra_campaign_ids: Further campaigns to search, **by name**. The way to compare a
+            known set (a seed sweep, a before/after pair) without contriving a regex that
+            matches exactly those ids and nothing else. Named campaigns are all searched;
+            *max_campaigns* does not cap them, so pass the ones you mean — each cold one
+            costs a ``data.db`` transfer on the cluster.
+        max_campaigns: Cap on how far a **regex** fans out — each cold campaign costs a
+            ``data.db`` transfer on the cluster; what was left out comes back in ``note``,
+            and a campaign that could not be read in ``campaigns_skipped``.
         config_filter: Glob over configuration names, e.g. ``goal-*``.
         run_id: Restarts at 0 per configuration, so pair it with *config_filter*.
         container: ``main``, ``simulation``, ``sut``, …
@@ -301,6 +319,8 @@ async def search_run_logs(
 
         search_run_logs("campaign-x", grep="CRITICAL FAILURE")
         search_run_logs("^basic-nav-", campaign_regex=True, min_severity="error")
+        search_run_logs("ar120-s1-...", extra_campaign_ids=["ar120-s2-...", "ar120-s3-..."],
+                        min_severity="error")
     """
     # `source`, `in_window`, `offset` and `top` are deliberately not parameters: the MCP tool
     # surface is a shared token budget, and each argument costs schema whether or not it is used.
@@ -309,7 +329,8 @@ async def search_run_logs(
     offset, top = 0, log_summary.DEFAULT_TOP
     try:
         campaigns, skip_note = _resolve_campaigns(
-            campaign_id, campaign_regex, None, max(1, int(max_campaigns)))
+            campaign_id, campaign_regex, extra_campaign_ids,
+            max(1, int(max_campaigns)))
         terms = _predicates(grep=grep, min_severity=min_severity, config_filter=config_filter,
                             run_id=run_id, container=container, node=node, source="",
                             t0=t0, t1=t1, in_window=None)
