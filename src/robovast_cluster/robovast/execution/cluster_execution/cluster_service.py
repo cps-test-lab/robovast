@@ -2744,18 +2744,20 @@ class ClusterService(LocalTransport):
     def _campaigns_a_restart_would_lose(self, active) -> dict:
         """``{campaign_id: why}`` for the live campaigns a replacement could not pick up.
 
-        Asked of :mod:`.campaign_resume` -- the same decision the successor will make -- so
-        the warning before a roll and the behaviour after it cannot drift apart. A campaign
-        this cannot answer for is treated as one that would be lost: the whole point of the
-        refusal is to be wrong in the safe direction.
+        Asked of :mod:`.campaign_resume` -- the same decision the successor will make, over the
+        same restored campaign root -- so the warning before a roll and the behaviour after it
+        cannot drift apart. Restoring the root is part of that decision and not a detail of it:
+        a running campaign's frozen ``_config/`` lives in the object store until its first batch
+        lands, so planning against whatever happens to be on disk refuses every campaign in its
+        first batch. A campaign this cannot answer for is treated as one that would be lost: the
+        whole point of the refusal is to be wrong in the safe direction.
         """
         from . import campaign_resume
         blocked = {}
         for summary in active:
             cid = summary.campaign_id
             try:
-                _, _, refusal = campaign_resume.plan_for(
-                    self, cid, Path(self._campaign_dir(cid)))
+                refusal = campaign_resume.would_be_lost(self, cid)
             except Exception as e:  # noqa: BLE001 - "cannot tell" is not "will survive"
                 refusal = f"could not be checked ({e})"
             if refusal is not None:
