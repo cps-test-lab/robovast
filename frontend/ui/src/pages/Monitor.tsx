@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
@@ -29,6 +29,10 @@ import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRound
 import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import CloudDownloadRoundedIcon from '@mui/icons-material/CloudDownloadRounded'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
+import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
+import InputAdornment from '@mui/material/InputAdornment'
+import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
@@ -47,6 +51,12 @@ import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
+import {
+  NO_CAMPAIGN_FILTER,
+  campaignFilterIsEmpty,
+  matchCampaigns,
+  type CampaignFilter,
+} from '@/lib/campaignFilter'
 import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
@@ -1095,6 +1105,9 @@ export function Monitor({
   const active = useActiveView()
   const [importAnchor, setImportAnchor] = useState<HTMLElement | null>(null)
   const [shareOpen, setShareOpen] = useState<string | null>(null)
+  // Hidden until asked for, and closing it clears what it holds: a filter that survived its own
+  // panel would hide campaigns with nothing on screen saying why the list is short.
+  const [filter, setFilter] = useState<CampaignFilter | null>(null)
   // The list is handed to the importer because it is how the import reports itself: the campaign
   // appears at phase `importing` and its stage report is read once it settles. Reconnecting on
   // start is belt-and-braces for a stream that has silently died meanwhile.
@@ -1113,6 +1126,14 @@ export function Monitor({
     retry: false,
   })
   const noShare = shareListing.data?.configured === false
+
+  // Typing is the one interaction here that must stay smooth, and every keystroke re-renders a
+  // list of cards that are not cheap. Deferring the value the filter runs on lets React paint
+  // the character first and the narrowed list right after, without a debounce's guessed delay.
+  const applied = useDeferredValue(filter ?? NO_CAMPAIGN_FILTER)
+  const campaigns = data?.campaigns
+  const shown = useMemo(() => matchCampaigns(campaigns ?? [], applied), [campaigns, applied])
+  const filtered = !campaignFilterIsEmpty(applied)
 
   // Held stable across renders because the dialog memoises its rows on it: a fresh Set every
   // render would recompute them on every campaign the stream pushes, which is a memo that
@@ -1162,6 +1183,19 @@ export function Monitor({
           </Typography>
         ) : null}
         <Box flexGrow={1} />
+        {/* Beside the import, at the end of the row: both act on the list as a whole rather
+            than on any one campaign. */}
+        <Tooltip title={filter ? 'Hide the search' : 'Search campaigns'}>
+          <IconButton
+            size="small"
+            aria-label="search campaigns"
+            aria-expanded={Boolean(filter)}
+            onClick={() => setFilter((f) => (f ? null : NO_CAMPAIGN_FILTER))}
+            sx={{ color: 'common.white' }}
+          >
+            <SearchRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         {/* A menu rather than a bare button, like both of a campaign card's own controls: a
             campaign can come from a file on your machine or off the configured share, and
             those are two transfers, not one with a setting. */}
@@ -1221,8 +1255,50 @@ export function Monitor({
         </Menu>
       </Stack>
 
-      {/* Under the header row, not in it: an import's report is four stage lines, which inside
-          that flex row would push the heading and its controls around. */}
+      {/* Under the header row, not in it, for the same reason the import's report is: a panel
+          inside that flex row would push the heading and its controls around as it grows.
+          `unmountOnExit` so the closed panel costs nothing and the field opens empty and
+          focused; the box is a Stack because text is only the first of the filters it will
+          hold. */}
+      <Collapse in={filter !== null} unmountOnExit>
+        <Stack direction="row" alignItems="center" spacing={1.5}>
+          <TextField
+            autoFocus
+            size="small"
+            placeholder="Search campaigns"
+            value={filter?.text ?? ''}
+            onChange={(e) => setFilter((f) => ({ ...(f ?? NO_CAMPAIGN_FILTER), text: e.target.value }))}
+            // Escape puts the list back the way the panel found it, in one key.
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setFilter(null)
+            }}
+            slotProps={{
+              input: {
+                endAdornment: filter?.text ? (
+                  <InputAdornment position="end">
+                    <Tooltip title="Clear the search">
+                      <IconButton
+                        size="small"
+                        aria-label="clear the search"
+                        onClick={() => setFilter({ ...NO_CAMPAIGN_FILTER })}
+                      >
+                        <ClearRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Tooltip>
+                  </InputAdornment>
+                ) : null,
+              },
+            }}
+            sx={{ maxWidth: 360, flexGrow: 1 }}
+          />
+          {filtered && campaigns ? (
+            <Typography variant="caption" color="text.secondary">
+              showing {shown.length} of {campaigns.length}
+            </Typography>
+          ) : null}
+        </Stack>
+      </Collapse>
+
       {importer.panel}
 
       {error ? (
@@ -1236,12 +1312,20 @@ export function Monitor({
         <Alert severity="info" variant="outlined">
           No campaigns yet — start one from the Launcher.
         </Alert>
+      ) : !shown.length ? (
+        // An empty list under a filter is not an empty deployment, and has to say which it is.
+        <Alert severity="info" variant="outlined">
+          No campaign matches “{applied.text.trim()}”.
+        </Alert>
       ) : (
-        data.campaigns.map((c, i) => (
+        // `newest` follows the campaign, not the row position: a filter that hides the
+        // campaign the user is here to watch must not promote another one into its place and
+        // auto-expand its failures.
+        shown.map((c) => (
           <CampaignCard
             key={c.campaign_id}
             summary={c}
-            newest={i === 0}
+            newest={c.campaign_id === data.campaigns[0].campaign_id}
             openedByLink={c.campaign_id === openCampaign}
           />
         ))
