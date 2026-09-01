@@ -36,6 +36,7 @@ campaigns it searched and which it skipped — a partial answer that looked comp
 worst outcome here.
 """
 
+import fnmatch
 import logging
 import re
 
@@ -141,8 +142,13 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
                 if log_summary.severity_rank(s) >= floor]
         terms.append(f"l.severity IN ({', '.join(_quote(s) for s in keep)})")
     if config_filter:
-        # The same glob vocabulary the campaign tools use, expressed in SQL's own wildcard.
-        terms.append(f"l.config_name GLOB {_quote(config_filter)}")
+        # The same glob vocabulary the campaign tools use, carried by REGEXP rather than by
+        # a wildcard operator: the campaign index answers in Postgres, which has no GLOB at
+        # all, so the filter has to go through the one matcher both dialects register.
+        # `\A` because REGEXP searches rather than matches, and fnmatch supplies only `\Z` --
+        # anchored at one end, `*-1` would also select `config-11`.
+        anchored = r"\A" + fnmatch.translate(config_filter)
+        terms.append(f"REGEXP({_quote(anchored)}, l.config_name)")
     if run_id is not None:
         terms.append(f"l.run_id = {int(run_id)}")
     if container:
