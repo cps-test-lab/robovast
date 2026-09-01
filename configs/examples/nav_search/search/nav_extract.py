@@ -77,12 +77,15 @@ the very spread the archive exists to map.
 """
 
 import csv
+import logging
 from pathlib import Path
 
 from robovast.common.campaign_data import read_test_result
 from robovast.search.aggregate import aggregate
 from robovast.search.extractor import (Extractor, ExtractResult, NoSampleError,
                                        completed_run_dirs)
+
+logger = logging.getLogger(__name__)
 
 #: Failure modes, in the order a categorical QD measure declares them. `none` is included
 #: so a passing run occupies a cell of its own rather than being absent from the archive:
@@ -181,9 +184,28 @@ class NavExtract(Extractor):
         path_scale = float(self.params.get('path_scale', 5.0))
 
         robustness, clearances, durations, modes, recoveries = [], [], [], [], []
+        unmeasured = []
         for run_dir in runs:
             row = _row(run_dir, metrics_file)
             passed = read_test_result(run_dir)['success']
+
+            if not row:
+                # This run wrote a verdict but no metrics row, so there is nothing here to
+                # take a margin FROM. Skipped rather than defaulted: every default below is
+                # a plausible number, and together they score the run at exactly 0.0 -- the
+                # failure boundary -- while also reporting `time_to_goal` at the timeout and
+                # a `failure_mode` of 'timeout'. That is the fabrication this whole objective
+                # exists to avoid, and it is the worst-placed one available: 0.0 is what an
+                # adversarial search minimizes toward and precisely what `boundary` traces,
+                # so a missing file reads as the most interesting cell in the space. The
+                # invented failure_mode is worse still -- it is a QD archive axis, so the
+                # fabrication lands in a real archive cell that the search then chases.
+                #
+                # NavMetrics leaves a run like this when it found no ground-truth pose track
+                # (it counts them and says so in its own note), so this is reachable without
+                # anything else being wrong.
+                unmeasured.append(run_dir.name)
+                continue
 
             clearance = _f(row, 'min_clearance')
             duration = _f(row, 'duration_s', timeout)
@@ -222,6 +244,28 @@ class NavExtract(Extractor):
             recoveries.append(_f(row, 'recovery_count', 0.0))
             modes.append(self._mode(passed, collided, duration, timeout, to_goal, goal_tol))
 
+        if not robustness:
+            # Every run of this cell produced a verdict and no measurements. The cell RAN
+            # but nothing about the crossing was recorded, which is what NoSampleError is
+            # for -- the framework records the cell and carries on, and no score is
+            # invented for it. Not the ValueError below: that one reports a misconfigured
+            # world, and this cell may sit in a perfectly good one.
+            raise NoSampleError(
+                f"{config_dir}: {len(runs)} run(s) produced a verdict but no "
+                f"'{metrics_file}' row (runs {', '.join(unmeasured)}), so there is no "
+                f"crossing to score. NavMetrics skips a run whose ground-truth pose track "
+                f"is missing -- check that the robot's _gt frame is recorded and that the "
+                f"tf->CSV conversion ran for this batch.")
+        if unmeasured:
+            # Some runs measured, some not. The measured ones still score the cell; saying
+            # so keeps the sample count honest, because `n_samples` counts completed runs
+            # and is therefore larger than what this aggregated over.
+            logger.warning(
+                "%s: %d of %d run(s) produced no '%s' row (runs %s) and were left out of "
+                "the aggregation; the cell is scored over the remaining %d.",
+                config_dir, len(unmeasured), len(runs), metrics_file,
+                ", ".join(unmeasured), len(robustness))
+
         if not clearances:
             # Every run of this cell recorded a pose track but no clearance, which is a
             # misconfigured world rather than an unlucky draw: without that term the
@@ -253,6 +297,9 @@ class NavExtract(Extractor):
             measures={
                 'min_clearance': aggregate(clearances, how=how) if clearances else 0.0,
                 'time_to_goal': aggregate(durations, how=how, higher_is_safer=False),
+                # Over every completed run, not only the measured ones: this reads
+                # test.xml, which a run without a metrics row still wrote. So its
+                # denominator is legitimately larger than the aggregations above.
                 'failure_rate': failures / len(runs),
                 'recovery_count': aggregate(recoveries, how=how, higher_is_safer=False),
                 # Categorical: the archive declares the names, so the worst mode seen
