@@ -512,8 +512,9 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         example}``. Or ``{error}``. ``phases`` always lists every section as ``{name, lines,
         included}``, so what a read left out is stated.
 
-        ``total_lines`` is the log, ``matched_lines`` what survived the filters (what
-        ``offset``/``limit`` page through), ``returned_lines`` this page —
+        ``total_lines`` is the log, ``matched_lines`` what survived the filters,
+        ``returned_lines`` this page (``offset``/``limit`` page through what ``tail``
+        left, which is all of ``matched_lines`` unless ``tail`` cut) —
         ``total_lines == matched_lines + dropped + shutdown_dropped``. ``truncated``
         says this page is not all of what matched, whether ``tail`` or the page window cut
         it.
@@ -557,7 +558,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         return {"file_name": name, "phases": phases, "patterns": view["patterns"],
                 "patterns_total": view["patterns_total"],
                 "severity_counts": view["severity_counts"],
-                "matched_lines": view["lines"],
+                "matched_lines": view["matched"],
                 "total_lines": view["lines_total"], "dropped": view["dropped"],
                 **_shutdown_report(view)}
     all_lines = view["content"].splitlines()
@@ -565,14 +566,18 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     # Three counts, because they answer three different questions and collapsing any two
     # of them hides a cut: ``total_lines`` is the log (the same figure a summary reports,
     # so the two shapes cannot disagree about how long it is), ``matched_lines`` is what
-    # survived the filters and is therefore what ``offset``/``limit`` page through, and
-    # ``returned_lines`` is this page. They tie out:
+    # survived the filters, and ``returned_lines`` is this page. ``offset``/``limit`` page
+    # through what ``tail`` left, which is ``matched_lines`` unless ``tail`` cut. They tie
+    # out:
     # total_lines == matched_lines + dropped + shutdown_dropped.
     result = {
         "file_name": name,
         "phases": phases,
         "total_lines": view["lines_total"],
-        "matched_lines": len(all_lines),
+        # What the filters kept, not what this page holds: with ``tail`` the two differ,
+        # and reporting the page size here said a 50-line tail of a 5000-line log had
+        # fifty matching lines -- which also broke the tie-out below.
+        "matched_lines": view["matched"],
         "returned_lines": len(selected),
         "offset": offset,
         "content": "\n".join(selected),
@@ -713,8 +718,8 @@ def _log_response(base: dict, view: dict, *, report_shutdown: bool = False) -> d
     has no scenario, so reporting ``shutdown_dropped: 0`` there would spend a key
     advertising a control that tool does not have.
     """
-    merged = {**base, "lines": view["lines"], "lines_total": view["lines_total"],
-              "dropped": view["dropped"],
+    merged = {**base, "lines": view["lines"], "matched_lines": view["matched"],
+              "lines_total": view["lines_total"], "dropped": view["dropped"],
               **(_shutdown_report(view) if report_shutdown else {})}
     if "patterns" in view:
         merged.pop("text", None)
@@ -805,9 +810,10 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
             ``get_campaign_log`` documents, applied in that order.
 
     Returns:
-        Lines: ``{text, next_offset, eof, lines, lines_total, dropped,
+        Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
         shutdown_dropped, truncated}``. With ``summarize``: the same minus ``text``,
         plus ``{patterns, patterns_total, severity_counts}``. Or ``{error}``.
+        ``lines`` is this chunk, ``matched_lines`` what the filters kept before ``tail``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
@@ -1118,8 +1124,10 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
             ``tail`` defaults to 200 here, not 0.
 
     Returns:
-        Lines: ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``.
-        With ``summarize``: the same minus ``text``, plus ``{patterns, patterns_total,
+        Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
+        truncated}`` — ``lines`` is this chunk, ``matched_lines`` what the filters kept
+        before ``tail`` (which defaults to 200 here, so the two usually differ). With
+        ``summarize``: the same minus ``text``, plus ``{patterns, patterns_total,
         severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
