@@ -514,6 +514,18 @@ This is separate from the push notifications a campaign sends to a phone, which 
 service rather than the browser and arrive whether or not anything is open; see
 :doc:`cluster_execution`.
 
+**The list can be searched.** The magnifier at the right-hand end of the heading row opens a
+field under it, hidden until asked for, that narrows the list to the campaigns whose id,
+description or launcher contains what you type — several words narrow further, wherever in the
+row each one sits. The heading says *showing N of M* while it is narrowed, and an empty result
+says which search emptied it, because a short list with nothing explaining it reads as a
+deployment with nothing in it. Closing the field, or *Esc*, restores the whole list: a filter
+that outlived its own field would hide campaigns with nothing on screen saying why.
+
+The phase is deliberately not matched. It is one value out of a known set, which is a control
+of its own rather than something to spell out in a free-text box — and matching it there would
+make a typed ``failed`` quietly mean two different things once that control exists.
+
 .. _web-ui-import:
 
 Bringing a campaign in
