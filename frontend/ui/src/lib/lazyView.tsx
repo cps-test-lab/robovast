@@ -12,9 +12,10 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 // white page with "Failed to fetch dynamically imported module" in the console.
 //
 // So the two halves ship together: retry the import a couple of times on our own, and put a
-// boundary behind that, so the worst case is one click. The boundary offers both clicks it
-// can, because the two ways a chunk goes missing want different ones — a dropped request
-// wants the import retried, a service rebuilt onto new asset hashes wants the page reloaded.
+// boundary behind that. The boundary then asks the service which of the two happened — a
+// dropped request, which wants the import retried, or a service rebuilt onto new asset
+// hashes, which wants the document reloaded — and reloads on its own for the second, so an
+// update costs a blink rather than a click.
 
 /** Attempts before giving up, including the first. Small: a real outage should surface. */
 const ATTEMPTS = 3
