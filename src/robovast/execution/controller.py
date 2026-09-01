@@ -295,8 +295,8 @@ class CampaignController:
         In the ``finally`` of :meth:`run` for the same reasons as
         :meth:`_record_execution_provenance`, and one sharper one: the campaign this exists
         for is the one that DIED. A campaign that fails mid-batch records no ``run`` rows
-        at all and never postprocesses, so ``data.db`` is never built -- and the query
-        interface fetches only ``campaign.db`` and ``_execution/data.db``. Writing here is
+        at all and never postprocesses, so it never reaches the index -- and the query
+        interface fetches only ``campaign.db``. Writing here is
         what makes the evidence reachable by SQL for exactly the campaigns that need it.
 
         The JSON file stays the record; this is an index into it. Best-effort throughout:
@@ -1246,7 +1246,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
     # A campaign this process RESUMED holds only its control plane until now (see
-    # cluster_execution.campaign_resume), and ``data.db`` is derived from the whole tree.
+    # cluster_execution.campaign_resume), and the derived data comes from the whole tree.
     # Here rather than in the caller's tail because this is the first reader that needs it:
     # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
     # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
@@ -1764,7 +1764,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         store.close()
         _campaign_root = os.path.join(results_dir, campaign_id)
         # After store.close() (campaign.db flushed, which data.db's `runs` table
-        # reads) and before _finalize, so data.db rides the existing upload.
+        # reads) and before _finalize, so the derived data rides the existing upload.
         _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)
 
 
@@ -1969,5 +1969,5 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             store.close()
             _campaign_root = os.path.join(results_dir, campaign_id)
             # After store.close() (campaign.db flushed, which data.db's `runs` table
-            # reads) and before _finalize, so data.db rides the existing upload.
+            # reads) and before _finalize, so the derived data rides the existing upload.
             _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)

@@ -526,7 +526,7 @@ def _is_pullable(image: str) -> bool:
 
 #: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized
 #: beside ``controller.log`` in ``_execution/``. Written on terminal exit so a controller
-#: crash that never builds ``data.db`` still leaves a durable, queryable reason.
+#: crash that never produces derived data still leaves a durable, queryable reason.
 _OUTCOME_FILENAME = "outcome.json"
 
 

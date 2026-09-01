@@ -49,16 +49,17 @@ def _record(campaign, entries):
     path.write_text(yaml.safe_dump({"entries": entries}), encoding="utf-8")
 
 
-def _campaign(svc, *, with_data_db: bool):
+def _campaign(svc, *, with_derived_data: bool):
     """A finished campaign on disk, with or without its derived data.
 
-    The parameter keeps its name because it is what these tests mean -- "did postprocessing
-    leave derived data" -- even though the thing on disk that proves it is now the provenance
-    record rather than the SQLite file it names.
+    Named for what it means rather than for the file that used to prove it. It was
+    `with_data_db`, and a defence of that name is what this comment used to be -- but a
+    parameter named after a retired mechanism is the same trap as a predicate testing for
+    one, and this suite exists because that trap keeps being sprung.
     """
     campaign = svc._campaigns_root() / CID              # noqa: SLF001
     (campaign / "_execution").mkdir(parents=True)
-    if with_data_db:
+    if with_derived_data:
         _record(campaign, [{"output": "poses.csv", "plugin": "rosbags_process"}])
     return campaign
 
@@ -78,14 +79,14 @@ def _track(svc, *, postprocessed: bool):
 def test_a_tracked_campaign_with_derived_data_reports_postprocessed(svc):
     """The bug: the .vast declared no postprocessing entries, so the live state says False —
     but data.db is there, which is what a reader is actually asking about."""
-    _campaign(svc, with_data_db=True)
+    _campaign(svc, with_derived_data=True)
     _track(svc, postprocessed=False)
     assert svc.get_status(CID).postprocessed is True
 
 
 def test_the_listing_agrees_with_the_status(svc):
     """The web UI gates its buttons on the *listing*, so the two must not diverge."""
-    _campaign(svc, with_data_db=True)
+    _campaign(svc, with_derived_data=True)
     _track(svc, postprocessed=False)
     assert svc._summary_for(CID).postprocessed is True        # noqa: SLF001
     assert svc.get_status(CID).postprocessed is True
@@ -94,7 +95,7 @@ def test_the_listing_agrees_with_the_status(svc):
 def test_a_restart_does_not_change_the_answer(svc):
     """Same campaign, same bytes, entry dropped — the disk path already said True, and the
     tracked path now agrees. This is the inconsistency that made the buttons come and go."""
-    _campaign(svc, with_data_db=True)
+    _campaign(svc, with_derived_data=True)
     _track(svc, postprocessed=False)
     tracked = svc.get_status(CID).postprocessed
     with svc._lock:                                          # noqa: SLF001
@@ -105,7 +106,7 @@ def test_a_restart_does_not_change_the_answer(svc):
 def test_without_derived_data_it_stays_false(svc):
     """Only ``data.db`` promotes it, so a campaign that produced none is still not
     postprocessed — the views would open on nothing."""
-    _campaign(svc, with_data_db=False)
+    _campaign(svc, with_derived_data=False)
     _track(svc, postprocessed=False)
     assert svc.get_status(CID).postprocessed is False
 
@@ -113,7 +114,7 @@ def test_without_derived_data_it_stays_false(svc):
 def test_a_state_that_already_says_true_is_left_alone(svc):
     """Promotion is one-way: what ``_postprocess`` recorded is never contradicted, so the
     archive decision that reads it is unaffected."""
-    _campaign(svc, with_data_db=False)
+    _campaign(svc, with_derived_data=False)
     _track(svc, postprocessed=True)
     assert svc.get_status(CID).postprocessed is True
 
@@ -139,7 +140,7 @@ def test_a_state_that_already_says_true_is_left_alone(svc):
 
 def _building(svc):
     """A campaign whose postprocessing is under way: no record written yet."""
-    return _campaign(svc, with_data_db=False)
+    return _campaign(svc, with_derived_data=False)
 
 
 def test_a_campaign_still_being_postprocessed_is_not_postprocessed(svc):
@@ -170,7 +171,7 @@ def test_a_record_declaring_no_entries_is_not_postprocessed(svc):
     """The record is written even when every step failed or none was configured. Reading its
     mere presence as success would promote a campaign with no derived data at all — the one
     direction of error a reader cannot detect by looking."""
-    campaign = _campaign(svc, with_data_db=False)
+    campaign = _campaign(svc, with_derived_data=False)
     _record(campaign, [])
     _track(svc, postprocessed=False)
     assert svc.get_status(CID).postprocessed is False
@@ -180,7 +181,7 @@ def test_a_recorded_failure_is_never_promoted(svc):
     """A step can fail after other steps have already derived data, so a record with entries
     in it does not mean the run succeeded. Promoting on it would put "results are ready" over
     the top of the ``postprocessing_error`` that says they are not."""
-    _campaign(svc, with_data_db=True)
+    _campaign(svc, with_derived_data=True)
     entry = _track(svc, postprocessed=False)
     entry.state.update(postprocessing_error="conversion failed")
     assert svc.get_status(CID).postprocessed is False

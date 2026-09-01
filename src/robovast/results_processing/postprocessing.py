@@ -550,7 +550,7 @@ def campaign_defines_postprocessing(campaign_dir: str) -> bool:
     under a results dir". Used to decide whether a finished campaign's stored data is
     the *postprocessed* archive or the minimal pre-postprocess data: a ``.vast`` with
     no ``results_processing.postprocessing`` entries yields the minimal data even
-    though the run still reaches ``finished`` (and still builds ``data.db``).
+    though the run still reaches ``finished``.
     """
     config_dir = os.path.join(campaign_dir, "_config")
     if not os.path.isdir(config_dir):

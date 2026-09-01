@@ -3571,7 +3571,13 @@ class ClusterService(LocalTransport):
     #: What `record_step_outcome` needs to reconstruct the campaign's Status, and all it
     #: needs: the durable outcome, the run table, and the postprocessing marker. Pulling
     #: these three beats pulling the campaign (see `run_share`).
-    _SHARE_STATUS_OBJECTS = ("_execution/outcome.json", "_execution/data.db", "campaign.db")
+    #:
+    #: The marker is postprocessing's provenance record. It was ``_execution/data.db``,
+    #: which is no longer written -- so the reconstruction saw no derived data for any
+    #: campaign, and a re-triggered export could name and record a fully postprocessed
+    #: campaign's archive as raw.
+    _SHARE_STATUS_OBJECTS = ("_execution/outcome.json", "_transient/postprocessing.yaml",
+                             "campaign.db")
 
     def run_share(self, request) -> ActionResult:
         """(Re)trigger upload-to-share for a cluster campaign, as a monitored background

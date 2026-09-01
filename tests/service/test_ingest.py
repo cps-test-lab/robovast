@@ -394,8 +394,6 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
     including archives that arrived complete, whose rows the import had just ingested. On a
     cluster it also dispatched the rosbag steps into the service pod, which has no Docker.
     """
-    import yaml as _yaml
-
     from robovast.service.local_transport import LocalTransport
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -405,7 +403,7 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
     (target / "_execution").mkdir(parents=True)
     record = target / "_transient" / "postprocessing.yaml"
     record.parent.mkdir(parents=True)
-    record.write_text(_yaml.safe_dump({"entries": [{"plugin": "p", "output": "poses.csv"}]}),
+    record.write_text(yaml.safe_dump({"entries": [{"plugin": "p", "output": "poses.csv"}]}),
                       encoding="utf-8")
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))

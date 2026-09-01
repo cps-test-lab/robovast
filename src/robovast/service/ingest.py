@@ -255,7 +255,7 @@ def missing_for_import(rel_paths) -> list:
     downloads fine and then fails at the far end, where nobody can do anything about it.
     Refusing to write it is the cheaper failure by a whole transfer.
 
-    Deliberately only what *blocks*. A campaign with no ``data.db`` is raw, not broken, and
+    Deliberately only what *blocks*. A campaign with no derived data is raw, not broken, and
     raw is the normal thing to share.
     """
     rels = {str(path).replace('\\', '/').lstrip('/') for path in rel_paths}

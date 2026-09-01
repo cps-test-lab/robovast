@@ -56,7 +56,7 @@ function DataGridToolbar() {
   )
 }
 
-// Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's data.db
+// Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's results
 // schema, run read-only SQL, chart it with Vega-Lite, and page through rows in a DataGrid. The
 // selected campaign is owned by the parent (shared with the Explorer).
 export function DataBrowser({

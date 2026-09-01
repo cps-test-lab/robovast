@@ -5085,13 +5085,22 @@ class LocalTransport(RobovastInterface):
             entry.thread is not None and not entry.thread.is_alive())
 
     #: Every file a campaign's summary or reconstructed status is derived from. ``campaign.db``
-    #: carries the run tallies and the mode; ``outcome.json`` the terminal outcome; ``data.db``
-    #: is what ``postprocessed`` is derived from (see _derive_postprocessed). The SQLite
-    #: sidecars are listed because a store in WAL mode commits into ``-wal`` and can leave the
-    #: main file's mtime standing still -- no journal_mode is set today, so this is insurance
-    #: against a later change silently freezing every card rather than a current requirement.
+    #: carries the run tallies and the mode; ``outcome.json`` the terminal outcome;
+    #: ``_transient/postprocessing.yaml`` is what ``postprocessed`` is derived from (see
+    #: :func:`~robovast.common.campaign_data.campaign_has_derived_data`).
+    #:
+    #: This is a stat fingerprint, so an entry that can never exist is worse than a missing
+    #: one: it contributes nothing that can change. It listed ``_execution/data.db`` until
+    #: that file was retired, and the consequence was invisible -- postprocessing finishing
+    #: changed nothing in the tuple, so a card could sit at "not postprocessed" over a
+    #: campaign whose tables were all there, until some unrelated file's mtime moved.
+    #:
+    #: The SQLite sidecars are listed because a store in WAL mode commits into ``-wal`` and
+    #: can leave the main file's mtime standing still -- no journal_mode is set today, so
+    #: this is insurance against a later change silently freezing every card rather than a
+    #: current requirement.
     _REST_FILES = ("campaign.db", "campaign.db-wal", "campaign.db-journal",
-                   "_execution/outcome.json", "_execution/data.db")
+                   "_execution/outcome.json", "_transient/postprocessing.yaml")
 
     def _rest_dir(self, cid: str) -> Optional[Path]:
         """The campaign's record directory **if it is already on local disk**, else ``None``.
