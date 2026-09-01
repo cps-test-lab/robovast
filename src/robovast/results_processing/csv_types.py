@@ -137,6 +137,16 @@ def coerce(value, col_type: str):
     """
     if value is None or value == "":
         return None
+    # A genuine JSON boolean, which only a .jsonl source produces -- `behaviors.jsonl`
+    # carries `is_active`. Stored as 1/0, which is what sqlite3 did with a Python bool
+    # whatever the column's declared type, so the values match what data.db held.
+    #
+    # Not cosmetic: psycopg adapts a bool to Postgres' own `t`/`f` literal, and COPY into
+    # the bigint that `infer_column_types` declares for it (bool IS an int in Python, so
+    # it is judged INTEGER) fails with `invalid input syntax for type bigint: "f"`. That
+    # took down a whole campaign's postprocessing after the runs had already been paid for.
+    if isinstance(value, bool):
+        return int(value)
     if col_type not in (INTEGER, REAL) or not isinstance(value, str):
         return value
     try:
