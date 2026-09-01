@@ -398,6 +398,8 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
         extra_campaign_ids: Campaigns to attach as ``c1``, ``c2``, … (their
             ``campaign.db`` as ``c1_campaign``, …) so one query can compare campaigns.
+            At most four — each takes two of SQLite's attached schemas. More is refused
+            by name rather than dropped; compare a longer list in batches of five.
 
     Returns:
         ``{campaign_id, columns, rows, row_count, truncated, fetch[, attached, csv_url]}``

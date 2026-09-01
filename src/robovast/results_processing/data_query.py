@@ -210,11 +210,42 @@ def _register_aggregates(conn: sqlite3.Connection) -> None:
 
 
 def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
-    """Attach *db_path* read-only under *alias*, best-effort (logs on failure)."""
+    """Attach *db_path* read-only under *alias*.
+
+    Tolerant of a file that cannot be opened — a database being written, or one from a
+    robovast that did not have it — because a query that names none of its tables is
+    still answerable. **Not** tolerant of running out of attach slots: that is not a
+    property of the file, it is the connection refusing to hold any more, and swallowing
+    it drops a campaign the caller asked for and then reports the resulting "no such
+    table: c6.runs" as if the campaign had no data.
+    """
     try:
         conn.execute(f'ATTACH DATABASE ? AS "{alias}"', (f"file:{db_path}?mode=ro",))
     except sqlite3.Error as e:
+        if "too many attached" in str(e).lower():
+            raise DataQueryError(
+                f"could not attach {alias}: {e}. Each extra campaign takes two schemas "
+                f"(its data.db and its campaign.db); query fewer campaigns at once.") from e
         logger.debug("could not attach %s as %s: %s", db_path, alias, e)
+
+
+def max_extra_campaigns(conn: sqlite3.Connection | None = None) -> int:
+    """How many *extra* campaigns one query can attach, from SQLite's own limit.
+
+    Read from the connection rather than hardcoded, because the budget is arithmetic over
+    ``SQLITE_LIMIT_ATTACHED`` (10 in a stock build) and every term is a decision made
+    here: one slot goes to the primary campaign's ``campaign.db``, and each extra
+    campaign takes **two** — its ``data.db`` under the alias and its ``campaign.db``
+    under ``<alias>_campaign``. So the stock budget is four, not ten, and a caller that
+    assumed ten silently lost the fifth campaign's ``campaign.db`` and the sixth
+    campaign entirely.
+    """
+    owned = conn if conn is not None else sqlite3.connect(":memory:")
+    try:
+        return max(0, (owned.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) - 1) // 2)
+    finally:
+        if conn is None:
+            owned.close()
 
 
 #: Flat views created per attached ``campaign.db``, as ``{name: SQL body}``.
@@ -532,6 +563,18 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     # Unconditional: `main` is either the real data.db or the empty in-memory stand-in above,
     # and the view is simply not created when the store has no system_usage table.
     _create_main_views(conn, "main")
+    # Refused before anything is attached, rather than left to fail on the schema that
+    # happens to be attached last: the caller named these campaigns and has to be told
+    # which of them the query could not have covered.
+    budget = max_extra_campaigns(conn)
+    if len(extra_dirs or {}) > budget:
+        raise DataQueryError(
+            f"{len(extra_dirs)} extra campaigns were requested, but one query can attach "
+            f"at most {budget} (SQLite allows "
+            f"{conn.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED)} attached schemas and each "
+            f"extra campaign takes two, with one spent on the primary campaign's own "
+            f"store). Query them in batches of {budget + 1} campaigns and combine the "
+            f"results.")
     for alias, other in (extra_dirs or {}).items():
         other = Path(other)
         other_data = other / "_execution" / "data.db"

@@ -39,12 +39,17 @@ import re
 
 from robovast.common import log_summary
 from robovast.mcp_server import data_access, log_view, service_access
+from robovast.results_processing.data_query import max_extra_campaigns
 
 logger = logging.getLogger(__name__)
 
-#: SQLite attaches at most 10 extra databases (``SQLITE_LIMIT_ATTACHED``), so one query spans
-#: 11 campaigns at most. Beyond that the tool batches; it never silently drops the remainder.
-_MAX_ATTACHED = 10
+#: Extra campaigns one query may attach, asked of the layer that does the attaching rather
+#: than restated here. It is NOT ``SQLITE_LIMIT_ATTACHED``: each extra campaign takes two
+#: schemas (``data.db`` + ``campaign.db``) and one slot is already spent on the primary
+#: campaign's store, so a stock build holds four extras -- eleven per batch dropped the
+#: sixth campaign onward and reported each as "no such table". Beyond the budget the tool
+#: batches; it never silently drops the remainder.
+_MAX_ATTACHED = max_extra_campaigns()
 
 #: Default number of campaigns a regex may fan out to. Low on purpose: on the cluster each cold
 #: campaign costs a ``data.db`` transfer, and a caller who wants forty of them should say so.
