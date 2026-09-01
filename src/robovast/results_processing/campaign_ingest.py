@@ -518,7 +518,8 @@ _POSTPROCESSING_STEPS_COLUMNS = {
 }
 
 
-def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict) -> int:
+def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict,
+                                     entries=None) -> int:
     """Write ``postprocessing_steps`` for one campaign; return rows written.
 
     The index holds one table per data-file stem but says nothing about their derivation,
@@ -538,11 +539,25 @@ def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict) ->
 
     The YAML remains the source of truth and is not replaced: it is what the FAIR/PROV-O
     export reads.
+
+    *entries* supplies those steps directly, and postprocessing passes them because it is
+    holding them anyway. Reading the file instead would be wrong there, and was: the record
+    is written LAST, after this ingest, so that its presence means postprocessing finished
+    (see ``campaign_data.campaign_has_derived_data``). During a campaign's FIRST
+    postprocessing the file therefore does not exist yet, and this table came out empty --
+    reporting "these metrics have no recorded derivation" for every newly processed
+    campaign, which is a wrong answer rather than an error. It only looked right on a
+    re-run, reading the *previous* run's record.
+
+    Falling back to the file keeps the re-ingest and import paths working, where the record
+    is on disk and nobody is holding its entries.
     """
     root = Path(campaign_dir)
     path = root / "_transient" / "postprocessing.yaml"
-    rows = []
-    if path.is_file():
+    data = {}
+    if entries is not None:
+        data = {"entries": entries}
+    elif path.is_file():
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError) as exc:
@@ -552,18 +567,20 @@ def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict) ->
             raise ValueError(
                 f"{path} exists but could not be read as postprocessing provenance: "
                 f"{exc}") from exc
-        for idx, entry in enumerate(data.get("entries") or []):
-            if not isinstance(entry, dict):
-                continue
-            output = entry.get("output") or ""
-            rows.append({
-                "step_idx": idx,
-                "plugin": entry.get("plugin") or None,
-                "output": output or None,
-                "table_name": name_map.get(Path(output).stem) if output else None,
-                "sources_json": json.dumps(entry.get("sources") or [], default=str),
-                "params_json": json.dumps(entry.get("params") or {}, default=str),
-            })
+
+    rows = []
+    for idx, entry in enumerate(data.get("entries") or []):
+        if not isinstance(entry, dict):
+            continue
+        output = entry.get("output") or ""
+        rows.append({
+            "step_idx": idx,
+            "plugin": entry.get("plugin") or None,
+            "output": output or None,
+            "table_name": name_map.get(Path(output).stem) if output else None,
+            "sources_json": json.dumps(entry.get("sources") or [], default=str),
+            "params_json": json.dumps(entry.get("params") or {}, default=str),
+        })
     # A campaign with no such file ran no postprocessing, or it produced nothing. The table
     # is still created (zero rows), because absent and empty say different things.
     return sink.write(POSTPROCESSING_STEPS_TABLE, rows,
@@ -683,7 +700,8 @@ def build_run_health(sink, conn, campaign_dir: str, campaign_id: str) -> int:
     return written
 
 
-def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
+def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
+                    provenance_entries=None) -> dict:
     """Load a whole campaign -- its record and its data files -- into the index.
 
     Returns ``{table: rows}``. Idempotent at the campaign level: the record is rewritten
@@ -742,7 +760,7 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
     # ``table_name`` to NULL for every step, silently turning the provenance edge into a
     # list of plugin names.
     totals[POSTPROCESSING_STEPS_TABLE] = build_postprocessing_steps_table(
-        sink, str(root), name_map)
+        sink, str(root), name_map, entries=provenance_entries)
 
     # LAST of all the builders, and that ordering is load-bearing twice over: a check reads
     # the campaign's derived tables (``run_log``, ``runs``), so they must already be in the

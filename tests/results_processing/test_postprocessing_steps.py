@@ -193,3 +193,70 @@ def test_the_notes_reach_describe_campaign_datas_column_notes(conn, tmp_path):
     notes = index_query.column_notes(conn)
     assert "ARRIVAL time" in notes["poses"]["timestamp"]
     assert "summed RSS" in notes["resource_usage"]["memory_rss_bytes"]
+
+
+# -- the record is written after the ingest, so it cannot be the ingest's input ----
+
+class _RecordingSink:
+    """Captures what was written, and needs no database.
+
+    Ungated deliberately: the bug below shipped because the coverage that would have
+    caught it was gated on a Postgres nobody had configured.
+    """
+
+    def __init__(self):
+        self.writes = []
+
+    def write(self, table, rows, context=None, types=None, source=""):  # noqa: D102
+        rows = list(rows)
+        self.writes.append((table, rows))
+        return len(rows)
+
+    def rows_for(self, table):
+        return [r for name, rows in self.writes if name == table for r in rows]
+
+
+def test_the_steps_are_recorded_on_a_campaigns_first_postprocessing(tmp_path):
+    """Entries passed in must not depend on the record file, which does not exist yet.
+
+    The ordering that makes this necessary: the provenance record is written LAST, after
+    the ingest, so that its presence means postprocessing finished. Read from that file
+    during the ingest, this table came out EMPTY on every campaign's first postprocessing
+    -- reporting "these metrics have no recorded derivation", which is a wrong answer
+    rather than an error, and one that looked correct on any re-run because it was then
+    reading the *previous* run's record.
+    """
+    entries = [
+        {"plugin": "rosbags_tf_to_csv", "output": "poses.csv",
+         "sources": ["rosbag2"], "params": {"frames": "all"}},
+        {"plugin": "rosbags_to_webm", "output": "camera.webm", "sources": ["rosbag2"]},
+    ]
+    sink = _RecordingSink()
+
+    written = campaign_ingest.build_postprocessing_steps_table(
+        sink, str(tmp_path), {"poses": "poses"}, entries=entries)
+
+    assert not (tmp_path / "_transient" / "postprocessing.yaml").exists(), (
+        "the premise: there is no record on disk during a first postprocessing")
+    assert written == 2
+    rows = {r["plugin"]: r for r in sink.rows_for(campaign_ingest.POSTPROCESSING_STEPS_TABLE)}
+    assert rows["rosbags_tf_to_csv"]["table_name"] == "poses"
+    assert rows["rosbags_to_webm"]["table_name"] is None, (
+        "an output that never became a table is a fact about the step, not a failure")
+
+
+def test_the_record_is_still_read_when_no_entries_are_passed(tmp_path):
+    """Re-ingest and import hold no entries, and must still recover the provenance."""
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    record = tmp_path / "_transient" / "postprocessing.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_text(
+        yaml.safe_dump({"entries": [{"plugin": "p", "output": "poses.csv"}]}),
+        encoding="utf-8")
+    sink = _RecordingSink()
+
+    written = campaign_ingest.build_postprocessing_steps_table(
+        sink, str(tmp_path), {"poses": "poses"})
+
+    assert written == 1

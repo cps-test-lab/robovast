@@ -850,7 +850,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
         campaign_id = os.path.basename(os.path.normpath(campaign_dir))
         with index_db.connect() as conn:
-            totals = campaign_ingest.ingest_campaign(conn, campaign_dir, campaign_id)
+            # Entries passed in rather than read back from the record, because the record
+            # is written after this ingest (see below) -- so on a campaign's FIRST
+            # postprocessing there is no file yet, and postprocessing_steps came out empty.
+            totals = campaign_ingest.ingest_campaign(
+                conn, campaign_dir, campaign_id,
+                provenance_entries=all_provenance_entries)
         rows = sum(totals.values())
         output(f"✓ Indexed {campaign_id}: {rows} rows across {len(totals)} tables")
 
