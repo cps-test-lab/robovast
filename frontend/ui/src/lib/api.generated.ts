@@ -681,11 +681,16 @@ export interface paths {
         put?: never;
         /**
          * Query Campaign Data Sql
-         * @description Run a read-only ``SELECT``.
+         * @description Run a read-only ``SELECT``, scoped to ``campaign_id``.
          *
          *     ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
          *     rather than reading them; omitted, it stays at the context-sized default, so an
          *     agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+         *
+         *     ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
+         *     whole search arm. It is a parameter rather than the default because the index
+         *     holds every campaign: a query that spans them by *omission* returns rows of the
+         *     right shape from the wrong experiment, and nothing about the reply says so.
          */
         post: operations["query_campaign_data_sql_campaigns__campaign_id__query_post"];
         delete?: never;
@@ -1637,6 +1642,8 @@ export interface components {
         };
         /** Body_query_campaign_data_sql_campaigns__campaign_id__query_post */
         Body_query_campaign_data_sql_campaigns__campaign_id__query_post: {
+            /** Campaigns */
+            campaigns: string[] | null;
             /** Max Bytes */
             max_bytes: number | null;
             /**
@@ -1814,7 +1821,7 @@ export interface components {
          *     contributed ones no ``.vast`` has to write (the ``playback`` transport
          *     always, a ``scene3d`` for a simulator that records a capture). Each entry
          *     is the flattened panel dict (``type`` + ``position`` + panel-specific data
-         *     bindings), rendered by the web run-view against the campaign's ``data.db``.
+         *     bindings), rendered by the web run-view against the campaign's results tables.
          *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
          *     the table + column that defines the playback range for non-ROS runs.
          *     ``transport_only`` answers, for the run view, whether any of it is content.
