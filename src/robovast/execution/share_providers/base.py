@@ -25,7 +25,25 @@ import click
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BaseShareProvider", "UploadProgressReader", "StreamProgressReader"]
+__all__ = ["ShareError", "BaseShareProvider", "UploadProgressReader",
+           "StreamProgressReader"]
+
+
+class ShareError(click.UsageError):
+    """A share operation refused by the remote, or misconfigured locally.
+
+    Everything a provider raises is of this shape: the credentials are wrong, the
+    URL points somewhere that is not the share, the remote said no. The message
+    names the setting to change, so it is complete on its own.
+
+    A ``click.UsageError`` so ``vast share`` keeps printing it as one line without a
+    stack; the ``include_traceback`` flag carries the same promise to the callers
+    that are not the CLI -- the controller logs it and
+    :func:`~robovast.client.status.failure_detail` records it -- because the frames
+    through ``requests`` name nothing the sentence does not.
+    """
+
+    include_traceback = False
 
 
 class UploadProgressReader:
@@ -112,7 +130,7 @@ class BaseShareProvider(ABC):
       *file* into inline JSON/PEM — and injects them into the pod environment).
 
     The constructor automatically validates that all required env vars are
-    present; it raises :class:`click.UsageError` if any are missing.  Values
+    present; it raises :class:`ShareError` if any are missing.  Values
     are read from ``os.environ`` (which is already populated by
     ``python-dotenv`` before the provider is instantiated).
 
@@ -131,7 +149,7 @@ class BaseShareProvider(ABC):
         self._validate_env()
 
     def _validate_env(self) -> None:
-        """Raise :class:`click.UsageError` if any required env vars are absent."""
+        """Raise :class:`ShareError` if any required env vars are absent."""
         missing = {
             var: desc
             for var, desc in self.required_env_vars().items()
@@ -147,7 +165,7 @@ class BaseShareProvider(ABC):
             lines.append(
                 "\nSet these variables in a .env file in your project directory."
             )
-            raise click.UsageError("\n".join(lines))
+            raise ShareError("\n".join(lines))
 
     @abstractmethod
     def required_env_vars(self) -> dict[str, str]:
@@ -155,7 +173,7 @@ class BaseShareProvider(ABC):
 
         All listed variables must be non-empty strings in the environment when
         the provider is instantiated.  The base class validates them
-        automatically and raises :class:`click.UsageError` if any are missing.
+        automatically and raises :class:`ShareError` if any are missing.
 
         Example::
 
