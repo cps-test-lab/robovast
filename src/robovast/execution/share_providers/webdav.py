@@ -22,12 +22,11 @@ import os
 import re
 import urllib.parse
 
-import click
 import requests
 
 from .naming import parse_archive_name
 
-from .base import BaseShareProvider, UploadProgressReader
+from .base import BaseShareProvider, ShareError, UploadProgressReader
 
 __all__ = ["WebDavShareProvider"]
 
@@ -93,7 +92,7 @@ class WebDavShareProvider(BaseShareProvider):
         there with a ``Content-Range`` header.
         """
         if not os.path.isfile(archive_path):
-            raise click.UsageError(f"archive not found: {archive_path}")
+            raise ShareError(f"archive not found: {archive_path}")
 
         url = self._file_url(object_name)
         total = os.path.getsize(archive_path)
@@ -119,11 +118,11 @@ class WebDavShareProvider(BaseShareProvider):
                     resp = session.put(
                         url, data=reader, headers=headers, timeout=(30, None))
             except requests.RequestException as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"Upload to WebDAV failed for '{object_name}': {exc}") from exc
 
         if resp.status_code not in (200, 201, 204):
-            raise click.UsageError(
+            raise ShareError(
                 f"WebDAV PUT of '{object_name}' returned HTTP {resp.status_code}: "
                 f"{resp.text[:200]}")
 
@@ -151,11 +150,11 @@ class WebDavShareProvider(BaseShareProvider):
             with self._session() as session:
                 resp = session.put(url, data=_chunks(), timeout=(30, None))
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Upload to WebDAV failed for '{object_name}': {exc}") from exc
 
         if resp.status_code not in (200, 201, 204):
-            raise click.UsageError(
+            raise ShareError(
                 f"WebDAV PUT of '{object_name}' returned HTTP {resp.status_code}: "
                 f"{resp.text[:200]}")
 
@@ -173,31 +172,63 @@ class WebDavShareProvider(BaseShareProvider):
     def verify_access(self) -> None:
         """Confirm the WebDAV collection is reachable and the credentials work.
 
-        Issues an authenticated ``PROPFIND Depth: 0`` on the base collection;
-        treats 207/200/204 as success and 401/403 (or transport errors) as a
-        failure the campaign should not start with.
+        Issues an authenticated ``PROPFIND Depth: 0`` on the base collection and
+        treats 200/204/207 as success. Everything else fails the campaign's share
+        step, with a message that says which of the four settings is wrong -- the
+        status code alone is the diagnosis, and a reader who has to look it up gets
+        the check's value from the lookup rather than from the check.
         """
+        base = self._base_url()
         try:
             with self._session() as session:
                 resp = session.request(
-                    "PROPFIND", self._base_url(),
-                    headers={"Depth": "0"}, timeout=30,
-                )
+                    "PROPFIND", base, headers={"Depth": "0"}, timeout=30)
         except requests.RequestException as exc:
-            raise click.UsageError(
-                f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
+            raise ShareError(
+                f"Cannot reach WebDAV server at {base!r}: {exc}\n"
                 "Check network connectivity and the ROBOVAST_WEBDAV_* settings."
             ) from exc
-        if resp.status_code in (401, 403):
-            raise click.UsageError(
-                f"WebDAV authentication failed (HTTP {resp.status_code}) for "
-                f"{self._base_url()!r}. Check ROBOVAST_WEBDAV_USER / _PASSWORD."
-            )
-        if resp.status_code not in (200, 204, 207):
-            raise click.UsageError(
-                f"WebDAV collection {self._base_url()!r} is not accessible "
-                f"(HTTP {resp.status_code}). Check ROBOVAST_WEBDAV_URL."
-            )
+        if resp.status_code in (200, 204, 207):
+            return
+        raise ShareError(f"{self._access_problem(base, resp.status_code)}\n"
+                         f"WebDAV PROPFIND {base} -> HTTP {resp.status_code} "
+                         f"{resp.reason or ''}".rstrip())
+
+    @staticmethod
+    def _access_problem(base: str, status: int) -> str:
+        """The one sentence that says what *status* means for this collection.
+
+        Split out from :meth:`verify_access` so each answer stays one string and the
+        set of them is readable at once. Every branch names the setting to change:
+        the check exists to end the search, not to hand back a number.
+        """
+        if status == 401:
+            return (f"WebDAV credentials were rejected for {base!r}. "
+                    "Check ROBOVAST_WEBDAV_USER / ROBOVAST_WEBDAV_PASSWORD.")
+        if status == 403:
+            return (f"The WebDAV account is not allowed to list {base!r}. "
+                    "The credentials are accepted, so this is a permission on the "
+                    "share, not a wrong password: an account that may not write "
+                    "there cannot be uploaded to either.")
+        if status == 404:
+            return (f"There is no WebDAV collection at {base!r}. "
+                    "Check ROBOVAST_WEBDAV_URL -- it must be the collection the "
+                    "archives go into, and it must already exist.")
+        if status in (405, 501):
+            # The one status that says nothing about credentials or about the
+            # collection: the *server* declines the method at this URL. Read as a
+            # bad URL it sends the reader to re-check a setting that is correct.
+            return (f"The server at {base!r} does not answer WebDAV requests "
+                    "(it refused PROPFIND). Either ROBOVAST_WEBDAV_URL is not the "
+                    "server's WebDAV endpoint -- a plain web address for the same "
+                    "storage is not one -- or WebDAV is not enabled for this "
+                    "account.")
+        if status in (429, 503):
+            return (f"The WebDAV server at {base!r} is refusing requests right now. "
+                    "This is temporary; the campaign's data is on the cluster and "
+                    "the share can be retried with 'vast share'.")
+        return (f"The WebDAV server at {base!r} refused the access check. "
+                "Check the ROBOVAST_WEBDAV_* settings.")
 
     def archive_exists_on_share(self, object_name: str) -> bool:
         """Return ``True`` if *object_name* already exists on the WebDAV share.
@@ -288,7 +319,7 @@ class WebDavShareProvider(BaseShareProvider):
                     timeout=30,
                 )
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
                 "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
             ) from exc
@@ -300,7 +331,7 @@ class WebDavShareProvider(BaseShareProvider):
             # Server does not support PROPFIND — fall back to HTML listing
             return self._list_via_html_index()
 
-        raise click.UsageError(
+        raise ShareError(
             f"WebDAV PROPFIND failed with HTTP {resp.status_code}: {resp.text[:200]}"
         )
 
@@ -344,13 +375,13 @@ class WebDavShareProvider(BaseShareProvider):
             with self._session() as session:
                 resp = session.get(self._base_url(), timeout=30)
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
                 "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
             ) from exc
 
         if not resp.ok:
-            raise click.UsageError(
+            raise ShareError(
                 f"WebDAV directory listing (GET) failed with HTTP "
                 f"{resp.status_code}: {resp.text[:200]}"
             )
@@ -425,7 +456,7 @@ class WebDavShareProvider(BaseShareProvider):
                             if progress_callback and total:
                                 progress_callback(received, total)
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot download '{object_name}' from WebDAV server: {exc}\n"
                 "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
             ) from exc
@@ -441,12 +472,12 @@ class WebDavShareProvider(BaseShareProvider):
             with self._session() as session:
                 resp = session.delete(url, timeout=30)
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot reach WebDAV server to delete '{object_name}': {exc}\n"
                 "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
             ) from exc
         if resp.status_code not in (200, 204):
-            raise click.UsageError(
+            raise ShareError(
                 f"WebDAV DELETE of '{object_name}' failed with "
                 f"HTTP {resp.status_code}: {resp.text[:200]}"
             )

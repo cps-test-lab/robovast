@@ -25,11 +25,9 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Callable
 
-import click
-
 from .naming import parse_archive_name
 
-from .base import BaseShareProvider, UploadProgressReader
+from .base import BaseShareProvider, ShareError, UploadProgressReader
 
 __all__ = ["GcsShareProvider"]
 
@@ -83,13 +81,13 @@ class GcsShareProvider(BaseShareProvider):
     def build_pod_env(self) -> dict[str, str]:
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
-            raise click.UsageError(
+            raise ShareError(
                 "ROBOVAST_GCS_KEY_FILE is required to write to the share.\n"
                 "Set it to the path of a service-account JSON key file with "
                 "Storage Object Creator access on the bucket."
             )
         if not os.path.isfile(key_file):
-            raise click.UsageError(
+            raise ShareError(
                 f"ROBOVAST_GCS_KEY_FILE: file not found: {key_file}"
             )
         try:
@@ -97,7 +95,7 @@ class GcsShareProvider(BaseShareProvider):
                 key_json = fh.read()
             json.loads(key_json)  # validate
         except (OSError, json.JSONDecodeError) as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"ROBOVAST_GCS_KEY_FILE: could not read key file {key_file!r}: {exc}"
             ) from exc
 
@@ -130,13 +128,13 @@ class GcsShareProvider(BaseShareProvider):
             with urllib.request.urlopen(req, timeout=30):
                 return
         except urllib.error.HTTPError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"GCS bucket {bucket!r} is not accessible (HTTP {exc.code} "
                 f"{exc.reason}). Check ROBOVAST_GCS_BUCKET and that the service "
                 "account has access."
             ) from exc
         except urllib.error.URLError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot reach GCS to verify bucket {bucket!r}: {exc.reason}"
             ) from exc
 
@@ -147,13 +145,13 @@ class GcsShareProvider(BaseShareProvider):
             import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
             import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
         except ImportError as exc:
-            raise click.UsageError(f"google-auth is not installed: {exc}") from exc
+            raise ShareError(f"google-auth is not installed: {exc}") from exc
         scopes = ["https://www.googleapis.com/auth/devstorage.read_write"]
         if key_json_str:
             try:
                 key_data = json.loads(key_json_str)
             except json.JSONDecodeError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"ROBOVAST_GCS_KEY_JSON is not valid JSON: {exc}"
                 ) from exc
             creds = google.oauth2.service_account.Credentials.from_service_account_info(
@@ -163,7 +161,7 @@ class GcsShareProvider(BaseShareProvider):
         # Host-side fallback: a key file path.
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
-            raise click.UsageError(
+            raise ShareError(
                 "GCS credentials not configured for verification: set "
                 "ROBOVAST_GCS_KEY_JSON or ROBOVAST_GCS_KEY_FILE."
             )
@@ -187,7 +185,7 @@ class GcsShareProvider(BaseShareProvider):
         Expired sessions (HTTP 404) restart cleanly.
         """
         if not os.path.isfile(archive_path):
-            raise click.UsageError(f"archive not found: {archive_path}")
+            raise ShareError(f"archive not found: {archive_path}")
 
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
         prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "")
@@ -222,11 +220,11 @@ class GcsShareProvider(BaseShareProvider):
             try:
                 urllib.request.urlopen(req, timeout=600)  # nosec B310 - https GCS endpoint
             except urllib.error.HTTPError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"HTTP {exc.code} uploading {object_name} to GCS: {exc.reason}"
                 ) from exc
             except urllib.error.URLError as exc:
-                raise click.UsageError(f"Upload to GCS failed: {exc.reason}") from exc
+                raise ShareError(f"Upload to GCS failed: {exc.reason}") from exc
 
         self._gcs_delete_session(archive_path)
 
@@ -292,10 +290,10 @@ class GcsShareProvider(BaseShareProvider):
         except urllib.error.HTTPError as exc:
             if not is_last and exc.code == 308:
                 return  # Resume Incomplete — expected between chunks
-            raise click.UsageError(
+            raise ShareError(
                 f"HTTP {exc.code} streaming to GCS: {exc.reason}") from exc
         except urllib.error.URLError as exc:
-            raise click.UsageError(f"Upload to GCS failed: {exc.reason}") from exc
+            raise ShareError(f"Upload to GCS failed: {exc.reason}") from exc
 
     # -- resumable-session management --------------------------------------
 
@@ -356,11 +354,11 @@ class GcsShareProvider(BaseShareProvider):
             with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
                 session_uri = resp.headers.get("Location")
         except urllib.error.HTTPError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"HTTP {exc.code} initiating GCS resumable upload: {exc.reason}"
             ) from exc
         if not session_uri:
-            raise click.UsageError("GCS did not return a resumable upload session URI")
+            raise ShareError("GCS did not return a resumable upload session URI")
         return session_uri
 
     @staticmethod
@@ -387,7 +385,7 @@ class GcsShareProvider(BaseShareProvider):
                 return 0
             if exc.code == 404:
                 return None  # session expired
-            raise click.UsageError(
+            raise ShareError(
                 f"HTTP {exc.code} querying GCS upload progress: {exc.reason}"
             ) from exc
 
@@ -426,7 +424,7 @@ class GcsShareProvider(BaseShareProvider):
                 with urllib.request.urlopen(url, timeout=30) as resp:
                     body = resp.read()
             except urllib.error.HTTPError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"Could not list GCS bucket '{bucket}': HTTP {exc.code} {exc.reason}\n"
                     "Make sure the bucket is publicly readable."
                 ) from exc
@@ -520,12 +518,12 @@ class GcsShareProvider(BaseShareProvider):
                         if progress_callback is not None:
                             progress_callback(received, total)
         except urllib.error.HTTPError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Failed to download '{object_name}' from GCS bucket '{bucket}': "
                 f"HTTP {exc.code} {exc.reason}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Failed to download '{object_name}': {exc.reason}"
             ) from exc
 
@@ -536,21 +534,21 @@ class GcsShareProvider(BaseShareProvider):
     def _get_gcs_access_token(self, key_file: str) -> str:
         """Exchange a service-account key file for a short-lived Bearer token."""
         if not os.path.isfile(key_file):
-            raise click.UsageError(
+            raise ShareError(
                 f"ROBOVAST_GCS_KEY_FILE: file not found: {key_file}"
             )
         try:
             with open(key_file) as fh:
                 key_data = json.load(fh)
         except (OSError, ValueError) as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"ROBOVAST_GCS_KEY_FILE: cannot read key file {key_file!r}: {exc}"
             ) from exc
         try:
             import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
             import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
         except ImportError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"google-auth is not installed: {exc}\n"
                 "Install it with: pip install google-auth"
             ) from exc
@@ -577,7 +575,7 @@ class GcsShareProvider(BaseShareProvider):
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
-            raise click.UsageError(
+            raise ShareError(
                 "ROBOVAST_GCS_KEY_FILE is required for 'vast share remove'.\n"
                 "Set it to the path of a service-account JSON key file with "
                 "Storage Object Admin access on the bucket."
@@ -599,14 +597,14 @@ class GcsShareProvider(BaseShareProvider):
                 pass
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise click.UsageError(
+                raise ShareError(
                     f"Object '{object_name}' not found in bucket '{bucket}'."
                 ) from exc
-            raise click.UsageError(
+            raise ShareError(
                 f"Failed to delete '{object_name}' from bucket '{bucket}': "
                 f"HTTP {exc.code} {exc.reason}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Failed to delete '{object_name}': {exc.reason}"
             ) from exc

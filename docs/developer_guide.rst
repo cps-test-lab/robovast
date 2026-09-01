@@ -1264,6 +1264,15 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
    with a cheap authenticated check so a bad configuration fails the pre-flight
    credential check before any batches run.
 
+   Raise :class:`~robovast.execution.share_providers.base.ShareError` for everything
+   the remote or the configuration refuses, and put the setting to change in the
+   message. The share step is best-effort — the campaign keeps its data and finishes
+   either way — so that message is the whole report: it is what the campaign log
+   shows, what ``share_error`` carries into the durable outcome, and what ``vast
+   share`` prints. A ``ShareError`` is recorded without a stack trace for that
+   reason, so a message that only quotes a status code leaves the reader with
+   nothing to act on.
+
 3. **Register the provider** in your package's ``pyproject.toml``:
 
    .. code-block:: toml
@@ -1283,6 +1292,9 @@ Share provider API reference
 .. autoclass:: robovast.execution.share_providers.base.BaseShareProvider
    :members:
    :undoc-members:
+
+.. autoclass:: robovast.execution.share_providers.base.ShareError
+   :members:
 
 .. autoclass:: robovast.execution.share_providers.nextcloud.NextcloudShareProvider
    :members:

@@ -1517,14 +1517,20 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         backend.share_campaign(campaign_root, options,
                                progress_callback=make_upload_progress_cb(state))
     except Exception as e:  # pylint: disable=broad-except
-        logger.warning("Upload-to-share failed; continuing with the campaign.",
-                       exc_info=True)
+        # A provider's own refusal (bad credentials, a URL that is not the share, a
+        # remote that said no) is self-contained and opts out of the tail via
+        # ``include_traceback = False`` — the frames through ``requests`` name nothing
+        # its sentence does not, and a stack here reads as a crash rather than as the
+        # configuration answer it is. Anything else is a bug and keeps its traceback.
+        detail = failure_detail(e)
+        logger.warning("Upload-to-share failed; continuing with the campaign.\n%s",
+                       detail, exc_info=getattr(e, "include_traceback", True))
         # Record the reason on its own field (not swallowed) so it survives to the
         # durable outcome _finish_campaign writes and can be re-triggered from disk
         # (service run_share). The phase is left for postprocessing/finalize to set —
         # a share failure keeps the campaign finished, it is not a run failure.
         if state is not None:
-            state.update(share_error=failure_detail(e))
+            state.update(share_error=detail)
         return
     if state is not None:
         state.update(share_error=None)

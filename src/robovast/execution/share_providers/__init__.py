@@ -21,10 +21,11 @@ import logging
 import os
 from importlib.metadata import entry_points
 
-from .base import BaseShareProvider
+from .base import BaseShareProvider, ShareError
 
-__all__ = ["BaseShareProvider", "load_share_provider_plugins", "share_type_configured",
-           "load_provider_from_env", "unavailable_share_type_message"]
+__all__ = ["BaseShareProvider", "ShareError", "load_share_provider_plugins",
+           "share_type_configured", "load_provider_from_env",
+           "unavailable_share_type_message"]
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def load_provider_from_env(overrides: "dict | None" = None):
 
     Raises:
         ValueError: the configured share type has no registered provider.
-        click.UsageError: required provider env vars are missing (from the constructor).
+        ShareError: required provider env vars are missing (from the constructor).
     """
     if overrides:
         for key, value in overrides.items():
