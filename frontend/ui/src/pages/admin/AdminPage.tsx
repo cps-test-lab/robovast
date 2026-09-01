@@ -465,8 +465,9 @@ export function AdminPage() {
             placement="right"
             title={
               'What this service did, kept across restarts — unlike the log below it, which '
-              + 'is this process\u2019s recent output and dies with the pod. Refusals mostly: '
-              + 'a reason that would otherwise exist only in the reply that carried it.'
+              + 'is this process\u2019s recent output and dies with the pod. Campaigns starting, '
+              + 'ending and failing, and every refusal — each otherwise announced once and then '
+              + 'gone, in a toast, a notification, or the reply that carried it.'
             }
           >
             <span>Service events</span>

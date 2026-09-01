@@ -340,10 +340,16 @@ and fetched only then — is the durable half, and the distinction from the log 
 whole reason it exists separately. That log is this process's recent output and dies with the
 pod; these survive a restart, which is when they are most worth having.
 
-What they carry is **refusals**. A campaign's failure is on its card and in its
-``outcome.json``, but an action the service would not do — a retrigger it could not accept —
-was composed in the request that refused it and shown once. The reason had no home. Each row
-carries the service's own words, the time, and the status the caller got.
+What they carry is the two things this app otherwise shows once and forgets. **Refusals**:
+an action the service would not do — a retrigger it could not accept — was composed in the
+request that refused it and shown for ten seconds. And **campaign lifecycle**: the same
+starts, endings and failures the toasts and the OS notifications announce, which until they
+scrolled away were held by nothing. Each row carries the service's own words, the time, the
+severity, who was refused where they said, and the status the caller got.
+
+Repeats collapse: an identical refusal inside a minute is counted onto the row already there
+(shown as ``repeated``) rather than recorded again, so a panel polling something that cannot
+answer it does not push the rest of the record out.
 
 Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
 a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
@@ -469,11 +475,12 @@ until the tab was reloaded — long after the campaign it was about had moved on
 next to a later attempt that had succeeded.
 
 **What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
-announcing it offers **Open campaign**, which unfolds that card and scrolls to it. The known gap
-is a refused *action* — a retrigger the service would not accept — whose reason exists nowhere
-but its notice; a durable event log is what will close that, and until then the longer duration
-is the whole of the answer. (A refusal the service *expects* — stopping a job that finished a
-moment earlier — stays an ordinary ten-second warning; it names a race, not a fault.)
+announcing it offers **Open campaign**, which unfolds that card and scrolls to it. A refused
+*action* — a retrigger the service would not accept — is in the **Service events** panel on
+Admin, in the service's own words and with the status the caller got, for as long as the record
+holds it; the notice's longer duration is only what carries it until you look. (A refusal the
+service *expects* — stopping a job that finished a moment earlier — stays an ordinary
+ten-second warning; it names a race, not a fault.)
 
 **A campaign is addressable.** ``#/execution?campaign=<id>`` opens the campaign view with that
 campaign's card unfolded and scrolled to; **Copy link to this campaign** in the card's menu
@@ -489,6 +496,11 @@ nothing to open. Two cases are deliberately quiet: a service restart, which leav
 at phase ``unknown`` because their driver was lost rather than because they ended, and which
 would otherwise announce an ending for every campaign at once; and a campaign moving between
 running phases, which is progress rather than news.
+
+The same events are kept. A notice is gone when you scroll past it and an OS notification when
+you dismiss it, so every start and ending is also written to the durable record behind
+**Service events** on Admin — which is where "what happened to that campaign last Tuesday?"
+is answered by something other than whoever happened to be looking.
 
 **An upgrade announces itself the same way.** A service roll keeps running after you navigate
 away from Admin, and the handover starts a short countdown that reloads the tab — so the notice
