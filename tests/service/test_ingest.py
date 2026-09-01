@@ -196,7 +196,8 @@ def test_a_raw_archive_reports_the_analysis_db_as_recoverable(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "campaign_store", "analysis_db"}
+    assert set(report["stages"]) == {"layout", "config", "campaign_store", "index",
+                                     "analysis_db"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -249,3 +250,72 @@ def test_the_export_check_reads_object_keys_as_readily_as_a_tree():
     assert missing_for_import(["_config/nav.vast", "_execution/data.db"]) == []
     # Absence of derived data is not incompleteness: raw is the normal thing to share.
     assert missing_for_import(["_config/nav.vast"]) == []
+
+
+# -- the index stage: importing IS ingesting ---------------------------------
+
+DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
+pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+
+
+def test_an_unreachable_index_degrades_the_import_rather_than_failing_it(
+        campaign, monkeypatch):
+    """The campaign imported fine and its files are intact; only the queryable copy is not.
+
+    Discarding a campaign somebody already has, to keep a boolean clean, is the trade this
+    module refuses everywhere else. But it must not be SILENT either -- a campaign that
+    lists and opens and answers nothing, with no stage saying why, is exactly what this
+    stage exists to make visible.
+    """
+    from robovast.common.errors import IndexUnreachableError
+
+    monkeypatch.setattr("robovast.common.index_db.connect",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")))
+
+    report = ingest_campaign(campaign)
+
+    assert report["ok"] is True, "an unreachable index must not discard the campaign"
+    stage = report["stages"]["index"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    assert "not queryable" in stage["detail"]
+    assert "ROBOVAST_INDEX_DSN" in stage["detail"], "it must name what is wrong"
+
+
+@pg
+def test_importing_a_campaign_loads_its_rows_without_running_postprocessing(
+        campaign, monkeypatch):
+    """An imported campaign must be queryable, and the archive already holds what it takes.
+
+    Before this, the import only REPORTED that the rows were absent and pointed at
+    postprocessing -- which re-runs the plugin pipeline against the campaign's own image to
+    regenerate derived files the archive already carries. Ingestion is not a command a user
+    issues; it happens wherever results arrive, and an import is one of those places.
+    """
+    import psycopg
+
+    from robovast.results_processing import index_schema
+
+    schema = "import_index_test"
+    with psycopg.connect(DSN, autocommit=True) as setup:
+        for stmt in (f"DROP SCHEMA IF EXISTS {schema} CASCADE",
+                     f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE",
+                     f"CREATE SCHEMA {schema}"):
+            setup.execute(stmt)
+    monkeypatch.setenv("ROBOVAST_INDEX_DSN", f"{DSN} options=-csearch_path={schema}")
+
+    run_dir = campaign / "nominal" / "0"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metrics.csv").write_text("value\n1.5\n2.5\n", encoding="utf-8")
+
+    report = ingest_campaign(campaign)
+
+    assert report["stages"]["index"]["verdict"] == STAGE_OK, report["stages"]["index"]
+    with psycopg.connect(f"{DSN} options=-csearch_path={schema}", autocommit=True) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM metrics WHERE campaign_id = %s",
+                            (campaign.name,)).fetchone()[0]
+    assert rows == 2, "the archive's own derived files are what make it queryable"
+
+    with psycopg.connect(DSN, autocommit=True) as teardown:
+        teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        teardown.execute(f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE")

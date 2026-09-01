@@ -321,3 +321,58 @@ def test_costmap_endpoint_neighbours_are_numeric_on_a_text_timestamp_column(tmp_
         assert frame["t"] == 10.2
         assert frame["t_prev"] == 9.5
         assert frame["t_next"] == 100.1
+
+
+# -- the index is secured when the service starts ----------------------------
+
+def test_startup_secures_the_index_so_an_upgrade_leaves_nothing_unreadable(
+        tmp_path, monkeypatch):
+    """An upgrade must not leave the campaigns it already holds unqueryable.
+
+    Campaigns ingested before the scoping existed carry no policy, and a scoped query
+    refuses an unsecured relation rather than answering with the whole corpus. Without
+    this the repair arrives only with the next postprocessing run -- so every existing
+    campaign reads as broken while the campaigns themselves are perfectly intact, which
+    is a repair nobody would think to look for.
+    """
+    from robovast.results_processing import index_scope
+
+    secured = []
+    monkeypatch.setattr(index_scope, "apply_to_index",
+                        lambda conn: secured.append(True) or ["public.poses"])
+    monkeypatch.setattr("robovast.common.index_db.connect",
+                        lambda *a, **k: _NullConn())
+
+    with TestClient(build_app(_local_transport(tmp_path), mount_mcp=False)):
+        pass
+
+    assert secured, "startup must repair the index's scoping"
+
+
+def test_an_unreachable_index_does_not_stop_the_service_booting(tmp_path, monkeypatch):
+    """Campaign control, logs and file access do not touch the index.
+
+    Refusing to boot would turn "results are unreadable" into "nothing works". The
+    scoped query path fails loudly on its own and names this repair, so nothing becomes
+    silently unscoped by starting anyway.
+    """
+    from robovast.common.errors import IndexUnreachableError
+
+    def _refuse(*_a, **_k):
+        raise IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")
+
+    monkeypatch.setattr("robovast.common.index_db.connect", _refuse)
+
+    with TestClient(build_app(_local_transport(tmp_path), mount_mcp=False)) as client:
+        assert client.get("/campaigns").status_code == 200, (
+            "a service whose index is down must still serve everything else")
+
+
+class _NullConn:
+    """A connection that is only entered and exited; the repair itself is stubbed."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
