@@ -156,6 +156,28 @@ class Notifier:
         self._send(f"Campaign uploaded to share ({share_type}).",
                    priority=3, tags="outbox_tray")
 
+    def upload_failed(self, reason: str) -> None:
+        """An upload-to-share failed. **Not** terminal, and deliberately not :meth:`failed`.
+
+        A share failure leaves the campaign finished — its trials ran and its data is on
+        disk; what failed is the copy to somebody else's storage, and it can be
+        re-triggered. Sending :meth:`failed` here would both claim the campaign died and
+        burn its one end-of-life message on something that is not the end of it.
+        """
+        self._send(f"Upload to share FAILED: {reason}", priority=4, tags="warning")
+
+    def postprocessed(self) -> None:
+        """A re-run of postprocessing produced its derived data."""
+        self._send("Postprocessing complete.", priority=3, tags="bar_chart")
+
+    def postprocessing_failed(self, reason: str) -> None:
+        """A re-run of postprocessing failed. Not terminal, for the same reason as
+        :meth:`upload_failed`: the campaign's trials are unaffected and on disk, and the
+        step can be re-triggered. Within a campaign this case is instead folded into
+        :meth:`finished` as ``degraded`` -- there it IS the campaign's ending.
+        """
+        self._send(f"Postprocessing FAILED: {reason}", priority=4, tags="warning")
+
     def failed(self, reason: str) -> None:
         self._send_terminal(f"Campaign FAILED: {reason}", priority=5,
                             tags="rotating_light")

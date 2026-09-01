@@ -3534,6 +3534,7 @@ class ClusterService(LocalTransport):
         chains. ``postprocess_campaign`` streams into the scratch ``postprocessing.log``,
         which is published to the object store so the Monitor and a later restart see it.
         """
+        from robovast.execution.notify import Notifier
         from robovast.execution.status_recovery import record_step_outcome
 
         from .postprocess_job import postprocess_campaign
@@ -3552,6 +3553,13 @@ class ClusterService(LocalTransport):
             state.update(postprocessed=status.postprocessed,
                          postprocessing_error=status.postprocessing_error)
             state.set_phase(Phase.FINISHED)
+            # Same one-shot notifier as the local lane, and it matters more here: this is
+            # the detached lane the push notifications exist for.
+            notifier = Notifier.from_env(request.campaign_id)
+            if ok:
+                notifier.postprocessed()
+            else:
+                notifier.postprocessing_failed(message)
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work)

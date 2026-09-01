@@ -231,3 +231,65 @@ def test_retriggered_is_silent_without_a_topic(monkeypatch):
     notifier = Notifier("c1")           # no topic -> disabled
     assert not notifier.enabled
     notifier.retriggered("c2")          # must not raise
+
+
+def test_upload_failed_is_not_a_terminal_message():
+    """A failed share leaves the campaign finished, so it must not spend its last message.
+
+    A re-triggered upload runs long after the campaign ended, and it can fail on its own
+    (credentials rotated, bucket gone) without anything being wrong with the campaign. Had
+    this gone through ``_send_terminal`` -- or through ``failed`` -- it would claim the
+    campaign died, and swallow the finish of whatever ends next.
+    """
+    from robovast.execution.notify import Notifier
+
+    notifier = Notifier("c1", topic="t")
+    sent = []
+    notifier._send = lambda msg, **kw: sent.append(msg)
+
+    notifier.upload_failed("bucket rejected the upload")
+    notifier.finished("2 runs")
+
+    assert len(sent) == 2
+    assert "bucket rejected the upload" in sent[0]
+    assert "Campaign FAILED" not in sent[0]  # the upload failed, not the campaign
+    assert "finished" in sent[1].lower()
+
+
+def test_upload_failed_is_silent_without_a_topic(monkeypatch):
+    """Unconfigured stays a no-op, like every other event -- no request is attempted."""
+    import requests
+
+    from robovast.execution.notify import Notifier
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("a disabled notifier must not reach the network")
+
+    monkeypatch.setattr(requests, "post", _refuse)
+
+    notifier = Notifier("c1")                     # no topic -> disabled
+    assert not notifier.enabled
+    notifier.upload_failed("nowhere to send it")  # must not raise
+
+
+def test_postprocessing_failed_is_not_a_terminal_message():
+    """A re-run of postprocessing that fails is not the campaign failing.
+
+    Inside a campaign this case is the campaign's ending, and ``finished(degraded=True)``
+    says so. Re-triggered from the service it is not: the trials are long done and on
+    disk, and only the derived data is missing -- so it must leave the terminal message
+    for whatever actually ends next.
+    """
+    from robovast.execution.notify import Notifier
+
+    notifier = Notifier("c1", topic="t")
+    sent = []
+    notifier._send = lambda msg, **kw: sent.append(msg)
+
+    notifier.postprocessing_failed("the metrics step found no bags")
+    notifier.finished("2 runs")
+
+    assert len(sent) == 2
+    assert "the metrics step found no bags" in sent[0]
+    assert "Campaign FAILED" not in sent[0]
+    assert "finished" in sent[1].lower()
