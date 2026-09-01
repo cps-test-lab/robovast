@@ -70,6 +70,83 @@ def _isolated_environment():
         os.environ.update(before)
 
 
+class _ClusterAccessInTest(BaseException):
+    """A test reached a Kubernetes API server.
+
+    Derived from ``BaseException`` rather than ``Exception``, deliberately. The paths this
+    guards are reporting and best-effort steps that catch ``Exception`` broadly and degrade
+    -- which is right in production and would, here, turn the guard into a silent no-op:
+    the suite would be fast again and nobody would learn that the test never exercised the
+    call at all. ``BaseException`` walks straight out through those handlers, the same way
+    ``KeyboardInterrupt`` does, and pytest reports it against the test that caused it.
+    """
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reaches_a_real_cluster(request):
+    """No test may send a request to a Kubernetes API server.
+
+    Same shape as the login and ``.env`` isolation above, and found the same way -- except
+    that this one had already gone wrong five times in a single fixture. Read
+    ``tests/execution/test_cluster_setup_projectless.py``: every stub in it that says "an
+    unstubbed call therefore reaches a real API server" is a step someone added to
+    ``setup_server`` and a test author later discovered by watching the suite crawl. The
+    invariant was maintained by hand, per call site, by whoever noticed.
+
+    The cost is not only time, though the time is real: two unstubbed reads in
+    ``setup_server`` took ONE of those tests from 0.02s to 80s, and the
+    ``tests/execution`` + ``tests/common`` suite from 94 seconds to twenty minutes. The
+    worse half is silent: the request goes to whatever the developer's current kubeconfig
+    context names. Where that is unreachable the test merely waits out a connect timeout;
+    where it is a **live cluster** the test quietly reads -- or writes -- the real one, and
+    a suite that passes on a laptop with no cluster starts doing something else entirely on
+    the machine that has one.
+
+    Guarding the *transport* rather than the config loader is what makes it unescapable.
+    ``kube_client.load_kube_config`` is the only sanctioned entry (enforced by
+    ``test_kube_loader_is_the_only_entry``), but three ``cluster_config`` providers bind it
+    at module import, so patching that name would miss them -- and would miss the fourth
+    one somebody adds next year. Every path, however it loaded its config, ends at one
+    method to send a request.
+
+    It does not cover ``kubernetes.stream``'s websockets (pod exec/attach), which build
+    their own connection a layer above this one. Nothing reaches one today -- every exec
+    path is stubbed at ``kube_client.exec_stream`` -- so the gap is recorded rather than
+    plugged, because a guard written for a case nobody has is a guess about what it
+    should say.
+
+    A test that means to talk to a cluster marks itself ``reaches_a_cluster``. Nothing does
+    today, and the marker exists so that adding one is a deliberate line in a diff.
+    """
+    if "reaches_a_cluster" in request.keywords:
+        yield
+        return
+    try:
+        from kubernetes.client import rest  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        # Core-only environment (no robovast_cluster, no kubernetes package): there is
+        # nothing here that could reach a cluster, and the suite must still run.
+        yield
+        return
+
+    original = rest.RESTClientObject.request
+
+    def _refuse(self, method, url, *args, **kwargs):
+        raise _ClusterAccessInTest(
+            f"{request.node.nodeid} sent a {method} to a Kubernetes API server.\n"
+            "Tests must not reach a cluster: off a cluster this waits out a connect "
+            "timeout (~80s per call), and on a machine that HAS one it reads or writes "
+            "the real thing.\n"
+            "Stub the step that made the call -- the failing traceback names it -- or, "
+            "if the call is genuinely the point, mark the test 'reaches_a_cluster'.")
+
+    rest.RESTClientObject.request = _refuse
+    try:
+        yield
+    finally:
+        rest.RESTClientObject.request = original
+
+
 def simulator_backends() -> list[str]:
     """Registered simulator backends, by name."""
     return sorted(e.name for e in entry_points(group=SIMULATOR_GROUP))
@@ -80,6 +157,10 @@ def pytest_configure(config):
         "markers",
         "requires_simulator: needs a registered robovast.simulators backend "
         "(installed by `make venv`); skipped when robovast stands alone")
+    config.addinivalue_line(
+        "markers",
+        "reaches_a_cluster: deliberately sends requests to a Kubernetes API server; "
+        "exempt from the guard in _no_test_reaches_a_real_cluster")
 
 
 def pytest_collection_modifyitems(config, items):

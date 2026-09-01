@@ -164,6 +164,11 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    # Setup reports which image and digest the pod came up on, once it is serving. Two more
+    # reads against the API server, and reporting-only -- they swallow their own errors, so
+    # unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
@@ -202,6 +207,11 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    # Setup reports which image and digest the pod came up on, once it is serving. Two more
+    # reads against the API server, and reporting-only -- they swallow their own errors, so
+    # unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
@@ -240,6 +250,11 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    # Setup reports which image and digest the pod came up on, once it is serving. Two more
+    # reads against the API server, and reporting-only -- they swallow their own errors, so
+    # unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
