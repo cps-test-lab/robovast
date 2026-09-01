@@ -51,6 +51,8 @@ are told to descend by ``fullkey`` anyway.
 
 import logging
 
+from psycopg import errors
+
 from robovast.results_processing import index_schema
 
 logger = logging.getLogger(__name__)
@@ -326,7 +328,23 @@ def create_views(conn) -> list:
     definitions = {**campaign_view_sql(conn), **metric_view_sql(conn)}
     for name, body in definitions.items():
         conn.execute(f'DROP VIEW IF EXISTS "{name}" CASCADE')
-        conn.execute(f'CREATE VIEW "{name}" AS {body}')
+        # A view is skipped when the index cannot support it, rather than taking the ingest
+        # down with it. The callers above already decide this by which TABLES exist; a
+        # column can be missing for the same reason a table can -- a campaign store written
+        # before a column was added, or one from a campaign that ended before it was
+        # populated -- and refusing the whole ingest for it would make the index unable to
+        # hold exactly the campaigns worth reading.
+        #
+        # Deliberately narrow: only "that relation/column is not there" is tolerated. A
+        # syntax error or a type mismatch is this module's own defect and must still raise,
+        # or a view could quietly stop existing everywhere and read as "no data".
+        try:
+            with conn.transaction():
+                conn.execute(f'CREATE VIEW "{name}" AS {body}')
+        except (errors.UndefinedColumn, errors.UndefinedTable, errors.UndefinedObject) as exc:
+            logger.info("index: view %s not created -- %s", name,
+                        str(exc).splitlines()[0])
+            continue
         created.append(name)
     logger.debug("index: created views %s", ", ".join(created) or "(none)")
     return created

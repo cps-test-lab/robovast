@@ -61,7 +61,7 @@ from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
 from robovast.common.quantity import to_bytes
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
-                                         resource_usage, run_health)
+                                         index_views, resource_usage, run_health)
 from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, widen
 # Reused rather than reimplemented: these decide what a data file *is* -- the JSONL format
 # registry, the yaw derivation, the table-name rule -- and a second copy of any of them
@@ -115,13 +115,32 @@ def _scenario_verdict(rows) -> dict:
     return {}
 
 
+#: Tables the ingest builds itself, which a data file must therefore not claim.
+#:
+#: These are computed per campaign -- from ``campaign.db``, from the provenance record, from
+#: the health checks -- and are written in the same schema as the globbed metric files. A run
+#: directory containing ``runs.csv`` would otherwise land its rows in the ``runs`` dimension
+#: table alongside the ones built from the campaign store, so every run would appear twice
+#: with no error and no obvious tell: the count is simply wrong, and every join through it
+#: doubles. Found exactly that way, by a test whose two campaigns reported four runs.
+#:
+#: Resolved lazily rather than as a literal set so that renaming one of the tables cannot
+#: leave a stale name here still reserved and the new one unguarded.
+def _reserved_tables() -> frozenset:
+    from robovast.results_processing import run_health  # pylint: disable=import-outside-toplevel
+    return frozenset({RUNS_TABLE, POSTPROCESSING_STEPS_TABLE, run_health.TABLE})
+
+
 def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
                name_map: dict = None) -> dict:
     """Load one run directory's data files; return rows written per table.
 
     A stem appearing twice in one run is a hard error, as it was for ``data.db``: two files
     claiming one table means one silently wins, and which one depends on directory order.
+    A stem claiming a table the ingest builds itself is refused for the stronger reason that
+    neither wins -- the rows are appended to the same table and the counts silently double.
     """
+    reserved = _reserved_tables()
     written = {}
     seen = {}
     verdict = {}
@@ -133,6 +152,13 @@ def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
                 f"Duplicate table name '{stem}' in run {run_id} of config "
                 f"'{config_name}': '{path.relative_to(run_dir)}' conflicts with "
                 f"'{seen[stem].relative_to(run_dir)}'")
+        if table in reserved:
+            raise ValueError(
+                f"'{path.relative_to(run_dir)}' in run {run_id} of config '{config_name}' "
+                f"would be ingested as the table '{table}', which RoboVAST builds itself "
+                f"from the campaign record. Its rows would be appended to that table rather "
+                f"than replacing it, so every row would appear twice and every count through "
+                f"it would be wrong. Rename the file.")
         seen[stem] = path
         if name_map is not None:
             name_map[stem] = table
@@ -725,6 +751,18 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
 
     # Same reason: which columns exist is known only after the walk declared them.
     record_column_notes(conn, set(totals))
+
+    # The views are (re)built here because which of them can exist depends on which tables
+    # do, and that is only settled once every builder above has run. Rebuilding on each
+    # ingest is also what lets a view appear for the campaign that first introduced the
+    # table it needs -- the first campaign to record system_usage brings run_validity_view.
+    #
+    # Nothing else called this. run_view, config_view, container_failure_view and
+    # run_validity_view had no creator anywhere outside the tests, so every reader of them
+    # -- the web UI's panels, describe_campaign_data, the notebooks -- would have found them
+    # missing on a real deployment.
+    created = index_views.create_views(conn)
+    logger.debug("index: views available for %s: %s", campaign_id, ", ".join(created))
 
     # Recorded even when the campaign produced no rows at all: "ingested and empty" is a
     # different answer from "never ingested", and only the registry can tell them apart.

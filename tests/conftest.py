@@ -17,6 +17,7 @@ reported as broken code, sending the reader to the wrong file entirely.
 skip only where robovast really is standing alone.
 """
 
+import os
 from importlib.metadata import entry_points
 
 import pytest
@@ -152,17 +153,6 @@ def simulator_backends() -> list[str]:
     return sorted(e.name for e in entry_points(group=SIMULATOR_GROUP))
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "requires_simulator: needs a registered robovast.simulators backend "
-        "(installed by `make venv`); skipped when robovast stands alone")
-    config.addinivalue_line(
-        "markers",
-        "reaches_a_cluster: deliberately sends requests to a Kubernetes API server; "
-        "exempt from the guard in _no_test_reaches_a_real_cluster")
-
-
 def pytest_collection_modifyitems(config, items):
     if simulator_backends():
         return
@@ -173,3 +163,76 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "requires_simulator" in item.keywords:
             item.add_marker(skip)
+
+
+# --- the suite's own Postgres -------------------------------------------------------
+#
+# The index tests are gated on ``ROBOVAST_TEST_PG_DSN``; unset, ~240 of them skipped and
+# the migration's whole correctness coverage silently did not run. The suite now provides
+# the database itself (see ``tests/pg_provision``), so no test depends on a service a
+# human started. Started once here and torn down once in ``pytest_unconfigure``: 240 tests
+# must not pay per-test container startup.
+#
+# This must happen in ``pytest_configure`` rather than a session fixture -- the gates are
+# module-level ``skipif``/``os.environ.get`` evaluated at import time, i.e. during
+# collection, by which point any fixture has not run yet.
+
+_pg_container = None
+_pg_unavailable: str | None = None
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "requires_simulator: needs a registered robovast.simulators backend "
+        "(installed by `make venv`); skipped when robovast stands alone")
+    config.addinivalue_line(
+        "markers",
+        "reaches_a_cluster: deliberately sends requests to a Kubernetes API server; "
+        "exempt from the guard in _no_test_reaches_a_real_cluster")
+
+    global _pg_container, _pg_unavailable  # pylint: disable=global-statement
+    from tests import pg_provision  # pylint: disable=import-outside-toplevel
+
+    if config.option.collectonly:
+        return
+    try:
+        dsn, _pg_container = pg_provision.start()
+    except pg_provision.ProvisionError as error:
+        _pg_unavailable = str(error)
+        return
+    os.environ[pg_provision.DSN_ENV] = dsn
+
+
+def pytest_unconfigure(config):  # pylint: disable=unused-argument
+    from tests import pg_provision  # pylint: disable=import-outside-toplevel
+    pg_provision.stop(_pg_container)
+
+
+def pytest_report_header(config):  # pylint: disable=unused-argument
+    if _pg_unavailable:
+        return f"postgres: NOT provisioned -- {_pg_unavailable}"
+    if _pg_container:
+        return "postgres: provisioned by the suite (throwaway container)"
+    return "postgres: ROBOVAST_TEST_PG_DSN was set; using it as-is"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):  # pylint: disable=unused-argument
+    """Give the one legitimate skip a reason that names what is missing.
+
+    The gates live in 26 files and phrase themselves as "ROBOVAST_TEST_PG_DSN is not
+    set", which tells the reader an env var is unset but not that the suite tried and
+    failed to provision a database, nor how to get one. Rewriting the reason here fixes
+    every one of them -- including the in-body ``pytest.skip`` calls a marker rewrite
+    could not reach -- in a single place.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if not (_pg_unavailable and report.skipped):
+        return
+    longrepr = getattr(report, "longrepr", None)
+    if isinstance(longrepr, tuple) and len(longrepr) == 3 \
+            and "ROBOVAST_TEST_PG_DSN" in str(longrepr[2]):
+        path, lineno, _ = longrepr
+        report.longrepr = (path, lineno, f"Skipped: {_pg_unavailable}")

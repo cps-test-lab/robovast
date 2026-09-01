@@ -226,3 +226,71 @@ def test_a_sink_written_row_and_an_ingested_row_share_one_table(conn, tmp_path):
     counts = dict(conn.execute(
         "SELECT campaign_id, COUNT(*) FROM poses GROUP BY 1 ORDER BY 1").fetchall())
     assert counts == {"camp-a": 4, "camp-b": 1}
+
+
+class _RecordingSink:
+    """A sink that records what it was asked to write and touches no database.
+
+    The reservation is refused before any row is written, so these tests need no Postgres --
+    and being ungated is the point: the bug they pin was hidden by a skip.
+    """
+
+    def __init__(self):
+        self.writes = []
+
+    def write(self, table, rows, context=None, source=""):  # noqa: D102 - matches RowSink
+        rows = list(rows)
+        self.writes.append((table, rows))
+        return len(rows)
+
+
+def test_a_data_file_may_not_claim_a_table_the_ingest_builds(tmp_path):
+    """``runs.csv`` in a run directory must be refused, not merged into the ``runs`` table.
+
+    The dimension tables are built by RoboVAST from the campaign record and land in the same
+    schema as the globbed metric files, so a file whose stem matches one is appended to it
+    rather than replacing it. Nothing raises and nothing looks wrong: the table simply holds
+    every run twice, and every count and join through it doubles.
+
+    Not hypothetical -- a fixture in the multi-campaign tests used ``runs.csv`` and reported
+    four runs for two. It went unnoticed because the test that would have caught it was one
+    of the ~240 skipped whenever no database was configured.
+    """
+    run_dir = tmp_path / "nominal" / "0"
+    run_dir.mkdir(parents=True)
+    (run_dir / "runs.csv").write_text("objective\n1.5\n", encoding="utf-8")
+    sink = _RecordingSink()
+
+    with pytest.raises(ValueError) as excinfo:
+        campaign_ingest.ingest_run(sink, run_dir, "nominal", 0)
+
+    message = str(excinfo.value)
+    assert "runs.csv" in message, "the error must name the file to rename"
+    assert "twice" in message, "it must say what goes wrong, not merely that it is refused"
+    assert not sink.writes, "nothing may be written before the conflict is refused"
+
+
+def test_every_table_the_ingest_builds_is_reserved():
+    """Guards the reservation itself: a new dimension table must be added to the set.
+
+    Written against the table-name constants rather than a literal list, so renaming one
+    cannot leave a stale name reserved while the real one goes unguarded.
+    """
+    from robovast.results_processing import run_health
+
+    reserved = campaign_ingest._reserved_tables()  # noqa: SLF001
+    assert campaign_ingest.RUNS_TABLE in reserved
+    assert campaign_ingest.POSTPROCESSING_STEPS_TABLE in reserved
+    assert run_health.TABLE in reserved
+
+
+def test_an_ordinary_metric_file_is_still_accepted(tmp_path):
+    """The guard must refuse the reserved names and nothing else."""
+    run_dir = tmp_path / "nominal" / "0"
+    run_dir.mkdir(parents=True)
+    (run_dir / "objectives.csv").write_text("objective\n1.5\n", encoding="utf-8")
+    sink = _RecordingSink()
+
+    written = campaign_ingest.ingest_run(sink, run_dir, "nominal", 0)
+
+    assert written == {"objectives": 1}

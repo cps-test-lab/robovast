@@ -51,13 +51,18 @@ def _make_campaign(root, name, objectives):
 
     No ``_execution/data.db`` any more -- the rows go to the index, and the tree on disk is
     only what names the campaign.
+
+    The metric file is ``objectives.csv`` and not ``runs.csv``: ``runs`` is a table the
+    ingest builds itself from the campaign record, and a data file claiming it is refused
+    (see :func:`test_a_data_file_may_not_claim_a_table_the_ingest_builds`). This fixture
+    used the reserved name and every run was ingested twice.
     """
     cdir = root / name
     (cdir / "_execution").mkdir(parents=True)
     for run_id, objective in enumerate(objectives):
         run_dir = cdir / "nominal" / str(run_id)
         run_dir.mkdir(parents=True)
-        with (run_dir / "runs.csv").open("w", newline="") as handle:
+        with (run_dir / "objectives.csv").open("w", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(["objective"])
             writer.writerow([objective])
@@ -101,7 +106,7 @@ def test_one_query_spans_several_campaigns(campaigns):
     """The A/B case, which is now a predicate rather than nine attached databases."""
     res = campaigns.query_campaign_data_sql(
         CAMP_A,
-        "SELECT campaign_id, COUNT(*) AS n FROM runs "
+        "SELECT campaign_id, COUNT(*) AS n FROM objectives "
         f"WHERE campaign_id IN ('{CAMP_A}', '{CAMP_B}') "
         "GROUP BY campaign_id ORDER BY campaign_id")
 
@@ -119,7 +124,7 @@ def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
     for campaign, objectives in ((CAMP_A, OBJECTIVES_A), (CAMP_B, OBJECTIVES_B)):
         res = campaigns.query_campaign_data_sql(
             campaign,
-            f"SELECT run_id, objective FROM runs WHERE campaign_id = '{campaign}'")
+            f"SELECT run_id, objective FROM objectives WHERE campaign_id = '{campaign}'")
         assert len(res.rows) == len(objectives)
         assert sorted(r["objective"] for r in res.rows) == sorted(objectives)
 
@@ -128,6 +133,6 @@ def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
 def test_the_campaign_named_by_the_caller_is_reported_back(campaigns):
     """The result still says which campaign was asked about; only the scoping moved."""
     res = campaigns.query_campaign_data_sql(
-        CAMP_A, f"SELECT COUNT(*) AS n FROM runs WHERE campaign_id = '{CAMP_A}'")
+        CAMP_A, f"SELECT COUNT(*) AS n FROM objectives WHERE campaign_id = '{CAMP_A}'")
     assert res.campaign_id == CAMP_A
     assert res.rows[0]["n"] == len(OBJECTIVES_A)
