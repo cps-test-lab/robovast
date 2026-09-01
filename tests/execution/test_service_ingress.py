@@ -282,3 +282,81 @@ def test_public_url_follows_the_scheme_the_ingress_was_validated_for():
     assert public_url("h.example.org", insecure_http=True) == "http://h.example.org"
     assert public_url("") == ""
     assert public_url("", insecure_http=True) == ""
+
+
+# -- the stale /v2 backend, which cost a campaign its build --------------------
+
+class _Attr:
+    """A stand-in for the kubernetes client's attribute-addressed Ingress objects."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _live_ingress(backend_service, annotations=None, path=None):
+    from robovast.execution.cluster_execution import registry_deploy
+    path = registry_deploy.REGISTRY_INGRESS_PATH if path is None else path
+    anns = dict(registry_deploy.REGISTRY_INGRESS_ANNOTATIONS)
+    anns.update(annotations or {})
+    route = _Attr(path=path,
+                 backend=_Attr(service=_Attr(name=backend_service, port=_Attr(number=5000))))
+    return _Attr(metadata=_Attr(annotations=anns),
+                spec=_Attr(rules=[_Attr(http=_Attr(paths=[route]))]))
+
+
+def test_a_v2_route_to_the_store_pod_is_healthy():
+    from robovast.execution.cluster_execution import service_deploy, store_pod
+
+    assert service_deploy.registry_ingress_defects(
+        _live_ingress(store_pod.STORE_SERVICE_NAME)) == []
+
+
+def test_a_v2_route_left_pointing_at_the_service_pod_is_a_defect():
+    """The observed failure, and the reason it is a defect rather than a tolerated variant.
+
+    The registry moved out of the service pod, but the Ingress kept routing /v2 at the
+    service's own Service -- which no longer listens on the registry port. A real campaign
+    died on it: the image built, then every layer push returned
+    `503 Service Temporarily Unavailable` from nginx and the campaign failed in its BUILD
+    phase without running a trial.
+
+    Nothing about the pods looked wrong, which is what makes this worth detecting rather
+    than leaving to whoever next reads an Ingress. And it is reachable by an ordinary
+    upgrade: the Ingress is only rebuilt when one is rendered, which needs the TLS
+    arguments a setup re-run and every upgrade lack.
+    """
+    from robovast.execution.cluster_execution import service_deploy
+
+    defects = service_deploy.registry_ingress_defects(_live_ingress("robovast-service"))
+
+    assert len(defects) == 1
+    assert "still routes to the service pod" in defects[0], defects
+    assert "/v2" in defects[0], "the defect must name the route an operator can look at"
+
+
+def test_a_missing_v2_route_is_reported_separately_from_a_stale_one():
+    """Absent and misdirected are different repairs, so they must not collapse."""
+    from robovast.execution.cluster_execution import service_deploy, store_pod
+
+    absent = service_deploy.registry_ingress_defects(
+        _live_ingress(store_pod.STORE_SERVICE_NAME, path="/somewhere-else"))
+
+    assert len(absent) == 1
+    assert "no /v2 route" in absent[0], absent
+
+
+def test_the_route_and_the_upload_limit_are_reported_together():
+    """An Ingress with the route and not the annotation is still a broken registry.
+
+    nginx's 1 MiB default kills every layer push with a 413, and `GET /v2/` answering 200
+    cannot see it -- so a health check that stopped at the route would call this healthy.
+    """
+    from robovast.execution.cluster_execution import registry_deploy, service_deploy
+
+    annotation = sorted(registry_deploy.REGISTRY_INGRESS_ANNOTATIONS)[0]
+    defects = service_deploy.registry_ingress_defects(
+        _live_ingress("robovast-service", annotations={annotation: "wrong"}))
+
+    assert len(defects) == 2, defects
+    assert any("still routes to the service pod" in d for d in defects)
+    assert any("missing annotations" in d and annotation in d for d in defects)
