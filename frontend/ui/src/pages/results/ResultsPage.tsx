@@ -161,6 +161,18 @@ export function ResultsPage({
   // Campaign ids this page has already asked the service about and not found — so an id that is
   // genuinely gone costs one refetch, not one per render (see below).
   const probed = useRef(new Set<string>())
+
+  // The snapshot freeze protects a list that is being READ; a campaign the service no longer has
+  // cannot be read. So when the selected campaign disappears from the service — someone deleted it,
+  // here or in another tab — the snapshot catches up for it immediately, which drops the selection
+  // into the self-heal below and every view back to its default (the newest readable campaign)
+  // instead of leaving them drawing an id that is gone. Deletions of campaigns nobody is looking at
+  // stay a Refresh away, as `gone` reports.
+  useEffect(() => {
+    if (!loaded || !campaignId) return
+    if (liveIds.has(campaignId) || !shownIds.has(campaignId)) return
+    setShown(live)
+  }, [loaded, campaignId, liveIds.has(campaignId), shownIds.has(campaignId)]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!loaded) return
     if (evalCampaigns.some((c) => c.campaign_id === campaignId)) return
