@@ -1,14 +1,18 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The Postgres sidecar in the service pod, and what it must never do.
+"""The Postgres that indexes every campaign, and what it must never do.
 
 These are manifest tests -- no cluster -- because the failures they guard against are
-manifest facts: an ``emptyDir`` that discards the index on a routine upgrade, a password
+manifest facts: an ``emptyDir`` that discards the index on a restart, a password
 regenerated against a data directory that already has one, a probe impatient enough to turn
-a slow first start into a crash loop.
+a slow first start into a crash loop, and a DSN naming a host that does not exist.
 """
 
-from robovast.execution.cluster_execution import index_deploy, service_deploy
+import io
+
+import yaml
+
+from robovast.execution.cluster_execution import index_deploy, service_deploy, store_pod
 
 
 def _pod_spec(**kwargs):
@@ -17,16 +21,39 @@ def _pod_spec(**kwargs):
     return manifest["spec"]["template"]["spec"]
 
 
-def test_the_index_runs_in_the_service_pod():
-    """Same pod, so the service reaches it on localhost with no Service object."""
-    names = [c["name"] for c in _pod_spec()["containers"]]
+def _store_docs(namespace="default", **kwargs):
+    from robovast.execution.cluster_config.rke2 import MINIO_MANIFEST_RKE2
 
-    assert index_deploy.INDEX_CONTAINER_NAME in names
-    assert names[0] == service_deploy.SERVICE_NAME, "the service stays the first container"
+    return store_pod.attach_infrastructure(
+        list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))), namespace, **kwargs)
 
 
-def test_the_index_port_is_not_published_anywhere():
-    """A database on the network with one shared password is a different posture."""
+def _store_pod_spec(**kwargs):
+    return next(d for d in _store_docs(**kwargs) if d["kind"] == "Pod")["spec"]
+
+
+def test_the_index_runs_in_the_store_pod_not_the_service_pod():
+    """The service Deployment is rolled by every upgrade; the store pod is not.
+
+    Postgres there restarted on each version bump, including one that only bumped the
+    controller image. The store pod is created once at setup, is node-pinned, and already
+    holds the campaign data these rows index.
+    """
+    assert [c["name"] for c in _pod_spec()["containers"]] == [service_deploy.SERVICE_NAME]
+    assert index_deploy.INDEX_CONTAINER_NAME in [
+        c["name"] for c in _store_pod_spec()["containers"]]
+
+
+def test_the_index_answers_on_the_store_pods_own_service():
+    """One Service, one selector. A second object would duplicate both for no isolation."""
+    services = [d for d in _store_docs() if d["kind"] == "Service"]
+
+    assert len(services) == 1, "the store pod keeps exactly one Service"
+    assert index_deploy.INDEX_PORT in [p["port"] for p in services[0]["spec"]["ports"]]
+
+
+def test_the_index_port_is_not_on_the_services_own_service():
+    """Nothing routes an Ingress at it, and the service pod no longer runs Postgres."""
     service = service_deploy._service_manifest("default", "")  # pylint: disable=protected-access
 
     ports = [p.get("port") for p in service["spec"]["ports"]]
@@ -34,28 +61,16 @@ def test_the_index_port_is_not_published_anywhere():
 
 
 def test_the_volume_is_never_an_emptydir():
-    """The sharpest rule here. Every upgrade restarts this pod.
+    """With an emptyDir any restart of the store pod would drop the index.
 
-    With an emptyDir a routine version bump would drop the index, so every campaign would
-    need re-ingesting from the object store to be queryable -- hours of work for the
-    existing corpus, triggered by a deploy nobody thought was destructive.
+    Re-ingesting the existing corpus from the object store is hours of work, and a crash,
+    an eviction or a node reboot are not events an operator asked for.
     """
-    for storage_class in ("", "local-path"):
-        volume = index_deploy.index_volume(storage_class=storage_class)
-        assert "emptyDir" not in volume, f"emptyDir offered for storage_class={storage_class!r}"
-        assert "hostPath" in volume or "persistentVolumeClaim" in volume
+    volume = index_deploy.index_volume()
 
-
-def test_a_storage_class_claims_a_pvc_and_none_falls_back_to_hostpath():
-    """A stock RKE2 ships no StorageClass, so a PVC there stays Pending forever."""
-    assert index_deploy.index_volume(storage_class="local-path") == {
-        "name": index_deploy.INDEX_VOLUME_NAME,
-        "persistentVolumeClaim": {"claimName": index_deploy.INDEX_VOLUME_NAME}}
-
-    assert index_deploy.index_volume(storage_path="/data/idx")["hostPath"]["path"] == "/data/idx"
-    assert index_deploy.index_pvc_manifest("default", "") is None
-    assert index_deploy.index_pvc_manifest("default", "local-path")["spec"][
-        "storageClassName"] == "local-path"
+    assert "emptyDir" not in volume
+    assert volume["hostPath"]["path"] == index_deploy.DEFAULT_INDEX_HOST_PATH
+    assert index_deploy.index_volume("/data/idx")["hostPath"]["path"] == "/data/idx"
 
 
 def test_the_data_directory_is_below_the_mount_not_the_mount():
@@ -98,17 +113,19 @@ def test_liveness_is_slower_than_readiness_so_a_slow_start_is_not_a_crash_loop()
     assert container["livenessProbe"]["failureThreshold"] > 1
 
 
-def test_the_dsn_uses_an_ipv4_literal_not_localhost():
-    """``localhost`` resolves to ``::1`` first in a dual-stack pod.
+def test_the_dsn_names_the_store_service_in_this_namespace():
+    """A different pod now, so the host is a Service name -- assembled, never configured.
 
-    Postgres' default ``listen_addresses`` covers IPv4 only, so the first attempt fails
-    and the retry succeeds -- an intermittent start-up error that looks like a race.
+    ``<service>.<namespace>.svc`` resolves in any cluster through the pod's own search
+    domain, so no cluster domain and no site-specific host is written into the source. The
+    ``.svc`` suffix matters: a bare name would resolve through the *client's* namespace.
     """
-    dsn = index_deploy.index_dsn("pw")
+    dsn = index_deploy.index_dsn("pw", "robotics")
 
-    assert "host=127.0.0.1" in dsn
-    assert "localhost" not in dsn
+    assert "host=robovast.robotics.svc" in dsn
+    assert "127.0.0.1" not in dsn and "localhost" not in dsn
     assert f"dbname={index_deploy.INDEX_DB_NAME}" in dsn
+    assert index_deploy.index_host("robotics") == store_pod.store_host("robotics")
 
 
 def test_the_role_is_not_the_postgres_superuser():
@@ -127,7 +144,7 @@ def test_the_service_is_told_where_its_index_is():
     env = {e["name"]: e.get("value") for e in container["env"]}
 
     assert DSN_ENV == service_deploy.INDEX_DSN_ENV
-    assert "host=127.0.0.1" in env[DSN_ENV]
+    assert "host=robovast.default.svc" in env[DSN_ENV]
     assert "password=pw" in env[DSN_ENV]
 
 
@@ -157,7 +174,10 @@ def test_an_explicit_dsn_in_env_is_not_overridden():
 
 def test_the_index_hostpath_follows_the_workspaces_store():
     """A deployer who moved the workspaces store moved the node-local data."""
-    volume = next(v for v in _pod_spec(workspaces_storage_path="/mnt/big/robovast-workspaces")
-                  ["volumes"] if v["name"] == index_deploy.INDEX_VOLUME_NAME)
+    assert index_deploy.index_host_path("/mnt/big/robovast-workspaces") == \
+        "/mnt/big/robovast-index"
+    assert index_deploy.index_host_path("") == index_deploy.DEFAULT_INDEX_HOST_PATH
 
+    volume = next(v for v in _store_pod_spec(index_storage_path="/mnt/big/robovast-index")
+                  ["volumes"] if v["name"] == index_deploy.INDEX_VOLUME_NAME)
     assert volume["hostPath"]["path"] == "/mnt/big/robovast-index"

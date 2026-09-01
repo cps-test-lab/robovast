@@ -404,8 +404,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # volume is noise at best, and with a zonal disk it is unschedulable.
     data_placement = resolve_placement(
         core, DATA_NODE_LABEL,
-        node_local=not (service_kwargs.get("registry_storage_class")
-                        and service_kwargs.get("workspaces_storage_class")),
+        # Only the workspaces class matters for the *service* pod now -- the registry
+        # volume moved to the store pod. The store pod's own placement is decided below and
+        # is what the registry and index hostPaths follow.
+        node_local=not service_kwargs.get("workspaces_storage_class"),
         requested=data_node, extra_labels=control_node_labels)
     service_kwargs["node_selector"] = data_placement.selector if data_placement else {}
 
@@ -434,15 +436,45 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # whatever pool the operator's `control.node_labels` allows, not replaced by it: a pool
     # selector alone still lets the pod float within the pool, which is this same bug at a
     # smaller scale.
+    #
+    # Pinned whether or not the *object store* is node-local, which it was conditional on
+    # before: this pod now also carries the registry's blobs and the campaign index, both
+    # hostPath-backed, so an unpinned pod would come back on another node with an empty
+    # registry and an empty index while everything reported healthy.
     store_selector = dict(control_node_labels or {})
-    if data_placement is not None and getattr(cluster_config, "store_is_node_local", False):
+    if data_placement is not None:
         store_selector.update(data_placement.selector)
 
+    # The index password must exist BEFORE the store pod is created: its Postgres container
+    # reads the Secret as POSTGRES_PASSWORD, and a pod created without it sits in
+    # CreateContainerConfigError. `deploy_service` below reads this same value back rather
+    # than minting a second one -- the password is never rotated (see
+    # `service_deploy.existing_index_password`).
+    from .service_deploy import ensure_index_secret  # pylint: disable=import-outside-toplevel
+    ensure_index_secret(namespace, kube_context)
+
+    # The storage flags for the registry and the index travel to the *store pod* now, not
+    # to the service Deployment: that is where both volumes live. Passed as named arguments
+    # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
+    # persisted as this cluster's recorded provider config.
+    from .index_deploy import index_host_path  # pylint: disable=import-outside-toplevel
     cluster_config.setup_cluster(
         kube_context=kube_context,
         control_node_labels=store_selector or None,
+        index_storage_path=index_host_path(
+            service_kwargs.get("workspaces_storage_path", "")),
+        registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
+        registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
         **cluster_kwargs,
     )
+
+    # An existing store pod is deliberately KEPT on a 409 (see `kubernetes.apply_manifests`),
+    # so a cluster set up before the registry and the index moved into it does not gain
+    # them here. Refuse now, naming the destructive remedy, rather than deploying a service
+    # whose registry route and index DSN point at containers that do not exist.
+    from .service_deploy import \
+        verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
+    verify_store_pod_infrastructure(namespace, kube_context)
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
     # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via
@@ -535,7 +567,8 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
                                    When config_name is given, these are the only kwargs used.
 
     Returns:
-        None
+        dict: what teardown did with the steps whose outcome the caller must report --
+              ``cpu_governor`` is one of ``removed`` / ``absent`` / ``failed``.
     """
     cluster_kwargs = {}
 
@@ -583,6 +616,15 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
     from .buildkitd_deploy import delete_buildkitd  # pylint: disable=import-outside-toplevel
     from .image_warm import delete_warm_daemonset  # pylint: disable=import-outside-toplevel
     delete_warm_daemonset(namespace, kube_context)
+
+    # Same class as the warm DaemonSet, and the reason it was missed: setup writes it, so
+    # only setup used to take it away. A teardown that left it kept a privileged pod on
+    # every node, re-asserting a governor for a deployment that no longer exists -- the
+    # observed symptom being governor pods days older than everything else after a
+    # cleanup + setup. Removing the DaemonSet does NOT restore the previous governor; see
+    # `remove_daemonset` and the note the CLI prints.
+    from .node_governor import delete_cpu_governor  # pylint: disable=import-outside-toplevel
+    governor_removal = delete_cpu_governor(namespace, kube_context)
     # Same reasoning, and the same reason it is unconditional: a Deployment left behind holds a
     # pod and its reservation forever for a deployment that no longer exists. Its volume claim
     # is deliberately kept -- see `delete_buildkitd`.
@@ -616,3 +658,8 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
         cleared = clear_labels(client.CoreV1Api())
         logger.info("placement labels cleared from %s; the data under the hostPaths is "
                     "untouched", ", ".join(cleared) if cleared else "no node")
+
+    # What the caller reports. Only the governor is here so far, because it is the only
+    # teardown step whose outcome the operator has to act on: a node left pinned is a
+    # lasting change to a shared machine.
+    return {"cpu_governor": governor_removal}

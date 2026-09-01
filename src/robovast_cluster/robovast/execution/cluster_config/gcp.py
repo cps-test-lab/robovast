@@ -18,8 +18,9 @@
 
 Instead of running an embedded MinIO server, this config uses a user-provided
 GCS bucket via the S3-compatible ``https://storage.googleapis.com`` endpoint
-with HMAC credentials.  A ``robovast`` helper pod (archiver sidecar)
-is still deployed for archive workflows.
+with HMAC credentials.  A ``robovast`` pod is still deployed, carrying the
+deployment's container registry and its campaign index (see
+``cluster_execution.store_pod``) -- campaign data does not pass through it.
 
 Required ``-o`` options at ``setup`` time::
 
@@ -42,6 +43,8 @@ from typing import Optional
 
 from kubernetes import client
 
+from ..cluster_execution import store_pod
+from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
 
@@ -267,7 +270,7 @@ class GcpClusterConfig(BaseConfig):
     # ------------------------------------------------------------------
 
     def setup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Validate the GCS bucket for a GCP cluster. No helper pod is deployed.
+        """Validate the GCS bucket, and deploy the pod holding registry + index.
 
         Campaign data lives directly in the user's GCS bucket, and the
         controller pod compresses + uploads it in-process, so GCP setup only
@@ -292,10 +295,29 @@ class GcpClusterConfig(BaseConfig):
         # ensuring the bucket exists.
         if gcs_access_key and gcs_secret_key:
             self._validate_gcs_bucket(gcs_bucket, gcs_access_key, gcs_secret_key)
-        logging.info("GCP cluster ready (no helper pod required).")
+
+        # Campaign *data* needs no pod here -- it goes straight to the bucket. The
+        # registry and the campaign index still do: they are cluster-lifetime
+        # infrastructure that must not live in the service Deployment every upgrade rolls.
+        # They get the same `robovast` Pod and Service every other provider carries, so the
+        # registry's Ingress backend and the index's DSN name one host on every provider.
+        from robovast.execution.cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+
+        load_kube_config(context=kwargs.get('kube_context'))
+        namespace = kwargs.get('namespace', 'default')
+        apply_manifests(
+            client.ApiClient(),
+            iter(store_pod.attach_infrastructure(
+                [], namespace,
+                index_storage_path=kwargs.get('index_storage_path', ''),
+                registry_storage_path=kwargs.get('registry_storage_path', ''),
+                registry_storage_class=kwargs.get('registry_storage_class', ''))),
+            namespace=namespace)
+        logging.info("GCP cluster ready (campaign data goes straight to the bucket).")
 
     def cleanup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """No-op for GCP: there is no helper pod to remove; the bucket is kept.
+        """Remove the registry/index pod. The bucket is user-managed and is kept.
 
         Args:
             storage_size (str): Unused (kept for CLI compatibility).
@@ -305,7 +327,16 @@ class GcpClusterConfig(BaseConfig):
         del storage_size, disk_type
         gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file = self._extract_gcs_params(kwargs)
         self._store_gcs_params(gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file)
-        logging.info("Nothing to clean up for GCP (no helper pod is deployed).")
+        from robovast.execution.cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+
+        load_kube_config(context=kwargs.get('kube_context'))
+        namespace = kwargs.get('namespace', 'default')
+        delete_manifests(
+            client.CoreV1Api(),
+            store_pod.infrastructure_claims(namespace)
+            + store_pod.attach_infrastructure([], namespace),
+            namespace=namespace)
         logging.info("Note: The GCS bucket '%s' was NOT deleted (user-managed).", gcs_bucket)
 
     def prepare_setup_cluster(self, output_dir, storage_size="10Gi", disk_type="pd-standard", **kwargs):
@@ -325,15 +356,16 @@ class GcpClusterConfig(BaseConfig):
         readme_content = f"""# GCP Cluster Setup Instructions
 
 Uses **Google Cloud Storage** (S3-compatible interface) for campaign data.
-No embedded MinIO server and no helper pod are deployed — the in-cluster
-controller pod compresses and uploads campaigns directly.
+No embedded MinIO server is deployed — the in-cluster controller pod compresses
+and uploads campaigns directly. A `robovast` pod is still created for the
+container registry and the campaign index.
 
 - **GCS bucket:** `{gcs_bucket}`
 - **S3 endpoint:** `{GCS_S3_ENDPOINT}`
 
 ## Setup Steps
 
-No Kubernetes resources need to be applied for storage. Ensure the GCS bucket
+No Kubernetes resources need to be applied for campaign storage. Ensure the GCS bucket
 `{gcs_bucket}` exists and the credentials (HMAC keys or a service-account key
 file) have read/write access to it.
 """

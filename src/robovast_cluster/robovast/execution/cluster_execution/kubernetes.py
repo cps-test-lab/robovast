@@ -93,8 +93,12 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                 # otherwise report success while the cluster kept the old spec.
                 logger.warning(
                     f"{kind}/{name} already exists and was left as it is; a changed "
-                    f"spec (e.g. new node labels) does not take effect until it is "
-                    f"removed. `vast cluster cleanup` deletes it.")
+                    f"spec does NOT take effect until it is removed -- new node labels, "
+                    f"and any container added to it since this one was created. The "
+                    f"{kind.lower()} carries the campaign store, the image registry and "
+                    f"the campaign index, so a version that adds one of those cannot "
+                    f"reach an existing cluster: `vast cluster cleanup` and then `vast "
+                    f"cluster setup` is the only way to pick it up.")
     except ApiException as e:
         raise RuntimeError(f"Failed to apply manifest: {e.reason}") from e
     except Exception as e:

@@ -115,8 +115,13 @@ def test_the_registry_is_published_ahead_of_the_catch_all():
     paths = _ingress(issuer="ca", ingress_class="nginx")["spec"]["rules"][0]["http"]["paths"]
     assert [p["path"] for p in paths] == [registry_deploy.REGISTRY_INGRESS_PATH, "/"]
     registry = paths[0]
-    assert registry["backend"]["service"]["name"] == SERVICE_NAME
+    # One Ingress, one hostname, two Services behind it: the registry moved to the store
+    # pod, so `/v2` is routed there while `/` stays on the service. No image ref changed.
+    from robovast.execution.cluster_execution import store_pod
+
+    assert registry["backend"]["service"]["name"] == store_pod.STORE_SERVICE_NAME
     assert registry["backend"]["service"]["port"]["number"] == registry_deploy.REGISTRY_PORT
+    assert paths[1]["backend"]["service"]["name"] == SERVICE_NAME
 
 
 def test_deploy_service_forwards_the_ingress_options(monkeypatch):

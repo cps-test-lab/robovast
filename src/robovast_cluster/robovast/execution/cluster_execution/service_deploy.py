@@ -131,6 +131,21 @@ RESULTS_VOLUME_NAME = "results-data"
 RESULTS_DATA_DIR = "/var/lib/robovast-results"
 DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
 
+#: What the scheduler reserves for the service container, and what it may grow to.
+#:
+#: A request rather than nothing, because a container with no request is scheduled as if it
+#: needed nothing -- and this one drives every campaign on the cluster. Kept to a floor
+#: (0.1 core, 512Mi) because it is subtracted from the capacity campaign jobs are admitted
+#: against; it is a chosen floor, not a measurement, and what would refine it is reading the
+#: pod's own usage across a full sweep.
+#:
+#: **No limits at all, deliberately.** The campaign controller and the in-memory admission
+#: queue live in this process: an OOMKill here does not degrade a campaign, it drops the
+#: only thing tracking one, and a CPU cap throttles the loop that admits and monitors every
+#: job on the cluster. Neither failure would be attributed to a cgroup by anyone reading the
+#: campaign log.
+SERVICE_RESOURCES = {"requests": {"cpu": "100m", "memory": "512Mi"}}
+
 #: The origin clients reach this service on, which the service reports as
 #: ``VersionInfo.web_base`` so a caller that cannot be handed bytes can be handed a link.
 #: Derived from the Ingress at setup/upgrade time, exactly like the build registry's prefix
@@ -187,18 +202,6 @@ def _results_host_path(workspaces_storage_path=""):
     if not workspaces_storage_path:
         return DEFAULT_RESULTS_HOST_PATH
     return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-results")
-
-
-def _index_host_path(workspaces_storage_path=""):
-    """Where the index hostPath goes: beside the workspaces one, for the same reason.
-
-    A deployer who moved the workspaces store moved the service's node-local data, and the
-    index is now part of it. See :func:`_results_host_path`.
-    """
-    from . import index_deploy  # pylint: disable=import-outside-toplevel
-    if not workspaces_storage_path:
-        return index_deploy.DEFAULT_INDEX_HOST_PATH
-    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-index")
 
 
 def results_volume(storage_path="", storage_class=""):
@@ -382,9 +385,8 @@ def _service_rbac_manifests(namespace):
 
 def _deployment_manifest(namespace, image, env=None, git_secret=False,
                          env_secret_names=(), pull_secret="", restarted_at=None,
-                         registry_storage_path="", registry_storage_class="",
                          workspaces_storage_path="", workspaces_storage_class="",
-                         node_selector=None, index_storage_path=""):
+                         node_selector=None):
     """The robovast-service Deployment (1 replica).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -412,14 +414,11 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     what makes every deploy roll. Pass a fixed value to compare two manifests without the
     timestamp being the difference.
 
-    The ``registry_*`` arguments configure the container registry that runs beside the
-    service (see :mod:`.registry_deploy`) — it is a second container in this pod rather
-    than its own Deployment, so that one restart covers both and the Ingress can reach it
-    on the same Service.
+    **One container.** The registry and the campaign index used to ride along here and now
+    live in the ``robovast`` pod (:mod:`.store_pod`): they are cluster-lifetime
+    infrastructure, and this Deployment is rolled by every upgrade. What is left in this
+    pod is the service and the two volumes only the service uses.
     """
-    from . import (index_deploy,  # pylint: disable=import-outside-toplevel
-                   registry_deploy)
-
     if restarted_at is None:
         restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     container = {
@@ -434,6 +433,7 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                     "--results-dir", RESULTS_DATA_DIR],
         "ports": [{"containerPort": SERVICE_PORT, "name": "http"}],
         "env": list(env or []),
+        "resources": SERVICE_RESOURCES,
         "readinessProbe": {
             "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
             "initialDelaySeconds": 5, "periodSeconds": 10},
@@ -460,19 +460,12 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                                   "mountPath": RESULTS_DATA_DIR}]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
-        "containers": [container, registry_deploy.registry_container(),
-                       index_deploy.index_container()],
-        "volumes": [registry_deploy.registry_volume(
-            registry_storage_path, registry_storage_class),
+        "containers": [container],
+        "volumes": [
             workspaces_volume(workspaces_storage_path, workspaces_storage_class),
             # Backed like the workspaces store, deliberately -- see results_volume().
             results_volume(_results_host_path(workspaces_storage_path),
-                           workspaces_storage_class),
-            # The central index, in this pod so the service reaches it on localhost with
-            # no Service, no network policy and no credential crossing a node boundary.
-            index_deploy.index_volume(
-                index_storage_path or _index_host_path(workspaces_storage_path),
-                workspaces_storage_class)],
+                           workspaces_storage_class)],
     }
     if node_selector:
         pod_spec["nodeSelector"] = dict(node_selector)
@@ -521,8 +514,6 @@ def _service_manifest(namespace, ingress_class=""):
     ``nginx`` is the tested path (rke2 ships ingress-nginx); ``gce`` is supported here
     but has not been exercised on a real GKE cluster.
     """
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
-
     annotations = {}
     if ingress_class == "gce":
         annotations["cloud.google.com/neg"] = '{"ingress": true}'
@@ -537,13 +528,12 @@ def _service_manifest(namespace, ingress_class=""):
         "spec": {
             "type": "ClusterIP",
             "selector": {"app": SERVICE_NAME},
-            # Two ports on one Service because the registry is a container in the same
-            # pod: the Ingress routes "/" to http and "/v2" to registry, so both halves
-            # answer on one hostname with one certificate.
+            # One port. The registry's `/v2` used to be the second one here; it now
+            # answers on the store pod's Service (:mod:`.store_pod`), which is what the
+            # Ingress rule points at. The published hostname and every image ref built
+            # from it are unchanged -- one Ingress may front two Services.
             "ports": [
                 {"port": SERVICE_PORT, "targetPort": SERVICE_PORT, "name": "http"},
-                {"port": registry_deploy.REGISTRY_PORT,
-                 "targetPort": registry_deploy.REGISTRY_PORT, "name": "registry"},
             ],
         },
     }
@@ -1412,6 +1402,11 @@ def existing_index_password(namespace, kube_context=None):
     Worse, it would look like a first-deploy success: a fresh volume initialises with
     whatever password it is handed, so the fault appears only on the *second* deploy, which
     is where nobody is looking for it.
+
+    Two pods read this one Secret now: the store pod's Postgres takes it as
+    ``POSTGRES_PASSWORD``, this service takes it inside its DSN. That makes never rotating
+    it load-bearing twice over -- the two are deployed by different commands at different
+    times, so a rotation would not even be simultaneous.
     """
     import base64  # pylint: disable=import-outside-toplevel
 
@@ -1430,6 +1425,42 @@ def existing_index_password(namespace, kube_context=None):
         raise
     encoded = (secret.data or {}).get(index_deploy.INDEX_PASSWORD_KEY, "")
     return base64.b64decode(encoded).decode() if encoded else ""
+
+
+def ensure_index_secret(namespace="default", kube_context=None):
+    """Create the index password Secret if it is not there yet; return the password.
+
+    Called by ``cluster setup`` **before** the store pod is applied, because that pod's
+    Postgres container references this Secret and a pod created without it sits in
+    CreateContainerConfigError. ``deploy_service`` then reads the very same value back
+    (:func:`existing_index_password`) instead of minting a second one.
+
+    Never overwrites an existing Secret, for the reason
+    :func:`existing_index_password` gives: ``initdb`` applied the first password to a data
+    directory that still exists, and a new one would leave the Secret and the database
+    disagreeing while every surface reported success.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel
+
+    from . import index_deploy  # pylint: disable=import-outside-toplevel
+
+    existing = existing_index_password(namespace, kube_context)
+    if existing:
+        return existing
+    password = generate_token()
+    core = client.CoreV1Api()
+    try:
+        core.create_namespaced_secret(
+            namespace, index_deploy.index_secret_manifest(namespace, password))
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        # Raced with another deploy; theirs is the one initdb will see.
+        return existing_index_password(namespace, kube_context)
+    return password
 
 
 def published_url(namespace="default", kube_context=None):
@@ -1478,16 +1509,26 @@ def registry_ingress_defects(ingress) -> list:
     Takes the Ingress object rather than a namespace: pure, so the reporting caller
     decides whether reading one is even possible.
     """
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import registry_deploy, store_pod  # pylint: disable=import-outside-toplevel
 
     rules = getattr(getattr(ingress, "spec", None), "rules", None) or []
     if not rules:
         return ["the Ingress has no rules at all"]
     paths = getattr(getattr(rules[0], "http", None), "paths", None) or []
     defects = []
-    if not any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH
-               for p in paths):
+    route = next((p for p in paths
+                  if getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH), None)
+    if route is None:
         defects.append(f"no {registry_deploy.REGISTRY_INGRESS_PATH} route to the registry")
+    elif getattr(getattr(getattr(route, "backend", None), "service", None),
+                 "name", "") != store_pod.STORE_SERVICE_NAME:
+        # A deployment published before the registry moved out of the service pod routes
+        # /v2 at the service's own Service, which now has no registry port at all. Every
+        # push and every pull of a newly built image 404s against the UI, and nothing about
+        # the pods looks wrong -- so this is a defect to repair, not a variant to tolerate.
+        defects.append(
+            f"{registry_deploy.REGISTRY_INGRESS_PATH} still routes to the service pod; "
+            f"the registry now runs in the {store_pod.STORE_POD_NAME} pod")
     have = getattr(getattr(ingress, "metadata", None), "annotations", None) or {}
     missing = sorted(k for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
                      if have.get(k) != v)
@@ -1537,25 +1578,66 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
         # Ingress that has the route but not the annotations is still a broken registry.
         networking.patch_namespaced_ingress(
             SERVICE_NAME, namespace, {"metadata": {"annotations": missing_annotations}})
-    if any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH for p in paths):
-        logger.info("Updated the %s Ingress annotations for registry uploads", SERVICE_NAME)
-        return True
-
     # Rebuild the path list as plain dicts and put /v2 first: "/" is a Prefix rule that
-    # matches everything, so the registry rule has to be the more specific one.
+    # matches everything, so the registry rule has to be the more specific one. Any
+    # existing /v2 rule is dropped rather than kept, because the only reason to be here
+    # with one present is that it names the backend the registry has moved away from.
     existing = [{"path": p.path, "pathType": p.path_type,
                  "backend": {"service": {
                      "name": p.backend.service.name,
                      "port": {"number": p.backend.service.port.number}}}}
-                for p in paths]
+                for p in paths
+                if getattr(p, "path", "") != registry_deploy.REGISTRY_INGRESS_PATH]
     patch = {"spec": {"rules": [{
         "host": rules[0].host,
         "http": {"paths": [registry_deploy.registry_ingress_path(), *existing]},
     }]}}
     networking.patch_namespaced_ingress(SERVICE_NAME, namespace, patch)
-    logger.info("Added %s to the %s Ingress", registry_deploy.REGISTRY_INGRESS_PATH,
-                SERVICE_NAME)
+    logger.info("Pointed %s of the %s Ingress at the registry",
+                registry_deploy.REGISTRY_INGRESS_PATH, SERVICE_NAME)
     return True
+
+
+def verify_store_pod_infrastructure(namespace="default", kube_context=None):
+    """Raise unless the live ``robovast`` pod runs the registry and the index.
+
+    Both moved out of this Deployment and into the pod ``vast cluster setup`` creates
+    (:mod:`.store_pod`). That pod is created once and **kept** on a re-run -- a 409 is
+    tolerated so a setup does not destroy the campaign store -- so a cluster set up before
+    the move does not gain the two containers by re-running setup or upgrading. It would
+    then run a service whose Ingress routes ``/v2`` at a container that does not exist and
+    whose DSN names a port nothing listens on: an ImagePullBackOff on the next campaign's
+    job pods, and an IndexUnreachableError on the next query, both far from here.
+
+    Checked before the service is deployed, because the honest remedy is destructive
+    (``vast cluster cleanup`` then ``vast cluster setup``) and an operator must choose it
+    knowingly rather than discover it from a failing pilot run.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    from . import store_pod  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    try:
+        pod = client.CoreV1Api().read_namespaced_pod(store_pod.STORE_POD_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            # No store pod at all is a different failure with a different message, and the
+            # providers that deploy one already report it (`verify_cluster_ready`).
+            return
+        raise
+    missing = store_pod.missing_infrastructure(pod)
+    if not missing:
+        return
+    raise RuntimeError(
+        f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
+        f"{', '.join(missing)}. This deployment predates their move out of the "
+        f"{SERVICE_NAME} pod, and an existing store pod is deliberately kept as it is by "
+        f"setup (recreating it would discard the campaign store), so re-running setup "
+        f"cannot add them. Run 'vast cluster cleanup' and then 'vast cluster setup': the "
+        f"object store is a transfer buffer, built images are rebuilt on demand, and the "
+        f"campaign index is re-ingested from the campaign data in the object store.")
 
 
 def published_host(namespace="default", kube_context=None):
@@ -1676,10 +1758,9 @@ def service_manifests(namespace="default", image=None, env=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
                       tls_secret="", issuer="", insecure_http=False,
-                      public_origin=None, registry_host="", registry_storage_path="",
+                      public_origin=None, registry_host="",
                       workspaces_storage_path="", workspaces_storage_class="",
-                      registry_storage_class="", node_selector=None,
-                      index_password=""):
+                      node_selector=None, index_password=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -1815,30 +1896,30 @@ def service_manifests(namespace="default", image=None, env=None,
     if registry_ca:
         extra.append(registry_ca)
 
-    from . import (index_deploy,  # pylint: disable=import-outside-toplevel
-                   registry_deploy)
-    registry_pvc = registry_deploy.registry_pvc_manifest(namespace, registry_storage_class)
-    if registry_pvc:
-        extra.append(registry_pvc)
+    from . import index_deploy  # pylint: disable=import-outside-toplevel
     # Both node-local stores claim through the same class. `workspaces_pvc_manifest` existed
     # but was never emitted, so passing --workspaces-storage-class produced a Deployment
     # referencing a PVC nothing created and a pod that stayed Pending with no explanation.
     # `results_volume` is backed by that same class, so it would have inherited the fault.
     for pvc in (workspaces_pvc_manifest(namespace, workspaces_storage_class),
-                results_pvc_manifest(namespace, workspaces_storage_class),
-                index_deploy.index_pvc_manifest(namespace, workspaces_storage_class)):
+                results_pvc_manifest(namespace, workspaces_storage_class)):
         if pvc:
             extra.append(pvc)
 
-    # The index credential, and the DSN that reaches it. Generated once and then read back
-    # by `deploy_service` -- see `existing_index_password` on why regenerating it would
-    # break only the second deploy.
+    # The index credential, and the DSN that reaches it. The Secret is emitted here AND at
+    # cluster setup, because both pods need it: the store pod's Postgres reads it as
+    # POSTGRES_PASSWORD, this Deployment carries it inside the DSN. `deploy_service` reads
+    # the deployed value back rather than minting one -- see `existing_index_password` on
+    # why regenerating it would break only the second deploy.
     if index_password:
         extra.append(index_deploy.index_secret_manifest(namespace, index_password))
     env = list(env or [])
     if not any(e.get("name") == INDEX_DSN_ENV for e in env):
+        # Built from the Service name and this namespace, never from a configured host:
+        # the index is in another pod now, so the DSN is a `<service>.<namespace>.svc`
+        # name that resolves in any cluster (see `store_pod.store_host`).
         env.append({"name": INDEX_DSN_ENV,
-                    "value": index_deploy.index_dsn(index_password)})
+                    "value": index_deploy.index_dsn(index_password, namespace)})
 
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
@@ -1849,10 +1930,10 @@ def service_manifests(namespace="default", image=None, env=None,
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret,
-                             registry_storage_path=registry_storage_path,
+
                              workspaces_storage_path=workspaces_storage_path,
                              workspaces_storage_class=workspaces_storage_class,
-                             registry_storage_class=registry_storage_class,
+
                              node_selector=node_selector),
         _service_manifest(namespace, ingress_class),
         *([ingress] if ingress else []),
@@ -1904,7 +1985,7 @@ def _delete_unconfigured_credentials(core, namespace, secrets, configmaps, *,
                 raise
 
 
-def _resolve_data_node(core, *, registry_storage_class="", workspaces_storage_class="",
+def _resolve_data_node(core, *, workspaces_storage_class="",
                        deployed_selector=None):
     """The data-node selector for the service pod, preserving whatever is already deployed.
 
@@ -1915,7 +1996,10 @@ def _resolve_data_node(core, *, registry_storage_class="", workspaces_storage_cl
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         DATA_NODE_LABEL, resolve_placement)
 
-    node_local = not (registry_storage_class and workspaces_storage_class)
+    # Only the workspaces class matters now: both volumes left in this pod (workspaces and
+    # results) are backed by it. The registry's class used to be ANDed in here and moved
+    # to the store pod with the registry itself.
+    node_local = not workspaces_storage_class
     if not node_local:
         return {}
     placement = resolve_placement(core, DATA_NODE_LABEL, node_local=True,
@@ -1954,12 +2038,12 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
         logger.debug("no %s Deployment in %s; nothing to recover", SERVICE_NAME, namespace)
         return {}
 
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
-
     pod_spec = dep.spec.template.spec
     settings = {}
-    for volume_name, prefix in ((registry_deploy.REGISTRY_VOLUME_NAME, "registry"),
-                                (WORKSPACES_VOLUME_NAME, "workspaces")):
+    # The registry volume was recovered here too until the registry moved to the store pod
+    # (:mod:`.store_pod`). It is created once by `vast cluster setup` now, so an upgrade
+    # neither re-renders nor needs to recover it.
+    for volume_name, prefix in ((WORKSPACES_VOLUME_NAME, "workspaces"),):
         volume = next((v for v in (pod_spec.volumes or []) if v.name == volume_name), None)
         if volume is None:
             continue
@@ -1970,7 +2054,7 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
                 volume.persistent_volume_claim.claim_name, namespace)
             storage_class = claim.spec.storage_class_name
             if not storage_class:
-                # `registry_volume`/`workspaces_volume` take the PVC branch only for a
+                # `workspaces_volume` takes the PVC branch only for a
                 # non-empty class, so re-rendering from an empty one silently becomes a
                 # hostPath -- the exact migration this reader exists to prevent.
                 raise RuntimeError(
@@ -1989,9 +2073,9 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
-                   public_origin=None, registry_host="", registry_storage_path="",
+                   public_origin=None, registry_host="",
                    workspaces_storage_path="", workspaces_storage_class="",
-                   registry_storage_class="", node_selector=None):
+                   node_selector=None):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
     ``dry_run=True`` performs a **server-side** dry run (validates against the
@@ -2019,8 +2103,6 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     # hostPath" lets one upgrade unpin the service pod and revert a PVC-backed registry --
     # silently, on the deployment whose data was the reason those flags were given.
     deployed = service_storage_from_cluster(namespace, kube_context)
-    registry_storage_path = registry_storage_path or deployed.get("registry_storage_path", "")
-    registry_storage_class = registry_storage_class or deployed.get("registry_storage_class", "")
     workspaces_storage_path = (workspaces_storage_path
                                or deployed.get("workspaces_storage_path", ""))
     workspaces_storage_class = (workspaces_storage_class
@@ -2030,8 +2112,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         # forgetting to pass it, which is the whole point of the constant label. Auto-picking
         # is refused here: only `setup` decides a placement, and it passes one in.
         node_selector = _resolve_data_node(
-            core, registry_storage_class=registry_storage_class,
-            workspaces_storage_class=workspaces_storage_class,
+            core, workspaces_storage_class=workspaces_storage_class,
             deployed_selector=deployed.get("node_selector"))
 
     # The service's own image may need registry auth. The Secret is usually NOT created
@@ -2067,10 +2148,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
         insecure_http=insecure_http, public_origin=public_origin,
         registry_host=registry_host,
-        registry_storage_path=registry_storage_path,
         workspaces_storage_path=workspaces_storage_path,
         workspaces_storage_class=workspaces_storage_class,
-        registry_storage_class=registry_storage_class,
         node_selector=node_selector)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
@@ -2144,6 +2223,20 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
             lambda: networking.create_namespaced_ingress(namespace, ingress, dry_run=dr),
             lambda: networking.replace_namespaced_ingress(
                 ingress["metadata"]["name"], namespace, ingress, dry_run=dr))
+    elif not dry_run:
+        # NO Ingress was rendered -- and this is the common case, because rendering one
+        # needs --ingress-host plus the TLS arguments, which a re-run of setup and every
+        # upgrade are not given. The live Ingress is then simply left alone, which is right
+        # for the host, class and certificate (the operator's configuration) and WRONG for
+        # the one field that is ours: the backend of the /v2 rule. When the registry moved
+        # to the store pod, an untouched Ingress went on routing pushes at a Service with
+        # no registry port, and nginx answered 503 in the middle of a campaign's build --
+        # after cleanup + setup had reported success minutes earlier.
+        #
+        # Reconciling the backend in place, rather than deleting the Ingress at cleanup:
+        # deleting it would unpublish the deployment and demand the original TLS arguments
+        # to get it back, for a field the operator never set.
+        reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context)
 
     logger.info("Deployed robovast-service in namespace %s (dry_run=%s)", namespace, dry_run)
     return manifests

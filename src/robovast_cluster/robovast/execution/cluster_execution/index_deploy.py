@@ -14,41 +14,43 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Postgres RoboVAST runs for itself, beside the service.
+"""The Postgres RoboVAST runs for itself, in the object-store pod.
 
 The central index holds every campaign's rows, which is what makes comparing the nine
 campaigns of a search arm one query instead of materialising ~10 GB of per-campaign
-databases. It runs as a **third container in the robovast-service pod**, exactly as the
-registry does (:mod:`.registry_deploy`) -- same pod, so the service reaches it on
-``localhost`` with no Service, no network policy and no credential in flight between nodes.
+databases. It runs as a container in the **``robovast`` pod** -- the one
+``vast cluster setup`` creates for the object store -- and is reached through that pod's
+existing ClusterIP Service.
 
-**It is a cache with a long memory, not a system of record.** Every row in it is derivable
-from the campaign directories in the object store: ``campaign.db`` for the dimensions, the
-artifacts for the metrics. Losing the volume costs a re-ingest, not data -- which is why
-this is one replica with no HA, no backup story, and no replication. What it must not do is
-lose the volume *casually*, because re-ingesting 153 campaigns is hours; hence a PVC or
-hostPath and never ``emptyDir``.
+**Why not the service pod.** ``robovast-service`` is a Deployment, and every
+``vast service upgrade`` rolls it; a Postgres living there is restarted by each upgrade,
+including the ones that only bump the controller image. The store pod is created once at
+cluster setup, is node-pinned, and already holds the campaign data these rows index -- so
+the index sits beside what it indexes and goes away only with
+``vast cluster cleanup``. Losing it there is an accepted, deliberate cost: every row is
+re-derivable from the campaign directories in the object store.
 
-**Why not a StatefulSet.** One replica, no ordinal identity, no peer discovery, and the
-volume is claimed by name -- a StatefulSet's guarantees are for a set. Running it in the
-service's own pod additionally means it starts and stops with the service, so there is no
-window where the service is up and its index is not yet reachable through a Service
-object's endpoints.
+**It is a cache with a long memory, not a system of record.** ``campaign.db`` holds the
+dimensions and the artifacts hold the metrics, so losing the index costs a re-ingest, not
+data -- which is why this is one replica with no HA, no backup, no replication and no PVC.
+What it must not do is lose the volume on a *routine* action, because re-ingesting the
+corpus is hours; ``vast cluster cleanup`` is not routine, an upgrade is.
 
-The trade that buys: the index restarts whenever the service does, because they share a
-pod and every upgrade rolls it (``service_deploy.RESTART_ANNOTATION``). That is acceptable
-because the service is the only client -- nothing else is mid-query when it goes -- and it
-is the same trade the registry already makes.
+The price of the move is that the service no longer reaches it on ``127.0.0.1``: it is a
+different pod, so the connection goes over the pod network to
+:func:`index_host`. Nothing else changes -- one namespace, one Secret, one client.
 """
 
-#: Postgres' own port, inside the pod only. Nothing publishes it: the service talks to
-#: ``localhost`` in the same pod, and no Ingress rule routes to it. An index reachable from
-#: outside the pod would be a database on the network with one shared password, which is a
-#: different security posture from the one this deployment has.
+#: Postgres' own port. Published on the store pod's ClusterIP Service and nowhere else:
+#: no Ingress rule routes to it, so it is reachable from inside the cluster network and not
+#: from outside it. Exposing it further would be a database on the internet with one shared
+#: password, which is a different security posture from the one this deployment has.
 INDEX_PORT = 5432
 
-#: Container name inside the robovast-service pod.
+#: Container name inside the store pod.
 INDEX_CONTAINER_NAME = "index"
+
+
 
 #: Upstream Postgres. Pinned to a major tag rather than a digest by the same rule as the
 #: registry: it is infrastructure a campaign never runs *in*, so no result depends on which
@@ -69,12 +71,40 @@ INDEX_DB_USER = "robovast"
 INDEX_MOUNT_DIR = "/var/lib/postgresql/data"
 INDEX_DATA_DIR = f"{INDEX_MOUNT_DIR}/pgdata"
 
-#: Name of the volume carrying :data:`INDEX_MOUNT_DIR`, and of its PVC.
+#: Name of the volume carrying :data:`INDEX_MOUNT_DIR`.
 INDEX_VOLUME_NAME = "index-data"
 
-#: Default host path backing the index when no StorageClass is available -- a stock RKE2
-#: ships none, so a PVC there stays Pending forever.
+#: Default host path backing the index. See :func:`index_volume` for why it is a hostPath
+#: and not a claim.
 DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
+
+#: What the scheduler reserves for Postgres, and what it may grow to.
+#:
+#: **The request is a floor, not an estimate.** It is subtracted from the capacity campaign
+#: jobs can be admitted against (this cluster admits by quota), so a comfortable number
+#: here costs parallel runs. An idle ``postgres:16-alpine`` sits at a few tens of MiB and
+#: near-zero CPU; 256Mi/50m is a chosen floor above that, not a measurement of the loaded
+#: server.
+#:
+#: **The memory limit is deliberately generous, and must not be "tidied" down.** Ingest is
+#: a bulk ``COPY`` of millions of rows per campaign (a 240-run campaign is ~7.6M rows), and
+#: an OOMKill in the middle of it fails postprocessing at the end of a campaign whose
+#: compute has already been spent -- the most expensive moment there is to lose. This
+#: container runs stock Postgres configuration: ``shared_buffers`` 128MB and
+#: ``maintenance_work_mem`` 64MB, plus ``work_mem`` per sort per connection, so a limit
+#: anywhere near a few hundred MiB is a configuration that looks fine idle and OOMs under
+#: exactly the load it exists for. 2Gi is ~16x ``shared_buffers`` with room for index
+#: builds; it is a starting point, and what would refine it is watching the container's RSS
+#: through a full-corpus ingest.
+#:
+#: **No CPU limit.** CPU is compressible: a low limit does not kill the ingest, it throttles
+#: it, turning a failure into a slow postprocessing nobody attributes to a cgroup. The
+#: request is what reserves; there is nothing to protect neighbours from that the request
+#: does not already handle.
+INDEX_RESOURCES = {
+    "requests": {"cpu": "50m", "memory": "256Mi"},
+    "limits": {"memory": "2Gi"},
+}
 
 #: The Secret holding the index password, and the key inside it. A Secret rather than a
 #: literal in the manifest because the manifest is printed by ``vast service manifests``
@@ -83,16 +113,27 @@ INDEX_SECRET_NAME = "robovast-index"
 INDEX_PASSWORD_KEY = "password"
 
 
-def index_dsn(password: str = "", host: str = "127.0.0.1") -> str:
+def index_host(namespace: str = "default") -> str:
+    """The in-cluster DNS name the index answers on: the store pod's Service.
+
+    One spelling, in :func:`store_pod.store_host` -- the registry's Ingress backend needs
+    the same name, and a second definition would drift from it.
+    """
+    from . import store_pod  # pylint: disable=import-outside-toplevel
+
+    return store_pod.store_host(namespace)
+
+
+def index_dsn(password: str = "", namespace: str = "default") -> str:
     """The DSN the service uses to reach the index.
 
-    ``127.0.0.1`` rather than ``localhost`` on purpose: ``localhost`` resolves to ``::1``
-    first in a dual-stack pod, and Postgres' default ``listen_addresses`` covers IPv4 only,
-    so the first connection attempt fails and the retry succeeds -- an intermittent
-    start-up error that looks like a race and is not.
+    A DNS name now, where this was ``127.0.0.1`` while the index shared the service's pod.
+    The IPv4-literal trick that avoided is gone with it: ``.svc`` resolves to the Service's
+    ClusterIP, and kube-proxy forwards that to the container's IPv4 port whatever Postgres'
+    ``listen_addresses`` covers.
     """
-    parts = [f"host={host}", f"port={INDEX_PORT}", f"dbname={INDEX_DB_NAME}",
-             f"user={INDEX_DB_USER}"]
+    parts = [f"host={index_host(namespace)}", f"port={INDEX_PORT}",
+             f"dbname={INDEX_DB_NAME}", f"user={INDEX_DB_USER}"]
     if password:
         parts.append(f"password={password}")
     return " ".join(parts)
@@ -111,7 +152,7 @@ def index_secret_manifest(namespace: str, password: str) -> dict:
 
 
 def index_container() -> dict:
-    """The Postgres container to run alongside the service in its pod."""
+    """The Postgres container to run in the object-store pod."""
     password_ref = {"secretKeyRef": {"name": INDEX_SECRET_NAME,
                                      "key": INDEX_PASSWORD_KEY}}
     return {
@@ -128,6 +169,7 @@ def index_container() -> dict:
         ],
         "volumeMounts": [{"name": INDEX_VOLUME_NAME,
                           "mountPath": INDEX_MOUNT_DIR}],
+        "resources": INDEX_RESOURCES,
         # pg_isready over the unix socket, not a TCP connect: a TCP port opens before
         # recovery finishes, so a port check would report ready while queries still fail.
         # -U/-d because the probe runs as root in the container and pg_isready otherwise
@@ -144,46 +186,35 @@ def index_container() -> dict:
     }
 
 
-def index_volume(storage_path: str = DEFAULT_INDEX_HOST_PATH,
-                 storage_class: str = "") -> dict:
-    """The volume backing the index: a PVC when one can be provisioned, else hostPath.
+def index_volume(storage_path: str = DEFAULT_INDEX_HOST_PATH) -> dict:
+    """The volume backing the index: a hostPath on the node the store pod is pinned to.
 
-    ``emptyDir`` is not offered, for a sharper reason than the registry's. Every upgrade
-    restarts this pod, and with an emptyDir that would drop the index on each version bump
-    -- so every campaign would need re-ingesting from the object store to be queryable
-    again, which for the existing corpus is hours of work triggered by a routine deploy.
-    The data is derivable; the cost of re-deriving it is not routine.
+    ``emptyDir`` is refused because it would drop the index whenever the pod restarts --
+    a crash, an eviction, a node reboot -- and re-ingesting the corpus from the object
+    store is hours. A hostPath survives all three.
 
-    hostPath is the default because a stock RKE2 cluster ships no StorageClass, so a PVC
-    stays Pending forever. It pins the index to one node, which is why the pod carries the
-    ``robovast.io/data-node`` selector (:mod:`.node_placement`) -- the same reason the
-    registry and the results volume do.
+    **No PVC, and no StorageClass switch.** The index is deliberately torn down with the
+    store pod by ``vast cluster cleanup``, so a claim would buy durability across exactly
+    the event we have decided not to survive, while adding an object that must be created
+    before the pod, deleted after it, and reconciled when neither happened. The rows are
+    derivable; the store pod they sit in is node-pinned by the same placement that pins the
+    campaign data, so the path stays under one node's control.
     """
-    if storage_class:
-        return {"name": INDEX_VOLUME_NAME,
-                "persistentVolumeClaim": {"claimName": INDEX_VOLUME_NAME}}
     return {"name": INDEX_VOLUME_NAME,
             "hostPath": {"path": storage_path or DEFAULT_INDEX_HOST_PATH,
                          "type": "DirectoryOrCreate"}}
 
 
-def index_pvc_manifest(namespace: str, storage_class: str, size: str = "100Gi") -> dict:
-    """The PVC for :func:`index_volume`, or ``None`` when backed by hostPath.
+def index_host_path(workspaces_storage_path: str = "") -> str:
+    """Where the index hostPath goes: beside the deployment's other node-local data.
 
-    100Gi by default. The rows are what a campaign's ``data.db`` files used to hold --
-    measured at ~4-6 MB per run, so the existing 153-campaign corpus is ~100-150 GB before
-    compression -- and Postgres stores them more compactly than SQLite did while adding
-    indexes. It is a starting size, not a computed one: the honest number comes from
-    ingesting the corpus and looking.
+    A deployer who moved the workspaces store to another disk moved this deployment's
+    node-local state, and the index is part of it. Pinning it to
+    :data:`DEFAULT_INDEX_HOST_PATH` regardless would quietly leave it on the node's root
+    filesystem -- the disk they were moving off.
     """
-    if not storage_class:
-        return None
-    return {
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {"name": INDEX_VOLUME_NAME, "namespace": namespace,
-                     "labels": {"app": "robovast-service"}},
-        "spec": {"accessModes": ["ReadWriteOnce"],
-                 "storageClassName": storage_class,
-                 "resources": {"requests": {"storage": size}}},
-    }
+    import pathlib  # pylint: disable=import-outside-toplevel
+
+    if not workspaces_storage_path:
+        return DEFAULT_INDEX_HOST_PATH
+    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-index")
