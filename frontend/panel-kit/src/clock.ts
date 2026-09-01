@@ -12,7 +12,7 @@ import { useSyncExternalStore } from 'react'
 export interface ClockSnapshot {
   t: number // current time (seconds)
   playing: boolean
-  speed: number // playback rate (1 = real time, 2 = fast-forward)
+  speed: number // playback rate (1 = real time; the transport bar steps 1/2/4/8)
   lo: number // range start
   hi: number // range end -- the *effective* one, see `hideShutdown`
   /** When the run's scenario reached a verdict, or null if it recorded none. */

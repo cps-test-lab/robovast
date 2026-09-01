@@ -1197,8 +1197,8 @@ nothing keeps re-checking it.
 
 Each campaign card in **Campaigns** also offers shortcuts — in its **actions menu** (the ☰
 button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
-offers what it can deliver: **Open in results Explorer** once the campaign is finished **and**
-postprocessed (the same gate the Results tab itself applies), and **Replay runs in the Run
+offers what it can deliver: **Open in Results Explorer** once the campaign is finished **and**
+postprocessed (the same gate the Results tab itself applies), and **Open in Run
 view** only if the campaign also recorded runs to replay. They are named lines in a menu rather
 than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
 same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
