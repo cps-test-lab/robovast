@@ -209,8 +209,10 @@ ended on a node it could not measure while naming a cause nobody had checked.
 * everything else takes the sustained figure as its request and keeps its declared ceiling,
   because a simulator's peak-to-mean ratio is ~18 and reserving its peak would cost more than
   no calibration at all;
-* memory is never re-sized — it does not vary with machine speed, and exceeding a memory limit
-  is an OOM kill rather than a slowdown;
+* memory is re-sized too, from the same probe, and for every role alike at the **maximum**
+  rather than at a percentile — exceeding a memory limit is an OOM kill rather than a
+  slowdown, so there is no tail to discard. Request and limit are set equal for the same
+  reason: a soft memory ceiling only means "allowed to die";
 * a calibrated figure is **clamped to the declared value**. Calibration sizes a node's jobs
   down to what they need; raising a ceiling the author set is not what it is for, and
   ``preflight`` ran once on the declared sizing and is never re-asked per node.
