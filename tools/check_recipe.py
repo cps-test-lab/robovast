@@ -52,8 +52,8 @@ _RECIPE = {
 #: Checked only when reading a built IMAGE. The Dockerfile cannot declare it -- CI passes the
 #: revision as a build arg -- but an image that does not carry it is missing a recipe input all
 #: the same: the Dockerfile is an input to a rebuild, and this is the only record of which one.
-#: The base image shipped with this empty for a long time, because that job passed neither the
-#: build arg nor metadata-action's labels.
+#: It is empty on any image whose build passed neither the build arg nor metadata-action's
+#: labels, which is exactly the case this catches.
 _IMAGE_ONLY = ("org.opencontainers.image.revision",)
 
 #: Ubuntu release the pinned ROS distro sits on. Named here because the Dockerfile reads it from
@@ -182,9 +182,20 @@ def main() -> int:
     distro = recipe.get("_ros_distro") or ""
     ubuntu, ros = (recipe.get("org.robovast.ubuntu-snapshot"),
                    recipe.get("org.robovast.ros-snapshot"))
+    # An unpinned build (UBUNTU_SNAPSHOT=none) records that it has no dated Ubuntu archive. It is
+    # an honest label rather than a forgotten build arg, and exactly for that reason it answers
+    # this script's question with "no": the recipe names nothing that could reinstall these
+    # versions. Reported as a problem so the difference between the two kinds of image is visible
+    # where it matters -- a campaign's provenance -- instead of only in a build log nobody kept.
+    if ubuntu == "none":
+        problems.append(
+            "built with UBUNTU_SNAPSHOT=none, from a rolling archive: there is no dated archive "
+            "to reinstall these package versions from, so every campaign recorded against this "
+            "image can be re-run only from the image itself, never rebuilt.")
+
     if not args.skip_network:
         checks = []
-        if ubuntu:
+        if ubuntu and ubuntu != "none":
             checks.append((
                 "ubuntu snapshot",
                 f"https://snapshot.ubuntu.com/ubuntu/{ubuntu}/dists/{_CODENAME}/Release"))

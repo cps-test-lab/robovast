@@ -332,9 +332,11 @@ def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
     what the campaign would actually produce — including which draws are
     infeasible, which is the whole point of checking before spending compute.
 
-    Returns ``{sampled, composed, infeasible, configs, runs_per_config}``, where
-    ``infeasible`` lists ``{name, params}`` per sampled param set that could not
-    be composed and ``configs`` are the composed config dicts.
+    Returns ``{sampled, distinct, composed, infeasible, configs, runs_per_config}``, where
+    ``sampled`` is how many parameter sets the strategy DREW and ``distinct`` how many
+    cells those were -- they differ whenever a draw repeats, which a discrete space does
+    routinely. ``infeasible`` lists ``{name, params}`` per distinct param set that could
+    not be composed, and ``configs`` are the composed config dicts.
     """
     from robovast.common.config import validate_config
     from robovast.search.strategy import build_strategy
@@ -349,15 +351,19 @@ def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
     # plugins for real and a preview should stay cheap.
     n = sample_size or min(search_cfg.per_batch, _PREVIEW_SAMPLE_CAP)
     # Collapsed exactly as a real batch is, so the preview reports what the campaign would
-    # compose rather than failing on a repeat the campaign itself would have absorbed.
-    param_sets = distinct_draws(
-        build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n), "This preview")
+    # compose rather than failing on a repeat the campaign itself would have absorbed. Both
+    # counts are reported: on a discrete space they differ by a lot, and a preview that
+    # showed only the survivors would look like a strategy proposing fewer sets than the
+    # campaign asked for.
+    drawn = build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n)
+    param_sets = distinct_draws(drawn, "This preview")
 
     with tempfile.TemporaryDirectory(prefix="robovast_preview_") as artifacts:
         campaign_data, name_by_id = Compose(vast_file).compose(param_sets, artifacts)
 
     return {
-        "sampled": len(param_sets),
+        "sampled": len(drawn),
+        "distinct": len(param_sets),
         "composed": len(name_by_id),
         "infeasible": [{"name": config_name_for(ps), "params": ps.values}
                        for ps in param_sets if ps.id not in name_by_id],

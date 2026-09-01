@@ -48,6 +48,17 @@ derives, aggregated over a config's runs:
 - **measures** `max_tilt`, `drift_dist`, `landing_speed`, `control_effort`
   (from `trajectory.csv`).
 
+Aggregated **worst-case** across a config's runs, not averaged (`extract.params`
+takes `aggregate: worst | quantile | mean`). Every measure is a cost, so the
+pessimistic end is the maximum — and averaging is what collapsed this campaign's
+512-cell archive onto 3 cells, by pulling every cell toward the middle of the
+behaviour space before the archive ever saw it.
+
+A cell that produced no result, or none this could read, raises `NoSampleError`
+rather than scoring: for a *maximized* failure rate a fabricated 0.0 is the least
+interesting score there is, and fabricated measures are archive coordinates, so
+they place an unmeasurable configuration in a real cell as an elite.
+
 The QD archive's `strategy_parameters.archive.measures` select/bound which
 measures form the behavior space. The same module is reused for analysis: the
 batch `.vast` lists `extract_to_csv` under `results_processing.postprocessing`,

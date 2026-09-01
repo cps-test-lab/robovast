@@ -514,6 +514,31 @@ def test_get_campaign_log_is_served_by_the_service(monkeypatch):
     assert out["total_lines"] == 3
 
 
+def test_get_campaign_log_tail_reports_what_matched_not_the_page_size(monkeypatch):
+    """`matched_lines` is what survived the filters, not how many this page holds.
+
+    Regression: it was the page size, so a `tail` of a long log reported that only the
+    tailed lines matched -- and the documented tie-out
+    (`total_lines == matched_lines + dropped + shutdown_dropped`) came apart on exactly
+    the reads a caller chasing a failure makes.
+    """
+
+    class _Chunk:
+        text = "===== RUN =====\n" + "".join(f"line {i}\n" for i in range(20))
+
+    class _Fake:
+        def get_campaign_logs(self, campaign_id, offset=0):
+            return _Chunk()
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
+    out = execution.get_campaign_log("camp-2026-01-01-000000", tail=3)
+    assert out["returned_lines"] == 3
+    assert out["matched_lines"] == 21
+    assert (out["total_lines"]
+            == out["matched_lines"] + out["dropped"] + out["shutdown_dropped"])
+    assert out["truncated"] is True
+
+
 def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_path):
     """With no service, an archived results tree is still readable offline."""
 

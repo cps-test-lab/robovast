@@ -93,10 +93,10 @@ ARG TARGETARCH
 # (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
 # removed archiver sidecar. tar ships in the base image.
 #
-# No X/GL shared objects here, deliberately. This image used to carry eight of
-# them (libglib2.0-0, libegl1, libfontconfig1, libx11-6, libxkbcommon0, libgl1,
-# libfreetype6, libdbus-1-3) for no display at all: they were the minimal set
-# PySide6's bundled Qt6 libs had to dynamically link against just to be
+# No X/GL shared objects here, deliberately. Eight of them (libglib2.0-0, libegl1,
+# libfontconfig1, libx11-6, libxkbcommon0, libgl1, libfreetype6, libdbus-1-3) would
+# be needed for no display at all: they are the minimal set
+# PySide6's bundled Qt6 libs must dynamically link against just to be
 # *imported*, because robovast-nav's variation plugins pulled a Qt map editor in
 # at module level. Without them `import PySide6.QtWidgets` failed with
 # "libGL.so.1: cannot open shared object file", which surfaced as nav variation

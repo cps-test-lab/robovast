@@ -12,14 +12,28 @@
 #
 # The names are the family members robovast.common.execution.FAMILY_MEMBERS resolves
 # ``family:<member>`` to, and the repositories .github/workflows/image.yml publishes. They
-# used to carry the ROS distro (``robovast_jazzy``), which meant a local build produced
-# repositories no default, doc or .vast ever named; the distro is a --tag now.
+# do not carry the ROS distro (``robovast_jazzy``): that produces repositories no default, doc
+# or .vast ever names. The distro is a --tag.
 #
 # Usage:
 #   ./container/robovast/build.sh [--image robovast|roqsim|all] [--project <prefix>] \
 #                                 [--tag <tag>] [--ros-distro <distro>] [--push] \
+#                                 [--ubuntu-mirror <url>] [--ubuntu-snapshot <stamp|none>] \
 #                                 [--roqsim-src <path>] [--scenario-execution-src <path>] \
 #                                 [-- <extra docker build args>]
+#
+# --ubuntu-mirror points the dated Ubuntu archive at a mirror of the snapshot service, for a
+# network with a slow or blocked path to it. It swaps the host and nothing else: the snapshot
+# stamp the Dockerfile pins is appended to it, so the same package versions are installed, and
+# the built image ships the canonical URI rather than the mirror. Defaults from the
+# UBUNTU_SNAPSHOT_MIRROR environment variable, so a site with a mirror sets it once in a shell
+# profile instead of putting its own hostname in this repository.
+#
+# --ubuntu-snapshot none is the escape for the mirror most sites actually have: a mirror of the
+# rolling archive, which has no dated paths for a stamp to be appended to. It installs whatever
+# that archive serves today and labels the image `none`, so a campaign's provenance says the
+# image cannot be rebuilt to the same software rather than naming a date it never used. Only
+# ever a deliberate trade -- a dated archive is what makes a year-old campaign rebuildable.
 #
 # The two --*-src flags are the development hatch: each repo is otherwise cloned BY THE
 # DOCKERFILE at a pinned ref, which cannot build a commit that is not pushed yet. A flag
@@ -47,6 +61,10 @@ TAG="latest"
 ROQSIM_SRC=""
 SCENARIO_EXECUTION_SRC=""
 ROQSIM_REPO="${ROQSIM_REPO:-https://github.com/cps-test-lab/roqsim.git}"
+UBUNTU_SNAPSHOT_MIRROR="${UBUNTU_SNAPSHOT_MIRROR:-}"
+# Empty means "whatever the Dockerfile pins", which is the answer for every build but an
+# unpinned one -- the stamp lives in one place and is refreshed by `make refresh-build-pins`.
+UBUNTU_SNAPSHOT="${UBUNTU_SNAPSHOT:-}"
 PLATFORM=""
 
 # shellcheck source=../platforms.env
@@ -89,6 +107,14 @@ while [[ $# -gt 0 ]]; do
       ROS_DISTRO="$2"
       shift 2
       ;;
+    --ubuntu-mirror)
+      UBUNTU_SNAPSHOT_MIRROR="$2"
+      shift 2
+      ;;
+    --ubuntu-snapshot)
+      UBUNTU_SNAPSHOT="$2"
+      shift 2
+      ;;
     --push|-n)
       PUSH=1
       shift
@@ -114,6 +140,81 @@ case "$IMAGE" in
   robovast|roqsim|all) ;;
   *) echo "unknown --image '$IMAGE' (expected robovast, roqsim or all)" >&2; exit 2 ;;
 esac
+
+# A mirror is only ever a fetch path, so it is passed to both Dockerfiles and to neither image's
+# labels. Rejected up front when it is not a URL, because the failure it otherwise produces is
+# apt reporting an unknown method a couple of minutes into the build.
+UBUNTU_MIRROR_ARGS=()
+# Base-image only: Dockerfile.roqsim reads the stamp back out of the sources the base
+# wrote, so the same arg there would be unconsumed and could disagree with it.
+UBUNTU_SNAPSHOT_ARGS=()
+if [[ -n "$UBUNTU_SNAPSHOT_MIRROR" ]]; then
+  case "$UBUNTU_SNAPSHOT_MIRROR" in
+    http://*|https://*) ;;
+    *) echo "error: --ubuntu-mirror must be an http(s) URL, got '$UBUNTU_SNAPSHOT_MIRROR'" >&2
+       exit 2 ;;
+  esac
+  # It replaces the snapshot service's own base URL, which the pinned stamp is appended to. A
+  # value ending in the stamp is the mistake worth catching by name: the build would then ask for
+  # <stamp>/<stamp> and every apt-get would 404, reading as a pruned snapshot.
+  if [[ "$UBUNTU_SNAPSHOT_MIRROR" =~ [0-9]{8}T[0-9]{6}Z/?$ ]]; then
+    echo "error: --ubuntu-mirror takes the archive's base URL, without a snapshot stamp." >&2
+    echo "       The stamp pinned in the Dockerfile is appended to it." >&2
+    exit 2
+  fi
+  UBUNTU_MIRROR_ARGS=(--build-arg "UBUNTU_SNAPSHOT_MIRROR=${UBUNTU_SNAPSHOT_MIRROR%/}")
+fi
+
+# The snapshot knob. Only two values mean anything -- a stamp, or `none` for an unpinned build --
+# and the empty default leaves the Dockerfile's own pin alone.
+if [[ -n "$UBUNTU_SNAPSHOT" ]]; then
+  if [[ "$UBUNTU_SNAPSHOT" == "none" ]]; then
+    if [[ -z "$UBUNTU_SNAPSHOT_MIRROR" ]]; then
+      echo "error: --ubuntu-snapshot none needs --ubuntu-mirror <rolling archive>." >&2
+      echo "       The snapshot service serves dated paths only, so there is nothing to" >&2
+      echo "       install from once the stamp is dropped." >&2
+      exit 2
+    fi
+    echo "ubuntu archive: UNPINNED -- this image installs whatever ${UBUNTU_SNAPSHOT_MIRROR%/}"
+    echo "                serves today and is labelled 'none', so it cannot be rebuilt to the"
+    echo "                same package versions later."
+  elif [[ ! "$UBUNTU_SNAPSHOT" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+    echo "error: --ubuntu-snapshot takes a snapshot stamp (YYYYMMDDTHHMMSSZ) or 'none'," >&2
+    echo "       got '$UBUNTU_SNAPSHOT'." >&2
+    exit 2
+  fi
+  UBUNTU_SNAPSHOT_ARGS=(--build-arg "UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}")
+fi
+
+# One request, before minutes of build: does this mirror actually serve the dated layout? Most
+# mirrors carry the rolling archive and nothing else, and against one of those the stamp is
+# appended to a path that does not exist -- which surfaces four layers in as apt reporting 404s
+# on every suite, a symptom that reads like a pruned snapshot rather than the wrong kind of host.
+# Only a definitive 404 is treated as an answer: an unreachable mirror is the build's problem to
+# report, and a probe with no network must not block a build that would have worked.
+if [[ -n "$UBUNTU_SNAPSHOT_MIRROR" && "$UBUNTU_SNAPSHOT" != "none" ]] \
+     && command -v curl >/dev/null 2>&1; then
+  probe_stamp="${UBUNTU_SNAPSHOT:-$(sed -n 's/^ARG UBUNTU_SNAPSHOT=\(.*\)$/\1/p' \
+                                     "$BASEDIR/Dockerfile" | head -1)}"
+  probe_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+                    "${UBUNTU_SNAPSHOT_MIRROR%/}/${probe_stamp}/dists/" || true)
+  if [[ "$probe_code" == "404" ]]; then
+    echo "error: ${UBUNTU_SNAPSHOT_MIRROR%/} does not serve the snapshot layout:" >&2
+    echo "       ${UBUNTU_SNAPSHOT_MIRROR%/}/${probe_stamp}/ is 404, so it mirrors the rolling" >&2
+    echo "       archive rather than snapshot.ubuntu.com." >&2
+    echo "       Either point --ubuntu-mirror at a mirror or cache of the snapshot service, or" >&2
+    echo "       add --ubuntu-snapshot none to build from that archive unpinned -- which gives" >&2
+    echo "       up rebuilding this image to the same package versions." >&2
+    exit 2
+  fi
+fi
+
+# Said once, after the checks: which archive this build installs from is the one thing about it
+# that a reader of the log cannot recover from the image afterwards -- a mirror leaves no trace
+# in it by design.
+if [[ -n "$UBUNTU_SNAPSHOT_MIRROR" && "$UBUNTU_SNAPSHOT" != "none" ]]; then
+  echo "ubuntu archive: mirrored (snapshot stamp unchanged)"
+fi
 
 # A push from here publishes an *interim* image for the cluster, so it targets
 # CLUSTER_PLATFORM -- not the host's architecture (an arm64 Mac would otherwise push
@@ -220,8 +321,8 @@ git_secret() {
 # ``--build-context <stage>=<dir>`` replaces that stage with a local tree, which is buildx's
 # own mechanism for exactly this and leaves the Dockerfile with ONE code path: the default
 # clone and a working checkout arrive at the same COPY. The alternative -- staging a directory
-# into a temp context and branching on whether it is empty -- is what used to be here, and it
-# made the Dockerfiles unbuildable by anything but this script, CI included.
+# into a temp context and branching on whether it is empty -- makes the Dockerfiles unbuildable
+# by anything but this script, CI included.
 #
 # rsync rather than passing the path straight through, because the excludes matter: a .git of
 # several hundred MB, a host venv whose binaries are wrong for the image, colcon build/ and
@@ -269,6 +370,8 @@ build_base() {
     "${GIT_REVISION_ARGS[@]}" \
     "${COMPAT_VERSION_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
+    "${UBUNTU_MIRROR_ARGS[@]}" \
+    "${UBUNTU_SNAPSHOT_ARGS[@]}" \
     $EXTRA_ARGS \
     -f $BASEDIR/Dockerfile \
     "$EMPTY_CTX"
@@ -326,6 +429,7 @@ build_roqsim() {
     --build-arg BASE_IMAGE="$base" \
     ${ROQSIM_REF:+--build-arg ROQSIM_REF="$ROQSIM_REF"} \
     ${ROQSIM_REPO:+--build-arg ROQSIM_REPO="$ROQSIM_REPO"} \
+    "${UBUNTU_MIRROR_ARGS[@]}" \
     $EXTRA_ARGS \
     -f $BASEDIR/Dockerfile.roqsim \
     "$EMPTY_CTX"

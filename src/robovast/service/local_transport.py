@@ -131,8 +131,8 @@ def _package_version() -> str:
 
     Deliberately *not* ``get_app_version``, which prefers a revision and so answers a
     different question. This is the release an operator can look up in a changelog, and
-    it was reported nowhere before this: a deployed image always has a baked revision, so
-    :func:`_robovast_version` always short-circuits to it and the semver never surfaced.
+    it needs a reader of its own: a deployed image always has a baked revision, so
+    :func:`_robovast_version` short-circuits to that and the semver never surfaces there.
 
     ``""`` is the honest answer for a source tree with no metadata, in the same way ``""``
     is for an undeterminable revision — never a substituted revision, which would look
@@ -928,10 +928,9 @@ class LocalTransport(RobovastInterface):
         """Attach the address to a store's file metadata.
 
         The **only** place a ``FileMeta`` is built, deliberately: the store below knows
-        paths and workspace ids, not addresses, so letting it construct one is how the
-        upload path came to return metadata with no address at all — a 400 on every
-        non-inline write over HTTP, invisible to the in-process transport that discards
-        the result.
+        paths and workspace ids, not addresses, so a ``FileMeta`` built there carries no
+        address — a 400 on every non-inline write over HTTP, and invisible to the
+        in-process transport, which discards the result.
         """
         return FileMeta(
             address=file_address.format_address(file_address.SOURCES, owner,
@@ -2227,10 +2226,9 @@ class LocalTransport(RobovastInterface):
         The one member a lane overrides about images, and it is a **factory, not
         behavior**: everything that consumes the store is written once, here, so a lane
         cannot answer an image question wrongly by forgetting to override the method that
-        asks it. That is exactly what happened before this seam existed —
-        :meth:`_exec_image` asked the local docker daemon on a lane whose images live in a
-        registry, inside a pod with no docker at all, and reported every built image as
-        unbuilt.
+        asks it. Without the seam, :meth:`_exec_image` asks the local docker daemon on a
+        lane whose images live in a registry, inside a pod with no docker at all, and
+        reports every built image as unbuilt.
         """
         store = getattr(self, "_image_store", None)
         if store is None:
@@ -2738,9 +2736,9 @@ class LocalTransport(RobovastInterface):
             state.update(postprocessing_error=failure_detail(e), postprocessed=False)
             state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {e}")
         finally:
-            # Re-write the durable outcome to reflect the final postprocessing state
-            # (_finish_campaign wrote one before this ran, when postprocessing was still
-            # pending). Success or failure, one record now carries the accurate
+            # Re-write the durable outcome to reflect the final postprocessing state: the
+            # record _finish_campaign writes is made while postprocessing is still pending.
+            # Success or failure, one record then carries the accurate
             # postprocessed / postprocessing_error / share_error snapshot.
             self._record_outcome(campaign_id, results_dir, state)
             remove_campaign_log_handler(handler)
@@ -4221,7 +4219,7 @@ class LocalTransport(RobovastInterface):
 
         The one check here that runs a container. It is worth it because the failure it
         catches is otherwise per-trial: a world that does not compile fails every run of
-        the sweep, after the image pull and the schedule, and nothing before this said so.
+        the sweep, after the image pull and the schedule, with nothing earlier to say so.
         The container is *held* (see ``ExecRequest.query``), so a second validation of the
         same project costs an exec rather than a container start.
 

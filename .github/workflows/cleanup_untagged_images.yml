@@ -93,8 +93,8 @@ jobs:
               # Untagged is not the same as unused. A campaign's results pin the image it ran
               # by DIGEST, so once that tag moves on the digest it recorded is untagged --
               # while still being the only thing a re-run of that campaign can start from.
-              # Deleting it immediately is what made "re-run last month's campaign"
-              # unanswerable, and nothing in the campaign said why.
+              # Deleting it immediately makes "re-run last month's campaign" unanswerable,
+              # with nothing in the campaign to say why.
               #
               # The grace window does not make images permanent -- that would not scale to
               # the number of images this produces. It buys the interval in which a recent

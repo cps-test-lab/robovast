@@ -13,6 +13,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
+import { ServiceEventsPanel } from './ServiceEventsPanel'
 import { useDialogs } from '@/components/DialogProvider'
 import { useToasts } from '@/components/ToastProvider'
 import * as browserNotify from '@/lib/browserNotify'
@@ -92,6 +93,10 @@ export function AdminPage() {
   // show, while the configuration is what you come looking for on a particular day. Its
   // query is gated on this flag, so an unopened panel costs nothing.
   const [configOpen, setConfigOpen] = useState(false)
+  // Collapsed too, and for the configuration's reason rather than the log's: this answers
+  // "why did that not work?", which is a question somebody arrives with. Its query is gated
+  // on the flag, so an unopened panel costs nothing.
+  const [eventsOpen, setEventsOpen] = useState(false)
 
   // This page is kept mounted once visited, so both readings are gated on it being the one on
   // screen: they then stop while it is not, and are re-read on the way back in — which is the
@@ -416,6 +421,27 @@ export function AdminPage() {
         {/* Mounted only while open, so the request is made the first time somebody asks
             for it rather than on every visit to this page. */}
         {configOpen ? <ServiceConfigPanel /> : null}
+      </CollapsibleBox>
+
+      <CollapsibleBox
+        open={eventsOpen}
+        onToggle={() => setEventsOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'What this service did, kept across restarts — unlike the log below it, which '
+              + 'is this process\u2019s recent output and dies with the pod. Refusals mostly: '
+              + 'a reason that would otherwise exist only in the reply that carried it.'
+            }
+          >
+            <span>Service events</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, like the panels around it: the request is made the first
+            time somebody asks rather than on every visit. */}
+        {eventsOpen ? <ServiceEventsPanel /> : null}
       </CollapsibleBox>
 
       <CollapsibleBox

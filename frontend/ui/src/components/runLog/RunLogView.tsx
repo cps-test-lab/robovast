@@ -310,8 +310,8 @@ export function RunLogView({
   const scrollToCursor = useCallback(() => {
     const el = scrollRef.current
     if (!el || cursorIndex < 0) return
-    // Never scroll out from under a selection. Auto-scrolling is what made text impossible to
-    // select while playing: every clock tick moved the container, and the drag lost its anchor.
+    // Never scroll out from under a selection. Auto-scrolling makes text impossible to select
+    // while playing: every clock tick moves the container, and the drag loses its anchor.
     // Following resumes by itself as soon as the selection is dropped.
     if (hasSelection()) return
     selfScroll.current = true
