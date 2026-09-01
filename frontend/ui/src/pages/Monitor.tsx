@@ -1008,7 +1008,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
           Nothing about an action lives on this card: an Alert here had nothing that cleared it,
           so it outlived what it was about by as long as the tab stayed open. */}
 
-      {!running && postprocError ? (
+      {/* Collapsed, the phase chip's issue marker already says postprocessing failed; a full
+          failure panel on a folded card defeats the fold. */}
+      {!collapsed && !running && postprocError ? (
         <StepFailure
           headline={
             'Postprocessing failed — the runs finished; retrigger postprocessing from the ' +
