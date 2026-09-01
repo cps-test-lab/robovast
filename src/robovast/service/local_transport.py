@@ -1373,15 +1373,22 @@ class LocalTransport(RobovastInterface):
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
         """Chain postprocessing when the imported campaign has none of its own.
 
-        ``_execution/data.db`` is postprocessing's output and nothing else writes it, so its
-        absence is the question already answered: this archive is a raw one -- what the
-        share holds -- and a campaign with no metric tables is not one anybody can ask
-        anything. A postprocessed archive is left exactly as it arrived.
+        Asked of postprocessing's provenance record, which is what says a campaign has
+        derived data now that the rows go to the central index.
+
+        It used to ask whether ``_execution/data.db`` existed. That file no longer exists
+        anywhere, so the test was permanently false and EVERY import re-postprocessed --
+        including archives that arrived complete, whose rows the import had just finished
+        ingesting. On a cluster that also dispatched the rosbag steps into the service pod,
+        where there is no Docker to run them.
         """
         from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
             record_step_outcome, reconstruct_status_from_disk)
 
-        if (target / "_execution" / "data.db").exists():
+        from robovast.common.campaign_data import \
+            campaign_has_derived_data  # pylint: disable=import-outside-toplevel
+
+        if campaign_has_derived_data(target):
             logger.info("%s arrived postprocessed; nothing to compute", campaign_id)
         else:
             logger.info("%s arrived raw; running postprocessing", campaign_id)

@@ -384,3 +384,71 @@ class _NullIndexConn:
 
     def __exit__(self, *_exc):
         return False
+
+
+def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monkeypatch):
+    """The predicate used to ask for a file that no longer exists anywhere.
+
+    It tested `_execution/data.db`, postprocessing's old output. Rows go to the central
+    index now, so that test was permanently false and EVERY import re-postprocessed --
+    including archives that arrived complete, whose rows the import had just ingested. On a
+    cluster it also dispatched the rosbag steps into the service pod, which has no Docker.
+    """
+    import yaml as _yaml
+
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    results = tmp_path / "results"
+    cid = "arrived-2026-09-01-101500"
+    target = results / cid
+    (target / "_execution").mkdir(parents=True)
+    record = target / "_transient" / "postprocessing.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_text(_yaml.safe_dump({"entries": [{"plugin": "p", "output": "poses.csv"}]}),
+                      encoding="utf-8")
+
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results             # noqa: SLF001
+    ran = []
+    monkeypatch.setattr(transport, "_postprocess_campaign",
+                        lambda *a, **k: ran.append(a) or (True, ""))
+    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
+
+    transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
+
+    assert not ran, "a campaign that arrived with derived data must not be recomputed"
+
+
+def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
+    """The other half: without the record there is nothing derived, so compute it."""
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    results = tmp_path / "results"
+    cid = "raw-2026-09-01-101501"
+    target = results / cid
+    (target / "_execution").mkdir(parents=True)
+
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results             # noqa: SLF001
+    ran = []
+    monkeypatch.setattr(transport, "_postprocess_campaign",
+                        lambda *a, **k: ran.append(a) or (True, ""))
+    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
+
+    transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
+
+    assert ran, "a raw archive carries no derived data and must be postprocessed"
+
+
+class _State:
+    """The minimum of the live-entry state the import chain writes through."""
+
+    def set_phase(self, *_a, **_k):
+        pass
+
+    def update(self, *_a, **_k):
+        pass

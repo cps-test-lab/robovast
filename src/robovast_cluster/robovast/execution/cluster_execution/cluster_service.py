@@ -3493,6 +3493,27 @@ class ClusterService(LocalTransport):
         storage.upload_dir(str(Path(campaign_root) / "_execution"),
                            bucket, f"{prefix}_execution")
 
+    def _postprocess_campaign(self, campaign_id: str, campaign_dir, *,
+                              force: bool = False, skip=(), state=None) -> tuple:
+        """Postprocess through the Job, as this lane does everywhere else.
+
+        The inherited version runs the whole pipeline in-process, which is right on a
+        machine with Docker and wrong in a pod: the rosbag steps shell out to
+        ``docker_exec.sh``, find no daemon, and fail against an image nobody chose.
+
+        Overriding the seam rather than its callers is what makes the base docstring's
+        promise true -- "one call for both callers, so a raw archive taken in is
+        postprocessed exactly the way asking for it later would be". It was not: the
+        retrigger went through ``postprocess_campaign`` and the import chain did not, so an
+        imported raw campaign was the one case that took the local path on a cluster.
+        """
+        from .postprocess_job import postprocess_campaign  # noqa: PLC0415
+
+        return postprocess_campaign(
+            self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
+            force=force, skip=list(skip or []), kube_context=self.kube_context,
+            state=state)
+
     def run_postprocessing(self, request) -> ActionResult:
         """(Re)run analysis postprocessing for a cluster campaign, as a monitored
         background operation (returns immediately; watch it in the campaign view).
