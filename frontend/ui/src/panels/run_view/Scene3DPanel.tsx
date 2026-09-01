@@ -142,7 +142,13 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   // the descriptor, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
   // but only one of them is worth retrying.
   const [loadError, setLoadError] = useState<string | null>(null)
-  const { status: scene, error: resolveError, url: sceneUrl, buildingText } = useSceneGeometry(
+  const {
+    status: scene,
+    error: resolveError,
+    url: sceneUrl,
+    buildingText,
+    buildingDetail,
+  } = useSceneGeometry(
     () => robovast.sceneStatus(data.campaignId, data.configName, data.runId),
     () => robovast.runScene(data.campaignId, data.configName, data.runId),
     `${data.campaignId}/${data.configName}/${data.runId}`,
@@ -253,6 +259,13 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
             </>
           ) : null}
           . Built once per world, then cached — every other run of this world is instant.
+          {/* The cluster's own words for the wait, when it has any. A pull that cannot succeed --
+              a campaign imported from elsewhere whose image this cluster cannot reach -- says so
+              here within seconds, where the stage alone would look like an ordinary cold start
+              until the build's deadline ran out minutes later. */}
+          {buildingDetail ? (
+            <Box sx={{ mt: 0.5, fontSize: '0.85em', opacity: 0.85 }}>{buildingDetail}</Box>
+          ) : null}
         </Alert>
       ) : null}
       {/* TOP CENTRE, unlike every other overlay here: top-left is where a run view's own panels

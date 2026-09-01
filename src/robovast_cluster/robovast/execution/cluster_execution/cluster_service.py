@@ -81,6 +81,43 @@ def _object_entry(name: str, size):
     return FileEntry(name=name.rstrip("/"), is_dir=name.endswith("/"), bytes=size)
 
 
+#: Container-state waiting reasons that mean the node is still *fetching the image*. Kubelet reports
+#: the pull itself as part of creating the container, and each way it can fail under its own name, so
+#: all of them describe one wait: the bytes are not on this node. Anything else a container waits for
+#: -- a pull secret that names no Secret, most of all -- is the image having arrived and the container
+#: still not coming up, which a reader has to fix somewhere else entirely.
+_IMAGE_WAIT_REASONS = ("ContainerCreating", "PodInitializing", "ErrImagePull", "ImagePullBackOff",
+                      "ImageInspectError", "ErrImageNeverPull", "RegistryUnavailable")
+
+
+def _pod_wait_reporter(on_wait):
+    """Turn a scene build's ``on_wait`` into an :class:`AuxPodSession` pending callback.
+
+    ``None`` when nobody is listening, which is what stops the session reading a reason no one
+    will be shown.
+
+    The pod's reason is passed on verbatim as the detail, and only *classified* here: whoever is
+    waiting needs to know that a two-minute pull is a pull (it will end) and that an unreachable
+    image is not (it will not), and the kubelet's own wording is the only thing that can say which.
+    """
+    if on_wait is None:
+        return None
+
+    from robovast.service import scene_cache  # pylint: disable=import-outside-toplevel
+
+    def report(reason: str) -> None:
+        if not reason:
+            # No container state at all: the pod has not been placed on a node yet, so what it
+            # waits for is capacity rather than bytes.
+            on_wait(scene_cache.STAGE_QUEUED, "")
+        elif reason.split(":", 1)[0].strip() in _IMAGE_WAIT_REASONS:
+            on_wait(scene_cache.STAGE_PULLING, reason)
+        else:
+            on_wait(scene_cache.STAGE_STARTING, reason)
+
+    return report
+
+
 class ClusterService(LocalTransport):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
@@ -3148,7 +3185,7 @@ class ClusterService(LocalTransport):
                 "configuration config", interactive=True)
         return super()._scene_identity(campaign_id, config_name, run_id)
 
-    def _scene_runner_context(self, campaign_id: str, identity: dict):
+    def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):
         """A context manager yielding an aux-pod runner factory on the campaign's own image.
 
         Deliberately not ``AuxPodSession``'s campaign-scoped use: this build is not part of a campaign's
@@ -3156,6 +3193,10 @@ class ClusterService(LocalTransport):
         serves *every* campaign that used that world -- so the pod's lifetime is the build's, and the
         context manager is what guarantees it is torn down rather than left to
         ``activeDeadlineSeconds``.
+
+        The pod is also the only thing that knows why a build has not started yet, so *on_wait*
+        is reported from it: on this lane the wait before the exporter runs is a scheduling
+        decision and an image pull, and an image this cluster cannot pull never gets past it.
         """
         import hashlib
 
@@ -3177,6 +3218,7 @@ class ClusterService(LocalTransport):
             with AuxPodSession(tag, [spec], self.namespace, core_v1=self._k8s(),
                                pull_secret=pull_secret,
                                kube_context=self.kube_context,
+                               on_pending=_pod_wait_reporter(on_wait),
                                **self._aux_store_kwargs()) as session:
                 yield session.runner_factory()
 
