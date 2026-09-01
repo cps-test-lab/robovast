@@ -7,11 +7,13 @@ that silently matches nothing all look identical in a diff and all return "no hi
 which reads as a healthy sweep.
 """
 
+import re
 import sqlite3
 
 import pytest
 
-from robovast.mcp_server.plugins.run_logs import _campaign_term, _shutdown_term
+from robovast.mcp_server.plugins.run_logs import (_campaign_term, _predicates,
+                                                  _shutdown_term)
 
 #: The campaign under test, and a second one sharing its configuration names -- the index
 #: holds every campaign in one table, so a term that forgets ``campaign_id`` reads both.
@@ -98,3 +100,41 @@ def test_the_verdict_lookup_is_correlated_on_the_campaign_too(db):
     """camp-b records a verdict at wall_ts 1.0 for cfg-b. Correlated only on
     (config_name, run_id), it would trim every one of camp-a's cfg-b lines."""
     assert "Unable to start transition" in _messages(db)
+
+
+def _config_term(config_filter: str) -> str:
+    """The one WHERE term `config_filter` contributes."""
+    terms = _predicates(grep="", min_severity="", config_filter=config_filter, run_id=None,
+                        container="", node="", source="", t0=None, t1=None, in_window=None)
+    assert len(terms) == 1
+    return terms[0]
+
+
+def test_the_config_filter_uses_no_sqlite_only_operator():
+    """The campaign index answers in Postgres, which has no ``GLOB``: a term carrying one
+    is not a wrong result but a syntax error, so every filtered search fails outright.
+    SQLite accepts ``GLOB`` happily, so executing the term is not on its own enough to
+    show it is portable -- this asserts the operator itself is gone."""
+    assert "GLOB" not in _config_term("cfg-*").upper()
+
+
+@pytest.mark.parametrize("config_filter, name, matches", [
+    ("probe-*", "probe-a", True),
+    ("probe-*", "other-probe-a", False),   # the pattern anchors at the start
+    ("*-1", "probe-1", True),
+    ("*-1", "probe-11", False),            # ... and at the end
+    ("probe-?", "probe-a", True),
+    ("probe-?", "probe-ab", False),
+])
+def test_the_config_filter_matches_the_campaign_glob_vocabulary(db, config_filter, name,
+                                                                matches):
+    """`config_filter` is documented as the glob the campaign tools take, so `*` and `?`
+    have to keep meaning what they do there -- and anchored at BOTH ends, since a filter
+    that also selects `config-11` reports another configuration's runs as this one's."""
+    db.create_function("REGEXP", 2,
+                       lambda pattern, value: re.search(pattern, str(value)) is not None)
+    db.execute("INSERT INTO run_log VALUES (?, ?, ?, ?, ?)",
+               (_CAMPAIGN, name, 0, 500.0, "filtered line"))
+    rows = db.execute(f"SELECT l.message FROM run_log l WHERE {_campaign_term(_CAMPAIGN)} "
+                      f"AND {_config_term(config_filter)}").fetchall()
+    assert (["filtered line"] == [r[0] for r in rows]) is matches
