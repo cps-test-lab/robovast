@@ -161,8 +161,14 @@ def search_campaign(index, tmp_path):  # pylint: disable=unused-argument
     return root
 
 
-def _rows(campaign_dir, sql):
-    return query_data_db(campaign_dir, sql)["rows"]
+def _rows(campaign_dir, sql, campaigns=None):
+    """Rows for *sql*, optionally spanning *campaigns*.
+
+    Spanning is explicit because the index scopes a session to one campaign: a query that
+    reaches another campaign now has to ask, which is what makes a cross-campaign read
+    distinguishable from a forgotten predicate.
+    """
+    return query_data_db(campaign_dir, sql, campaigns=campaigns)["rows"]
 
 
 def _mine(campaign_dir) -> str:
@@ -229,18 +235,26 @@ def test_run_view_does_not_bleed_across_configs(campaign):
 def test_run_view_does_not_bleed_across_campaigns(campaign):
     """The second bleed, which only the central index makes possible.
 
-    The other campaign has the same two configuration names and the same run ids, so an
-    unscoped ``WHERE config_name='cfg-a' AND run_id=0`` returns two rows that are
-    indistinguishable in shape from the one correct row -- and averaging over them
-    silently mixes two campaigns' results.
+    The other campaign has the same two configuration names and the same run ids, so
+    ``WHERE config_name='cfg-a' AND run_id=0`` selects a row in each -- rows
+    indistinguishable in shape from one another, so averaging over them silently mixes two
+    campaigns' results.
+
+    Leaving the predicate off no longer reaches them, and that is the point: the session is
+    scoped by the index, so a query cannot span campaigns by omission. Which means the
+    fixture's collision has to be demonstrated the only way it now can be -- by asking for
+    both campaigns deliberately. If that returned one row the collision would not exist and
+    this test would be pinning nothing.
     """
     scoped = _rows(campaign, "SELECT campaign_id FROM run_view "
-                             f"WHERE {_mine(campaign)} AND config_name='cfg-a' AND run_id=0")
-    assert [r["campaign_id"] for r in scoped] == [campaign.name]
+                             "WHERE config_name='cfg-a' AND run_id=0")
+    assert [r["campaign_id"] for r in scoped] == [campaign.name], (
+        "with no predicate at all, a scoped session still sees only its own campaign")
 
-    unscoped = _rows(campaign, "SELECT campaign_id FROM run_view "
-                               "WHERE config_name='cfg-a' AND run_id=0")
-    assert len(unscoped) == 2, \
+    both = _rows(campaign, "SELECT campaign_id FROM run_view "
+                           "WHERE config_name='cfg-a' AND run_id=0 ORDER BY campaign_id",
+                 campaigns=[campaign.name, "camp-other"])
+    assert len(both) == 2, \
         "the fixture must actually hold a colliding row, or this pins nothing"
 
 

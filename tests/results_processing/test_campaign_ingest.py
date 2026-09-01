@@ -294,3 +294,37 @@ def test_an_ordinary_metric_file_is_still_accepted(tmp_path):
     written = campaign_ingest.ingest_run(sink, run_dir, "nominal", 0)
 
     assert written == {"objectives": 1}
+
+
+# -- deletion has to reach the index ----------------------------------------
+
+@pytest.mark.skipif(not os.environ.get("ROBOVAST_TEST_PG_DSN"),
+                    reason="ROBOVAST_TEST_PG_DSN is not set")
+def test_forgetting_a_campaign_removes_its_rows_and_its_registry_entry(conn, tmp_path):
+    """Deleting a campaign must not leave the index describing it.
+
+    The rows are derived, and a derived copy that outlives its source is worse than none:
+    it answers questions about a campaign nobody can reach, with nothing left to check it
+    against. The registry entry goes too, so the campaign reads as NEVER INGESTED rather
+    than as ingested-and-empty -- different answers, and only one is true after a delete.
+    """
+    keep, drop = "camp-keep-2026-09-01-000001", "camp-drop-2026-09-01-000002"
+    for cid in (keep, drop):
+        run_dir = tmp_path / cid / "nominal" / "0"
+        run_dir.mkdir(parents=True)
+        (tmp_path / cid / "_execution").mkdir(exist_ok=True)
+        (run_dir / "metrics.csv").write_text("value\n1.5\n", encoding="utf-8")
+        campaign_ingest.ingest_campaign(conn, str(tmp_path / cid), cid)
+
+    deleted = index_schema.forget_campaign(conn, drop)
+
+    assert deleted, "it must report what it removed"
+    remaining = conn.execute(
+        "SELECT campaign_id, COUNT(*) FROM metrics GROUP BY campaign_id").fetchall()
+    assert [(r[0], r[1]) for r in remaining] == [(keep, 1)], (
+        "the other campaign's rows must survive; a delete is not a truncate")
+    registered = [r[0] for r in conn.execute(
+        f'SELECT campaign_id FROM "{index_schema.CAMPAIGNS_TABLE}" ORDER BY 1').fetchall()]
+    assert registered == [keep], (
+        "a deleted campaign must read as never ingested, not as ingested and empty -- "
+        "those are different answers and only one is true after a delete")

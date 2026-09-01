@@ -2827,14 +2827,19 @@ class ClusterService(LocalTransport):
                            exc_info=True)
         # 3. The index marker, or the campaign keeps being listed with no data behind it.
         self._unmark_campaign(campaign_id)
-        # 4. Service-local caches: the fetch scratch and any in-pod driver dir.
+        # 4. The central index. Inherited rather than repeated: this lane deletes more
+        # places than the local one, but the index is the same index, and a campaign whose
+        # object-store copy is gone must not keep answering queries from rows describing it.
+        self._forget_in_index(campaign_id)
+        # 5. Service-local caches: the fetch scratch and any in-pod driver dir.
         shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
         shutil.rmtree(self._campaign_dir(campaign_id), ignore_errors=True)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
         return ActionResult(
             ok=True,
-            message=f"Deleted campaign {campaign_id!r} (object store, jobs, cache).")
+            message=f"Deleted campaign {campaign_id!r} (object store, jobs, index, "
+                    f"cache).")
 
     # -- data / results -----------------------------------------------------
 

@@ -169,6 +169,53 @@ def campaign_is_ingested(campaign_id: str) -> bool:
         conn.close()  # pylint: disable=no-member
 
 
+def run_counts(campaign_id: str) -> "dict | None":
+    """Per-run pass/fail tallies for *campaign_id* from the index, or ``None``.
+
+    The same shape ``common.store.read_run_counts`` returns from a campaign's own
+    ``campaign.db``, and read for the same summary. It exists because that file is not
+    always on the machine doing the summarising: an imported campaign is extracted,
+    ingested, published to the object store and its local copy removed, after which the
+    only local answer is a directory walk over a directory that is not there -- which
+    reports zero runs for a campaign that has two.
+
+    ``None`` on any failure, including an unreachable index. This is the 1 Hz listing
+    path, and a campaign listing must not stop working because the index is down; the
+    caller keeps its existing fallbacks.
+    """
+    from robovast.common.errors import \
+        IndexUnreachableError  # pylint: disable=import-outside-toplevel
+
+    try:
+        conn = open_index(readonly=True)
+    except IndexUnreachableError:
+        return None
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("index run counts unavailable for %s", campaign_id, exc_info=True)
+        return None
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS num_runs, "
+            "COUNT(*) FILTER (WHERE passed = 1) AS num_passed, "
+            "COUNT(*) FILTER (WHERE status = 'failed') AS num_failed, "
+            "COUNT(*) FILTER (WHERE status = 'error') AS num_errors, "
+            "COUNT(*) FILTER (WHERE status = 'killed') AS num_killed, "
+            "COUNT(*) FILTER (WHERE status = 'composition_failed') "
+            "  AS num_composition_failed "
+            f'FROM {index_schema.qualified("run", index_schema.CAMPAIGN_SCHEMA)} '
+            "WHERE campaign_id = %s", (campaign_id,)).fetchone()
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("index run counts failed for %s", campaign_id, exc_info=True)
+        return None
+    finally:
+        conn.close()  # pylint: disable=no-member
+    if row is None or not row[0]:
+        return None
+    return {"num_runs": row[0], "num_passed": row[1], "num_failed": row[2],
+            "num_errors": row[3], "num_killed": row[4],
+            "num_composition_failed": row[5], "num_no_sample": 0}
+
+
 def missing_campaign_note(campaign_id: str) -> str:
     """What to say when a campaign has no rows at all.
 

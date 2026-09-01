@@ -319,3 +319,68 @@ def test_importing_a_campaign_loads_its_rows_without_running_postprocessing(
     with psycopg.connect(DSN, autocommit=True) as teardown:
         teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         teardown.execute(f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE")
+
+
+def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
+    """A delete that removed the files and left the rows is a half-delete.
+
+    The index would then answer questions about a campaign nobody can reach, re-import or
+    check -- confidently, and with nothing left to compare against. Both lanes go through
+    one helper for exactly this reason: the cluster deletes more places than the local
+    transport, but it is the same index.
+    """
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    forgotten = []
+    monkeypatch.setattr(
+        "robovast.results_processing.index_schema.forget_campaign",
+        lambda conn, cid: forgotten.append(cid) or {"poses": 3})
+    monkeypatch.setattr("robovast.common.index_db.connect",
+                        lambda *a, **k: _NullIndexConn())
+
+    results = tmp_path / "results"
+    cid = "gone-2026-09-01-101500"
+    (results / cid / "_execution").mkdir(parents=True)
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results        # noqa: SLF001
+
+    result = transport.delete_campaign(cid)
+
+    assert result.ok
+    assert forgotten == [cid], "deleting the files must also drop the rows"
+    assert not (results / cid).exists()
+
+
+def test_an_unreachable_index_does_not_fail_a_delete(tmp_path, monkeypatch):
+    """The files are already gone by then.
+
+    Reporting failure would invite a retry against a campaign that no longer exists, and
+    the orphaned rows are re-cleared by the next ingest of that id anyway.
+    """
+    from robovast.common.errors import IndexUnreachableError
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    def _down(*_a, **_k):
+        raise IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")
+
+    monkeypatch.setattr("robovast.common.index_db.connect", _down)
+    results = tmp_path / "results"
+    cid = "gone-2026-09-01-101501"
+    (results / cid / "_execution").mkdir(parents=True)
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results        # noqa: SLF001
+
+    assert transport.delete_campaign(cid).ok
+    assert not (results / cid).exists()
+
+
+class _NullIndexConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False

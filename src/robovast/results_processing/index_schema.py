@@ -196,6 +196,34 @@ def record_campaign(conn, campaign_id: str) -> None:
         "ON CONFLICT (campaign_id) DO UPDATE SET ingested_at = now()", (campaign_id,))
 
 
+def forget_campaign(conn, campaign_id: str) -> dict:
+    """Remove every trace of *campaign_id* from the index; return rows deleted per table.
+
+    :func:`clear_campaign`'s sibling, and the difference is the registry. Clearing empties
+    the campaign's rows so the ingest can write them again -- the campaign is still
+    *ingested*, it just has nothing in it for a moment. Forgetting says it was never here,
+    which is what deletion means.
+
+    That distinction is not academic: ``_campaigns`` is what separates "ingested and empty"
+    from "never ingested", and a query for a campaign in the registry with no rows answers
+    honestly that it measured nothing. Leaving a deleted campaign in the registry would make
+    the index assert that a campaign nobody can reach still exists and produced no data.
+
+    Deletion has to reach here at all because the index outlives what it describes
+    otherwise: the rows are derived, and a derived copy that survives its source is worse
+    than none, since it answers questions about something that cannot be checked.
+    """
+    deleted = clear_campaign(conn, campaign_id)
+    ensure_metadata_tables(conn)
+    conn.execute(f"DELETE FROM {_quote(CAMPAIGNS_TABLE)} WHERE campaign_id = %s",
+                 (campaign_id,))
+    # Column notes and type verdicts are deliberately left: they describe what a COLUMN
+    # means (`poses.timestamp` is arrival time, not measurement time), which is a fact about
+    # the pose contract rather than about any campaign. Deleting the last campaign that
+    # happened to have a table would otherwise take its documentation with it.
+    return deleted
+
+
 def known_tables(conn) -> list:
     """Every ``(schema, table)`` the index has ingested into, from the verdict registry."""
     ensure_metadata_tables(conn)

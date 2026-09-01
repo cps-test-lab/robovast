@@ -4004,12 +4004,47 @@ class LocalTransport(RobovastInterface):
             raise RuntimeError(
                 f"Campaign {campaign_id!r} is still running; stop it before deleting.")
 
+    def _forget_in_index(self, campaign_id: str) -> None:
+        """Drop the campaign's rows from the central index. Shared by every lane.
+
+        Deleting a campaign has to reach the index, or the index outlives what it
+        describes: rows are derived, and a derived copy that survives its source is worse
+        than none -- it answers questions about a campaign nobody can reach or check, with
+        nothing left to compare against.
+
+        It also removes the ingest registry entry, so the campaign reads as *never
+        ingested* rather than as ingested-and-empty. Those are different answers, and only
+        one of them is true after a delete.
+
+        Never raises. A delete that removed the campaign's data but reported failure
+        because the index was unreachable would invite a retry against a campaign that is
+        already gone; the orphaned rows are re-cleared by the next ingest of that id, and
+        by ``index_scope``'s repair sweep.
+        """
+        from robovast.common import index_db  # pylint: disable=import-outside-toplevel
+        from robovast.common.errors import \
+            IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing import \
+            index_schema  # pylint: disable=import-outside-toplevel
+        try:
+            with index_db.connect() as conn:
+                deleted = index_schema.forget_campaign(conn, campaign_id)
+        except IndexUnreachableError:
+            logger.warning("index unreachable; %s's rows remain indexed", campaign_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("could not remove %s from the index", campaign_id)
+        else:
+            if deleted:
+                logger.info("index: removed %d row(s) for deleted campaign %s",
+                            sum(deleted.values()), campaign_id)
+
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Delete the campaign's directory under the results root (see interface)."""
         self._ensure_deletable(campaign_id)
         campaign_dir = self._campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
         shutil.rmtree(campaign_dir, ignore_errors=True)
+        self._forget_in_index(campaign_id)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
         return ActionResult(
@@ -5186,6 +5221,20 @@ class LocalTransport(RobovastInterface):
                 logger.debug("run-row backfill failed for %s: %s", campaign_dir, e)
         if counts is not None and counts["num_runs"] > 0:
             return counts
+        # The index, before the disk walk. A campaign that was IMPORTED is extracted,
+        # ingested, published to the object store and its local copy removed -- so there is
+        # no campaign.db here to read and no directory to walk, and the walk reports zero
+        # runs for a campaign that has two. Its rows are in the index either way, because
+        # importing ingests.
+        #
+        # Below the store rather than above it: campaign.db is this campaign's own record
+        # and is authoritative for what it ran, while the index is a copy of it. They agree
+        # when both exist; when they disagree the file is the one to believe.
+        from robovast.results_processing import \
+            index_query  # pylint: disable=import-outside-toplevel
+        indexed = index_query.run_counts(Path(campaign_dir).name)
+        if indexed is not None:
+            return indexed
         return self._walk_counts(campaign_dir)
 
     @staticmethod
