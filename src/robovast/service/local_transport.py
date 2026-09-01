@@ -4415,12 +4415,22 @@ class LocalTransport(RobovastInterface):
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        max_bytes: int | None = None,
+        max_bytes: int | None = None, campaigns: list | None = None,
     ) -> "DataQueryResult":
+        """Run a read-only ``SELECT`` against *campaign_id*, and only against it.
+
+        The index confines the session to that campaign, so a query that forgets
+        ``WHERE campaign_id = ...`` -- which the web UI's results tree did, and served
+        another campaign's runs with it -- returns this campaign's rows rather than the
+        corpus.
+
+        *campaigns* is the deliberate way out, for the comparison this one index exists to
+        make cheap: name every campaign the query may see and it may see them.
+        """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
-                               max_bytes=max_bytes)
+                               max_bytes=max_bytes, campaigns=campaigns)
         return DataQueryResult(campaign_id=campaign_id, **result)
 
     def stream_campaign_query_csv(self, campaign_id: str, sql: str):

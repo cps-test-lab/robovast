@@ -104,14 +104,17 @@ class RunDataContext:
         REAL)`` is a *4-byte* float here, which silently mangles an epoch timestamp -- use
         ``double precision``. A shim pretending otherwise would only move the surprise.
 
-        **A handler must filter on ``campaign_id``.** One index now holds every campaign,
-        so a query scoped to ``config_name``/``run_id`` alone matches the same run in every
-        other campaign -- and returns one of them, plausibly. Raises
+        **The connection is confined to this handler's campaign**, so a query scoped to
+        ``config_name``/``run_id`` alone answers about *this* run rather than matching the
+        same run in every other campaign and returning one of them, plausibly. The
+        ``campaign_id`` predicate is no longer the handler's to remember -- it is enforced
+        by the index (:mod:`robovast.results_processing.index_scope`); a handler that
+        writes it anyway is simply redundant. Raises
         :class:`~robovast.results_processing.data_query.DataQueryError` (→ 400) when the
         campaign has no database yet (postprocessing hasn't run)."""
         from robovast.results_processing.data_query import \
             open_data_db  # pylint: disable=import-outside-toplevel
-        conn = open_data_db(self.data_dir)
+        conn = open_data_db(self.data_dir, campaign_id=self.campaign_id)
         try:
             yield conn
         finally:

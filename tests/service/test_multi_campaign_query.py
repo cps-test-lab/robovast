@@ -9,7 +9,7 @@ interface, not only through the direct MCP local path.
 **What changed is how.** Comparing campaigns used to mean attaching one ``data.db`` per
 campaign under the schema aliases ``c1``, ``c2``, ... which cost a fetch per campaign
 (~10 GB to answer one question about a nine-campaign arm). Every campaign's rows now live
-in one Postgres index, so spanning them is ``WHERE campaign_id IN (...)`` and the aliases
+in one Postgres index, so spanning them is a list of ids on the call and the aliases
 are gone.
 
 The property to protect is the same one the aliases existed to provide, and it has two
@@ -23,6 +23,11 @@ a missing file; with one shared table it means a frame of the right shape, the r
 columns and the wrong experiment -- nothing raised, nothing empty, and the only symptom a
 number. Both campaigns here therefore use the same configuration name and the same run
 ids, which are exactly the keys that collide once one table holds everything.
+
+Which is why spanning campaigns is now **asked for** rather than assumed: the session is
+confined to ``campaign_id`` by the index itself, and ``campaigns=[...]`` names the ids a
+query may see (see :mod:`robovast.results_processing.index_scope`). The capability is
+unchanged; what changed is that reaching it by forgetting a predicate no longer works.
 """
 
 import csv
@@ -107,8 +112,8 @@ def test_one_query_spans_several_campaigns(campaigns):
     res = campaigns.query_campaign_data_sql(
         CAMP_A,
         "SELECT campaign_id, COUNT(*) AS n FROM objectives "
-        f"WHERE campaign_id IN ('{CAMP_A}', '{CAMP_B}') "
-        "GROUP BY campaign_id ORDER BY campaign_id")
+        "GROUP BY campaign_id ORDER BY campaign_id",
+        campaigns=[CAMP_A, CAMP_B])
 
     assert [(r["campaign_id"], r["n"]) for r in res.rows] == [
         (CAMP_A, len(OBJECTIVES_A)), (CAMP_B, len(OBJECTIVES_B))]
@@ -119,12 +124,12 @@ def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
     """The other direction, and the one a shared table makes easy to get wrong.
 
     Asserted for both campaigns, so a scope pinned to the wrong constant would still fail
-    rather than pass on whichever campaign happened to be asked about first.
+    rather than pass on whichever campaign happened to be asked about first. The SQL
+    deliberately carries no predicate: that it holds anyway is the point.
     """
     for campaign, objectives in ((CAMP_A, OBJECTIVES_A), (CAMP_B, OBJECTIVES_B)):
         res = campaigns.query_campaign_data_sql(
-            campaign,
-            f"SELECT run_id, objective FROM objectives WHERE campaign_id = '{campaign}'")
+            campaign, "SELECT run_id, objective FROM objectives")
         assert len(res.rows) == len(objectives)
         assert sorted(r["objective"] for r in res.rows) == sorted(objectives)
 
@@ -133,6 +138,6 @@ def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
 def test_the_campaign_named_by_the_caller_is_reported_back(campaigns):
     """The result still says which campaign was asked about; only the scoping moved."""
     res = campaigns.query_campaign_data_sql(
-        CAMP_A, f"SELECT COUNT(*) AS n FROM objectives WHERE campaign_id = '{CAMP_A}'")
+        CAMP_A, "SELECT COUNT(*) AS n FROM objectives")
     assert res.campaign_id == CAMP_A
     assert res.rows[0]["n"] == len(OBJECTIVES_A)

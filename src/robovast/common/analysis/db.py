@@ -141,7 +141,12 @@ def open_campaign_db(data_dir: Union[str, Path]):
     # as its value in every cell -- a frame of the right shape and the right length, full of
     # header strings, with nothing raised. Tuple rows are what pandas expects, so that is
     # what the notebook path opens.
-    return index_query.open_index(readonly=True)
+    # Scoped to the campaign the notebook opened. Every table holds every campaign, so a
+    # notebook cell that forgets the predicate would otherwise plot the corpus under this
+    # campaign's title -- silently, and in the right shape. A cell that genuinely means to
+    # span campaigns opens the index itself with the ids it wants.
+    return index_query.open_index(readonly=True,
+                                  campaigns=[campaign_root(data_dir).name])
 
 
 def campaign_id(data_dir: Union[str, Path]) -> str:
@@ -442,18 +447,21 @@ def read_sql(data_dir: Union[str, Path], sql: str, params: Sequence = ()) -> pd.
     The escape hatch, for joins and for the ``run_view``/``config_view`` views. Use ``%s``
     placeholders, or ``%(name)s`` named ones -- this is Postgres, not sqlite.
 
-    **Not scoped, and that now means every campaign.** It always said so, but when each
-    campaign had its own file the widest a query could reach was the campaign it was written
-    for. One index holds all of them, so an unfiltered ``SELECT * FROM poses`` returns the
-    whole corpus -- as a perfectly ordinary frame, with no error and nothing empty to notice.
+    **Scoped to this notebook's campaign, by the index rather than by the query.** One
+    index holds every campaign, so an unfiltered ``SELECT * FROM poses`` used to return the
+    whole corpus -- a perfectly ordinary frame, with no error and nothing empty to notice.
+    The session is now confined to ``data_dir``'s campaign
+    (:mod:`robovast.results_processing.index_scope`), so the widest a cell can reach is the
+    campaign it was written for.
 
-    Which is also the feature: comparing the campaigns of a search arm is now a ``WHERE``
-    rather than nine databases fetched and attached. So the id is bound for you as
-    ``%(campaign_id)s``, always available whether *params* is a sequence or a mapping:
+    The id is still bound for you as ``%(campaign_id)s``, whether *params* is a sequence or
+    a mapping, for a query that wants it in a join or a label:
 
         read_sql(DATA_DIR, "SELECT * FROM poses WHERE campaign_id = %(campaign_id)s")
 
-    Say it when you mean this campaign; leave it out when you mean more than one.
+    Comparing the campaigns of a search arm is still one query rather than nine databases
+    fetched and attached -- but it is asked for: open the index with the ids it may see
+    (``index_query.open_index(campaigns=[...])``) and query that connection.
     """
     campaign = campaign_id(data_dir)
     if isinstance(params, dict):

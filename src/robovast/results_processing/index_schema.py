@@ -128,8 +128,19 @@ def qualified(table: str, schema: str = METRIC_SCHEMA) -> str:
     return f"{_quote(schema)}.{_quote(table)}" if schema else _quote(table)
 
 
+def _scope():
+    """:mod:`index_scope`, imported late because it imports this module for its names."""
+    from robovast.results_processing import \
+        index_scope  # pylint: disable=import-outside-toplevel
+    return index_scope
+
+
 def ensure_metadata_tables(conn) -> None:
     """Create the two bookkeeping tables if they are absent."""
+    # Whether they existed *before* these statements, so the scope is applied exactly once
+    # rather than on every call -- this runs per data file of per run of a campaign.
+    fresh = not conn.execute(
+        "SELECT to_regclass(%s)", (CAMPAIGNS_TABLE,)).fetchone()[0]
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_TYPES_TABLE)} ("
         "schema_name text NOT NULL DEFAULT '', table_name text NOT NULL, "
@@ -142,6 +153,13 @@ def ensure_metadata_tables(conn) -> None:
         f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_NOTES_TABLE)} ("
         "table_name text NOT NULL, column_name text NOT NULL, kind text NOT NULL, "
         "note text NOT NULL, PRIMARY KEY (table_name, column_name, kind))")
+    if fresh:
+        # ``_campaigns`` carries a campaign_id and is scoped like any other table -- a
+        # scoped session has no business enumerating the corpus. The other two describe
+        # the *index's* schema rather than any campaign's rows and have no key to scope
+        # by, so they only get the read grant; ``secure_table`` decides which is which.
+        for table in (COLUMN_TYPES_TABLE, CAMPAIGNS_TABLE, COLUMN_NOTES_TABLE):
+            _scope().secure_table(conn, table)
 
 
 def read_verdicts(conn, table: str, schema: str = METRIC_SCHEMA) -> dict:
@@ -242,6 +260,10 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
                      f"ON {name} ({index_cols})")
         for col, verdict in columns:
             _record_verdict(conn, table, col, verdict, schema)
+        # Here rather than once at setup: tables appear as data files appear, so a scope
+        # applied only to what existed at setup would leave every later table unscoped --
+        # and an unscoped table does not error, it answers with the whole corpus.
+        _scope().secure_table(conn, table, schema)
         return widened
 
     for column, verdict in types.items():

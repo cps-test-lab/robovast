@@ -404,16 +404,19 @@ def test_read_sql_binds_this_campaigns_id_for_the_caller(campaigns):
 
 
 @pg
-def test_read_sql_left_unfiltered_spans_every_campaign(campaigns):
-    """The documented hazard, asserted so it stays documented rather than surprising.
+def test_read_sql_left_unfiltered_still_reads_only_this_campaign(campaigns):
+    """The hazard this used to document, removed rather than described.
 
-    ``read_sql`` is the escape hatch and is deliberately not scoped -- comparing the
-    campaigns of a search arm is now a ``WHERE`` rather than nine databases. The cost is
-    that forgetting the clause reads the corpus, which is why the readers above bind it.
+    ``read_sql`` is the escape hatch, and a notebook cell that forgets the predicate used
+    to read the corpus -- as an ordinary frame, of the right shape, plotted under this
+    campaign's title. The session is confined to the campaign the notebook was opened on,
+    so the omission is no longer the difference between one experiment and all of them.
+    Spanning campaigns is still possible; it is asked for (see
+    ``index_query.open_index(campaigns=[...])``).
     """
     this, _ = campaigns
     frame = read_sql(this, "SELECT * FROM behaviors")
-    assert set(frame["campaign_id"]) == {THIS, OTHER}
+    assert set(frame["campaign_id"]) == {THIS}
 
 
 @pg

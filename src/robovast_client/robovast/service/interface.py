@@ -2981,13 +2981,18 @@ class RobovastInterface(ABC):
     @abstractmethod
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        max_bytes: Optional[int] = None,
+        max_bytes: Optional[int] = None, campaigns: Optional[list] = None,
     ) -> DataQueryResult:
         """Run a read-only ``SELECT`` over a campaign's data.
 
-        The campaign record is reachable in the same query as schema ``campaign``, and a
-        query may span campaigns with a ``campaign_id`` predicate: the rows of every
-        campaign live in one index.
+        The campaign record is reachable in the same query as schema ``campaign``. The
+        session is **confined to** *campaign_id*: the rows of every campaign live in one
+        index, so a query that omits ``WHERE campaign_id = ...`` would otherwise answer
+        with the corpus, in the same columns and with nothing to say it had.
+
+        A query may still span campaigns -- that is what one index is for -- by naming
+        them in *campaigns*. Deliberate rather than default, because spanning them by
+        accident and on purpose look identical in the reply.
 
         The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
         size. The size ceiling defaults to a *context* budget, because the caller that

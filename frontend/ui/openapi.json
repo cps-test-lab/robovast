@@ -204,6 +204,20 @@
       },
       "Body_query_campaign_data_sql_campaigns__campaign_id__query_post": {
         "properties": {
+          "campaigns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaigns"
+          },
           "max_bytes": {
             "anyOf": [
               {
@@ -226,6 +240,7 @@
           }
         },
         "required": [
+          "campaigns",
           "max_bytes",
           "max_rows",
           "sql"
@@ -5904,7 +5919,7 @@
     },
     "/campaigns/{campaign_id}/query": {
       "post": {
-        "description": "Run a read-only ``SELECT``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.",
+        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because the index\nholds every campaign: a query that spans them by *omission* returns rows of the\nright shape from the wrong experiment, and nothing about the reply says so.",
         "operationId": "query_campaign_data_sql_campaigns__campaign_id__query_post",
         "parameters": [
           {

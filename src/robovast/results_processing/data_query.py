@@ -548,7 +548,7 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     return conn
 
 
-def open_data_db(campaign_dir):
+def open_data_db(campaign_dir, campaign_id: str | None = None):
     """Open the index **read-only** — the public seam for package-provided endpoints.
 
     Returns a live connection, as before, so a plugin can read a table untruncated. The
@@ -573,10 +573,12 @@ One index holds every campaign, so spanning them is a ``WHERE`` clause rather th
         index_query  # pylint: disable=import-outside-toplevel
 
     # The scope the directory carried is real again, and enforced by the index rather
-    # than by the plugin remembering it: this connection sees only the campaign the
-    # directory names, whatever SQL the plugin writes.
+    # than by the plugin remembering it: this connection sees only one campaign's rows,
+    # whatever SQL the plugin writes. *campaign_id* is for the caller that already knows
+    # which campaign it serves and whose directory is not the campaign root -- the
+    # endpoint-plugin seam is handed both, and the id it was routed with is the truth.
     return index_query.open_index(readonly=True, row_factory=True,
-                                  campaigns=[campaign_id_of(campaign_dir)])
+                                  campaigns=[campaign_id or campaign_id_of(campaign_dir)])
 
 
 # What an LLM needs to write a correct query against a table it cannot see: what one row

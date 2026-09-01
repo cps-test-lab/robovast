@@ -568,9 +568,12 @@ class HTTPTransport(RobovastInterface):
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500, max_bytes=None,
+        campaigns=None,
     ) -> "DataQueryResult":
         from robovast.service.interface import DataQueryResult
         body = {"sql": sql, "max_rows": max_rows}
+        if campaigns:
+            body["campaigns"] = list(campaigns)
         # Only sent when asked for: an older service rejects an unknown body key, and the
         # default is the one this client's callers (MCP tools) want anyway.
         if max_bytes is not None:

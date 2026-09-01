@@ -43,7 +43,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from robovast.common import index_db
-from robovast.results_processing import index_dialect, index_functions, index_schema
+from robovast.results_processing import (index_dialect, index_functions, index_schema,
+                                         index_scope)
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and linters only
     import psycopg
@@ -79,7 +80,8 @@ class IndexQueryError(RuntimeError):
 
 
 def open_index(*, readonly: bool = True, timeout_ms: int = STATEMENT_TIMEOUT_MS,
-               row_factory: bool = False) -> "psycopg.Connection":
+               row_factory: bool = False,
+               campaigns=None) -> "psycopg.Connection":
     """A connection to the index, ready to be queried.
 
     Ensures the query functions exist before handing the connection back, so a caller
@@ -88,6 +90,12 @@ def open_index(*, readonly: bool = True, timeout_ms: int = STATEMENT_TIMEOUT_MS,
 
     *row_factory* returns rows as dicts, for the plugin seam (:func:`open_data_db`) whose
     consumers already index rows by column name.
+
+    *campaigns* confines the session to those campaign ids: a query that names no campaign
+    then sees only their rows, through row-level security rather than through anything the
+    caller has to write (see :mod:`~robovast.results_processing.index_scope`). Omitting it
+    opens the session over the whole corpus, which is what the ingest and a deliberate
+    maintenance query need -- every caller that reads *on behalf of a campaign* passes it.
     """
     # The no-member disables below are pylint failing to infer psycopg's Connection through
     # index_db.connect's deliberately local driver import -- not a missing method.
@@ -98,6 +106,12 @@ def open_index(*, readonly: bool = True, timeout_ms: int = STATEMENT_TIMEOUT_MS,
         # takes down every caller of `open_data_db` -- which is to say every notebook read
         # and every service-endpoint plugin.
         index_functions.install(conn)
+        if campaigns:
+            # After the function install and before anything is read: SET ROLE drops the
+            # rights that install needs, and a statement issued before the scope is in
+            # place is a statement over the corpus. Also before the row factory, for the
+            # same reason install is: the scope reads its own catalog rows positionally.
+            index_scope.enter_scope(conn, campaigns)
         if row_factory:
             from psycopg.rows import dict_row  # pylint: disable=import-outside-toplevel
             conn.row_factory = dict_row
@@ -148,7 +162,7 @@ def campaign_is_ingested(campaign_id: str) -> bool:
     notebook readers, which need the question answered before deciding whether an empty
     frame means "measured nothing" or "never postprocessed".
     """
-    conn = open_index(readonly=True)
+    conn = open_index(readonly=True, campaigns=[campaign_id] if campaign_id else None)
     try:
         return _campaign_exists(conn, campaign_id)
     finally:
@@ -169,11 +183,22 @@ def missing_campaign_note(campaign_id: str) -> str:
 
 
 def query_index(sql: str, *, max_rows: int = 500, max_bytes: int | None = None,
-                campaign_id: str | None = None) -> dict:
+                campaign_id: str | None = None, campaigns=None) -> dict:
     """Run one read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
-    *campaign_id*, when given, is used only to explain an empty result -- the scoping
-    itself belongs in the caller's ``WHERE``, which is what lets one query span campaigns.
+    *campaign_id* **scopes the session**: the query sees that campaign's rows and no
+    others, whether or not it says so in its own ``WHERE``. It used to be advisory -- a
+    label for the empty-result note, with the scoping left to every caller's SQL -- and
+    that expectation had already failed in the product: an unscoped ``FROM run_view`` in
+    the web UI rendered another campaign's runs inside the campaign the user had opened.
+    A forgotten predicate returns more rows that look entirely ordinary, so it is enforced
+    by the index instead (see :mod:`~robovast.results_processing.index_scope`).
+
+    *campaigns* is how a caller asks for **more than one** campaign: the A/B comparison
+    and the nine-campaign search arm this index exists to make cheap. Spanning campaigns
+    stays possible and becomes deliberate -- it is a named argument rather than the
+    consequence of forgetting a predicate. *campaign_id* is still reported back and still
+    explains an empty result, so it is included in the scope when both are given.
     """
     # Imported lazily for the reason in common.index_db: `results_processing` is reachable
     # from the container-side scripts, which have no driver and never talk to an index.
@@ -188,7 +213,10 @@ def query_index(sql: str, *, max_rows: int = 500, max_bytes: int | None = None,
     # Two SQLite spellings Postgres reads differently and silently -- see index_dialect.
     sql = index_dialect.translate(sql)
 
-    conn = open_index(readonly=True)
+    scope = list(campaigns) if campaigns else []
+    if campaign_id and campaign_id not in scope:
+        scope.append(campaign_id)
+    conn = open_index(readonly=True, campaigns=scope)
     try:
         try:
             cursor = conn.execute(sql)  # pylint: disable=no-member
@@ -332,7 +360,9 @@ def describe_index(campaign_id: str | None = None) -> dict:
         _DESCRIBE_NOTE)
     from robovast.results_processing import index_views  # pylint: disable=import-outside-toplevel
 
-    conn = open_index(readonly=True)
+    # Scoped like a query: describe reports each table's row count, and an unscoped count
+    # would report the index's size while reading as this campaign's.
+    conn = open_index(readonly=True, campaigns=[campaign_id] if campaign_id else None)
     try:
         notes = column_notes(conn)
         current = index_schemas(conn)[0]

@@ -299,8 +299,12 @@ metric tables already used:
 
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
   question is written down**. Read its ``note`` first.
-* ``query_campaign_data_sql`` — one ``SELECT``. Every campaign's rows live in one index,
-  so a query spans campaigns with a ``WHERE campaign_id IN (...)`` predicate.
+* ``query_campaign_data_sql`` — one ``SELECT``, **confined to the campaign it names**.
+  Every campaign's rows live in one index, so a query that omits ``WHERE campaign_id =
+  ...`` would otherwise answer with the corpus, in the same columns and with nothing in
+  the reply to say it had; the index enforces the scope instead of the caller remembering
+  it. Spanning campaigns is still one query and is now asked for: name the ids in the
+  call's ``campaigns`` argument.
 
 The entry points are two flat views, queried unqualified:
 

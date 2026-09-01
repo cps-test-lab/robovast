@@ -53,7 +53,7 @@ import logging
 
 from psycopg import errors
 
-from robovast.results_processing import index_schema
+from robovast.results_processing import index_schema, index_scope
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +340,16 @@ def create_views(conn) -> list:
         # or a view could quietly stop existing everywhere and read as "no data".
         try:
             with conn.transaction():
-                conn.execute(f'CREATE VIEW "{name}" AS {body}')
+                # security_invoker is not decoration. A view runs with its OWNER's rights
+                # by default, so the row-level security on the tables underneath does not
+                # apply to it -- which is how an unscoped `FROM run_view` served another
+                # campaign's runs to the browser. Postgres 15+ makes the view read as the
+                # caller, so the caller's campaign scope applies. Created WITH it rather
+                # than altered afterwards: between the two statements the view is live and
+                # unscoped.
+                conn.execute(f'CREATE VIEW "{name}" WITH (security_invoker = true) '
+                             f"AS {body}")
+                index_scope.secure_view(conn, name)
         except (errors.UndefinedColumn, errors.UndefinedTable, errors.UndefinedObject) as exc:
             logger.info("index: view %s not created -- %s", name,
                         str(exc).splitlines()[0])

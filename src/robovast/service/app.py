@@ -1368,15 +1368,21 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
         max_bytes: int | None = Body(None, embed=True),
+        campaigns: list[str] | None = Body(None, embed=True),
     ) -> DataQueryResult:
-        """Run a read-only ``SELECT``.
+        """Run a read-only ``SELECT``, scoped to ``campaign_id``.
 
         ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
         rather than reading them; omitted, it stays at the context-sized default, so an
         agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+
+        ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
+        whole search arm. It is a parameter rather than the default because the index
+        holds every campaign: a query that spans them by *omission* returns rows of the
+        right shape from the wrong experiment, and nothing about the reply says so.
         """
         return _guard(lambda: impl.query_campaign_data_sql(
-            campaign_id, sql, max_rows, max_bytes))
+            campaign_id, sql, max_rows, max_bytes, campaigns))
 
     @app.get(Routes.campaign_query_csv("{campaign_id}"), tags=["results"])
     def query_campaign_data_csv(campaign_id: str, sql: str):

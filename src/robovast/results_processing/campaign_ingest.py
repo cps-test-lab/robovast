@@ -61,7 +61,8 @@ from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
 from robovast.common.quantity import to_bytes
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
-                                         index_views, resource_usage, run_health)
+                                         index_scope, index_views, resource_usage,
+                                         run_health)
 from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, widen
 # Reused rather than reimplemented: these decide what a data file *is* -- the JSONL format
 # registry, the yaw derivation, the table-name rule -- and a second copy of any of them
@@ -712,6 +713,13 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     root = Path(campaign_dir)
     totals = {}
     name_map: dict = {}
+
+    # Before the write, and on every ingest: this repairs anything the per-table path
+    # could not have covered -- relations created before the campaign scope existed, or
+    # by hand. An unscoped relation is not an error at query time, it is a query that
+    # answers with the whole corpus, so the repair belongs where a writable connection
+    # is already in hand.
+    index_scope.apply_to_index(conn)
 
     # Before anything is written, so a re-ingest replaces rather than doubles. Scoped to
     # this campaign: the others in the index are not this operation's business.

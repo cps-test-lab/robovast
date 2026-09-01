@@ -1414,8 +1414,9 @@ directly, and ``run_health`` says whether the tighter ceilings cost the stack an
 provided the campaigns declared a check under ``results_processing.health_checks``. Nothing
 runs undeclared, so an empty ``run_health`` for the pair means *not graded*, never *not
 degraded*; that is the same rule as everywhere else in the table. Both campaigns' grades sit
-in the one index, so compare them with ``WHERE campaign_id IN (...)`` rather than expecting a
-per-campaign database.
+in the one index, so compare them in one query -- naming both ids in the query call's
+``campaigns`` argument -- rather than expecting a per-campaign database. A query that names
+only one campaign sees only that one, whatever its ``WHERE`` clause says.
 
 **Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
 is what says whether a tighter allocation cost the simulator its pacing, and a campaign whose
