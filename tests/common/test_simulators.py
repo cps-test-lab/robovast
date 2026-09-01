@@ -176,6 +176,31 @@ def test_robovast_keys_are_not_offered_to_the_backend():
     assert plan_containers(ex).main.image == "mine:1"
 
 
+def test_calibration_is_a_container_key_not_a_backend_one():
+    """``calibration`` sizes the container, so a simulator never sees it.
+
+    It is the ``resources`` case one level up: a campaign sizing its simulator under
+    ``execution.sizing: calibrated`` writes the block on the ``simulation`` container,
+    which is also where the backend is named.
+    """
+    ex = apply_backend(_execution("ros2", stage="s",
+                                  calibration={"size_on": 95, "limit": "declared"}))
+    assert ex["containers"]["simulation"]["calibration"] == {"size_on": 95,
+                                                             "limit": "declared"}
+
+
+def test_a_folded_simulator_takes_its_calibration_with_it():
+    """The allocation and the rule producing it must land on the same container.
+
+    Stepped, the simulator IS the scenario container: a ``calibration`` left on the
+    folded block would size nothing while ``resources`` moved.
+    """
+    ex = apply_backend(_execution("base", stage="s", resources={"cpu": 2},
+                                  calibration={"size_on": 95}))
+    assert ex["containers"]["scenario"]["calibration"] == {"size_on": 95}
+    assert "calibration" not in ex["containers"]["simulation"]
+
+
 def test_no_backend_is_a_no_op():
     ex = {"mode": "base", "containers": {"scenario": {"image": "a"}}}
     assert apply_backend(ex) is ex
