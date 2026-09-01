@@ -18,7 +18,7 @@
 """Derivations over a run-data frame — pure, no I/O.
 
 Everything here takes a DataFrame and returns a DataFrame, so it works the same on a frame
-from :mod:`~robovast.common.analysis.db` (a ``data.db`` table) and on one from
+from :mod:`~robovast.common.analysis.db` (a results-index table) and on one from
 :mod:`~robovast.common.analysis.files` (per-run files).
 
 That is why these are not in ``ros2``. ``scenario_execution`` writes ``behaviors.jsonl``
@@ -33,7 +33,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
-#: The two ways a frame identifies which run a row came from. ``data.db`` uses
+#: The two ways a frame identifies which run a row came from. The index uses
 #: ``(config_name, run_id)`` — the column pair every metric table is keyed by, and the one
 #: ``runs`` joins on. ``read_output_files`` attaches ``(config, run)`` instead. Both are
 #: current, so these functions accept either rather than forcing a rename on the caller.

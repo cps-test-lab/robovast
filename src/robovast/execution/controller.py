@@ -1352,7 +1352,7 @@ def outcome_summary(snap) -> tuple[str, bool]:
 
     Built here rather than at each reader because "did this campaign succeed?" cannot
     be answered from ``phase`` alone — a campaign whose trials all passed but whose
-    postprocessing failed stays ``finished`` with no CSVs and no ``data.db``. A channel
+    postprocessing failed stays ``finished`` with no CSVs and nothing queryable. A channel
     answering from ``phase`` alone reports that as a clean success.
     """
     runs = snap.runs
@@ -1372,7 +1372,7 @@ def outcome_summary(snap) -> tuple[str, bool]:
     degraded = bool(runs.failed or runs.no_result)
     if snap.postprocessing_error:
         parts.append(f"POSTPROCESSING FAILED ({snap.postprocessing_error}) — "
-                     "no CSVs or data.db")
+                     "no CSVs, nothing queryable")
         degraded = True
     elif snap.postprocessed:
         parts.append("postprocessed")

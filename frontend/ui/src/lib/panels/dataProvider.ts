@@ -1,9 +1,9 @@
 // dbDataProvider: the host's implementation of the DataProvider seam (declared in
 // @robovast/panel-kit, shared with panel remotes). It reads a single run's rows out of the campaign's
-// postprocessed `data.db` through the read-only query/describe endpoints.
+// postprocessed results tables through the read-only query/describe endpoints.
 //
-// A run in data.db is keyed by (config_name, run_id); a provider is bound to one such run, so every
-// query is scoped to it. All data.db columns are TEXT, so callers coerce numerics themselves.
+// A run's rows are keyed by (config_name, run_id); a provider is bound to one such run, so every
+// query is scoped to it. A TEXT column stays TEXT, so callers coerce numerics themselves.
 
 import type { DataProvider, SeriesOptions } from '@robovast/panel-kit'
 import { robovast, type DataDescribe } from '@/lib/robovastClient'

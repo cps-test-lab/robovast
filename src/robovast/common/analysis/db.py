@@ -25,14 +25,14 @@ So the same cell reads one run or the whole campaign, and a notebook never names
 Reading tables instead of files is what makes an analysis portable across the substrate. The
 per-run files differ by simulator and by whether the run had ROS at all — ``poses.csv`` exists
 only when a rosbag was recorded, ``behaviors.csv`` was replaced by ``behaviors.jsonl`` in
-2026-08 — while ``data.db`` normalizes all of it into tables keyed the same way. The
+2026-08 — while the index normalizes all of it into tables keyed the same way. The
 behaviour-tree ingest is the clearest case: it drops the JSONL header record and splits the
 status into the numeric ``status`` and the ``status_name`` that analysis actually filters on, so
 ``read_table(DATA_DIR, "behaviors")`` is the behaviour-tree reader and there is no format left
 for a notebook to know about.
 
-There is deliberately no fallback to reading those files when ``data.db`` is absent. It is
-absent for one of a few knowable reasons — postprocessing has not run, it failed, or the campaign
+There is deliberately no fallback to reading those files when the campaign's rows are not in
+the index. They are missing for one of a few knowable reasons — postprocessing has not run, it failed, or the campaign
 is still going — and each has a remedy the caller should hear, none of which is "silently answer a
 different question with less data".
 """
@@ -100,7 +100,7 @@ def open_campaign_store(data_dir: Union[str, Path]) -> sqlite3.Connection:
 
     The campaign's own record -- what was proposed, in which batch, and what it scored -- as
     opposed to :func:`open_campaign_db`, which is the postprocessed *measurements* and needs
-    ``data.db`` to exist for them. A search notebook wants this one: it is written as the
+    the campaign to be ingested for them. A search notebook wants this one: it is written as the
     search runs, so a batch or archive view works while the campaign is still going and on one
     that was never postprocessed, which is exactly when watching a search is worth anything.
 

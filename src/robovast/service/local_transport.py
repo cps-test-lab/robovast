@@ -492,16 +492,28 @@ ARCHIVE_UPLOAD_TTL_SECONDS = 600
 
 
 def _archive_has_metrics(archive_path) -> bool:
-    """Whether the archive already carries ``_execution/data.db``, from the tar index.
+    """Whether the archive carries derived data, from the tar index alone.
 
-    Postprocessing writes that file and nothing else does, so its presence is the whole
-    raw-versus-postprocessed question -- answerable from the member list, without
-    extracting anything, before the import even starts.
+    Read from postprocessing's provenance record, which is what says a campaign has been
+    postprocessed now that the rows go to the central index. Answerable from the member
+    list, without extracting anything, before the import even starts.
+
+    It used to look for ``_execution/data.db``. That file is not written any more, so the
+    answer became permanently "no" and every archive was announced as raw -- the same
+    inversion that made the import re-postprocess archives which arrived complete. Matched
+    on the member list only: whether the record has ENTRIES needs its bytes, and the
+    difference (a campaign that ran postprocessing and derived nothing) is not worth
+    reading the archive twice for. The chain that follows re-asks properly with
+    ``campaign_has_derived_data``.
     """
     import tarfile  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.campaign_data import \
+        POSTPROCESSING_RECORD  # pylint: disable=import-outside-toplevel
     try:
         with tarfile.open(archive_path, "r:*") as tar:
-            return any(name.endswith("/_execution/data.db") for name in tar.getnames())
+            return any(name.endswith("/" + POSTPROCESSING_RECORD)
+                       for name in tar.getnames())
     except (tarfile.TarError, OSError):
         # Unreadable is not "postprocessed"; the extraction that follows will say so
         # properly, and until then the safe answer is the one that runs postprocessing.

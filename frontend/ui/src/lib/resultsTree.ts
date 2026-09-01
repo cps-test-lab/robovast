@@ -15,7 +15,7 @@ import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 //
 // `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
 // (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
-// `data.db` at all -- still lists its runs. It also means both surfaces build the same tree from
+// postprocessed rows at all -- still lists its runs. It also means both surfaces build the same tree from
 // the same rows.
 //
 // `batch` is the ask/tell round that proposed the configuration, and `objective` its score --
@@ -460,7 +460,7 @@ function runNode(
   }
 }
 
-// A single non-selectable child shown under a campaign that has no queryable `data.db` yet.
+// A single non-selectable child shown under a campaign that has no queryable data yet.
 export function placeholderChild(campaignId: string, message: string): ResultsTreeItem {
   return {
     id: `${campaignId}//placeholder`,

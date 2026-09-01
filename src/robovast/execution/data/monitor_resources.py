@@ -421,7 +421,7 @@ def _memory_events_v1():
 
 
 #: A probe is a callable returning ``{metric: value}``. Adding one is adding it here; nothing
-#: else in the chain needs to know, because the CSV -> ``data.db`` ingest types columns from
+#: else in the chain needs to know, because the CSV -> index ingest types columns from
 #: what it finds.
 PROBES = (cpu_stat_probe, cpu_usage_probe, memory_probe, memory_stat_probe,
           memory_events_probe, pressure_probe, node_pressure_probe)

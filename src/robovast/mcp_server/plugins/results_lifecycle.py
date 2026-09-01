@@ -81,7 +81,7 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
 
 def run_postprocessing(campaign_id: str, force: bool = False,
                        skip: list | None = None) -> dict:
-    """(Re)run analysis postprocessing for one campaign, rebuilding ``data.db``.
+    """(Re)run analysis postprocessing for one campaign, rebuilding its derived data.
 
     **Dispatched in the background** — returns as soon as the run is started (it can take
     minutes to hours). The campaign enters the ``postprocessing`` phase; background

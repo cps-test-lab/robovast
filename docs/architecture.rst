@@ -658,11 +658,11 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
    * - each job's ``sysinfo.yaml``
      - DB — ``campaign.job``; "did the slow runs share a host?" is a join
    * - per-run metric CSVs
-     - DB — one ``data.db`` table per CSV stem, after postprocessing
+     - DB — one index table per CSV stem, after postprocessing
    * - ``_execution/execution.yaml``
      - DB — provenance columns on ``campaign.campaign`` (+ ``execution_json``)
    * - ``_transient/postprocessing.yaml``
-     - DB — ``data.db``'s ``postprocessing_steps``; the file stays, as the PROV-O input
+     - DB — the index's ``postprocessing_steps``; the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
    * - each configuration's ``_config/sim.config``
@@ -679,7 +679,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        ``runner`` for the campaign itself — the ledger is not only human acts).
        It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
-       the separate ``runs.probed`` column in ``data.db`` — orthogonal on purpose, since a
+       the separate ``runs.probed`` column in the index — orthogonal on purpose, since a
        probed run can still pass. The file stays because the two writers differ — the **service**
        records the kill, the **controller** writes ``campaign.db``, and a SQLite file
        shared between them would be a race. It exists only for a campaign somebody
@@ -711,7 +711,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        than shared — another run's CPU is not this run's. See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``
      - File + the log tools — the raw bytes, and the **live** case is the point of reading
-       them: ``data.db`` does not exist while a campaign runs. The tools reduce them on read
+       them: a campaign is not in the index while it runs. The tools reduce them on read
        (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What *is* stored is the
        derived, time-aligned ``run_log`` above; the files stay the record of what was
        actually printed
@@ -727,7 +727,7 @@ SQLite ``json_extract``) or the ``config_view`` rows — never ``SELECT config_j
 Querying results
 ----------------
 
-Per-run metrics are consolidated into ``<campaign>/_execution/data.db`` (one
+Per-run metrics are consolidated into the central results index (one
 table per CSV stem) plus a ``runs`` **dimension table** — per-run
 ``status``/``duration_s`` and each scenario parameter as a ``param_*`` column.
 That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
@@ -736,9 +736,9 @@ each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
 ``run_data`` plugin exposes read-only **SQL**
 (``query_campaign_data_sql`` + ``describe_campaign_data``), with ``campaign.db``
 attached as schema ``campaign`` — so ``campaign.run`` is queryable for raw
-pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
+pass/fail even before postprocessing ingests the campaign. Joining ``runs`` to any
 metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
-*<metric>*" in one query. Analysis notebooks read the same ``data.db`` through
+*<metric>*" in one query. Analysis notebooks read the same tables through
 :mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
 :ref:`evaluation-reading-results`).
 
@@ -790,8 +790,7 @@ column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its
 NaN has no SQLite representation, so accepting it would delete data instead of typing it).
 Scenario ``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
-caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``. A
-``data.db`` built before typed ingest is all-``TEXT``; re-running postprocessing retypes it.
+caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
 
 **The declaration never outlives the evidence.** A column is declared by the first run that
 writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
@@ -804,7 +803,7 @@ normalizes a mixed column so every row in it is text. Only affected tables are t
 the usual case rebuilds nothing.
 
 Because a type alone cannot say "numeric except in the runs that failed", such a column is
-also recorded in ``data.db``'s ``_column_notes`` and surfaced by ``describe_campaign_data``
+also recorded in the index's ``_column_notes`` and surfaced by ``describe_campaign_data``
 as ``column_notes`` on the owning table — postprocessing logs a warning too, but no SQL
 caller ever reads that log. The note names the fix (exclude the text rows, e.g.
 ``WHERE col GLOB '[0-9-]*'``) because ``CAST`` alone would silently read them as 0.
@@ -845,7 +844,7 @@ three:
 * **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
   by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
   rows/frames by table + time, decoupled from transport. Today it reads one run's rows from
-  ``data.db`` through the existing ``query``/``describe`` endpoints, plus the dedicated
+  the index through the existing ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
   ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
   drops in without touching any panel.

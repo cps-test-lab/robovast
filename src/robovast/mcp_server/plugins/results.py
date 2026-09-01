@@ -549,7 +549,7 @@ def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
-        time: Seconds on the run's timeline — the clock every ``data.db`` table uses, so a
+        time: Seconds on the run's timeline — the clock every results table uses, so a
             moment found in SQL can be looked at directly. Default: the first frame.
         topic: Which camera, if the run recorded several. Omitted lists them.
 

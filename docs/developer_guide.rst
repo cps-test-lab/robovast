@@ -1531,7 +1531,7 @@ live store.
       -> captured live at record time (data already in hand)
     campaign.db.run  operational source of truth — queryable DURING the run
       -> postprocessing joins sysinfo/params/metrics
-    data.db.runs     analytics-ready wide view (param_* columns, metrics) — DERIVED
+    index runs view  analytics-ready wide view (param_* columns, metrics) — DERIVED
 
 .. note::
 
@@ -1661,7 +1661,7 @@ Status: phase and stage
      - Streaming the raw pre-postprocessing archive to the configured share (only when
        ``upload_to_share`` was set).
    * - ``postprocessing``
-     - Chained analysis postprocessing (rosbag→CSV Job + ``data.db``) running.
+     - Chained analysis postprocessing (rosbag→CSV Job + index ingest) running.
    * - ``finished``
      - Done; the campaign is published to the object store. **A post-run step may still
        have failed:** the runs are the deliverable, so a failed upload-to-share or
@@ -2208,7 +2208,7 @@ descriptor, which ``RemotePreview.tsx`` loads at runtime (sharing the host's Rea
 Built-ins ship no assets; a type with neither shows just the resolved parameters.
 
 **Results viewer** (``frontend/ui/src/pages/results/``): pick a
-campaign, browse its ``data.db`` schema, run read-only SQL, and chart the result with
+campaign, browse its results schema, run read-only SQL, and chart the result with
 **Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
 **promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
@@ -2357,12 +2357,13 @@ table in an existing schema still gets a type of its own, but derives the panel.
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
 ``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
-core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
-``data.db`` table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
+core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes an
+index table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
 points. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
 (``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
 plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
-``ctx.open_db()`` (read-only sqlite over ``data.db``, from the public ``data_query.open_data_db``),
+``ctx.open_db()`` (a read-only connection to the central index, from the public
+``data_query.open_data_db``),
 ``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
 ``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
 resolves the campaign dir through the public ``impl.resolve_data_dir(campaign_id)`` seam, which
@@ -2468,7 +2469,7 @@ Two entry points share that one implementation (``postprocess_campaign``):
 * **auto-chain** — the campaign driver, when ``create_campaign(postprocess=True)`` sets
   ``RunOptions.postprocess`` (an option, not a process-global env var, so concurrent campaigns in the
   one service process stay distinct). It runs **after ``store.close()``** (``campaign.db`` must be
-  flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the results ride
+  flushed — the index's ``runs`` table is built from it) and **before ``_finalize``**, so the results ride
   the campaign's existing upload rather than needing one of their own.
 * **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local

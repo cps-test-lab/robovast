@@ -22,7 +22,7 @@ A package installs a run-scoped JSON data endpoint served at
 (the run-view already reaches any such endpoint through ``data.fetchRun(name, params)``).
 
 This closes the last core-coupling for a self-contained analysis package: it can ship a
-**postprocessing** plugin (writes a table into ``data.db``), a **service endpoint** (this
+**postprocessing** plugin (writes a table into the results index), a **service endpoint** (this
 module — serves that table as JSON), and a **panel** (renders it) entirely via entry points.
 ``robovast_nav``'s ``costmap`` is the reference across all three.
 

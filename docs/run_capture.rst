@@ -5,7 +5,7 @@ Replay artifacts: the scene and the capture
 ===========================================
 
 The :ref:`run view <run-view>`'s 3D panel replays a run from **two artifacts**, and from nothing else —
-no ROS, no rosbag, no postprocessing, no ``data.db``. Both are formats RoboVAST defines and a simulator
+no ROS, no rosbag, no postprocessing, no results tables. Both are formats RoboVAST defines and a simulator
 *may* produce; this page is the contract a producer implements against.
 
 .. list-table::

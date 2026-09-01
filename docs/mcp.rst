@@ -344,7 +344,7 @@ and to ``poses`` for what the robot was doing at the time. The two read alike an
 different questions, so ``describe_campaign_data`` names the table and says which is which.
 
 **The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
-``nav_get_path_deviation`` and ``nav_get_action_feedback`` query ``data.db`` — the tables
+``nav_get_path_deviation`` and ``nav_get_action_feedback`` query the results index — the tables
 postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``.
 Re-parsing ``poses.csv`` off local disk instead answers "campaign not found" for every
 cluster campaign, transfers a whole recording to compute eight numbers, and reads
@@ -438,9 +438,9 @@ is the **real on-disk path**, so what a listing shows is what you can read:
 
    /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
                          _execution/  launch.yaml, outcome.json, execution.yaml,
-                                      controller.log, postprocessing.log,
-                                      data.db (query it with SQL)
-                         _transient/  configurations.yaml, entrypoint.sh
+                                      controller.log, postprocessing.log
+                         _transient/  configurations.yaml, entrypoint.sh,
+                                      postprocessing.yaml
                          _jobs/job-N/ sysinfo.yaml, logs/system.log
                          <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
 
@@ -867,11 +867,10 @@ Three shapes, one per question:
 * ``summarize=True`` — patterns and counts, so "what flooded this sweep" costs one call. The
   summary scans far more rows than it returns, because it returns counts.
 
-Two costs it reports rather than hides. Every response carries ``campaigns`` (with what each
-transfer cost) and ``campaigns_skipped``: on the cluster the first query of a campaign
-materializes its ``data.db`` from the object store, so a cross-campaign search pays one transfer
-per *cold* campaign — hence ``max_campaigns`` defaults to 5. And SQLite attaches at most 10 extra
-databases, so a wider search is batched, never silently trimmed.
+Two costs it reports rather than hides. Every response carries ``campaigns`` and
+``campaigns_skipped``: the rows live in the central index, so a campaign costs no transfer, but
+``grep`` is still a regex over every log line of every campaign it spans — hence
+``max_campaigns`` defaults to 5, and what it leaves out is named rather than silently trimmed.
 
 Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
 ``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
@@ -1134,7 +1133,7 @@ reach a live job, and the difference between them is who chooses the command:
   is recorded. That property holds *because* the commands are ours: they read files the run is
   already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
-  campaign instead: every run the job covers is marked ``probed`` in ``data.db``.
+  campaign instead: every run the job covers is marked ``probed`` in the results index.
 
 That makes this tool the right *first* move rather than the only one, because it answers the
 same question against a copy at no cost to the campaign. A fault that does not reproduce here

@@ -14,14 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Column typing for the CSV -> SQLite ingest (``data.db``): infer, declare, convert.
+"""Column typing for the CSV -> results-index ingest: infer, declare, convert.
 
 Every value a CSV yields is a string, so a column ingested verbatim lands in a
 ``TEXT`` column and every comparison over it becomes lexicographic. That failure
 is silent and plausible: ``ORDER BY timestamp`` puts ``"10.022"`` before
 ``"9.5"``, so a trajectory comes out shuffled and its path length is wrong by a
 factor, not by an error. This module decides, per column, whether the CSV's own
-values say the column is numeric, and converts them so ``data.db`` stores real
+values say the column is numeric, and converts them so the index stores real
 ``INTEGER``/``REAL`` values and plain SQL means what it says.
 
 The rule is deliberately strict — a column is numeric only if *every* non-empty

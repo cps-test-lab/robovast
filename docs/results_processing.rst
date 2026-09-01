@@ -78,7 +78,7 @@ The structure inside is domain-specific, but typically includes:
    ├── plugin_install.log                    # ``plugin install`` phase (pip output; only when plugins are declared)
    ├── variation.log                         # ``variation`` phase (config-variation expansion)
    ├── controller.log                        # ``run`` phase — campaign controller log
-   ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + data.db)
+   ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + index ingest)
    ├── share.log                             # ``share`` phase (export to share, when re-run)
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
    └── import.json                           # per-stage ingest report (only on an imported campaign)
@@ -413,8 +413,8 @@ from an agent with ``search_run_logs``. What it makes possible that a log *strea
    GROUP BY 1, 2 ORDER BY hits DESC;
 
 The raw streams stay files and stay the record of what was printed, and ``get_campaign_log`` /
-``get_job_log`` remain the way to read a campaign that is still running, since ``data.db`` does not
-exist yet.
+``get_job_log`` remain the way to read a campaign that is still running, since it is not in the
+index yet.
 
 Those files now carry a prefix on every line, including the infrastructure ones: ``Running as UID:
 1000`` reads ``[INFO] [1786264427.117714] [entrypoint]: Running as UID: 1000``. That is the cost of
@@ -534,7 +534,7 @@ Standard JUnit XML format with scenario execution results:
 Each run's ``test.xml`` is the runner's contract for that run's outcome. The
 controller mirrors it into ``campaign.db``'s ``run`` table at record time (status,
 pass/fail, errors/failures, duration, start time), so per-run outcomes are
-queryable live and the postprocessed ``data.db`` ``runs`` view is built from those
+queryable live and the postprocessed ``runs`` view is built from those
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
@@ -633,8 +633,8 @@ because it is about to be deleted — and lands in **two** places, deliberately:
    the **dead instance's own log** (``kubectl logs --previous``, which nothing read before).
 
 ``campaign.db`` → ``container_failure_view``
-   the index into it, so the question is one query. It is in ``campaign.db`` and not
-   ``data.db`` on purpose: ``data.db`` is built by postprocessing, and a campaign that dies
+   the index into it, so the question is one query. It is in ``campaign.db`` and not the
+   results index on purpose: the index is loaded by postprocessing, and a campaign that dies
    mid-batch never postprocesses — which is exactly the campaign that needs explaining.
 
 ::
@@ -664,7 +664,7 @@ campaign somebody intervened in. **One ledger holds every kind of intervention**
 carrying a ``kind`` -- ``killed`` for a job stopped by hand, ``probed`` for a run somebody read
 into while it was going -- because "what was done to this run?" is one question and answering it
 should not mean knowing to ask twice. What *follows* differs by kind and that is why the readers
-do: a kill becomes a run status, while ``probed`` is a separate ``runs`` column in ``data.db`` and
+do: a kill becomes a run status, while ``probed`` is a separate ``runs`` column in the index and
 never touches the verdict. Putting an intervention into the measured outcome is the same mistake
 that keeping ``killed`` out of ``num_failed`` avoids.
 
@@ -1007,8 +1007,8 @@ postprocessing script, or on a campaign imported raw — name the campaign:
    Skip a postprocessing plugin (repeatable), e.g. ``--skip rosbags_to_webm``.
 
 The campaign is the address and the service is the lane, so the rosbag→CSV step runs
-wherever that campaign's runs ran — in-cluster for a cluster campaign — and ``data.db``
-is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
+wherever that campaign's runs ran — in-cluster for a cluster campaign — and the campaign's
+derived data is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
 so the campaign re-enters its ``postprocessing`` phase and the command returns. Follow it
 exactly as after a launch:
 
@@ -1045,7 +1045,7 @@ A third operation shares their shape without being a *re*-run: **importing** a
 campaign this deployment never ran, from an archive
 (``vast campaign import <archive>``) or from the share (``vast share import
 <campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
-— when what arrived is a raw archive with no ``_execution/data.db`` — rolls straight
+— when what arrived is a raw archive, carrying no postprocessing record — rolls straight
 on into ``postprocessing``, because a campaign without its metric tables is not one
 anybody can query. Its per-stage verdicts land in ``_execution/import.json`` and its
 narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
@@ -1091,7 +1091,8 @@ untouched. The edited config applies on both the local and the cluster backend. 
 same campaign to a different provider. The archive is named for what it now is —
 a campaign exported after postprocessing goes up as ``.postprocessed.tar.gz``, one
 exported before it as ``.raw.tar.gz`` — and nobody passes that in: it is read off
-``_execution/data.db``, so the campaign-end upload and a later export agree by
+postprocessing's own provenance record (``_transient/postprocessing.yaml``), so the
+campaign-end upload and a later export agree by
 construction.
 
 Custom postprocessing plugins that need third-party Python packages — an

@@ -109,7 +109,7 @@ Recommended first-cell pattern
 Reading results
 ---------------
 
-``read_table`` reads one of the campaign's ``data.db`` tables and **restricts it to what
+``read_table`` reads one of the campaign's results-index tables and **restricts it to what
 ``DATA_DIR`` selects** — a run directory gives that run's rows, a configuration directory that
 configuration's, the campaign root everything. The same cell therefore serves all three
 notebook scopes, and no notebook names a file.
@@ -166,7 +166,8 @@ Reading a search's own record
 campaign also keeps a record of what it **proposed**: one row per evaluated configuration
 with its objectives, its quality-diversity measures and the parameters it was drawn with,
 grouped into the batches that proposed them. That record is written as the search runs, so
-:func:`~robovast.common.analysis.db.open_campaign_store` reads it without ``data.db`` — a
+:func:`~robovast.common.analysis.db.open_campaign_store` reads it without any postprocessed
+data — a
 batch or archive view therefore works on a campaign still in progress, and on one that was
 never postprocessed.
 
@@ -191,7 +192,7 @@ one that ran and lost every run to infrastructure. Both are search coverage that
 obtained; count them rather than dropping them, or the campaign reads as having explored more
 than it did.
 
-Reading requires postprocessing to have run — ``data.db`` does not exist before it, and a
+Reading requires postprocessing to have run — the campaign is not in the index before it, and a
 campaign whose postprocessing failed still reports ``finished``. That case raises with the
 remedy in the message rather than falling back to the per-run files, which would answer a
 different question with less data. :func:`~robovast.common.analysis.files.read_run_statuses`

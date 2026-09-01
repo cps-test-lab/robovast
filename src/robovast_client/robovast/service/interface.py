@@ -1870,7 +1870,7 @@ class CampaignPanelsResponse(BaseModel):
     contributed ones no ``.vast`` has to write (the ``playback`` transport
     always, a ``scene3d`` for a simulator that records a capture). Each entry
     is the flattened panel dict (``type`` + ``position`` + panel-specific data
-    bindings), rendered by the web run-view against the campaign's ``data.db``.
+    bindings), rendered by the web run-view against the campaign's results tables.
     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
     the table + column that defines the playback range for non-ROS runs.
     ``transport_only`` answers, for the run view, whether any of it is content."""
@@ -2585,7 +2585,7 @@ class RobovastInterface(ABC):
         :func:`~robovast.common.campaign_data.record_intervention` records it *before* the command
         runs -- the same ordering :meth:`stop_job` uses, and for the same reason: a crash in
         between must not leave perturbed data with no explanation. Every run the job covers is
-        marked, which surfaces as ``runs.probed`` in ``data.db``.
+        marked, which surfaces as ``runs.probed`` in the results index.
 
         That is the whole line between this and :meth:`get_job_state`: there the service chooses a
         fixed read, so nothing arbitrary can ride in and nothing needs recording. Here the *caller*
@@ -2750,8 +2750,8 @@ class RobovastInterface(ABC):
         through somebody's laptop to get between two servers. After it the campaign is
         indistinguishable from one that ran here — which takes registration, not just
         extraction, since listings and the web UI answer from ``campaign.db`` rather than
-        from the results tree. When what arrived was **raw** (no ``_execution/data.db``, which
-        is what the share holds) postprocessing is chained, because a campaign without its
+        from the results tree. When what arrived was **raw** -- no postprocessing provenance
+        record, which is what the share holds -- postprocessing is chained, because a campaign without its
         metric tables is not one anybody can ask anything.
 
         Returns a :class:`CampaignRef`, not a report: the work is a download, a
@@ -3100,7 +3100,7 @@ class RobovastInterface(ABC):
     def list_campaign_panels(self, campaign_id: str) -> CampaignPanelsResponse:
         """Return the campaign's run-view panels (top-level ``visualization.panels``
         in its snapshot ``.vast``): the raw panel dicts, rendered by the web run-view
-        against the campaign's ``data.db``."""
+        against the campaign's results tables."""
 
     @abstractmethod
     def get_panels_source(self, campaign_id: str) -> PanelsSource:

@@ -468,8 +468,8 @@ _TABLE_DESCRIPTIONS = {
         "scenario_timestamps. A run with no rows either had no locatable job artifacts or "
         "shares a job and never wrote test.xml."),
     ("main", "postprocessing_steps"): (
-        "How each table in this data.db was produced. One row per step: plugin, output, "
-        "table_name (the data.db table it became; NULL when the output was not a CSV that "
+        "How each of this campaign's tables was produced. One row per step: plugin, output, "
+        "table_name (the index table it became; NULL when the output was not a CSV that "
         "became a table), sources_json, params_json. "
         "SELECT DISTINCT plugin, params_json FROM postprocessing_steps WHERE "
         "table_name='poses'. Use DISTINCT: a step is recorded once per run. A table with "
@@ -646,9 +646,7 @@ _DESCRIBE_NOTE = (
     "on (config_name, run_id). campaign.db is attached as schema 'campaign'. "
     "Each column is listed as 'name TYPE': numeric CSV columns are stored as "
     "INTEGER/REAL, so compare and ORDER BY them directly. A TEXT column holds text — "
-    "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first, and "
-    "note that a data.db built before typed ingest has TEXT everywhere (rerun "
-    "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
+    "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first. A table's 'column_notes' flags a column whose type "
     "does not tell the whole story — read it before aggregating that column. "
     "JSON columns (config_json, execution_json, sysinfo_json, params_json, a non-scalar "
     "param_* column) are TEXT holding JSON, and this is Postgres — not SQLite, so there is "
@@ -663,7 +661,7 @@ _DESCRIBE_NOTE = (
 )
 
 
-#: Internal bookkeeping tables in ``data.db``: not results, so not listed as tables —
+#: Internal bookkeeping tables: not results, so not listed as tables —
 #: ``_column_notes`` is folded into the owning table's entry instead.
 _INTERNAL_TABLES = ("_table_name_map", "_column_notes")
 
@@ -671,8 +669,8 @@ _INTERNAL_TABLES = ("_table_name_map", "_column_notes")
 def describe_data_db(campaign_dir, campaign_id: str | None = None) -> dict:
     """Return ``{tables: [{schema, table, columns, rows, description}], note}``.
 
-    Works before postprocessing: when ``data.db`` is absent, the attached
-    ``campaign`` schema (config/objectives/batch progress) is still described.
+    Works before postprocessing: when the campaign has no rows in the index, the
+    attached ``campaign`` schema (config/objectives/batch progress) is still described.
     """
     from robovast.results_processing import \
         index_query  # pylint: disable=import-outside-toplevel

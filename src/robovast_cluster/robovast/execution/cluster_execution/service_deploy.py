@@ -116,8 +116,8 @@ WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 #: Not a cache, and expensive to treat as one. A cluster campaign's
 #: *durable* home is the object store, but the one being driven has a local tree all the
 #: same: each batch downloads its own results into it, per-run extraction reads it through a
-#: path (``search.extractor.Extractor.extract``), and postprocessing derives ``data.db``
-#: from it. Unmounted it landed on the container's writable layer — as ``/var/lib/results``,
+#: path (``search.extractor.Extractor.extract``), and postprocessing reads it to derive
+#: the campaign's results. Unmounted it landed on the container's writable layer — as ``/var/lib/results``,
 #: the *sibling* of the workspaces mount, one directory outside what was covered — so every
 #: restart discarded it. Combined with a resume that rebuilds it before the port is bound,
 #: that was a restart loop no ``startupProbe`` could have saved: each attempt was killed

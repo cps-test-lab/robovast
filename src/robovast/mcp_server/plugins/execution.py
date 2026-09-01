@@ -432,7 +432,7 @@ def get_campaign_status(campaign_id: str) -> dict:
 
     ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
     deliverable, so a campaign whose postprocessing failed still finishes, with
-    ``postprocessing_error`` and no CSVs or ``data.db``. ``run_postprocessing`` fixes that
+    ``postprocessing_error``, no CSVs and nothing queryable. ``run_postprocessing`` fixes that
     without re-running anything.
 
     **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
@@ -779,7 +779,7 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     same configuration and perturbs nothing, and a fault that does **not** reproduce there is
     itself the finding that sends you here (contention, a particular draw, a long warm-up).
 
-    **This marks the run as probed** (``runs.probed`` in ``data.db``), recorded before the command
+    **This marks the run as probed** (``runs.probed`` in the results index), recorded before the command
     runs. Confirming a cause is the point; making a wedged run go green is not -- the fix belongs
     in the ``.vast`` and the number to a clean relaunch, with this run dropped.
 

@@ -19,7 +19,7 @@
 
 RoboVAST runs three sequential infrastructure phases — variation (config
 generation / composition), run (the controller driving batches/runs), and
-postprocessing (rosbags → CSV → ``data.db``). Each phase writes its own file
+postprocessing (rosbags → CSV → the results index). Each phase writes its own file
 under the campaign's ``_execution/`` directory. Because the phases are strictly
 sequential, an earlier phase's file is frozen before the next phase's file
 appears, so concatenating them in phase order yields an **append-only** virtual

@@ -98,7 +98,7 @@ export function ResultsTree({
       const msg = (q.error as Error).message
       // `run_view` needs only `campaign.db`, so this is a campaign with no store to read at all
       // (a deleted result dir, an unreachable object store) — not one still awaiting
-      // postprocessing, which is how a tree built from `data.db`'s `runs` would read it.
+      // postprocessing, which is how a tree built from the postprocessed `runs` table would read it.
       children = [
         placeholderChild(
           c.campaign_id,

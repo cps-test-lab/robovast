@@ -1006,7 +1006,7 @@ class ResultsConfig(BaseModel):
 class PlotSpec(BaseModel):
     """A user-declared eval plot: a read-only SQL query + a Vega-Lite encoding.
 
-    The query runs over the campaign's ``data.db`` (``runs`` + metric tables,
+    The query runs over the campaign's rows in the results index (``runs`` + metric tables,
     ``campaign.db`` attached); its result rows are bound into the Vega-Lite spec as
     ``data.values`` by the web eval viewer, so the spec declares only
     ``mark``/``encoding`` and its ``field`` names are the query's column aliases
@@ -1275,7 +1275,7 @@ def check_panel_type(value: str, builtins: frozenset, surface: str, allow_custom
 #: type name).
 CUSTOM_PANEL_TYPE = "custom"
 
-#: The panel type that renders an author-supplied Vega-Lite spec over a ``data.db`` table. Its
+#: The panel type that renders an author-supplied Vega-Lite spec over a results table. Its
 #: ``vega_lite``/``source`` bindings are validated by ``RunViewPanelConfig._vega_needs_bindings``.
 VEGA_PANEL_TYPE = "vega"
 
@@ -1458,7 +1458,7 @@ class RunViewPanelConfig(PanelConfigBase):
     ``type`` is one of the core built-ins (:data:`BUILTIN_PANEL_TYPES`), a package-provided
     panel registered in the :data:`PANEL_TYPES_GROUP` entry-point group, or
     :data:`CUSTOM_PANEL_TYPE` for a user-authored panel shipped as a built bundle next to
-    the ``.vast``. The panel's own data bindings (e.g. ``layers``/``source`` naming ``data.db``
+    the ``.vast``. The panel's own data bindings (e.g. ``layers``/``source`` naming results
     tables) are extra keys, interpreted by that plugin.
 
     Everything a config-view panel also has lives on :class:`PanelConfigBase`; what is here is
@@ -1498,7 +1498,7 @@ class RunViewPanelConfig(PanelConfigBase):
         source = extra.get('source')
         if not isinstance(source, dict) or not source.get('table'):
             raise ValueError(
-                "a 'vega' panel must set 'source' to a data.db table, e.g. "
+                "a 'vega' panel must set 'source' to a results table, e.g. "
                 "source: {table: poses, filter: {frame: base_link}}")
         for _field, message in panel_source_problems(extra):
             raise ValueError(message)
@@ -1506,7 +1506,7 @@ class RunViewPanelConfig(PanelConfigBase):
 
 
 class TimelineConfig(BaseModel):
-    """Which ``data.db`` table + column defines the run's playback timeline. Set this
+    """Which results table + column defines the run's playback timeline. Set this
     for non-ROS runs whose time lives in a table other than the nav defaults (e.g. a
     sim's ``trajectory`` table with a ``t`` column); when omitted the UI derives the
     range from the standard ``poses``/``behaviors``/``scenario_timestamps`` tables."""
@@ -1570,7 +1570,7 @@ class ConfigViewConfig(BaseModel):
 class RunViewConfig(BaseModel):
     """The web run-view: an ordered list of panels for replaying a single run of a
     postprocessed campaign over its timeline. Rendered by the UI from the campaign's
-    snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
+    snapshot ``.vast``; each panel reads existing results tables."""
     model_config = ConfigDict(extra='forbid')
     timeline: Optional[TimelineConfig] = None
     panels: Optional[list[RunViewPanelConfig]] = Field(default_factory=list)

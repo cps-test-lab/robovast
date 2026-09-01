@@ -4,7 +4,8 @@
 
 Split by where a frame comes from, plus one module for what you compute from one:
 
-* :mod:`db` — a campaign's ``data.db``, scoped to the notebook's ``DATA_DIR``. Start here.
+* :mod:`db` — a campaign's rows in the results index, scoped to the notebook's ``DATA_DIR``.
+  Start here.
 * :mod:`files` — per-run files (``test.xml`` and friends), including what predates the
   postprocessed database or exists outside it.
 * :mod:`metrics` — derivations over a frame, whichever of the two produced it.

@@ -724,7 +724,7 @@ def _vega_panel_problems(i, props):
     if not isinstance(source, dict) or not source.get("table"):
         problems.append(_problem(
             "panel",
-            "a 'vega' panel must set 'source' to a data.db table, e.g. "
+            "a 'vega' panel must set 'source' to a results table, e.g. "
             "source: {table: poses, filter: {frame: base_link}}",
             field=f"{prefix}.source"))
     for field, message in panel_source_problems(props):

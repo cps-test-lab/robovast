@@ -598,7 +598,7 @@ campaign is genuinely over, *after* postprocessing rather than when the last run
 stops, and it carries what the campaign actually produced: the run tally, and any
 postprocessing or upload failure. A campaign whose trials all passed but whose
 postprocessing failed is reported as "finished WITH PROBLEMS" — it has no CSVs
-and no ``data.db``, and reporting that as a clean finish made a campaign with no
+and nothing queryable, and reporting that as a clean finish made a campaign with no
 metrics look identical to a complete one on the one screen nobody re-reads.
 
 Notifications outlive whatever started the campaign, which is what makes them the
@@ -1913,8 +1913,9 @@ Archive names
 ^^^^^^^^^^^^^
 
 ``<campaign-id>.raw.tar.gz`` or ``<campaign-id>.postprocessed.tar.gz``. Nobody is
-asked which: it is read off the campaign (``_execution/data.db`` is postprocessing's
-output and nothing else writes it), so the campaign-end upload and a later
+asked which: it is read off the campaign (``_transient/postprocessing.yaml`` is
+postprocessing's own provenance record, written last and by nothing else), so the
+campaign-end upload and a later
 ``vast share export`` cannot disagree. An archive uploaded before the name carried a
 variant is read as ``raw``, which is what it is.
 

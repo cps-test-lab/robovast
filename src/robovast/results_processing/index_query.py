@@ -399,9 +399,9 @@ def describe_index(campaign_id: str | None = None) -> dict:
     """``{tables: [...], note}`` -- the schema to write SQL against.
 
     The views come first because that is where a caller should start and a schema dump is
-    read top-down; the note carries the ready-made queries. Both are the same prose
-    ``data.db`` served, reused rather than retyped, because it is a documented contract
-    that agents write queries from.
+    read top-down; the note carries the ready-made queries. Both are the same prose the
+    per-campaign query path served, reused rather than retyped, because it is a documented
+    contract that agents write queries from.
     """
     from robovast.results_processing.data_query import (  # pylint: disable=import-outside-toplevel
         _DESCRIBE_NOTE)
