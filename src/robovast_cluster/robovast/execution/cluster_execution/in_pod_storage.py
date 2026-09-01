@@ -32,6 +32,7 @@ access ("reuse the cluster's approach"). Buckets/prefixes are passed per call,
 since per-batch search runs target different prefixes within a campaign.
 """
 
+import contextlib
 import logging
 import os
 import tempfile
@@ -98,8 +99,8 @@ def _download_atomic(dst: str, fetch) -> None:
     Several service requests can race to populate the same cache dir — the results
     explorer fires one ``FROM runs`` query per sub-view on first load, and each
     re-fetches the campaign. Writing straight to *dst* lets one request open a
-    half-written ``data.db`` that another is still streaming; SQLite then reports
-    "no such table: runs" until the next reload. Renaming a fully-written temp file
+    half-written object that another is still streaming, so a reader sees truncated
+    content until the next reload. Renaming a fully-written temp file
     over *dst* is atomic on a POSIX filesystem, so a reader always sees either the
     previous complete file or the new complete file, never a partial one.
 
@@ -254,7 +255,7 @@ class StorageClient:
 
         :meth:`list_entries` cannot answer this: it treats its argument as a *prefix* and
         appends ``/``, so an exact object key matches nothing. Sizing one known key — "is
-        the cached copy of this ``data.db`` still current?" — is a single metadata
+        the cached copy of this object still current?" — is a single metadata
         round-trip, where the alternative (listing the campaign prefix to find one key) is
         the whole-prefix cost the caller is trying to avoid.
         """
@@ -264,8 +265,38 @@ class StorageClient:
         """Stream one object to *dst*; return False if it does not exist.
 
         :meth:`read_object` answers the same question through memory, which is the wrong
-        shape for a ``data.db`` that can be hundreds of MB. Written via
+        shape for an object that can be hundreds of MB. Written via
         :func:`_download_atomic`, so a concurrent reader never opens a partial file.
+        """
+        raise NotImplementedError
+
+    def open_object(self, bucket: str, key: str):
+        """Open one object as a **forward-only** binary stream, or ``None`` if absent.
+
+        Returns a context manager yielding a file-like with ``read(n)``; the caller must
+        use it in a ``with`` block. This is the third shape of the same read, and the
+        three are not interchangeable:
+
+        * :meth:`read_object` -- whole object in memory. Right for a 2 KB
+          ``outcome.json``, wrong for anything a campaign produces in bulk: paging 200
+          lines of a 1 GB ``controller.log`` moves 1 GB and peaks around 3.4x that.
+        * :meth:`download_object` -- whole object to local disk. Right when it will be
+          read repeatedly (a cached campaign artifact), wrong when it is read once and needs
+          scratch space equal to its size.
+        * this -- neither buffered nor landed. The case it exists for is reading a bag
+          that is larger than the pod's disk, once, while decoding as the bytes arrive.
+
+        **A stream is not retryable, and that is why the reconnect stops at the open.**
+        Every other operation here is re-run whole by :meth:`_resilient` because each is
+        idempotent. A half-consumed stream is not: re-running would hand the caller the
+        object's first bytes a second time, and resuming without a range request would
+        skip whatever was in flight. So the reconnect covers establishing the stream, and
+        a mid-stream transport failure is raised to the caller rather than papered over.
+        A caller that needs to survive one restarts its own read.
+
+        The object must be closed even when the caller stops early -- on S3 the response
+        holds a connection from the pool until then, so an abandoned partial read leaks
+        one. The returned context manager guarantees it.
         """
         raise NotImplementedError
 
@@ -626,6 +657,23 @@ class _S3StorageClient(StorageClient):
             return True
         return self._resilient(op, f"downloading s3://{bucket}/{key}")
 
+    def open_object(self, bucket: str, key: str):
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+
+        def op():
+            try:
+                return self._s3.get_object(Bucket=bucket, Key=key)["Body"]
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey", "NoSuchBucket"):
+                    return None
+                raise
+        # Only the open is wrapped -- see StorageClient.open_object on why a stream cannot
+        # be re-run. botocore's StreamingBody already offers read(n); close() both releases
+        # the pooled connection and aborts a response the caller abandoned part-way.
+        body = self._resilient(op, f"opening s3://{bucket}/{key}")
+        return None if body is None else contextlib.closing(body)
+
     def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
         clean = prefix.rstrip("/")
@@ -769,6 +817,21 @@ class _GcsStorageClient(StorageClient):
         except NotFound:
             return False
         return True
+
+    def open_object(self, bucket: str, key: str):
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        try:
+            # get_blob rather than blob(): the local handle carries no metadata, so a
+            # missing object would only surface on the first read -- past the point where
+            # this method promises None.
+            blob = self._client.bucket(bucket).get_blob(key)
+            if blob is None:
+                return None
+            # Already a context manager, and already chunked -- the GCS reader fetches in
+            # windows rather than materialising the blob.
+            return blob.open("rb")
+        except NotFound:
+            return None
 
     def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel

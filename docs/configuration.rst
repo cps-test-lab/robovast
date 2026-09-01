@@ -681,7 +681,7 @@ tens to a few hundred KB, beside a rosbag measured in MB — and not recording i
 the *live* answer, since ``get_job_state`` reads it to say which action a wedged run is stuck
 in. There is no campaign worth paying that for.
 
-The file is ingested into the ``behaviors`` table of ``data.db`` — one row per behaviour
+The file is ingested into the ``behaviors`` table of the results index — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
 executed are still present. Each row carries ``parent_id`` and ``child_index`` (structure),
 ``tip_id`` (which leaf determined an ancestor's status) and ``osc_file``/``osc_line``

@@ -438,11 +438,11 @@ class HTTPTransport(RobovastInterface):
     def list_variation_types(self) -> VariationTypesResponse:
         return VariationTypesResponse.model_validate(self._get(Routes.VARIATION_TYPES))
 
-    #: A cluster campaign's first data call can spend minutes inside the request fetching
-    #: from the object store (``ClusterService._query_dir``), and the default 30 s would
-    #: abort the client while the service is still transferring — leaving the caller with a
-    #: ReadTimeout indistinguishable from a broken service. The web UI never hit this
-    #: because ``fetch`` sets no timeout at all.
+    #: A data call can spend minutes inside the request — a query is answered by the index
+    #: now rather than by a fetch, but a wide aggregate over a large campaign still runs
+    #: there — and the default 30 s would abort the client mid-answer, leaving the caller
+    #: with a ReadTimeout indistinguishable from a broken service. The web UI never hit
+    #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
 
     #: A screenshot renders inside the request, and on a node that has never run this
@@ -457,8 +457,7 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_describe(campaign_id),
             timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
-    def stream_campaign_query_csv(self, campaign_id: str, sql: str,
-                                  extra_campaign_ids=None):
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str):
         """Stream the CSV export through, chunk by chunk.
 
         Not ``_get``: that decodes a JSON body, and the point of this route is that the
@@ -467,8 +466,6 @@ class HTTPTransport(RobovastInterface):
         the JSON query does.
         """
         params = {"sql": sql}
-        if extra_campaign_ids:
-            params["extra_campaign_ids"] = ",".join(extra_campaign_ids)
         resp = self.session.get(f"{self.base_url}{Routes.campaign_query_csv(campaign_id)}",
                             params=params, timeout=self.DATA_TIMEOUT, stream=True)
         self.raise_for_status(resp)
@@ -570,12 +567,13 @@ class HTTPTransport(RobovastInterface):
             "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
 
     def query_campaign_data_sql(
-        self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids=None, max_bytes=None,
+        self, campaign_id: str, sql: str, max_rows: int = 500, max_bytes=None,
+        campaigns=None,
     ) -> "DataQueryResult":
         from robovast.service.interface import DataQueryResult
-        body = {"sql": sql, "max_rows": max_rows,
-                "extra_campaign_ids": extra_campaign_ids or []}
+        body = {"sql": sql, "max_rows": max_rows}
+        if campaigns:
+            body["campaigns"] = list(campaigns)
         # Only sent when asked for: an older service rejects an unknown body key, and the
         # default is the one this client's callers (MCP tools) want anyway.
         if max_bytes is not None:

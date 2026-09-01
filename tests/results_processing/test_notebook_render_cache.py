@@ -7,7 +7,7 @@ except the thing the notebook actually reads. So the normal sequence of using th
 Results explorer produced a wrong answer that never healed:
 
     view a campaign          -> renders "[no data] no poses.csv", caches it
-    run postprocessing       -> poses.csv, data.db appear
+    run postprocessing       -> poses.csv and the rest of the derived files appear
     view the campaign again  -> served from cache, still "[no data] no poses.csv"
 
 and the only ways out were editing the notebook or deleting <node>/.cache by hand.

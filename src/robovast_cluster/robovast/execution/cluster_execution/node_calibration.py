@@ -788,7 +788,7 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
     (``main`` for the pod's main container, the role name for each sidecar).
 
     **Read directly, never through postprocessing.** The file the monitor writes IS the
-    measurement -- postprocessing only lifts it into ``data.db``, and does so at the end of a
+    measurement -- postprocessing only lifts it into the results index, and does so at the end of a
     campaign or a batch, which is far too late to size the job that comes next. It is also
     why the probe's directory being skipped by postprocessing costs nothing: there was never
     anything to gain from it going through.

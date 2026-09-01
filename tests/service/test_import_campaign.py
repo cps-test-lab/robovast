@@ -47,7 +47,17 @@ def _archive(tmp_path, *, postprocessed=False, name="camp.tar.gz",
     shutil.copytree(_SOURCE, staged)
     (staged / "_execution").mkdir(exist_ok=True)
     if postprocessed:
-        (staged / "_execution" / "data.db").write_bytes(b"")
+        # Postprocessing's provenance record, which is what says an archive carries derived
+        # data. This wrote an empty `_execution/data.db` until that file was retired -- and
+        # since the predicate under test read the same file, the fixture and the code agreed
+        # with each other while both were wrong about the world.
+        import yaml as _yaml
+        record = staged / "_transient" / "postprocessing.yaml"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(
+            _yaml.safe_dump({"entries": [{"plugin": "rosbags_tf_to_csv",
+                                          "output": "poses.csv"}]}),
+            encoding="utf-8")
     if runs:
         (staged / "_execution" / "outcome.json").write_text(json.dumps({
             "phase": "finished", "mode": "batch", "batches_done": 1,

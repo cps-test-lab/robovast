@@ -10,10 +10,22 @@ Three defect classes are pinned here, all found in the CSV-reading version these
   that looked like a real one;
 * it let ``ValueError`` escape, so an unknown campaign reached the client as a protocol
   error rather than as ``{"error": …}``.
+
+A fourth is added by the move to a central index: ``poses`` is one table holding every
+campaign, so a query scoped only by ``(config_name, run_id)`` reads whichever campaigns
+happen to share those keys.
+
+The tests that need the index are gated on ``ROBOVAST_TEST_PG_DSN``; the map-reading and
+refusal ones read files only and stay ungated.
+
+These were written as ``xfail`` against a plugin that had not been ported to the index --
+as the passing behaviour rather than the behaviour of the day -- and turned green when
+``robovast_nav.mcp_plugin`` was ported to it.
 """
 
 import itertools
 import math
+import os
 import sqlite3
 
 import pytest
@@ -21,7 +33,18 @@ import pytest
 from robovast.mcp_server import service_access
 from robovast_nav import mcp_plugin as nav
 
+DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
+
+#: Namespaced so a shared test database can hold several suites at once.
+SCHEMA = "mcp_nav_test"
+
 _CAMPAIGN = "nav-2026-07-16-120000"
+
+#: A second campaign recording the SAME configuration and run id. Its poses sit far away
+#: in space, so a row of it leaking into a trajectory is unmistakable rather than merely
+#: extra.
+_OTHER = "nav-2026-07-16-130000"
+_OTHER_OFFSET = 1000.0
 
 #: A quarter-circle drive: distance and heading are both non-trivial, so a helper that
 #: drops the yaw or mis-sums the segments cannot pass by accident.
@@ -38,29 +61,86 @@ def _arrival(stamp: float) -> float:
     return math.floor(stamp / _ARRIVAL_GRID) * _ARRIVAL_GRID
 
 
+def _write_campaign(root, name: str, offset: float = 0.0):
+    """A campaign whose ``poses.csv`` the ingest turns into an indexed ``poses`` table.
+
+    The pose contract's two clocks are both written. ``timestamp`` is arrival:
+    deliberately quantised onto a coarse grid here, the way a real /clock grid quantises
+    it, so a tool that differentiates the wrong column reports a different number and the
+    test can tell. ``stamp`` is the true measurement time, evenly spaced -- which is what
+    the speeds below are the truth for.
+    """
+    cdir = root / name
+    run = cdir / "cfg-a" / "0"
+    run.mkdir(parents=True)
+    (cdir / "_execution").mkdir(parents=True)
+    header = "timestamp,stamp,frame,position.x,position.y,orientation.yaw"
+    lines = [header]
+    for frame in ("base_link", "odom"):
+        for (t, x, y, yaw) in _POSES:
+            lines.append(f"{_arrival(t)},{t},{frame},{x + offset},{y + offset},{yaw}")
+    (run / "poses.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # A minimal record, so the campaign has the `runs` dimension row a reader joins to.
+    db = sqlite3.connect(cdir / "campaign.db")
+    db.executescript(
+        "CREATE TABLE campaign (id INTEGER PRIMARY KEY, name TEXT, config_json TEXT);"
+        "CREATE TABLE batch (id INTEGER PRIMARY KEY, campaign_id INTEGER, idx INTEGER);"
+        "CREATE TABLE unit (id INTEGER PRIMARY KEY, batch_id INTEGER, config_name TEXT,"
+        "                   paramset_id TEXT, params_json TEXT, objective REAL,"
+        "                   status TEXT);"
+        "CREATE TABLE run (id INTEGER PRIMARY KEY, unit_id INTEGER, run_id INTEGER,"
+        "                  status TEXT, passed INTEGER, duration_s REAL, errors INTEGER,"
+        "                  failures INTEGER, tests INTEGER, start_time TEXT,"
+        "                  failure_message TEXT, job_id INTEGER);")
+    db.execute("INSERT INTO campaign VALUES (1, ?, '{}')", (name,))
+    db.execute("INSERT INTO batch VALUES (1, 1, 0)")
+    db.execute("INSERT INTO unit VALUES (1, 1, 'cfg-a', 'ps-1', '{}', 0.5, 'evaluated')")
+    db.execute("INSERT INTO run VALUES (1, 1, 0, 'passed', 1, 59.0, 0, 0, 1, 't', NULL, NULL)")
+    db.commit()
+    db.close()
+    return cdir
+
+
 @pytest.fixture
-def campaign(tmp_path, monkeypatch):
-    """A campaign whose data.db holds a ``poses`` table, reached over the local lane."""
+def campaign_tree(tmp_path, monkeypatch):
+    """The campaign on disk, with nothing ingested. For the tests that read files only."""
     # The results root is derived from the workspaces store, and a CWD .robovast_project
     # would otherwise win the precedence and point the tools at the developer's own tree.
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
-    cdir = tmp_path / "results" / _CAMPAIGN
-    (cdir / "_execution").mkdir(parents=True)
-    db = sqlite3.connect(cdir / "_execution" / "data.db")
-    # The pose contract's two clocks. `timestamp` is arrival: deliberately quantised onto a coarse
-    # grid here, the way a real /clock grid quantises it, so a tool that differentiates the wrong
-    # column reports a different number and the test can tell. `stamp` is the true measurement
-    # time, evenly spaced -- which is what the speeds below are the truth for.
-    db.execute('CREATE TABLE poses (config_name TEXT, run_id INTEGER, frame TEXT, '
-               '"timestamp" REAL, "stamp" REAL, "position.x" REAL, "position.y" REAL, '
-               '"orientation.yaw" REAL)')
-    rows = [(_arrival(t), t, x, y, yaw) for (t, x, y, yaw) in _POSES]
-    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'base_link', ?, ?, ?, ?, ?)", rows)
-    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'odom', ?, ?, ?, ?, ?)", rows)
-    db.commit()
-    db.close()
     monkeypatch.setattr(service_access, "service_client", lambda: None)
-    return str(cdir)
+    return _write_campaign(tmp_path / "results", _CAMPAIGN)
+
+
+@pytest.fixture
+def campaign(campaign_tree, tmp_path, monkeypatch):
+    """That campaign's poses in the index, with a second campaign's beside them."""
+    if not DSN:
+        pytest.skip("ROBOVAST_TEST_PG_DSN is not set")
+    psycopg = pytest.importorskip("psycopg")
+    from robovast.common import index_db
+
+    with psycopg.connect(DSN, autocommit=True) as setup:
+        for statement in (f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          f"CREATE SCHEMA {SCHEMA}"):
+            setup.execute(statement)
+    monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
+
+    _ingest(campaign_tree)
+    _ingest(_write_campaign(tmp_path / "results", _OTHER, offset=_OTHER_OFFSET))
+    yield str(campaign_tree)
+    with psycopg.connect(DSN, autocommit=True) as teardown:
+        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        teardown.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
+
+
+def _ingest(root) -> None:
+    from robovast.results_processing import campaign_ingest, index_query, index_views
+
+    with index_query.open_index(readonly=False) as conn:
+        campaign_ingest.ingest_campaign(conn, str(root), root.name)
+        index_views.create_views(conn)
 
 
 def test_trajectory_reports_the_recorded_yaw(campaign):
@@ -93,14 +173,38 @@ def test_stats_are_computed_over_every_pose_not_the_returned_ones(campaign):
     assert stats["end_pose"]["yaw"] == pytest.approx(_POSES[-1][3])
 
 
-def test_sqrt_is_registered_rather_than_assumed(campaign):
-    """The distance sum needs SQRT; SQLite's own is a compile-time option, so we ship one."""
+def test_a_trajectory_holds_only_the_campaign_it_was_asked_about(campaign):
+    """One ``poses`` table holds every campaign, so scoping is the query's job.
+
+    The other campaign records the same configuration and run id, a kilometre away. Read
+    unscoped, the trajectory silently doubles in length and its distance is dominated by
+    the jump between the two campaigns' tracks -- a number nothing downstream can tell is
+    wrong.
+    """
+    result = nav.nav_get_trajectory(_CAMPAIGN, "cfg-a", 0, limit=2 * len(_POSES))
+    assert result["total_points"] == len(_POSES)
+    assert all(abs(p["x"]) <= 2.0 for p in result["points"]), \
+        "no pose of the other campaign may reach this trajectory"
+
+
+def test_sqrt_is_available_to_the_distance_sum(campaign):
+    """The distance sum needs SQRT, and the schema note promises it is there.
+
+    On SQLite it had to be registered (its own is a compile-time option) and the shim
+    answered NULL for an argument it could not take a root of. Postgres ships one that
+    *refuses* instead -- the guarantee that survives is the one that matters: a distance
+    is never silently computed from a wrong number.
+    """
+    import psycopg
+
     from robovast.results_processing.data_query import open_data_db
     conn = open_data_db(campaign)
     try:
-        assert conn.execute("SELECT SQRT(9)").fetchone()[0] == 3.0
-        assert conn.execute("SELECT SQRT(-1)").fetchone()[0] is None
-        assert conn.execute("SELECT SQRT('nope')").fetchone()[0] is None
+        assert conn.execute("SELECT SQRT(9)").fetchone()["sqrt"] == 3.0
+        for refused in ("SELECT SQRT(-1)", "SELECT SQRT('nope')"):
+            with pytest.raises(psycopg.Error):
+                conn.execute(refused).fetchone()
+            conn.rollback()
     finally:
         conn.close()
 
@@ -118,18 +222,18 @@ def test_a_missing_table_names_the_postprocessing_step_that_makes_it(campaign):
     assert "poses" in result["error"]  # lists what the campaign does have
 
 
-def test_an_unknown_campaign_is_an_error_result_not_an_exception(campaign):
+def test_an_unknown_campaign_is_an_error_result_not_an_exception(campaign_tree):
     """Raising here reaches an MCP client as a broken server."""
     result = nav.nav_get_trajectory("no-such-2026-01-01-000000", "cfg-a", 0)
     assert "error" in result
 
 
-def test_obstacles_refuse_cleanly_when_the_config_has_no_scenario_config(campaign):
+def test_obstacles_refuse_cleanly_when_the_config_has_no_scenario_config(campaign_tree):
     result = nav.nav_get_obstacles(_CAMPAIGN, "cfg-a")
     assert "error" in result
 
 
-def test_map_info_says_this_is_not_a_navigation_config(campaign):
+def test_map_info_says_this_is_not_a_navigation_config(campaign_tree):
     result = nav.nav_get_map_info(_CAMPAIGN, "cfg-a")
     assert "not a navigation configuration" in result["error"]
 
@@ -169,7 +273,11 @@ _EXPECTED_CELLS = {"occupied": 2, "free": 1, "unknown": 2}
 
 @pytest.fixture
 def map_campaign(tmp_path, monkeypatch):
-    """A campaign whose configuration carries a one-row occupancy map."""
+    """A campaign whose configuration carries a one-row occupancy map.
+
+    No index: the map is read from the campaign's files, and pinning that it stays a file
+    read is part of the point -- a raster is not a table.
+    """
     pytest.importorskip("PIL")
     from PIL import Image as PILImage
 

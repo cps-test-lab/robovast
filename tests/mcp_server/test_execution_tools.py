@@ -818,3 +818,49 @@ def test_a_tail_that_cut_nothing_is_not_reported_as_truncated(monkeypatch):
     out = execution.get_campaign_log("camp-2026-01-01-000000", tail=10)
     assert out["truncated"] is False
     assert out["matched_lines"] == out["returned_lines"] == 2
+
+
+# -- "not postprocessed" is two states, needing opposite actions --------------
+
+def test_a_failed_postprocessing_step_does_not_report_the_campaign_as_empty():
+    """Measured on a real campaign: one plugin of four raised, and 10252 pose rows, the
+    run log and the behaviour tree were all queryable afterwards.
+
+    The old message said "there are no CSVs and no data.db yet" for exactly this state.
+    Both halves were false -- the steps beside the failing one had already derived and
+    loaded their data -- and it invited re-running everything to recover what was there.
+    """
+    from robovast.mcp_server.plugins.execution import _campaign_next_step
+
+    step = _campaign_next_step({
+        "status": "finished", "postprocessed": False,
+        "postprocessing_error": "1 of 4 step(s) — ./break.py:Break: deliberate failure",
+    })
+
+    assert "no CSVs" not in step, "the derived data that DID load must not be denied"
+    assert "deliberate failure" in step, "the reader needs the error itself"
+    assert "queryable" in step
+    assert "without re-running any trial" in step
+
+
+def test_postprocessing_that_never_ran_says_only_the_record_will_answer():
+    """The other state, and the one the original message was written for.
+
+    Nothing was derived, so the campaign's own record is all there is -- which is worth
+    saying, because it is not nothing: run_view and the campaign.* tables answer.
+    """
+    from robovast.mcp_server.plugins.execution import _campaign_next_step
+
+    step = _campaign_next_step({"status": "finished", "postprocessed": False})
+
+    assert "did not run" in step
+    assert "run_view" in step, "say what still answers, rather than implying nothing does"
+    assert "data.db" not in step, "that file no longer exists"
+
+
+def test_a_progressing_campaign_still_gets_no_hint():
+    """A hint on every reply is a field callers learn to skip."""
+    from robovast.mcp_server.plugins.execution import _campaign_next_step
+
+    assert _campaign_next_step({"status": "running", "postprocessed": False}) == ""
+    assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""

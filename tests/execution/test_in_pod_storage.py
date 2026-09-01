@@ -364,3 +364,134 @@ def test_upload_dir_reports_the_destination_when_the_store_is_unreachable(monkey
     with pytest.raises(ObjectStoreUnreachableError) as excinfo:
         client.upload_dir(str(tmp_path), "results", "camp-1/")
     assert "s3://results/camp-1" in str(excinfo.value)
+
+
+# -- streaming reads (open_object) ------------------------------------------
+
+def test_open_object_streams_without_buffering_the_object(monkeypatch):
+    """The point of the method: bytes arrive in chunks, not as one blob.
+
+    ``read_object`` would call ``.read()`` once; a caller decoding a bag needs
+    ``read(n)`` so its peak memory is the chunk, not the object.
+    """
+    class _Body:
+        def __init__(self):
+            self.data = b"0123456789"
+            self.pos = 0
+            self.closed = False
+
+        def read(self, size=-1):
+            end = len(self.data) if size is None or size < 0 else self.pos + size
+            chunk = self.data[self.pos:end]
+            self.pos = end
+            return chunk
+
+        def close(self):
+            self.closed = True
+
+    body = _Body()
+
+    class _Store:
+        def get_object(self, **_kw):
+            return {"Body": body}
+
+    client = _interactive_client(monkeypatch, _Store())
+    with client.open_object("camp-1", "rosbag2/rosbag2_0.mcap") as stream:
+        assert stream.read(4) == b"0123"
+        assert stream.read(4) == b"4567"
+    assert body.closed, "the stream must be closed so the pooled connection is released"
+
+
+def test_open_object_closes_even_when_the_caller_stops_early(monkeypatch):
+    """An abandoned partial read must not leak the connection.
+
+    This is the failure mode the context manager exists for: on S3 the response holds a
+    connection from the pool until ``close()``, so a decoder that stops at the first
+    matching message would otherwise leak one per bag.
+    """
+    class _Body:
+        def __init__(self):
+            self.closed = False
+
+        def read(self, _size=-1):
+            return b"x" * 8
+
+        def close(self):
+            self.closed = True
+
+    body = _Body()
+
+    class _Store:
+        def get_object(self, **_kw):
+            return {"Body": body}
+
+    client = _interactive_client(monkeypatch, _Store())
+    with client.open_object("camp-1", "big.mcap") as stream:
+        stream.read(8)  # stop long before the end
+    assert body.closed
+
+
+def test_open_object_returns_none_for_a_missing_object(monkeypatch):
+    """404 stays the caller's ``None``, as with every other read here."""
+    from botocore.exceptions import ClientError
+
+    class _Missing:
+        def get_object(self, **_kw):
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+    client = _interactive_client(monkeypatch, _Missing())
+    assert client.open_object("camp-1", "absent.mcap") is None
+
+
+def test_open_object_reports_an_unreachable_store_like_the_others(monkeypatch):
+    """Failing to *establish* the stream is still a named, traceback-free error."""
+    import pytest
+    from botocore.exceptions import ConnectionClosedError
+
+    from robovast.common.errors import ObjectStoreUnreachableError
+
+    class _Reset:
+        def get_object(self, **_kw):
+            raise ConnectionClosedError(endpoint_url="http://localhost:18080/camp-1/x.mcap")
+
+    client = _interactive_client(monkeypatch, _Reset())
+    with pytest.raises(ObjectStoreUnreachableError) as excinfo:
+        client.open_object("camp-1", "x.mcap")
+
+    message = str(excinfo.value)
+    assert "http://localhost:18080" in message
+    assert "s3://camp-1/x.mcap" in message
+    assert excinfo.value.include_traceback is False
+
+
+def test_open_object_does_not_retry_a_half_consumed_stream(monkeypatch):
+    """The documented boundary: the reconnect covers the open, never the reads.
+
+    A retry after bytes have been handed out would either duplicate them or skip what
+    was in flight, so a mid-stream transport failure reaches the caller as itself. This
+    pins that boundary, because a well-meaning change to wrap the reads in
+    ``_resilient`` would silently corrupt every decode.
+    """
+    import pytest
+    from botocore.exceptions import ConnectionClosedError
+
+    opens = []
+
+    class _Body:
+        def read(self, _size=-1):
+            raise ConnectionClosedError(endpoint_url="http://localhost:18080/camp-1/x.mcap")
+
+        def close(self):
+            pass
+
+    class _Store:
+        def get_object(self, **_kw):
+            opens.append(1)
+            return {"Body": _Body()}
+
+    client = _interactive_client(monkeypatch, _Store())
+    with pytest.raises(ConnectionClosedError):
+        with client.open_object("camp-1", "x.mcap") as stream:
+            stream.read(4)
+
+    assert opens == [1], "a failed read must not re-open the object"

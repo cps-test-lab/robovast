@@ -1,7 +1,7 @@
 // ScenePanel (type `scene`): a top-down/side 2D view of "where the thing is right now". It plots one
 // column against another (e.g. a quadrotor's x vs altitude z), tracing the path up to the current
 // playback time and marking the sample at that time. It is the source-agnostic analog of the costmap's
-// robot marker + driven path, for any data.db table with a time column.
+// robot marker + driven path, for any results table with a time column.
 //
 // It renders whatever a TimeSeriesSource yields, so it is blind to how the data was captured. Bindings
 // (vast visualization.panels):

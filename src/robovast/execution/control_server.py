@@ -206,7 +206,7 @@ def stage_output_callback(state, log):
     """An ``output_callback`` that logs a step's line *and* publishes it as ``Status.stage``.
 
     Postprocessing narrates itself through that callback already — one line per step, plus the
-    ``data.db`` builder's run counter — and that narration is the only account a reader gets of
+    ingest's run counter — and that narration is the only account a reader gets of
     a phase with **no run counter of its own**. A campaign holds ``postprocessing`` with
     ``progress`` pinned and every run tally frozen, so on the evidence the campaign view had,
     converting a large campaign's rosbags and a wedged step looked identical for as long as it

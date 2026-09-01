@@ -250,6 +250,25 @@ if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
     echo ""
 fi
 
+# Is there a Docker to ask at all? Checked BEFORE the label, because every question below
+# reads an empty string when the daemon is missing and then blames the image for it.
+#
+# That misdirection is not hypothetical. This script reached a cluster pod, which has no
+# Docker, and reported "cannot determine the container protocol version of
+# 'ghcr.io/cps-test-lab/robovast:latest'" -- naming an upstream default image nobody had
+# chosen, on a deployment whose own images live in a private registry. The message sent two
+# separate investigations after registry configuration; the actual fault was that this
+# script cannot run where it was run at all.
+if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: this script needs a Docker daemon and cannot reach one."
+    echo "  It runs containers directly, so it belongs on a machine with Docker -- not"
+    echo "  inside a cluster pod, where the conversion runs as a Job instead."
+    echo "  If you are seeing this from a campaign, the step was dispatched to the wrong"
+    echo "  lane: rosbag conversion on a cluster is the Job's work, and the in-pod pass"
+    echo "  must skip it (results_processing.postprocessing.ROSBAG_JOB_NAMES)."
+    exit 1
+fi
+
 # Container protocol check, off the image's label -- `docker inspect` reads it without starting
 # anything. One marker, read one way: a file inside the image would cost a container start
 # to read, and could not be read at all for an image this machine does not hold.

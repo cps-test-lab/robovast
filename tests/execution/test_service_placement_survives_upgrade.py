@@ -4,8 +4,12 @@
 
 The bug: `vast service upgrade` called `deploy_service` with neither the node pin nor
 the storage classes, and "not passed" meant "unpinned, on a hostPath". One upgrade therefore
-unpinned the service pod and reverted a PVC-backed registry -- silently, on the deployment
-whose data was the reason those flags were given in the first place.
+unpinned the service pod and reverted a PVC-backed volume to a hostPath -- silently, on the
+deployment whose data was the reason those flags were given in the first place.
+
+The registry has since moved to the store pod (``cluster_execution.store_pod``), so the only
+volumes left under this Deployment are the workspaces store and the results root, both
+backed by the workspaces StorageClass. The rule is unchanged; the surface is smaller.
 
 Two changes make that unreachable, and these tests pin both: the selector is a CONSTANT
 label rather than a value a call site has to remember, and everything else is recovered from
@@ -66,7 +70,7 @@ def _live(**kwargs):
 def _pvc(storage_class):
     return _deserialize(
         {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
-         "metadata": {"name": "registry-data", "namespace": "ns"},
+         "metadata": {"name": "workspaces-data", "namespace": "ns"},
          "spec": {"accessModes": ["ReadWriteOnce"], "storageClassName": storage_class,
                   "resources": {"requests": {"storage": "50Gi"}}}},
         "V1PersistentVolumeClaim")
@@ -115,44 +119,39 @@ def test_an_upgrade_with_no_label_left_keeps_the_live_pods_selector(monkeypatch)
 
 
 def test_a_provisioned_volume_is_not_pinned(monkeypatch):
-    """Both volumes on a StorageClass: nothing is on a node, so nothing is pinned."""
-    assert sd._resolve_data_node(None, registry_storage_class="fast",
-                                 workspaces_storage_class="fast") == {}
+    """Every volume left in this pod is on a StorageClass: nothing is on a node."""
+    assert sd._resolve_data_node(None, workspaces_storage_class="fast") == {}
 
 
-def test_one_hostpath_volume_is_enough_to_keep_the_pod_pinned(monkeypatch):
-    """The pod carries both volumes, so a provisioned registry does not free it to move
-    while the workspaces are still a hostPath under it."""
+def test_a_hostpath_volume_keeps_the_pod_pinned(monkeypatch):
+    """The workspaces class backs the results root too, so one answer covers both."""
     monkeypatch.setattr(np, "resolve_placement",
                         lambda core, label, **kw: np.Placement("node-a",
                                                                np.label_selector(label),
                                                                "label"))
-    assert sd._resolve_data_node(None, registry_storage_class="fast") == {
-        np.DATA_NODE_LABEL: "true"}
+    assert sd._resolve_data_node(None) == {np.DATA_NODE_LABEL: "true"}
 
 
 # --- the volumes ------------------------------------------------------------------
 
 @pytest.mark.parametrize("rendered,recovered", [
-    ({"registry_storage_class": "fast"}, {"registry_storage_class": "fast"}),
-    ({"registry_storage_path": "/data/elsewhere"},
-     {"registry_storage_path": "/data/elsewhere"}),
+    ({"workspaces_storage_class": "fast"}, {"workspaces_storage_class": "fast"}),
     ({"workspaces_storage_path": "/srv/work"}, {"workspaces_storage_path": "/srv/work"}),
 ])
 def test_an_upgrade_re_renders_the_volumes_it_found(monkeypatch, rendered, recovered):
-    """Recovered, never defaulted: re-rendering from defaults handed a PVC-backed registry
-    a hostPath -- a new empty registry, while the old claim still held its space."""
+    """Recovered, never defaulted: re-rendering from defaults handed a PVC-backed store a
+    hostPath -- a new empty directory, while the old claim still held its space."""
     _cluster(monkeypatch, dep=_live(**rendered),
-             pvc=_pvc(rendered.get("registry_storage_class", "")))
+             pvc=_pvc(rendered.get("workspaces_storage_class", "")))
     settings = sd.service_storage_from_cluster("ns")
     for key, value in recovered.items():
         assert settings[key] == value
 
 
 def test_a_claim_with_no_storage_class_is_refused_not_defaulted(monkeypatch):
-    """`registry_volume` takes the PVC branch only for a non-empty class, so recovering an
+    """`workspaces_volume` takes the PVC branch only for a non-empty class, so recovering an
     empty one silently becomes a hostPath -- the exact migration this reader prevents."""
-    _cluster(monkeypatch, dep=_live(registry_storage_class="fast"), pvc=_pvc(None))
+    _cluster(monkeypatch, dep=_live(workspaces_storage_class="fast"), pvc=_pvc(None))
     with pytest.raises(RuntimeError, match="StorageClass"):
         sd.service_storage_from_cluster("ns")
 

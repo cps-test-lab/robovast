@@ -22,6 +22,7 @@ from kubernetes import client
 
 from robovast.execution.cluster_execution.kube_client import load_kube_config
 
+from ..cluster_execution import store_pod
 from ..cluster_execution.kubernetes import apply_manifests, check_pod_running, delete_manifests
 from .base_config import BaseConfig
 
@@ -58,6 +59,17 @@ spec:
     volumeMounts:
     - mountPath: /data
       name: {MINIO_VOLUME_NAME}
+    resources:
+      # A floor, not an estimate: every milli-core requested here is capacity campaign jobs
+      # cannot be admitted against. MinIO streams objects rather than buffering them, so
+      # the request covers an idle server and the limit leaves room for concurrent
+      # multi-part transfers. No CPU limit -- throttling the store slows every upload and
+      # download with no visible cause.
+      requests:
+        cpu: "50m"
+        memory: "256Mi"
+      limits:
+        memory: "1Gi"
     readinessProbe:
       httpGet:
         path: /minio/health/ready
@@ -146,8 +158,16 @@ class Rke2ClusterConfig(BaseConfig):
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
-        yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         namespace = kwargs.get('namespace', 'default')
+        # The registry and the campaign index ride in this pod: setup-lifetime
+        # infrastructure, created once here rather than in the service Deployment that
+        # every upgrade rolls. See `cluster_execution.store_pod`.
+        yaml_objects = store_pod.attach_infrastructure(
+            yaml_objects, namespace,
+            index_storage_path=kwargs.get('index_storage_path', ''),
+            registry_storage_path=kwargs.get('registry_storage_path', ''),
+            registry_storage_class=kwargs.get('registry_storage_class', ''))
+        yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         self._refuse_a_store_pod_on_the_wrong_node(namespace, MINIO_POD_NAME, control_node_labels)
         try:
             apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
@@ -172,7 +192,9 @@ class Rke2ClusterConfig(BaseConfig):
             raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
         namespace = kwargs.get('namespace', 'default')
-        delete_manifests(core_v1, yaml_objects, namespace=namespace)
+        yaml_objects = store_pod.attach_infrastructure(list(yaml_objects), namespace)
+        delete_manifests(core_v1, store_pod.infrastructure_claims(namespace) + yaml_objects,
+                         namespace=namespace)
         logging.debug("MinIO manifest deleted successfully!")
 
     def prepare_setup_cluster(self, output_dir, **kwargs):
@@ -183,13 +205,13 @@ class Rke2ClusterConfig(BaseConfig):
             **kwargs: Cluster-specific options (control_node_labels)
         """
         control_node_labels = kwargs.pop('control_node_labels', None)
-        manifest_to_write = MINIO_MANIFEST_RKE2
-        if control_node_labels:
-            docs = list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2)))
-            docs = self._apply_pod_node_selector(docs, control_node_labels)
-            manifest_to_write = "---\n".join(
-                yaml.dump(d, default_flow_style=False) for d in docs if d is not None
-            )
+        docs = store_pod.attach_infrastructure(
+            list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))),
+            kwargs.get('namespace', 'default'))
+        docs = self._apply_pod_node_selector(docs, control_node_labels)
+        manifest_to_write = "---\n".join(
+            yaml.dump(d, default_flow_style=False) for d in docs if d is not None
+        )
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
             f.write(manifest_to_write)
 

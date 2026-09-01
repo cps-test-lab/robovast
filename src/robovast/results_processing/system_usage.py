@@ -13,7 +13,7 @@ the UI as a process nobody can find. So it gets its own table.
 **Column-generic, deliberately.** This module names no metric. The sampler decides what a
 container can report (``monitor_resources.PROBES``), writes it as a header, and everything
 downstream carries it through: here by passing every non-key column verbatim, and in the
-CSV -> ``data.db`` ingest because that step already types columns from what it finds. Adding a
+CSV -> index ingest because that step already types columns from what it finds. Adding a
 counter is therefore a change to the sampler and to nothing else -- which is the property
 ``resource_usage`` does not have, where the column list is repeated in five places.
 """

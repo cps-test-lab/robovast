@@ -31,7 +31,6 @@ from robovast.common.common import load_config
 from robovast.common.plugin_ref import is_file_ref, load_ref
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing_plugins import generate_data_db
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 
@@ -551,7 +550,7 @@ def campaign_defines_postprocessing(campaign_dir: str) -> bool:
     under a results dir". Used to decide whether a finished campaign's stored data is
     the *postprocessed* archive or the minimal pre-postprocess data: a ``.vast`` with
     no ``results_processing.postprocessing`` entries yields the minimal data even
-    though the run still reaches ``finished`` (and still builds ``data.db``).
+    though the run still reaches ``finished``.
     """
     config_dir = os.path.join(campaign_dir, "_config")
     if not os.path.isdir(config_dir):
@@ -829,21 +828,54 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     all_provenance_entries = (_staged_provenance_entries(campaign_dir)
                               + all_provenance_entries)
 
-    # Write postprocessing.yaml in campaign/_transient/
-    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
-
     _record_campaign_providers(campaign_dir, output)
 
 
-    # Build SQLite data.db for the campaign
+    # Load the campaign into the central index. This is what used to write a per-campaign
+    # data.db -- a 1.1 GB SQLite file that then had to be uploaded and downloaded again on
+    # the first cold query, and that could only ever answer about one campaign.
+    #
+    # A failure here fails postprocessing, deliberately and without a fallback. The run
+    # artifacts are untouched in the object store and re-ingest is the ordinary path, so
+    # nothing is lost -- the campaign is simply not queryable until postprocessing is
+    # re-run. Continuing quietly would be worse: "finished" would stop meaning "queryable",
+    # and the difference would surface only when somebody asked a question and got nothing
+    # back. See ``common.index_db`` on why there is no degraded mode anywhere on this path.
     if skip_db:
-        output("Skipping data.db creation")
+        output("Skipping index ingest")
     else:
-        db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
-        if db_success:
-            output(f"✓ {db_msg}")
-        else:
-            raise RuntimeError(f"data.db generation failed: {db_msg}")
+        from robovast.common import index_db  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing import \
+            campaign_ingest  # pylint: disable=import-outside-toplevel
+
+        campaign_id = os.path.basename(os.path.normpath(campaign_dir))
+        with index_db.connect() as conn:
+            # Entries passed in rather than read back from the record, because the record
+            # is written after this ingest (see below) -- so on a campaign's FIRST
+            # postprocessing there is no file yet, and postprocessing_steps came out empty.
+            totals = campaign_ingest.ingest_campaign(
+                conn, campaign_dir, campaign_id,
+                provenance_entries=all_provenance_entries)
+        rows = sum(totals.values())
+        output(f"✓ Indexed {campaign_id}: {rows} rows across {len(totals)} tables")
+
+    # The provenance record is written LAST, after the ingest, and the ordering is the
+    # point rather than an accident of where the call sits.
+    #
+    # This file is now the evidence that a campaign is postprocessed -- both for the
+    # archive variant (`share_providers.naming.variant_from_record`) and for
+    # `Status.postprocessed` (`common.campaign_data.campaign_has_derived_data`), which
+    # used to prove it from a finished `data.db` and its absent WAL sidecars. A file has
+    # no equivalent of those sidecars, so "finished" has to come from *when* it is
+    # written: written before the ingest, it would claim results for a campaign whose rows
+    # are not in the index -- and the ingest is the step most likely to fail, since it is
+    # the one that needs the index to be up. Written after, its presence means every step
+    # that produces derived data has already succeeded.
+    #
+    # `skip_db` is deliberately not special-cased: a caller who skipped the ingest asked
+    # for a campaign that is not queryable, and the record still describes what was
+    # derived, which is what an archive's recipient reads it for.
+    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Generate metadata.yaml in each campaign directory
     if skip_metadata:

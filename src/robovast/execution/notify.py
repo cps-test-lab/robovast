@@ -125,7 +125,7 @@ class Notifier:
         """The campaign is over. *summary* says what it actually produced.
 
         ``degraded`` is not cosmetic: a campaign whose trials passed but whose
-        postprocessing failed still finishes, with no CSVs and no ``data.db``. Sent at
+        postprocessing failed still finishes, with no CSVs and nothing queryable. Sent at
         the same priority and tag as a clean finish, it read as success on the phone —
         the one place nobody goes back to re-read.
         """

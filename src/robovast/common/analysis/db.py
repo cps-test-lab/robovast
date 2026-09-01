@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read a campaign's results from ``data.db``, scoped to the notebook's ``DATA_DIR``.
+"""Read a campaign's results from the central index, scoped to the notebook's ``DATA_DIR``.
 
 A notebook is handed ``DATA_DIR`` — the directory of the tree node the reader selected, which is
 the campaign root, one configuration, or one run. Everything here takes that path and works out
@@ -25,14 +25,14 @@ So the same cell reads one run or the whole campaign, and a notebook never names
 Reading tables instead of files is what makes an analysis portable across the substrate. The
 per-run files differ by simulator and by whether the run had ROS at all — ``poses.csv`` exists
 only when a rosbag was recorded, ``behaviors.csv`` was replaced by ``behaviors.jsonl`` in
-2026-08 — while ``data.db`` normalizes all of it into tables keyed the same way. The
+2026-08 — while the index normalizes all of it into tables keyed the same way. The
 behaviour-tree ingest is the clearest case: it drops the JSONL header record and splits the
 status into the numeric ``status`` and the ``status_name`` that analysis actually filters on, so
 ``read_table(DATA_DIR, "behaviors")`` is the behaviour-tree reader and there is no format left
 for a notebook to know about.
 
-There is deliberately no fallback to reading those files when ``data.db`` is absent. It is
-absent for one of a few knowable reasons — postprocessing has not run, it failed, or the campaign
+There is deliberately no fallback to reading those files when the campaign's rows are not in
+the index. They are missing for one of a few knowable reasons — postprocessing has not run, it failed, or the campaign
 is still going — and each has a remedy the caller should hear, none of which is "silently answer a
 different question with less data".
 """
@@ -42,22 +42,6 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple, Union
 
 import pandas as pd
-
-#: Layout of ``data.db`` that this reader understands, stamped by the builder into sqlite's
-#: ``PRAGMA user_version``.
-#:
-#: Unlike :data:`robovast.common.store.SCHEMA_VERSION` there is **no migration table beside
-#: this constant, and there should never be one.** ``campaign.db`` is authored — written as the
-#: campaign runs, and the only record of what happened — so an old one has to be migrated in
-#: place. ``data.db`` is derived: postprocessing deletes and rebuilds it from the run
-#: directories, which keep their CSV/JSONL forever. Re-running postprocessing re-executes no
-#: trial, so regeneration is both exact and cheap, and a migration would be code maintained to
-#: reproduce what the builder already does.
-#:
-#: Bump this when the builder's layout changes. It does not gate reads: what decides whether a
-#: query works is whether the columns are there, which :func:`read_table`'s ``require`` checks
-#: directly. The version only sharpens the error when they are not.
-DATA_DB_SCHEMA_VERSION = 2
 
 _LEVELS = ("campaign", "config", "run")
 
@@ -116,7 +100,7 @@ def open_campaign_store(data_dir: Union[str, Path]) -> sqlite3.Connection:
 
     The campaign's own record -- what was proposed, in which batch, and what it scored -- as
     opposed to :func:`open_campaign_db`, which is the postprocessed *measurements* and needs
-    ``data.db`` to exist for them. A search notebook wants this one: it is written as the
+    the campaign to be ingested for them. A search notebook wants this one: it is written as the
     search runs, so a batch or archive view works while the campaign is still going and on one
     that was never postprocessed, which is exactly when watching a search is worth anything.
 
@@ -137,56 +121,70 @@ def open_campaign_store(data_dir: Union[str, Path]) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{store}?mode=ro", uri=True)
 
 
-def open_campaign_db(data_dir: Union[str, Path]) -> sqlite3.Connection:
-    """Open the campaign's databases read-only. The caller must ``close()`` the connection.
+def open_campaign_db(data_dir: Union[str, Path]):
+    """Open the campaign's data read-only. The caller must ``close()`` the connection.
 
-    ``campaign.db`` is attached as schema ``campaign``, and the ``run_view``/``config_view``
-    temp views are available — see :func:`robovast.results_processing.data_query.open_data_db`,
-    which does that work.
+    A connection to the central index, where campaign dimensions live in schema ``campaign``
+    and the ``run_view``/``config_view`` views are available -- see
+    :func:`robovast.results_processing.data_query.open_data_db`, which does that work.
+
+    **What comes back is Postgres, not sqlite.** Parameters are ``%s``, and every table holds
+    every campaign, so SQL written against it must say which campaign it means. The readers
+    in this module do that for you; :func:`read_sql` hands you the id to do it yourself.
     """
-    root = campaign_root(data_dir)
-    _require_data_db(root)
+    _require_ingested(campaign_root(data_dir))
     # Imported here, not at module scope: `robovast.results_processing` pulls in the whole
     # postprocessing stack on import, and this package is what a notebook imports first.
-    from robovast.results_processing.data_query import open_data_db
-    return open_data_db(root)
+    from robovast.results_processing import index_query
+    # Deliberately NOT `data_query.open_data_db`, which is the plugin seam and hands back
+    # dict rows. `pandas.read_sql` over a dict-row connection returns each column's *name*
+    # as its value in every cell -- a frame of the right shape and the right length, full of
+    # header strings, with nothing raised. Tuple rows are what pandas expects, so that is
+    # what the notebook path opens.
+    # Scoped to the campaign the notebook opened. Every table holds every campaign, so a
+    # notebook cell that forgets the predicate would otherwise plot the corpus under this
+    # campaign's title -- silently, and in the right shape. A cell that genuinely means to
+    # span campaigns opens the index itself with the ids it wants.
+    return index_query.open_index(readonly=True,
+                                  campaigns=[campaign_root(data_dir).name])
 
 
-def _require_data_db(root: Path) -> None:
-    """Fail with the remedy when the campaign has no postprocessed results.
+def campaign_id(data_dir: Union[str, Path]) -> str:
+    """Which campaign *data_dir* belongs to -- the value every query must filter on."""
+    return campaign_root(data_dir).name
 
-    ``open_data_db`` deliberately degrades to an empty in-memory database so ``campaign.db``
-    stays reachable for callers that only want live progress. For a notebook reading metrics
-    that would surface one table at a time as ``no such table: behaviors``, which names neither
-    the real cause nor the fix.
+
+def _require_ingested(root: Path) -> None:
+    """Fail with the remedy when the campaign's results are not in the index.
+
+    The distinction this exists to preserve: **not ingested and ingested-but-empty are
+    different answers.** One index holds every campaign, so a query for a campaign that was
+    never postprocessed returns zero rows exactly as a campaign that genuinely measured
+    nothing does -- and zero rows is a claim about the experiment, not about the pipeline.
+    Without this check a notebook would plot an empty frame and read it as a result.
     """
-    if (root / "_execution" / "data.db").exists():
+    from robovast.results_processing import index_query
+    # IndexUnreachableError propagates deliberately: "the index is down" and "this
+    # campaign was never ingested" are different answers, and only the second is a fact
+    # about the campaign.
+    if index_query.campaign_is_ingested(root.name):
         return
-    raise CampaignDataError(
-        f"Campaign {root.name} has no _execution/data.db, so there are no results to read "
-        f"yet.\n\n"
-        f"If the campaign has finished, postprocessing did not run or did not succeed "
-        f"(check `postprocessed` and `postprocessing_error` in its status). Build it with "
-        f"`run_postprocessing`, or `vast campaign postprocess {root.name}` -- this re-runs "
-        f"no trial, it rebuilds the tables from the run directories and _jobs/, which are "
-        f"kept.\n"
-        f"If it is still running, data.db is written when it finishes.")
+    raise CampaignDataError(index_query.missing_campaign_note(root.name))
 
 
-def _schema_version(conn: sqlite3.Connection) -> int:
-    """The layout stamp, or 0 for a database built before stamping."""
-    return conn.execute("PRAGMA user_version").fetchone()[0]
+def _outdated_hint(conn) -> str:
+    """No layout stamp to report against.
+
+    ``data.db`` carried a ``PRAGMA user_version`` so a stale rebuild could be named in an
+    error. The index has no equivalent and needs none: it is derived, re-ingest is the
+    definition of correct, and a campaign is either ingested or it is not -- which
+    :func:`_require_ingested` has already established by the time any of this runs.
+    """
+    del conn
+    return ""
 
 
-def _outdated_hint(conn: sqlite3.Connection) -> str:
-    version = _schema_version(conn)
-    if version >= DATA_DB_SCHEMA_VERSION:
-        return ""
-    return (f" This data.db was built by an older layout (v{version}, current is "
-            f"v{DATA_DB_SCHEMA_VERSION}); re-running postprocessing rebuilds it.")
-
-
-def _sql_name(conn: sqlite3.Connection, table: str) -> str:
+def _sql_name(conn, table: str) -> str:
     """The table's SQL name, which the ingest may have derived from a filename.
 
     ``_table_name_map`` is the ingest's own record of that mapping (``run.clock_map.csv`` ->
@@ -194,10 +192,13 @@ def _sql_name(conn: sqlite3.Connection, table: str) -> str:
     """
     try:
         row = conn.execute(
-            "SELECT sql_name FROM _table_name_map WHERE display_name = ?", (table,)).fetchone()
-    except sqlite3.Error:
+            "SELECT sql_name FROM _table_name_map WHERE display_name = %s LIMIT 1",
+            (table,)).fetchone()
+    except Exception:  # pylint: disable=broad-except
         return table
-    return row[0] if row else table
+    if not row:
+        return table
+    return row["sql_name"] if isinstance(row, dict) else row[0]
 
 
 def list_tables(data_dir: Union[str, Path]) -> list:
@@ -209,12 +210,9 @@ def list_tables(data_dir: Union[str, Path]) -> list:
     """
     conn = open_campaign_db(data_dir)
     try:
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' "
-            "ESCAPE '\\' ORDER BY name").fetchall()
-        return [r[0] for r in rows]
+        return _result_tables(conn, campaign_id(data_dir))
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
 def table_info(data_dir: Union[str, Path], table: str) -> "dict[str, str]":
@@ -227,24 +225,47 @@ def table_info(data_dir: Union[str, Path], table: str) -> "dict[str, str]":
     try:
         return _table_columns(conn, _sql_name(conn, table))
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
-def _table_columns(conn: sqlite3.Connection, sql_name: str) -> "dict[str, str]":
-    rows = conn.execute(f'PRAGMA table_info("{sql_name}")').fetchall()
-    return {r[1]: r[2] for r in rows}
+def _result_tables(conn, campaign: str) -> list:
+    """The tables *campaign* actually has rows in, excluding the ingest's bookkeeping.
+
+    Scoped, and that is the whole point. ``list_tables`` describes the index, which holds
+    every campaign -- so unscoped it would answer "what tables exist anywhere" to a caller
+    asking "what did this campaign produce", and a campaign that recorded no rosbag would be
+    told it has ``poses`` because some other campaign does.
+    """
+    from robovast.results_processing import index_query
+    return sorted(t["table"] for t in index_query.list_tables(conn, campaign_id=campaign)
+                  if t.get("rows"))
 
 
-def _check_table(conn: sqlite3.Connection, table: str, sql_name: str) -> "dict[str, str]":
-    """Resolve a table to its columns, or explain what is missing and why."""
+def _table_columns(conn, sql_name: str) -> "dict[str, str]":
+    rows = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = %s ORDER BY ordinal_position",
+        (sql_name,)).fetchall()
+    if rows and isinstance(rows[0], dict):
+        return {r["column_name"]: r["data_type"] for r in rows}
+    return {r[0]: r[1] for r in rows}
+
+
+def _check_table(conn, campaign: str, table: str, sql_name: str) -> "dict[str, str]":
+    """Resolve a table to its columns, or explain what is missing and why.
+
+    "Missing" is judged **for this campaign**, not for the index. Under one ``data.db`` per
+    campaign the two were the same question; they no longer are, and taking the index's
+    answer would silently retire the explanations below -- a campaign whose image shipped a
+    scenario_execution predating ``--bt-log`` would stop being told why it has no behaviour
+    tree the moment any other campaign in the index had one, and get an empty frame instead.
+    """
     columns = _table_columns(conn, sql_name)
-    if columns:
+    present = _result_tables(conn, campaign)
+    if columns and table in present:
         return columns
 
-    available = ", ".join(
-        r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' "
-            "ESCAPE '\\' ORDER BY name")) or "(none)"
+    available = ", ".join(present) or "(none)"
     hint = ""
     if table == "behaviors":
         # How a passing run ends up with no scenario tree. Silent by construction, so the
@@ -253,11 +274,11 @@ def _check_table(conn: sqlite3.Connection, table: str, sql_name: str) -> "dict[s
                 "scenario_execution predating --bt-log: the flag is dropped rather than "
                 "refused, so the run passes and writes nothing.")
     raise CampaignDataError(
-        f"No table {table!r} in this campaign's data.db. Tables it has: {available}."
+        f"No table {table!r} in this campaign's results. Tables it has: {available}."
         + hint + _outdated_hint(conn))
 
 
-def _check_columns(conn: sqlite3.Connection, table: str, columns: "dict[str, str]",
+def _check_columns(conn, table: str, columns: "dict[str, str]",
                    require: Iterable) -> None:
     missing = [c for c in require if c not in columns]
     if not missing:
@@ -267,19 +288,32 @@ def _check_columns(conn: sqlite3.Connection, table: str, columns: "dict[str, str
         f"It has: {', '.join(columns)}." + _outdated_hint(conn))
 
 
-def _scope_clause(level: str, config_name: Optional[str],
+def _scope_clause(campaign: str, level: str, config_name: Optional[str],
                   run_id: Optional[int], columns: "dict[str, str]") -> Tuple[str, list]:
-    """The ``WHERE`` restricting a campaign-wide table to the selected node.
+    """The ``WHERE`` restricting a table to the selected node.
 
-    Applied only to tables actually keyed by run. The campaign-wide ones (``config_view``, and
-    anything a future ingest adds) have no such columns, and filtering them would be an error
-    rather than a narrowing.
+    **``campaign_id`` is always applied, and that is the load-bearing part.** Every campaign
+    now shares one index, so the campaign level -- which used to mean "no filter", because the
+    file already was the campaign -- would otherwise mean *all 153 of them*: a notebook opened
+    on one campaign would silently plot the corpus, and the frame would look entirely
+    ordinary. Widening a scope is the one failure here that produces no error and no empty
+    result, so it is the one worth spending a predicate on unconditionally.
+
+    Below that, scoping is applied only to tables actually keyed by run. The campaign-wide
+    ones (``config_view``, and anything a future ingest adds) have no such columns, and
+    filtering them would be an error rather than a narrowing.
     """
-    if level == "campaign" or "config_name" not in columns:
+    clause = ["campaign_id = %s"] if "campaign_id" in columns else []
+    values = [campaign] if clause else []
+    if level != "campaign" and "config_name" in columns:
+        clause.append("config_name = %s")
+        values.append(config_name)
+        if level == "run" and "run_id" in columns:
+            clause.append("run_id = %s")
+            values.append(run_id)
+    if not clause:
         return "", []
-    if level == "config" or "run_id" not in columns:
-        return "WHERE config_name = ?", [config_name]
-    return "WHERE config_name = ? AND run_id = ?", [config_name, run_id]
+    return "WHERE " + " AND ".join(clause), values
 
 
 def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequence] = None,
@@ -296,7 +330,8 @@ def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequenc
         require: Columns the caller cannot work without. Missing ones raise, naming them and
             what the table does have — so a layout change surfaces as an error rather than as
             a frame that is quietly missing a column, or empty.
-        where: Extra SQL predicate, ANDed with the scope restriction. Use ``?`` placeholders.
+        where: Extra SQL predicate, ANDed with the scope restriction. Use ``%s``
+            placeholders (the index is Postgres; ``?`` is a syntax error there).
         params: Values for those placeholders.
         with_params: Attach each scenario parameter of the owning run as a column — see
             :func:`attach_params`. What a metric varied *with* is usually the question, and
@@ -306,24 +341,25 @@ def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequenc
         A DataFrame, empty (with the right columns) when the node produced no rows.
     """
     level, config_name, run_id = run_scope(data_dir)
+    campaign = campaign_id(data_dir)
     conn = open_campaign_db(data_dir)
     try:
         sql_name = _sql_name(conn, table)
-        available = _check_table(conn, table, sql_name)
+        available = _check_table(conn, campaign, table, sql_name)
         if require:
             _check_columns(conn, table, available, require)
         if columns:
             _check_columns(conn, table, available, columns)
 
         selected = ", ".join(f'"{c}"' for c in columns) if columns else "*"
-        clause, values = _scope_clause(level, config_name, run_id, available)
+        clause, values = _scope_clause(campaign, level, config_name, run_id, available)
         if where:
             clause = f"{clause} AND ({where})" if clause else f"WHERE {where}"
             values = [*values, *params]
 
         frame = pd.read_sql(f'SELECT {selected} FROM "{sql_name}" {clause}', conn, params=values)
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
     return attach_params(frame, data_dir) if with_params else frame
 
@@ -405,14 +441,39 @@ def read_runs(data_dir: Union[str, Path]) -> pd.DataFrame:
 
 
 def read_sql(data_dir: Union[str, Path], sql: str, params: Sequence = ()) -> pd.DataFrame:
-    """Run *sql* against the campaign's databases and return the result.
+    """Run *sql* against the index and return the result.
 
-    The escape hatch, for joins and for the ``run_view``/``config_view`` views. **Not scoped**
-    — a query issued from a run directory still sees the whole campaign unless it says
-    otherwise, because a query spanning runs is usually the point of writing one.
+    The escape hatch, for joins and for the ``run_view``/``config_view`` views. Use ``%s``
+    placeholders, or ``%(name)s`` named ones -- this is Postgres, not sqlite.
+
+    **Scoped to this notebook's campaign, by the index rather than by the query.** One
+    index holds every campaign, so an unfiltered ``SELECT * FROM poses`` used to return the
+    whole corpus -- a perfectly ordinary frame, with no error and nothing empty to notice.
+    The session is now confined to ``data_dir``'s campaign
+    (:mod:`robovast.results_processing.index_scope`), so the widest a cell can reach is the
+    campaign it was written for.
+
+    The id is still bound for you as ``%(campaign_id)s``, whether *params* is a sequence or
+    a mapping, for a query that wants it in a join or a label:
+
+        read_sql(DATA_DIR, "SELECT * FROM poses WHERE campaign_id = %(campaign_id)s")
+
+    Comparing the campaigns of a search arm is still one query rather than nine databases
+    fetched and attached -- but it is asked for: open the index with the ids it may see
+    (``index_query.open_index(campaigns=[...])``) and query that connection.
     """
+    campaign = campaign_id(data_dir)
+    if isinstance(params, dict):
+        bound = {"campaign_id": campaign, **params}
+    elif params:
+        # Positional and named placeholders cannot be mixed in one psycopg statement, so a
+        # caller passing positional params gets them through unchanged rather than a
+        # confusing failure about %(campaign_id)s -- they can filter with a positional %s.
+        bound = list(params)
+    else:
+        bound = {"campaign_id": campaign}
     conn = open_campaign_db(data_dir)
     try:
-        return pd.read_sql(sql, conn, params=list(params))
+        return pd.read_sql(sql, conn, params=bound)
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member

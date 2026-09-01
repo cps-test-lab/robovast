@@ -224,7 +224,7 @@ def _data_fingerprint(data_dir: str) -> str:
 
     Not contents, because a node can hold gigabytes of rosbag and this runs before every
     render. Path + size catches what actually happens to a results node: postprocessing
-    adds files (poses.csv, data.db) and rewrites others. It cannot see an edit that keeps
+    adds files (poses.csv, postprocessing.yaml) and rewrites others. It cannot see an edit that keeps
     a file's size identical -- accepted, since results are written once by a pipeline
     rather than edited in place, and the alternative costs a full read of the campaign.
     """

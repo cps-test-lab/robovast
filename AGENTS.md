@@ -37,7 +37,8 @@ pulled every rosbag to read one small `.vast`, once per campaign, on every Resul
 
 So a caller states its need, and pays only that:
 
-- `_query_dir` — the two databases a SQL query opens;
+- `_query_dir` — the campaign a SQL query names (it reads the central index, and
+  fetches nothing);
 - `_config_dir` — the frozen `_config` snapshot (declared plots, panel assets);
 - `_whole_campaign_dir` — everything, when the caller genuinely cannot know which files
   it will read (notebook rendering, the `/results` address space).

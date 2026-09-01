@@ -107,3 +107,41 @@ def test_cast_expr_retypes_a_stored_column_but_leaves_unknown_alone():
 def test_sql_value_json_encodes_containers():
     assert sql_value([{"x": 1.0}], TEXT) == '[{"x": 1.0}]'
     assert sql_value("1.5", REAL) == pytest.approx(1.5)
+
+
+# -- booleans, which only a .jsonl source produces ---------------------------
+
+def test_a_json_boolean_is_stored_as_one_or_zero():
+    """`behaviors.jsonl` carries a real JSON `is_active`, and it must store as 1/0.
+
+    `value_type` already judges a bool INTEGER -- deliberately, since bool is an int
+    subclass and sqlite3 stored a Python bool as 1/0 whatever the column was declared.
+    The conversion has to agree, or the declared type and the written value disagree.
+    """
+    assert sql_value(True, INTEGER) == 1
+    assert sql_value(False, INTEGER) == 0
+
+
+def test_a_boolean_is_not_left_for_the_driver_to_adapt():
+    """The regression this pins, which cost a campaign its postprocessing.
+
+    Left unconverted, psycopg adapts a Python bool to Postgres' own `t`/`f` literal, and
+    COPY into the bigint that inference declared for the column fails outright:
+    `invalid input syntax for type bigint: "f"`. The runs had already been paid for by
+    the time the ingest ran, so this surfaced at the most expensive possible moment.
+    """
+    for declared in (INTEGER, REAL, TEXT, UNKNOWN):
+        assert sql_value(False, declared) == 0, (
+            f"a bool must not reach the driver as a bool, whatever the column says "
+            f"it holds (declared {declared})")
+        assert not isinstance(sql_value(False, declared), bool)
+
+
+def test_the_declaration_and_the_value_agree_for_a_boolean_column():
+    """Inference and conversion must reach the same answer, which is the actual bug."""
+    rows = [{"is_active": True}, {"is_active": False}]
+
+    declared = infer_column_types(rows, ["is_active"])["is_active"]
+
+    assert declared == INTEGER
+    assert all(isinstance(sql_value(r["is_active"], declared), int) for r in rows)

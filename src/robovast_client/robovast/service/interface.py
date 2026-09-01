@@ -1695,7 +1695,7 @@ class DataTable(BaseModel):
 
 
 class DataDescribe(BaseModel):
-    """Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).
+    """Schema of a campaign's tables in the index (+ the ``campaign`` schema).
 
     Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
     the query helper verbatim — kept as a dict so ``schema`` stays that key across
@@ -1870,7 +1870,7 @@ class CampaignPanelsResponse(BaseModel):
     contributed ones no ``.vast`` has to write (the ``playback`` transport
     always, a ``scene3d`` for a simulator that records a capture). Each entry
     is the flattened panel dict (``type`` + ``position`` + panel-specific data
-    bindings), rendered by the web run-view against the campaign's ``data.db``.
+    bindings), rendered by the web run-view against the campaign's results tables.
     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
     the table + column that defines the playback range for non-ROS runs.
     ``transport_only`` answers, for the run view, whether any of it is content."""
@@ -2585,7 +2585,7 @@ class RobovastInterface(ABC):
         :func:`~robovast.common.campaign_data.record_intervention` records it *before* the command
         runs -- the same ordering :meth:`stop_job` uses, and for the same reason: a crash in
         between must not leave perturbed data with no explanation. Every run the job covers is
-        marked, which surfaces as ``runs.probed`` in ``data.db``.
+        marked, which surfaces as ``runs.probed`` in the results index.
 
         That is the whole line between this and :meth:`get_job_state`: there the service chooses a
         fixed read, so nothing arbitrary can ride in and nothing needs recording. Here the *caller*
@@ -2750,8 +2750,8 @@ class RobovastInterface(ABC):
         through somebody's laptop to get between two servers. After it the campaign is
         indistinguishable from one that ran here — which takes registration, not just
         extraction, since listings and the web UI answer from ``campaign.db`` rather than
-        from the results tree. When what arrived was **raw** (no ``_execution/data.db``, which
-        is what the share holds) postprocessing is chained, because a campaign without its
+        from the results tree. When what arrived was **raw** -- no postprocessing provenance
+        record, which is what the share holds -- postprocessing is chained, because a campaign without its
         metric tables is not one anybody can ask anything.
 
         Returns a :class:`CampaignRef`, not a report: the work is a download, a
@@ -2971,7 +2971,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_campaign_data(self, campaign_id: str) -> DataDescribe:
-        """Describe a campaign's ``data.db`` schema (+ attached ``campaign.db``).
+        """Describe a campaign's tables in the index (+ the ``campaign`` schema).
 
         The dir is resolved per transport (local disk / object-store fetch); the
         query logic is shared with the MCP ``run_data`` plugin
@@ -2981,10 +2981,18 @@ class RobovastInterface(ABC):
     @abstractmethod
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids: Optional[list[str]] = None,
-        max_bytes: Optional[int] = None,
+        max_bytes: Optional[int] = None, campaigns: Optional[list] = None,
     ) -> DataQueryResult:
-        """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached).
+        """Run a read-only ``SELECT`` over a campaign's data.
+
+        The campaign record is reachable in the same query as schema ``campaign``. The
+        session is **confined to** *campaign_id*: the rows of every campaign live in one
+        index, so a query that omits ``WHERE campaign_id = ...`` would otherwise answer
+        with the corpus, in the same columns and with nothing to say it had.
+
+        A query may still span campaigns -- that is what one index is for -- by naming
+        them in *campaigns*. Deliberate rather than default, because spanning them by
+        accident and on purpose look identical in the reply.
 
         The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
         size. The size ceiling defaults to a *context* budget, because the caller that
@@ -2993,10 +3001,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def stream_campaign_query_csv(
-        self, campaign_id: str, sql: str,
-        extra_campaign_ids: Optional[list[str]] = None,
-    ):
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str):
         """The same ``SELECT``, yielded as CSV text with **no row cap**.
 
         :meth:`query_campaign_data_sql` clamps at 5000 rows and reports ``truncated``,
@@ -3095,7 +3100,7 @@ class RobovastInterface(ABC):
     def list_campaign_panels(self, campaign_id: str) -> CampaignPanelsResponse:
         """Return the campaign's run-view panels (top-level ``visualization.panels``
         in its snapshot ``.vast``): the raw panel dicts, rendered by the web run-view
-        against the campaign's ``data.db``."""
+        against the campaign's results tables."""
 
     @abstractmethod
     def get_panels_source(self, campaign_id: str) -> PanelsSource:

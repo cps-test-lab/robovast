@@ -522,8 +522,8 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
 
     Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
     not from the results tree, so a campaign that is only unpacked is invisible. And when
-    the archive is a **raw** one -- no ``_execution/data.db``, which is what the share holds
-    -- postprocessing is chained automatically, because a campaign without its metric tables
+    the archive is a **raw** one -- carrying no postprocessing record, which is what the
+    share holds -- postprocessing is chained automatically, because a campaign without its metric tables
     is not one you can ask anything.
 
     Long-running, so it returns once the import is under way: the campaign appears
@@ -572,8 +572,8 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
     """(Re)run analysis postprocessing for CAMPAIGN.
 
     The campaign is the address, and the service is the lane: the rosbag->CSV step runs
-    wherever that campaign's runs ran -- in-cluster for a cluster campaign -- and
-    ``data.db`` is rebuilt. Mirrors the web "Retrigger postprocessing" action and the MCP
+    wherever that campaign's runs ran -- in-cluster for a cluster campaign -- and the
+    campaign's derived data is rebuilt. Mirrors the web "Retrigger postprocessing" action and the MCP
     ``run_postprocessing`` tool, so all three drive one implementation.
 
     This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the

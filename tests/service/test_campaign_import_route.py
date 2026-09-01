@@ -208,7 +208,8 @@ def test_the_stage_report_is_written_where_a_client_can_read_it(env, tmp_path):
     _settle(client, fixture.name)
 
     report = _report(transport, fixture.name)
-    assert set(report["stages"]) == {"layout", "config", "campaign_store", "analysis_db"}
+    assert set(report["stages"]) == {"layout", "config", "campaign_store", "index",
+                                     "analysis_db"}
     assert report["campaign_id"] == fixture.name
     # Served over the file route too, which is how the web UI reads it.
     served = client.get(f"/results/{fixture.name}/_execution/import.json?as=text&lines=0")

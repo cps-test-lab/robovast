@@ -19,7 +19,7 @@
 Some of what a run produced is not written by the run. Container logs, ``/rosout``, the
 clock map and the resource monitor's samples are written per **job**, under
 ``_jobs/[<batch>/]job-N/`` — one job can serve several runs. Meanwhile
-``generate_data_db`` only globs run directories, so the way such an artifact becomes a
+``campaign_ingest`` only globs run directories, so the way such an artifact becomes a
 table is always the same: read it once per job, cut it to each run, and write the result
 into the run directory where the glob already looks.
 

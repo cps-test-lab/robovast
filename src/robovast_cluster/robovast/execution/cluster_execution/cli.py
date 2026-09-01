@@ -1000,7 +1000,8 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     from .cluster_setup import apply_controller_rbac
     from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
-                                 wait_for_rollout, wait_for_service_ready)
+                                 verify_store_pod_infrastructure, wait_for_rollout,
+                                 wait_for_service_ready)
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1022,12 +1023,18 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         public_origin = published_url(namespace, kube_context)
         ingress_host = public_origin.split("://", 1)[-1] if public_origin else ""
 
+        # Before anything is changed. This upgrade renders a service pod that no longer
+        # contains the registry or the index -- they belong to the store pod now -- so on a
+        # cluster whose store pod predates the move it would take both away and put neither
+        # back. That cluster needs cleanup + setup, and must hear so before the roll.
+        verify_store_pod_infrastructure(namespace, kube_context)
+
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
         click.echo("  reconciling RBAC...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
-            click.echo("  added the registry's /v2 route to the existing Ingress")
+            click.echo("  pointed the Ingress' /v2 route at the registry")
         # --no-restart stops here, and everything above this line is why it can: RBAC is
         # evaluated by the API server per request, and
         # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
@@ -1266,9 +1273,19 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement, vas
                 sys.exit(1)
             key, value = option.split('=', 1)
             cluster_kwargs[key] = value
-        delete_server(config_name=config_name, forget_placement=forget_placement,
-                      **cluster_kwargs)
+        removed = delete_server(config_name=config_name, forget_placement=forget_placement,
+                                **cluster_kwargs) or {}
         click.echo("✓ Cluster cleanup completed successfully!")
+        governor = removed.get("cpu_governor")
+        if governor == "removed":
+            # Said out loud because it is a lasting change to a machine RoboVAST is a guest
+            # on: the DaemonSet does not restore the previous governor when it stops, and
+            # nothing recorded what it was, so the nodes stay pinned until they reboot.
+            click.echo("  CPU governor DaemonSet removed; the nodes STAY on 'performance' "
+                       "until something changes it (a reboot restores their own default)")
+        elif governor == "failed":
+            click.echo("  could not remove the CPU governor DaemonSet — its pods are still "
+                       "running on every node; see the warning above", err=True)
         if forget_placement:
             click.echo("  placement labels removed; the next setup picks a node again")
             click.echo("  the data under the hostPaths is NOT removed by this")

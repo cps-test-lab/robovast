@@ -36,9 +36,26 @@ would be graded by nav2's idea of healthy.
    without re-running anything. That is why ``value`` exists at all: a finding says *bad*, a
    measure says *how bad*, and a floor is found in the knee of a curve.
 
-**What a check reads.** The run's already-derived tables in ``data.db`` -- for nav2 that
-would be ``nav2_behaviors``, ``nav2_behavior_tree`` and the control-loop warnings in
-``run_log``; for MoveIt 2, planning time and solve failures. None of that is known here.
+**What a check reads.** The campaign's already-derived tables in the central index -- for
+nav2 that would be ``nav2_behaviors``, ``nav2_behavior_tree`` and the control-loop warnings
+in ``run_log``; for MoveIt 2, planning time and solve failures. None of that is known here.
+
+**The check contract is** ``check(conn, campaign_id)``, **and the second argument is not
+optional.** The index holds every campaign in one set of tables, so a query without
+``WHERE campaign_id = %s`` reads the whole corpus: a check would grade runs from campaigns
+it never saw, and the rows it wrote would be attributed to this one. *campaign_id* is a
+required positional parameter with no default precisely so an unported third-party check
+raises rather than doing that quietly -- an arity error is recoverable, a corpus-wide
+``ok`` row is not. What the arity cannot catch is a ported check that takes the argument
+and forgets to use it in one of its statements; that stays the check author's
+responsibility, and it is the single thing to look for when reviewing one.
+
+Placeholders are Postgres' ``%s``, not SQLite's ``?``. Campaign dimension tables (
+``campaign``, ``batch``, ``unit``, ``run``, ``job``, ``node``, ``container_failure``) live
+in the ``campaign`` schema and must be written ``campaign.job``; metric tables (``runs``,
+``run_log``, ...) are unqualified. ``CAST(x AS REAL)`` is a trap carried over from SQLite:
+Postgres' ``real`` is 4 bytes and silently mangles epoch timestamps -- use
+``double precision``.
 
 **Scoping to the trial, without a phase system.** ``run_log`` carries ``sim_time`` (NULL for
 every row written before the clock existed) and ``in_window`` (the trial window). So "after
@@ -54,6 +71,9 @@ import inspect
 import logging
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+
+from robovast.results_processing import index_schema
+from robovast.results_processing.csv_types import REAL, TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -170,36 +190,78 @@ def _rows_from(check_name, result):
         yield row
 
 
-def build_run_health_table(conn, checks=None, source: str = SOURCE_STACK) -> int:
-    """Create ``run_health`` and fill it from *checks*. Returns the row count.
+#: The table's columns, declared rather than inferred so it has its full shape even for a
+#: campaign whose checks had nothing to say. ``value`` is ``REAL`` -- ``double precision``
+#: in the index -- because it carries a measure whose scale the plugin chooses.
+_RUN_HEALTH_COLUMNS = {
+    "check_name": TEXT, "level": TEXT, "value": REAL, "unit": TEXT,
+    "detail": TEXT, "source": TEXT,
+}
+
+#: What a check that still has the pre-index signature is told. Spelled out rather than left
+#: as a bare ``TypeError`` because the fix is not obvious from the traceback: the argument is
+#: new, and the reason it is required is a correctness property of the shared index.
+_OLD_SIGNATURE = (
+    "health check %r has the OLD check(conn) signature; the contract is now "
+    "check(conn, campaign_id). The index holds every campaign in one set of tables, so "
+    "every statement in the check needs a `WHERE campaign_id = %%s` predicate (and "
+    "Postgres `%%s` placeholders, not SQLite `?`). Skipped: its runs are recorded as NOT "
+    "CHECKED rather than graded against the whole corpus."
+)
+
+
+def _accepts_campaign_id(check) -> bool:
+    """Whether *check* can be called as ``check(conn, campaign_id)``.
+
+    Asked before calling rather than by catching ``TypeError`` from the call, because a
+    ``TypeError`` raised *inside* a correct check would otherwise be reported as a signature
+    problem and send its author looking in the wrong place.
+    """
+    # A check is a function or a callable instance; for the latter the signature that
+    # matters is its bound ``__call__``, whose ``self`` is already applied.
+    target = check if inspect.isroutine(check) else getattr(check, "__call__", check)  # noqa: B004
+    try:
+        inspect.signature(target).bind(object(), "campaign-id")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def build_run_health_table(sink, conn, campaign_id: str, checks=None,
+                           source: str = SOURCE_STACK) -> int:
+    """Run *checks* against one campaign in the index and write their rows; return the count.
+
+    Each check is called ``check(conn, campaign_id)`` and must scope every statement it
+    issues to *campaign_id* -- see the module docstring on why that argument is required.
 
     **The table is created even when nothing fills it.** An absent table and an empty one say
     different things -- "this campaign predates health checks" versus "they ran and found
     nothing to say" -- and only the second is evidence. Rule 2 is about runs; this is the same
     rule one level up.
-    """
-    conn.execute(f"DROP TABLE IF EXISTS {TABLE}")
-    conn.execute(
-        f"CREATE TABLE {TABLE} (config_name TEXT, run_id INTEGER, check_name TEXT, "
-        "level TEXT, value REAL, unit TEXT, detail TEXT, source TEXT)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_run "
-                 f"ON {TABLE} (config_name, run_id)")
 
-    written = 0
+    **Nothing is dropped here.** The old per-campaign writer began by dropping the table; in
+    one shared index that would take every other campaign's grades with it. Idempotence comes
+    from :func:`~robovast.results_processing.index_schema.clear_campaign`, which the ingest
+    runs for this campaign alone before anything is written.
+    """
+    rows = []
     for name, check in (checks or {}).items():
+        if not _accepts_campaign_id(check):
+            logger.error(_OLD_SIGNATURE, name)
+            continue
         try:
-            result = check(conn)
+            result = check(conn, campaign_id)
         except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop the rest
             logger.warning("health check %r failed: %s", name, exc)
             continue
-        rows = [(r.config_name, r.run_id, r.check, r.level,
-                 None if r.value is None else float(r.value),
-                 r.unit, r.detail, source)
-                for r in _rows_from(name, result)]
-        if rows:
-            conn.executemany(
-                f"INSERT INTO {TABLE} (config_name, run_id, check_name, level, value, unit, "
-                "detail, source) VALUES (?,?,?,?,?,?,?,?)", rows)
-            written += len(rows)
-    conn.commit()
-    return written
+        rows.extend(
+            {"config_name": r.config_name, "run_id": r.run_id, "check_name": r.check,
+             "level": r.level, "value": None if r.value is None else float(r.value),
+             "unit": r.unit, "detail": r.detail, "source": source}
+            for r in _rows_from(name, result))
+
+    # ``context`` carries no config_name/run_id: this table's rows each name their own run,
+    # so the per-row value must win over a batch-wide one.
+    return sink.write(TABLE, rows, context={},
+                      types={**dict(index_schema.CONTEXT_COLUMNS), **_RUN_HEALTH_COLUMNS},
+                      source=f"{campaign_id}/health")

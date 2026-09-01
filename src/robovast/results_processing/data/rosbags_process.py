@@ -693,7 +693,7 @@ class RosoutToCsvHandler(RosbagHandler):
             print(f"  ✓ {self._output_file}: {self._record_count} messages")
         else:
             print(f"  ✗ {self._output_file}: no rosout records (min_level={self._min_level})")
-        # Always return the output file (header-only CSV is still useful for generate_data_db)
+        # Always return the output file (header-only CSV is still useful for the index ingest)
         return self._record_count, [self._output_file] if self._csvfile is not None else []
 
     @classmethod

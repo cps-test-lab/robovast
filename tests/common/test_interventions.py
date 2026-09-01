@@ -17,6 +17,7 @@ The three properties that define the feature, one test each:
 * with no ledger, outcomes are byte-identical to what they were before it existed.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -214,11 +215,34 @@ def test_a_killed_run_is_counted_apart_from_the_failures(campaign):
     assert read_run_counts(campaign)["num_killed"] == 1
 
 
-def test_run_view_exposes_the_kill_and_its_reason(campaign):
-    """SQL is how results are read, so the kill has to be filterable and explained there."""
+@pytest.mark.skipif(not os.environ.get("ROBOVAST_TEST_PG_DSN"),
+                    reason="ROBOVAST_TEST_PG_DSN is not set")
+def test_run_view_exposes_the_kill_and_its_reason(tmp_path):
+    """SQL is how results are read, so the kill has to be filterable and explained there.
+
+    The reading path is Postgres now: the campaign's own record is mirrored into the
+    central index by the ingest, and ``run_view`` is a view over it. What is pinned is
+    unchanged -- a killed run is selectable by ``status = 'killed'`` and carries the
+    operator's reason -- but it only reaches SQL if the ingest mirrors the store, so the
+    campaign is ingested here rather than queried off a file.
+
+    Its own campaign directory, not the module fixture's: one index holds every campaign,
+    so the id has to be unique or a re-run reads a previous one's rows.
+    """
     from robovast.common.store import STORE_FILENAME, CampaignStore
+    from robovast.results_processing import campaign_ingest, index_query, index_views
     from robovast.results_processing.data_query import query_data_db
 
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ["ROBOVAST_TEST_PG_DSN"]
+    schema = "interventions_run_view_test"
+    os.environ["ROBOVAST_INDEX_DSN"] = f"{dsn} options=-csearch_path={schema}"
+    with psycopg.connect(dsn, autocommit=True) as setup:
+        setup.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        setup.execute(f"CREATE SCHEMA {schema}")
+
+    campaign_id = "killed-run-view-2026-08-13-120000"
+    campaign = tmp_path / campaign_id
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
     _run(campaign, "cfgA", "1", job_index=1)
     record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1", job_name="cfgA/1",
@@ -232,12 +256,21 @@ def test_run_view_exposes_the_kill_and_its_reason(campaign):
                                  status="evaluated", result_dir="cfgA")
         store.record_runs(unit, read_run_outcomes(campaign / "cfgA", campaign))
 
-    rows = query_data_db(campaign,
-                         "SELECT run_id, status, failure_message FROM run_view "
-                         "WHERE status = 'killed'")["rows"]
-    assert len(rows) == 1
-    assert rows[0]["run_id"] == 1
-    assert rows[0]["failure_message"] == "manually stopped via mcp: never converged"
+    try:
+        with index_query.open_index(readonly=False) as conn:
+            campaign_ingest.ingest_campaign(conn, str(campaign), campaign_id)
+            index_views.create_views(conn)
+
+        rows = query_data_db(campaign,
+                             "SELECT run_id, status, failure_message FROM run_view "
+                             f"WHERE campaign_id = '{campaign_id}' "
+                             "AND status = 'killed'")["rows"]
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == 1
+        assert rows[0]["failure_message"] == "manually stopped via mcp: never converged"
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as teardown:
+            teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
 
 
 # -- probes: the same ledger, a different consequence ---------------------------------------------
@@ -261,29 +294,6 @@ def test_a_probe_and_a_kill_share_one_ledger_but_not_one_meaning(campaign):
     assert sorted(probed_runs(campaign)) == ["cfgA/0"]
     # The probed run keeps the verdict it reached: an intervention is not an outcome.
     assert read_run_outcome(campaign / "cfgA" / "0", campaign)["status"] == "passed"
-
-
-def test_a_probed_run_is_flagged_in_data_db_without_changing_its_status(campaign, tmp_path):
-    """`probed` is a separate column for the reason `killed` is kept out of num_failed: putting a
-    human's action into the measured outcome makes the result unreadable."""
-    import sqlite3
-
-    from robovast.common.campaign_data import KIND_PROBED
-    from robovast.results_processing.postprocessing_plugins import _build_runs_table
-    _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
-    _run(campaign, "cfgA", "1", xml=_PASS_XML, job_index=1)
-    record_intervention(campaign, kind=KIND_PROBED, job_dir="_jobs/batch-0/job-0",
-                        job_name="cfgA/0", source="mcp", detail="uptime",
-                        runs=("cfgA/0",))
-
-    conn = sqlite3.connect(tmp_path / "data.db")
-    _build_runs_table(conn, campaign, [campaign / "cfgA"])
-    rows = dict(conn.execute("SELECT run_id, probed FROM runs").fetchall())
-    statuses = dict(conn.execute("SELECT run_id, status FROM runs").fetchall())
-    conn.close()
-
-    assert rows == {0: 1, 1: 0}
-    assert statuses == {0: "passed", 1: "passed"}, "a probe must not touch the verdict"
 
 
 def test_a_campaign_nobody_touched_has_no_ledger_at_all(campaign):

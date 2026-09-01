@@ -3379,7 +3379,7 @@ class KubernetesBackend(ExecutionBackend):
         A no-op in bytes for a campaign that was never interrupted: the objects are immutable
         and ``download_prefix`` skips a local file whose size already matches, so all this
         costs then is the listing. Best-effort is not an option here -- a truncated tree would
-        yield a truncated ``data.db`` and a canonical publish missing runs that really ran --
+        yield a truncated ingest and a canonical publish missing runs that really ran --
         so a failure propagates.
         """
         from robovast.common.progress import fmt_size  # pylint: disable=import-outside-toplevel

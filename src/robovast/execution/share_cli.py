@@ -343,8 +343,8 @@ def upload_cmd(archives, force):
 
     ARCHIVES are ``.tar.gz`` files as ``vast campaign download`` or ``vast share
     download`` produce them. The campaign id is read from the archive's single
-    top-level directory and the variant from whether ``_execution/data.db`` is in it,
-    so the object is named the way everything else on the share is named -- whatever
+    top-level directory and the variant from postprocessing's provenance record inside
+    it, so the object is named the way everything else on the share is named -- whatever
     the file happens to be called on your disk.
 
     This is a write, so it needs share credentials that may write. A read-only
@@ -395,10 +395,13 @@ def upload_cmd(archives, force):
 def _read_archive_identity(tarfile_mod, path):
     """``(campaign_id, variant)`` for the archive at *path*, read from its index.
 
-    Both facts are in the tar's member list, so neither costs an extraction: the
-    campaign id is the single top-level directory (an archive with more than one is
+    Both facts come out of a single pass over the tar: the campaign id is the single top-level directory (an archive with more than one is
     not a campaign and is refused here rather than halfway through an upload), and
-    the variant is whether postprocessing's ``_execution/data.db`` is a member.
+    the variant follows postprocessing's provenance record -- the one member the
+    archive carries that says derived data was produced and what it was derived from
+    (see :func:`~robovast.execution.share_providers.naming.variant_from_record`; it is
+    the only member small enough to be worth extracting here, and the only one whose
+    name does not depend on the campaign's own plugin list).
 
     The same pass answers a third question for free -- does this archive carry a frozen
     ``_config/`` -- and refuses it if not. An archive without one uploads and downloads
@@ -407,19 +410,21 @@ def _read_archive_identity(tarfile_mod, path):
     push of a file somebody built earlier is the remaining way onto a share.
     """
     from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
-        POSTPROCESSED, RAW)
+        POSTPROCESSING_RECORD, variant_from_record)
     from robovast.service.ingest import \
         missing_for_import  # pylint: disable=import-outside-toplevel
     try:
         with tarfile_mod.open(path, "r:*") as tar:
-            tops, rels, has_db = set(), set(), False
+            tops, rels, record = set(), set(), None
             for member in tar:
                 head, _, rel = member.name.partition("/")
                 if head not in (".", ""):
                     tops.add(head)
                     rels.add(rel)
-                if member.name.endswith("/_execution/data.db"):
-                    has_db = True
+                if rel == POSTPROCESSING_RECORD and member.isfile():
+                    handle = tar.extractfile(member)
+                    if handle is not None:
+                        record = handle.read()
     except tarfile_mod.TarError as exc:
         raise click.ClickException(f"Cannot read '{path}' as a tar archive: {exc}") from exc
 
@@ -428,13 +433,20 @@ def _read_archive_identity(tarfile_mod, path):
             f"'{path}' does not hold exactly one campaign (top-level entries: "
             f"{', '.join(sorted(tops)) or 'none'}). A campaign archive has one "
             "directory named after the campaign.")
+    try:
+        variant = variant_from_record(record)
+    except ValueError as exc:
+        # Refused, not guessed at: the archive carries a provenance record that is not one,
+        # and both names available here would misdescribe what is inside it.
+        raise click.ClickException(f"'{path}': {exc}") from exc
+
     missing = missing_for_import(rels)
     if missing:
         raise click.ClickException(
             f"'{path}' has no " + " ".join(missing) +
             " No deployment could import it, including this one, so it is refused here "
             "rather than at the far end of a transfer.")
-    return tops.pop(), (POSTPROCESSED if has_db else RAW)
+    return tops.pop(), variant
 
 
 @share.command(name='remove')

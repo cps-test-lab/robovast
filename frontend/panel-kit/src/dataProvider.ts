@@ -1,14 +1,14 @@
 // DataProvider: the panel↔data seam. Panels ask for rows by table + time and never learn where the
 // data comes from. The host's only implementation is `dbDataProvider`, which reads a single run's rows
-// out of the campaign's postprocessed `data.db` through the read-only query/describe endpoints.
+// out of the campaign's postprocessed results tables through the read-only query/describe endpoints.
 // A future live view can implement the same interface over a rosbridge buffer (nearest = latest sample)
 // without touching any panel.
 //
 // The interface lives here (shared by the host UI and package-provided panel remotes); the
 // implementation stays in the host, where the HTTP client and React Query cache belong.
 //
-// A run in data.db is keyed by (config_name, run_id); a provider is bound to one such run, so every
-// query is scoped to it. All data.db columns are TEXT, so callers coerce numerics themselves.
+// A run's rows are keyed by (config_name, run_id); a provider is bound to one such run, so every
+// query is scoped to it. A TEXT column stays TEXT, so callers coerce numerics themselves.
 
 export type DataRow = Record<string, unknown>
 

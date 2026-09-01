@@ -1,5 +1,5 @@
 // VegaPanel (type `vega`): the general diagram rendering of a run -- an author-supplied Vega-Lite
-// spec over one of the run's data.db tables, with a rule marking the current playback time.
+// spec over one of the run's results tables, with a rule marking the current playback time.
 //
 // Where `timeseries` draws a fixed canvas line chart of columns that already exist, a Vega-Lite spec
 // can *derive* what the run never recorded (speed from a pose trail, error between two frames) and
@@ -43,7 +43,7 @@ const DEFAULT_MAX_ROWS = 5000
 // Vega dataset change rather than a canvas line, so it is throttled well below it.
 const CURSOR_HZ = 18
 
-/** Every data.db column is TEXT, so a `type: quantitative` field would sort lexicographically unless
+/** A TEXT results column would make a `type: quantitative` field sort lexicographically unless
  *  it is coerced first. Vega-Lite's own `format: {parse: 'auto'}` cannot do it here: that runs in the
  *  *load* step, and these rows are injected into the view as a named dataset instead of being loaded.
  *

@@ -216,6 +216,7 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
         "config": _check_config(campaign_dir),
     }
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
+    stages["index"] = _ingest_index(campaign_dir)
     stages["analysis_db"] = _check_analysis_db(campaign_dir)
     blocking = sorted(name for name, stage in stages.items()
                       if stage["verdict"] in BLOCKING_STAGES)
@@ -254,7 +255,7 @@ def missing_for_import(rel_paths) -> list:
     downloads fine and then fails at the far end, where nobody can do anything about it.
     Refusing to write it is the cheaper failure by a whole transfer.
 
-    Deliberately only what *blocks*. A campaign with no ``data.db`` is raw, not broken, and
+    Deliberately only what *blocks*. A campaign with no derived data is raw, not broken, and
     raw is the normal thing to share.
     """
     rels = {str(path).replace('\\', '/').lstrip('/') for path in rel_paths}
@@ -449,18 +450,72 @@ def _migrate_store_in_place(campaign_dir: Path, store_path: Path) -> None:
     backfill_run_rows(campaign_dir)
 
 
-def _check_analysis_db(campaign_dir: Path) -> dict:
-    """Whether the postprocessed analysis database is present.
+def _ingest_index(campaign_dir: Path) -> dict:
+    """Load the campaign's rows into the central index. A stage, not a separate command.
 
-    Absent is expected for a *raw* (pre-postprocess) archive and is recoverable by running
-    postprocessing, so it is reported with that action rather than as a failure.
+    Ingestion is not something a user asks for -- it happens wherever a campaign's results
+    ARRIVE, and this function is the arrival for two of the three ways they do: an import
+    from a share, and a user upload. (The third is a campaign finishing, which
+    ``results_processing.postprocessing`` covers.) Anything else leaves a campaign that
+    lists, opens and has files, and answers nothing when queried.
+
+    Before this existed, the stage below merely *reported* that the rows were absent and
+    told the reader to run postprocessing -- which re-runs the plugin pipeline against the
+    campaign's own image to regenerate derived files that the archive already contains.
+    The ingest reads those files, so an imported campaign is queryable without resolving a
+    single plugin.
+
+    Not blocking when the index is unreachable, deliberately, and consistent with the rest
+    of this module: the campaign itself imported fine and its files are intact, so
+    discarding it to keep a boolean clean is the wrong trade. Degraded says the queryable
+    copy is missing and names the remedy, and re-importing (or postprocessing) supplies it
+    later. The one thing this must not do is stay silent -- a campaign that lists but
+    cannot be queried, with nothing saying why, is the failure this whole stage exists to
+    make visible.
     """
-    from robovast.common.analysis.db import DATA_DB_SCHEMA_VERSION
+    from robovast.common import index_db  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import \
+        IndexUnreachableError  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing import \
+        campaign_ingest  # pylint: disable=import-outside-toplevel
 
+    try:
+        with index_db.connect() as conn:
+            totals = campaign_ingest.ingest_campaign(conn, str(campaign_dir),
+                                                     campaign_dir.name)
+    except IndexUnreachableError as exc:
+        return _stage(STAGE_DEGRADED,
+                      f"the campaign is imported but not queryable: {exc}. It is loaded "
+                      f"by re-importing once the index is reachable, or by "
+                      f"'vast campaign postprocess {campaign_dir.name}'.")
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("index ingest failed for %s", campaign_dir.name, exc_info=True)
+        return _stage(STAGE_DEGRADED,
+                      f"the campaign is imported but its rows could not be loaded: {exc}")
+    rows = sum(totals.values())
+    if not rows:
+        # Recorded, so "ingested and empty" stays distinguishable from "never ingested".
+        return _stage(STAGE_ABSENT,
+                      "no rows to load -- the archive carries no derived data. Run "
+                      f"'vast campaign postprocess {campaign_dir.name}' to produce it.")
+    return _stage(STAGE_OK,
+                  f"{rows} row(s) across {len(totals)} table(s) loaded into the index")
+
+
+def _check_analysis_db(campaign_dir: Path) -> dict:
+    """Whether the campaign carries a per-campaign analysis database.
+
+    Historical only: postprocessed rows now stream into the central index, so a modern
+    campaign directory carries none and *absent* is the ordinary answer -- recoverable, as
+    it always was, by running postprocessing, which is what loads the campaign into the
+    index. Reported rather than dropped because an archive from before the index still has
+    such a file, and saying so is how a reader knows where its metrics are.
+    """
     candidates = sorted(campaign_dir.glob("**/*.duckdb")) + sorted(campaign_dir.glob("**/data.db"))
     if not candidates:
         return _stage(STAGE_ABSENT,
-                      "no analysis database. Expected for a raw, pre-postprocess archive; "
-                      "regenerate it with 'vast campaign postprocess <campaign-id>'.")
-    return _stage(STAGE_OK, f"{len(candidates)} analysis database(s) present "
-                            f"(current schema v{DATA_DB_SCHEMA_VERSION})")
+                      "no per-campaign analysis database. Expected -- postprocessed rows "
+                      "live in the central index, and the 'index' stage above reports "
+                      "whether this campaign's are loaded.")
+    return _stage(STAGE_OK, f"{len(candidates)} legacy per-campaign analysis database(s) "
+                            f"present; the queryable copy is the central index")

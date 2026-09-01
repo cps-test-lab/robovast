@@ -513,9 +513,10 @@ Fetch what the caller needs, not the campaign
 same answer is a directory read locally and an object-store transfer on the cluster:
 
 ``_query_dir``
-    Just ``_execution/data.db`` and ``campaign.db`` — the only two objects
-    ``data_query._open_db`` opens. Used by ``describe_campaign_data`` and
-    ``query_campaign_data_sql``.
+    Nothing at all: a query reads the central index, so it needs only the campaign the
+    path *names*. This returns the cache dir unfetched. Used by
+    ``describe_campaign_data`` and ``query_campaign_data_sql``. It stayed an override
+    only because the inherited one goes through the refused ``_data_dir``.
 
 ``_config_dir``
     The frozen ``_config`` snapshot: a handful of small objects. Used by the cheap
@@ -533,34 +534,36 @@ same answer is a directory read locally and an object-store transfer on the clus
 
 The refusal is the design. While ``_data_dir`` silently meant ``fetch_campaign``, every
 *inherited* method that touched it became a whole-campaign download — and nothing errored,
-so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` over a
-40 MB ``data.db`` pulled every rosbag the campaign produced, inside an HTTP request whose
-client timeout was 30 s; the web UI survived it only because ``fetch`` sets no timeout at
-all. ``list_campaign_plots`` arrived that way too, and the Results page calls it *per
+so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` pulled
+every rosbag the campaign produced, inside an HTTP request whose client timeout was 30 s;
+the web UI survived it only because ``fetch`` sets no timeout at all. Narrowing that to the
+campaign's databases removed most of the cost, and the central index removed the rest:
+there is now no per-campaign file a query has to have. ``list_campaign_plots`` arrived that
+way too, and the Results page calls it *per
 campaign*, so opening the UI moved gigabytes to render a list of plot names.
 
 Fixing those one at a time left the trap armed for the next method. Now a caller that
 reaches for ``_data_dir`` fails immediately, naming the three alternatives, instead of
 quietly moving a terabyte in production.
 
-Two properties of the narrow path are load-bearing:
+Two properties of the narrow path are load-bearing for the seams that still transfer
+something (``_config_dir``, ``_record_dir``, the ``/results`` file reads):
 
-* **The cached copy is validated by size, not existence.** ``data.db`` is the one campaign
-  object that is *mutable* — re-postprocessing rewrites it in place, which is what
-  ``fetch_campaign(force=True)`` exists for. An existence check would pin the first version a
-  service ever saw and serve stale metrics indefinitely.
-* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock.** The
-  results explorer fires one query per sub-view on first load; without both, one request
-  opens a ``data.db`` another is still streaming and SQLite reports "no such table: runs".
+* **The cached copy is validated by size, not existence.** ``outcome.json`` is rewritten in
+  place by re-postprocessing, and an existence check would pin the first version a service
+  ever saw and serve it indefinitely.
+* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock**, so one
+  request never reads a file another is still streaming.
 
-Both seams write into the *same* cache directory, so a later whole-campaign fetch finds the
-two databases already at the right size and skips them, and ``delete_campaign`` still clears
+They write into the *same* cache directory as the whole-campaign fetch, so a later one finds
+those objects already at the right size and skips them, and ``delete_campaign`` still clears
 one place.
 
 The data-status probe (``GET /campaigns/{id}/data-status``, exposed as ``describe_campaign_data(preflight_only=True)``) reports whether a query would
 transfer anything and what it would cost, so a caller can explain the wait *before* it waits.
-It is bounded to two ``stat_object`` calls — a probe that itself enumerated the prefix would
-only move the cost it exists to warn about. It is a **control** route, not a ``/results``
+On both lanes the answer is now "nothing": the rows are in the index, and the probe says so
+from memory rather than probing the store — a probe that costs a round-trip to warn about a
+transfer that no longer happens is pure loss. It is a **control** route, not a ``/results``
 path: every segment there is a user-chosen file name, so a literal ``data-status`` under it
 would shadow a campaign file of that name.
 
@@ -655,11 +658,11 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
    * - each job's ``sysinfo.yaml``
      - DB — ``campaign.job``; "did the slow runs share a host?" is a join
    * - per-run metric CSVs
-     - DB — one ``data.db`` table per CSV stem, after postprocessing
+     - DB — one index table per CSV stem, after postprocessing
    * - ``_execution/execution.yaml``
      - DB — provenance columns on ``campaign.campaign`` (+ ``execution_json``)
    * - ``_transient/postprocessing.yaml``
-     - DB — ``data.db``'s ``postprocessing_steps``; the file stays, as the PROV-O input
+     - DB — the index's ``postprocessing_steps``; the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
    * - each configuration's ``_config/sim.config``
@@ -676,7 +679,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        ``runner`` for the campaign itself — the ledger is not only human acts).
        It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
-       the separate ``runs.probed`` column in ``data.db`` — orthogonal on purpose, since a
+       the separate ``runs.probed`` column in the index — orthogonal on purpose, since a
        probed run can still pass. The file stays because the two writers differ — the **service**
        records the kill, the **controller** writes ``campaign.db``, and a SQLite file
        shared between them would be a race. It exists only for a campaign somebody
@@ -708,7 +711,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        than shared — another run's CPU is not this run's. See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``
      - File + the log tools — the raw bytes, and the **live** case is the point of reading
-       them: ``data.db`` does not exist while a campaign runs. The tools reduce them on read
+       them: a campaign is not in the index while it runs. The tools reduce them on read
        (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What *is* stored is the
        derived, time-aligned ``run_log`` above; the files stay the record of what was
        actually printed
@@ -717,13 +720,14 @@ Two consequences worth stating. A **file** is never *also* a table: putting
 ``configurations.yaml`` in the DB would create a second source of truth for the resolved
 configuration list. And a **document in a cell** is not a queryable artifact:
 ``campaign.config_json`` holds the whole ``.vast``, which exceeds the per-cell limit and
-comes back truncated, so it is queried through ``json_extract`` or the ``config_view``
-rows — never ``SELECT config_json``.
+comes back truncated, so it is queried through the index's JSON operators
+(``config_json::jsonb -> 'execution' ->> 'image'``; the index is Postgres, which has no
+SQLite ``json_extract``) or the ``config_view`` rows — never ``SELECT config_json``.
 
 Querying results
 ----------------
 
-Per-run metrics are consolidated into ``<campaign>/_execution/data.db`` (one
+Per-run metrics are consolidated into the central results index (one
 table per CSV stem) plus a ``runs`` **dimension table** — per-run
 ``status``/``duration_s`` and each scenario parameter as a ``param_*`` column.
 That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
@@ -732,27 +736,25 @@ each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
 ``run_data`` plugin exposes read-only **SQL**
 (``query_campaign_data_sql`` + ``describe_campaign_data``), with ``campaign.db``
 attached as schema ``campaign`` — so ``campaign.run`` is queryable for raw
-pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
+pass/fail even before postprocessing ingests the campaign. Joining ``runs`` to any
 metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
-*<metric>*" in one query. Analysis notebooks read the same ``data.db`` through
+*<metric>*" in one query. Analysis notebooks read the same tables through
 :mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
 :ref:`evaluation-reading-results`).
 
-**Versioned, never migrated.** The layout is stamped into ``PRAGMA user_version``
-(``DATA_DB_SCHEMA_VERSION``), and no migration table goes with it — the deliberate difference
-from ``campaign.db``, whose :data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The
-store is *authored*: written as the campaign runs, and the only record of what happened, so an
-old one must be upgraded in place. ``data.db`` is *derived*: postprocessing deletes and rebuilds
-it from the run directories, which keep their CSV/JSONL, so the upgrade path for an old one is
-to run postprocessing again — which re-executes no trial, and needs neither ROS nor the
-campaign's execution image, since only the ``rosbags_*`` → CSV step does and everything after
-it is plain Python. A migration here would be code maintained to reproduce what the builder
-already does.
+**Not versioned, because it is derived.** The metrics store carries no schema version and no
+migration ladder — the deliberate difference from ``campaign.db``, whose
+:data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The store is *authored*: written
+as the campaign runs, and the only record of what happened, so an old one must be upgraded in
+place. The metrics are *derived*: postprocessing rebuilds them from the run directories, which
+keep their CSV/JSONL, so the upgrade path is to run postprocessing again — which re-executes no
+trial, and needs neither ROS nor the campaign's execution image, since only the ``rosbags_*`` →
+CSV step does and everything after it is plain Python. A migration here would be code
+maintained to reproduce what the ingest already does.
 
-The stamp does not gate reads, because a version is too coarse to answer the question a reader
-actually has: most campaigns on disk predate it, and many carry everything a given notebook
-needs. What gates a query is whether the columns are there, which the reader checks directly;
-the version only sharpens the error when they are not.
+A version would not gate reads anyway, because it is too coarse to answer the question a reader
+actually has. What gates a query is whether the columns are there, which the reader checks
+directly.
 
 **Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
 run: config, status, duration, params, search round, host record) and ``config_view`` (the ``.vast`` as
@@ -788,8 +790,7 @@ column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its
 NaN has no SQLite representation, so accepting it would delete data instead of typing it).
 Scenario ``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
-caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``. A
-``data.db`` built before typed ingest is all-``TEXT``; re-running postprocessing retypes it.
+caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
 
 **The declaration never outlives the evidence.** A column is declared by the first run that
 writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
@@ -802,7 +803,7 @@ normalizes a mixed column so every row in it is text. Only affected tables are t
 the usual case rebuilds nothing.
 
 Because a type alone cannot say "numeric except in the runs that failed", such a column is
-also recorded in ``data.db``'s ``_column_notes`` and surfaced by ``describe_campaign_data``
+also recorded in the index's ``_column_notes`` and surfaced by ``describe_campaign_data``
 as ``column_notes`` on the owning table — postprocessing logs a warning too, but no SQL
 caller ever reads that log. The note names the fix (exclude the text rows, e.g.
 ``WHERE col GLOB '[0-9-]*'``) because ``CAST`` alone would silently read them as 0.
@@ -843,7 +844,7 @@ three:
 * **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
   by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
   rows/frames by table + time, decoupled from transport. Today it reads one run's rows from
-  ``data.db`` through the existing ``query``/``describe`` endpoints, plus the dedicated
+  the index through the existing ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
   ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
   drops in without touching any panel.

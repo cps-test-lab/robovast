@@ -8,7 +8,7 @@
 // This is the first package-provided run-view panel: it ships with robovast_nav (not the core UI) as a
 // Module-Federation remote, because it is the only panel that needs nav2 costmap grids + the occupancy-
 // grid helpers. It implements the PanelProps contract from @robovast/panel-kit, so it is time-synced and
-// queries the run's data.db exactly like a built-in panel.
+// queries the run's results tables exactly like a built-in panel.
 //
 // It is also the only panel that fetches per clock position rather than preloading its whole series --
 // grids are far too large for that, which is why they are served one frame at a time. Everything about
@@ -161,7 +161,7 @@ function parseLayers(config: Record<string, unknown>): { layers: LayerCfg[]; pos
   return { layers, posesTable }
 }
 
-// The service clamps any data.db query at 5000 rows and cuts by TIME, so a query that asks for more
+// The service clamps any results query at 5000 rows and cuts by TIME, so a query that asks for more
 // than that silently loses the end of the run rather than failing. `poses` is a recording, not a
 // summary: with `rosbags_tf_to_csv: {frames: all}` it holds every TF frame that resolves against map
 // -- a TB4 nav run carries base_link, odom, both wheels and the ground-truth frame at ~50 Hz, which

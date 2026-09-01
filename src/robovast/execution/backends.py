@@ -217,7 +217,7 @@ class ExecutionBackend(ABC):
         Called from the controller's finish tail **before** analysis postprocessing,
         so at campaign end the archive is the raw campaign (no derived data) and is
         named as such; a later ``vast share export`` of the same campaign finds
-        ``_execution/data.db`` there and names it ``postprocessed``. Neither caller
+        postprocessing's provenance record there and names it ``postprocessed``. Neither caller
         is told which it is — :func:`~robovast.execution.share_providers.naming.
         campaign_variant` reads it off the directory, so the two cannot disagree.
 

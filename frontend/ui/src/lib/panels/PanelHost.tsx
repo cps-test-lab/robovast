@@ -327,7 +327,7 @@ function layoutStyle(
 
 // Loads a Module-Federation remote panel and mounts it with the full PanelProps contract
 // (spec + clock + data), exactly like a built-in panel — so a remote panel is time-synced and
-// queries the run's data.db the same way. Guarded loading/error states, never a silent drop.
+// queries the run's results tables the same way. Guarded loading/error states, never a silent drop.
 function RemotePanel({ spec, clock, data }: HostPanelProps) {
   const { Comp, err } = useRemoteComponent<PanelProps>(spec.remote!)
   // Built-ins a remote can render rather than reimplement (see PanelBuiltins). Read from the

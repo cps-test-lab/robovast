@@ -124,8 +124,8 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
         return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
 
     # ``postprocessed`` is a fact about the campaign, not about who last drove it:
-    # a *finished* ``data.db`` is the ground truth (postprocessing can chain *after*
-    # ``outcome.json`` is written, so the durable record can say False while the
+    # postprocessing's own provenance record is the ground truth (postprocessing can chain
+    # *after* ``outcome.json`` is written, so the durable record can say False while the
     # derived data is present). Recover it here so every disk-recovered Status
     # reports it consistently — the single recovery path stays authoritative.
     # ``campaign_has_derived_data`` owns what counts as finished, shared with the live
@@ -212,7 +212,8 @@ def record_step_outcome(campaign_dir: str | Path, *,
     status.phase = Phase.FINISHED
     if postprocessing is not None:
         ok, message = postprocessing
-        # ``postprocessed`` follows the on-disk data.db (reconstruct already set it);
+        # ``postprocessed`` follows postprocessing's on-disk record (reconstruct already
+        # set it);
         # here we only clear/set the failure marker.
         status.postprocessing_error = None if ok else message
     if share is not None:

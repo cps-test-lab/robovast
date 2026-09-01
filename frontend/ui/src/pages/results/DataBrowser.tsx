@@ -56,7 +56,7 @@ function DataGridToolbar() {
   )
 }
 
-// Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's data.db
+// Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's results
 // schema, run read-only SQL, chart it with Vega-Lite, and page through rows in a DataGrid. The
 // selected campaign is owned by the parent (shared with the Explorer).
 export function DataBrowser({
@@ -81,7 +81,7 @@ export function DataBrowser({
   const [color, setColor] = useState(NONE)
   const [mark, setMark] = useState<'point' | 'line' | 'bar' | 'boxplot'>('point')
 
-  // Only finished+postprocessed campaigns have the derived data (data.db) this viewer queries.
+  // Only finished+postprocessed campaigns have the derived data this viewer queries.
   // (The Results container already filters to these; kept defensive since `campaigns` is a prop.)
   // Newest-first is the service's order; filtering preserves it.
   const evalCampaigns = campaigns.filter(hasResults)
@@ -130,7 +130,7 @@ export function DataBrowser({
     refetchInterval: describe.isFetching || result.isFetching ? 1000 : false,
   })
   const fetchLabel = formatDataFetchLabel(dataStatus.data)
-  // A failed campaign never produces data.db — surface *why* it failed (the same
+  // A failed campaign never produces derived data — surface *why* it failed (the same
   // reason the Monitor shows) instead of an endless "run postprocessing" prompt.
   const status = useQuery({
     queryKey: ['status', campaignId],
@@ -140,9 +140,14 @@ export function DataBrowser({
   })
   const failure = status.data?.phase === 'failed' ? status.data.error : null
 
-  // A campaign has no queryable data until analysis postprocessing has run (it
-  // generates data.db). Offer to run it right here when that's the case.
-  const noData = /data\.db/i.test(
+  // A campaign has no queryable data until analysis postprocessing has run (it ingests the
+  // campaign into the central index). Offer to run it right here when that's the case.
+  //
+  // Matched on the index's own "not in the index" wording, from
+  // `results_processing.index_query.missing_campaign_note`. This used to test for `data.db`,
+  // the per-campaign file postprocessing wrote before the index — a predicate that stayed
+  // true-looking while being permanently false, so the offer silently stopped appearing.
+  const noData = /not in the index/i.test(
     (describe.error as Error | null)?.message ?? (result.error as Error | null)?.message ?? '',
   )
   const postprocess = useMutation({
@@ -271,7 +276,7 @@ export function DataBrowser({
         >
           {postprocess.isError
             ? `Postprocessing failed: ${(postprocess.error as Error).message}`
-            : 'This campaign has no queryable data yet — run analysis postprocessing to generate data.db.'}
+            : 'This campaign has no queryable data yet — run analysis postprocessing to index it.'}
         </Alert>
       ) : (
         <Box sx={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 2 }}>

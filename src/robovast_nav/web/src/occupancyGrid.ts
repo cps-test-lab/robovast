@@ -5,7 +5,7 @@
 // everything is 2D (ground-plane) so a small planar transform (x, y, yaw) suffices.
 //
 // These are generic OccupancyGrid rendering helpers: whether the grid arrives live over rosbridge or,
-// as here, is rebuilt into the same OccupancyGrid shape from a data.db row by the CostmapPanel, the
+// as here, is rebuilt into the same OccupancyGrid shape from a results row by the CostmapPanel, the
 // functions are identical.
 
 // --- ROS message shapes (only the fields we read) ---

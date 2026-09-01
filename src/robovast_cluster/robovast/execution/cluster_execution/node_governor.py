@@ -196,14 +196,7 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bo
 
     governor = PERFORMANCE
     if not enabled:
-        try:
-            apps_api.delete_namespaced_daemon_set(name=DAEMONSET_NAME, namespace=namespace)
-            logger.info("Removed the CPU governor DaemonSet. Nodes keep the governor they "
-                        "were last set to until something changes it -- a reboot returns "
-                        "them to their own default.")
-        except ApiException as exc:
-            if exc.status != 404:
-                logger.warning("Could not remove %s: %s", DAEMONSET_NAME, exc)
+        remove_daemonset(apps_api, namespace)
         return False
 
     body = manifest(namespace, governor, node_selector=node_selector)
@@ -228,3 +221,54 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bo
     logger.info("CPU governor DaemonSet applied: every%s node will be set to '%s'.",
                 " selected" if node_selector else "", governor)
     return True
+
+
+#: What :func:`remove_daemonset` did, so a caller can report it rather than guess. "absent"
+#: is a success: teardown is re-runnable, and a cluster that never had the DaemonSet is the
+#: same end state as one that just lost it.
+REMOVED, ABSENT, FAILED = "removed", "absent", "failed"
+
+
+def remove_daemonset(apps_api, namespace: str) -> str:
+    """Delete the governor DaemonSet, tolerating its absence. Returns one of the three
+    outcomes above.
+
+    ``Foreground`` propagation so the call does not return before the pods are going: the
+    pods are what hold the governor, and a teardown that reported success while they were
+    still running would be reporting the opposite of what happened.
+
+    Never raises. This runs inside a teardown, where failing to remove one object must not
+    abandon the rest -- but it does not swallow the failure either: the caller is expected
+    to say what could not be removed.
+    """
+    from kubernetes.client.exceptions import ApiException  # noqa: PLC0415
+
+    try:
+        # A dict rather than V1DeleteOptions: the client serialises either, and this keeps
+        # the delete path free of the model imports.
+        apps_api.delete_namespaced_daemon_set(
+            name=DAEMONSET_NAME, namespace=namespace,
+            body={"propagationPolicy": "Foreground"})
+    except ApiException as exc:
+        if exc.status == 404:
+            return ABSENT
+        logger.warning("Could not remove %s from %s: %s", DAEMONSET_NAME, namespace, exc)
+        return FAILED
+    except Exception as exc:  # noqa: BLE001 - a teardown must continue past one object
+        logger.warning("Could not remove %s from %s: %s", DAEMONSET_NAME, namespace, exc)
+        return FAILED
+    logger.info("Removed the CPU governor DaemonSet from %s. The nodes KEEP the governor "
+                "they were last set to -- the DaemonSet does not restore the previous one "
+                "on termination, and nothing recorded what it was. A reboot returns a node "
+                "to its own configured default.", namespace)
+    return REMOVED
+
+
+def delete_cpu_governor(namespace: str, kube_context=None) -> str:
+    """:func:`remove_daemonset` against a cluster named by kubeconfig context."""
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(kube_context)
+    return remove_daemonset(client.AppsV1Api(), namespace)

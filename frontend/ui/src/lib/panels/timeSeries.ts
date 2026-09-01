@@ -3,7 +3,7 @@
 // as "a table with a time column"; a TimeSeriesSource wraps one such table as a time-indexed view.
 //
 // This is the seam that keeps the panels source-agnostic and free of duplicated plumbing: the
-// CAST-to-REAL (all data.db columns are TEXT), the sort-by-time, and the nearest-sample lookup all
+// CAST-to-REAL (a TEXT results column), the sort-by-time, and the nearest-sample lookup all
 // live here, once. A panel binds a `{ table, time_column }` from its .vast spec, gets a
 // TimeSeriesSource, and just renders `at(t)` / `upTo(t)` / `all()`. A future live view implements this
 // same interface over a rosbridge buffer without any panel change.
@@ -11,7 +11,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { lastAtOrBefore, type DataProvider, type DataRow } from '@robovast/panel-kit'
 
-/** How a .vast spec names a time series: a data.db table, its time column (default `timestamp`), and
+/** How a .vast spec names a time series: a results table, its time column (default `timestamp`), and
  *  an optional equality filter to isolate one series from a multi-keyed table (e.g. `{ frame: base_link }`). */
 export interface TimeSeriesBinding {
   table: string

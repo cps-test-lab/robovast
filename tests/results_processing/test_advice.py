@@ -351,3 +351,58 @@ def test_a_campaign_that_recorded_no_mode_reads_as_the_mode_it_had():
     campaign then had declared sizing."""
     got = A.throttle_advice(_THROTTLED, _DECLARED, sizing=None)
     assert got[0]["severity"] == "warning"
+
+
+# -- the SQL constants themselves -------------------------------------------
+#
+# Every test above builds its rows by hand and checks the advice derived from them. That is
+# the right shape for the judgement each function makes, and it is also why a real break went
+# unseen: the constants are strings until a live campaign runs them. When the substrate moved
+# from SQLite to the central Postgres index they still said `json_extract(...)` and `FROM job`
+# -- legal SQLite, and in Postgres respectively a function that does not exist and a table
+# that is now in the `campaign` schema. A caller asking for advice would have got
+# "function json_extract(...) does not exist" instead.
+#
+# Executing them here was the first instinct and is the wrong tool: PREPARE needs every table
+# a statement mentions, so a fixture campaign that legitimately has no `resource_usage` would
+# fail tests about SQL validity for reasons that are nothing to do with it. These two checks
+# need no database and always run.
+
+_STATEMENTS = {name: getattr(A, name) for name in dir(A)
+               if name.endswith("_SQL") and isinstance(getattr(A, name), str)}
+
+#: Campaign dimensions were `ATTACH`ed as a database named `campaign`, so `FROM job` resolved.
+#: They are now a *schema* of the one index, which holds every campaign -- so an unqualified
+#: name either fails to resolve or, worse, finds a metric table of the same name.
+_DIMENSION_TABLES = ("campaign", "batch", "unit", "run", "job", "node", "container_failure")
+
+#: SQLite's JSON functions, none of which Postgres has. The Postgres spellings are `->`/`->>`
+#: for a field and `jsonb_array_elements` for a fan-out.
+_SQLITE_JSON = ("json_extract", "json_each", "json_tree", "json_quote")
+
+
+def test_there_are_sql_constants_to_check():
+    """Guards the two tests below: a rename emptying this dict would pass them vacuously."""
+    assert _STATEMENTS
+
+
+@pytest.mark.parametrize("name", sorted(_STATEMENTS))
+def test_no_advice_statement_uses_a_sqlite_only_json_function(name):
+    lowered = _STATEMENTS[name].lower()
+    used = [fn for fn in _SQLITE_JSON if fn in lowered]
+    assert not used, (
+        f"{name} calls {', '.join(used)}, which Postgres does not have -- the index would "
+        f"reject the statement outright. Use -> / ->> for a field, jsonb_array_elements "
+        f"for a fan-out.")
+
+
+@pytest.mark.parametrize("name", sorted(_STATEMENTS))
+def test_every_campaign_dimension_is_schema_qualified(name):
+    """One index holds every campaign, so an unqualified dimension name is a real hazard."""
+    pattern = re.compile(
+        r"\b(?:from|join)\s+(?!campaign\.)([a-z_][a-z0-9_]*)\b", re.IGNORECASE)
+    bare = {m for m in pattern.findall(_STATEMENTS[name]) if m.lower() in _DIMENSION_TABLES}
+    assert not bare, (
+        f"{name} names campaign dimension(s) {', '.join(sorted(bare))} without the "
+        f"`campaign.` schema. These used to be an ATTACHed database; unqualified they now "
+        f"resolve to nothing, or to a metric table that happens to share the name.")

@@ -662,7 +662,10 @@ def _campaign_sizing(query_rows) -> "str | None":
     before the key existed -- which is the mode every campaign had then.
     """
     try:
-        rows = query_rows("SELECT json_extract(config_json, '$.execution.sizing') AS sizing "
+        # `->` then `->>`, not SQLite's json_extract with a '$.a.b' path: the index is
+        # Postgres, which has no such function, and the call would fail outright rather
+        # than return the NULL the `except` below is written for.
+        rows = query_rows("SELECT config_json::jsonb -> 'execution' ->> 'sizing' AS sizing "
                           "FROM campaign.campaign LIMIT 1")
     except Exception:  # noqa: BLE001 - no campaign table attached is not an error here
         return None
@@ -873,11 +876,15 @@ def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) ->
 #: speed a function of how busy it is -- a variable no campaign declares or records.
 WANTED_CPU_GOVERNOR = "performance"
 
+#: ``->>`` rather than SQLite's ``json_extract``, which Postgres does not have. The cast is
+#: explicit because the column is text: an unparseable value fails here rather than reading
+#: as an absent governor, and "this node did not report" is a different finding from "this
+#: node was on ondemand" -- the whole point of the check below.
 GOVERNOR_SQL = """
-    SELECT DISTINCT json_extract(sysinfo_json, '$.node_label')   AS node,
-                    json_extract(sysinfo_json, '$.cpu_name')     AS cpu,
-                    json_extract(sysinfo_json, '$.cpu_governor') AS governor
-    FROM job
+    SELECT DISTINCT sysinfo_json::jsonb ->> 'node_label'   AS node,
+                    sysinfo_json::jsonb ->> 'cpu_name'     AS cpu,
+                    sysinfo_json::jsonb ->> 'cpu_governor' AS governor
+    FROM campaign.job
     WHERE sysinfo_json IS NOT NULL
 """
 

@@ -113,9 +113,17 @@ function pageSql(
   // The run leads the key so that a multi-run scope reads as one run after another. Sorting a
   // whole campaign by time alone interleaves runs that each start at zero, which is how the
   // old sim-time key left it.
+  //
+  // `seq` breaks the wall-time ties, and it is a real column the merge writes (see
+  // `run_log.FIELDNAMES`), not the storage engine's implicit row number. This ordered by
+  // `rowid` until the results moved to Postgres, which has none -- and the reason that ever
+  // worked was an accident: rows happened to come back in insertion order from a file only
+  // one writer touched. A table is a set. Ties here are routine rather than exotic, since a
+  // burst of lines can share one inherited stamp, and without a total order paging with
+  // LIMIT/OFFSET shows some rows twice and drops others.
   return (
     `SELECT config_name, run_id, ${COLUMNS} FROM run_log${scope} ` +
-    `ORDER BY config_name, run_id, wall_ts, rowid ` +
+    `ORDER BY config_name, run_id, wall_ts, seq ` +
     `LIMIT ${PAGE} OFFSET ${offset}`
   )
 }

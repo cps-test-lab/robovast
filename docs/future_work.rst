@@ -15,7 +15,7 @@ Visual artifact egress over MCP (video and rasters)
 
 **Motivation.** Analysis over MCP is increasingly driven by an LLM. Quantitative
 questions are well served: per-run metrics are consolidated into
-``<campaign>/_execution/data.db`` and queried with read-only SQL
+the central results index and queried with read-only SQL
 (``describe_campaign_data`` / ``query_campaign_data_sql``), and
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``visualization.results.data_browser.plots`` in the snapshot ``.vast``).
@@ -71,7 +71,7 @@ A machine-readable figure layer **now exists**: a campaign's ``visualization.res
 declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
 ``list_campaign_plots`` and over the service by ``GET
 /campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
-an LLM can read ``data.db`` through the SQL tools to *propose* new ones.
+an LLM can read those tables through the SQL tools to *propose* new ones.
 
 What is *not* built is a server-side ``render_analysis(campaign, spec) ->
 figure_json`` that resolves a declarative spec to a figure on the server. It is an
@@ -150,7 +150,7 @@ joinable to ``runs``. So "which failed runs share a warning pattern?" is now one
 has only its streams.
 
 (The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
-written to the **job** directory, which ``generate_data_db`` does not glob. That gap is what
+written to the **job** directory, which the index ingest does not glob. That gap is what
 ``run_log`` closes.)
 
 **5b. The file address space's remaining substrate costs.** The address space landed
@@ -414,7 +414,7 @@ sixteenth.
   (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
   ``system_usage`` table is the right shape, and the split should be structural so later
   metrics of either kind have an obvious home.
-* **Make the new lane column-generic.** CSV → ``data.db`` already is: any ``*.csv`` in a run
+* **Make the new lane column-generic.** CSV → index already is: any ``*.csv`` in a run
   directory becomes a table, columns are the union of row keys and types are inferred
   (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
   :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that

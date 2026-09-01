@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS unit (
 # ``n_samples`` and ``status`` are lossy roll-ups of runs that had no row of their
 # own. The ``run`` table completes ``campaign -> batch -> unit -> run`` and mirrors
 # each run's ``test.xml`` (the runner's contract), so pass/fail is queryable live
-# and ``data.db`` can be built from it instead of re-parsing the XML.
+# and the results index can be built from it instead of re-parsing the XML.
 _MIGRATION_ADD_RUN = """
 CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,

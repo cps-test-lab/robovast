@@ -91,7 +91,7 @@ export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
 // Results are ready to explore only once the run finished AND its configured postprocessing
 // pipelines ran: "finished" alone is reached *before* postprocessing chains, and a campaign that
-// defines no postprocessing never gets the derived data.db the Results views query. The single gate
+// defines no postprocessing never gets the derived data the Results views query. The single gate
 // for what the Results topic (Explorer / Run / Data) shows.
 export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so

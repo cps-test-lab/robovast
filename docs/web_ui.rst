@@ -1272,8 +1272,8 @@ can only ever show one run:
 There is no playback clock here, so the view drops the graying and the jump button rather than
 implying a position it does not have.
 
-**Data browser.** The left panel lists the tables in the campaign's
-``_execution/data.db`` — one per metric CSV, plus the ``runs`` **dimension table**
+**Data browser.** The left panel lists the campaign's tables in the results
+index — one per metric CSV, plus the ``runs`` **dimension table**
 (per-run ``status``/``duration_s`` and each scenario parameter as a ``param_*``
 column), with ``campaign.db`` attached as schema ``campaign``. Write **read-only SQL**
 in the editor and **Run** it; the result shows as a table and, via the chart builder,
@@ -1293,7 +1293,7 @@ alongside the query itself.
 .. note::
 
    A campaign only becomes queryable once **analysis postprocessing** has run — it
-   builds ``data.db`` from the raw rosbags. Launching with **Postprocess when done**
+   derives its tables from the raw rosbags and loads them into the index. Launching with **Postprocess when done**
    (the default) runs it automatically on both backends; otherwise the Results tab
    offers a **Run postprocessing** button, and the CLI equivalent is
    ``vast campaign postprocess <id>``. To *change* the postprocessing
@@ -1352,7 +1352,7 @@ The **Run view** replays a *single run* of a postprocessed campaign over its **r
 timeline**. You pick a campaign and a run; the view then lays out a set of **panels**
 that a shared **playback clock** drives — dragging the timeline moves every panel to
 the same instant. All panels read only the run's recorded results — its postprocessed
-``data.db``, plus per-run artifact files such as the 3D scene descriptor (there is no
+tables, plus per-run artifact files such as the 3D scene descriptor (there is no
 live connection to the system-under-test).
 
 The run picker lists only campaigns that actually **recorded runs** (``num_runs > 0``,
@@ -1432,7 +1432,7 @@ panel plugin) and its value holds that panel's fields: an optional ``title``, a
 ``top-center``/``bottom-center``/``left-center``/``right-center``, or ``center`` — plus
 ``width``/``height`` in pixels or a ``"40%"`` string; or ``fill: true`` *instead of* an
 anchor), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
-**data bindings** (which ``data.db`` table or recorded topic each piece of data comes from).
+**data bindings** (which results table or recorded topic each piece of data comes from).
 Any field you omit falls back to the panel type's built-in default, so a bare ``log:``
 on its own is a complete panel.
 
@@ -1764,7 +1764,7 @@ read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
 .. _vega-panel:
 
 **Vega chart** (``vega``) — any diagram, declared as a `Vega-Lite
-<https://vega.github.io/vega-lite/>`_ spec over one of the run's ``data.db`` tables. Where
+<https://vega.github.io/vega-lite/>`_ spec over one of the run's results tables. Where
 ``timeseries`` plots columns that *already exist*, a spec's ``transform`` can **derive** what the
 run never recorded, and any Vega-Lite mark is available. It binds a ``source`` (the same
 ``{ table, time_column, filter, decimate_hz, key }`` as ``timeseries``, so the run scope, the frame
@@ -1791,7 +1791,7 @@ Three things to know when charting a ``poses`` table, because every such spec hi
 * **Dotted column names.** ``rosbags_tf_to_csv`` writes ``position.x`` / ``orientation.yaw``, and a
   Vega-Lite ``field`` reads a dot as a nested path. Either escape it (``position\.x``) or — usually
   clearer — hoist it to a flat name in a ``calculate`` transform: ``datum['position.x']``.
-* **Every ``data.db`` column is TEXT.** The panel coerces each column whose values all parse as
+* **A TEXT column stays TEXT.** The panel coerces each column whose values all parse as
   finite numbers, so ``type: quantitative`` works without a ``format.parse`` block.
 * **A long run needs ``decimate_hz``, not a bigger ``max_rows``.** The row cap is a ``LIMIT`` applied
   *after* ``ORDER BY`` time, so a run that outgrows it is cut at the **head**: the chart ends
@@ -1886,7 +1886,7 @@ code lives is invisible to the config:
 
 **Writing a panel.** A panel is a React component implementing the same contract the
 built-ins use — ``({ spec, clock, data }) => JSX`` — so it is time-synced and reads the
-run's ``data.db`` exactly like a built-in: ``clock.t`` / ``clock.subscribe(...)`` for the
+run's results tables exactly like a built-in: ``clock.t`` / ``clock.subscribe(...)`` for the
 current playback time, ``data.series(table)`` / ``data.nearest(table, t)`` for run rows,
 ``spec.config`` for the panel's ``.vast`` bindings. A panel needing a specialized endpoint
 (as the costmap panel needs nav2 grids) reaches it through the generic run-scoped
@@ -1912,7 +1912,7 @@ lines that render ``builtins.ScenarioTree`` with nav2's defaults, and inherits e
 improvement to it. Write a renderer only when the host cannot draw the data at all — ``costmap``,
 whose binary grids need their own endpoint.
 
-**Serving a panel's data.** A panel reads the run's postprocessed ``data.db`` through ``data``
+**Serving a panel's data.** A panel reads the run's postprocessed rows through ``data``
 (``fetchRun`` for anything beyond plain table rows). When that data comes from a table your own
 **postprocessing** step produced and needs custom serving (untruncated blobs, nearest-frame
 selection, …), a package can also ship the endpoint: a small class registered in the
@@ -1960,7 +1960,7 @@ least-recently-used). Two consequences worth knowing:
 
 .. _costmap-delivery:
 
-**Costmap data delivery.** Occupancy grids cannot be flattened into ``data.db`` columns
+**Costmap data delivery.** Occupancy grids cannot be flattened into table columns
 usefully (a grid becomes thousands of per-cell columns). Instead the
 ``rosbags_costmap_to_csv`` postprocessing step stores each grid **losslessly and
 compactly** — its int8 cells zlib-compressed — into a ``costmaps`` table, together with
