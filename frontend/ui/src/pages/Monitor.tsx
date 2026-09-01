@@ -768,23 +768,25 @@ function CampaignCard({ summary, newest, openedByLink }: {
               stalled {formatDuration(progressAgeS!)}
             </Typography>
           ) : null}
-          {/* A fixed column, not a shrink-to-fit label: campaign ids carry a user-supplied name,
-              so their widths vary by a factor of three, and without a column the timestamp and
-              the meter on every row below would sit at a different x. Applied whether the card is
-              open or shut so folding one does not shift the header sideways. */}
+          {/* A fixed column while FOLDED, a shrink-to-fit label while open: campaign ids carry a
+              user-supplied name, so their widths vary by a factor of three, and a page of folded
+              cards without a column would sit its timestamp and its meter at a different x on
+              every row. An open card is read on its own — there is no column below it to line up
+              with — and there the same fixed width cuts the ids that overrun it, so it sizes to
+              the id instead and shows the whole of it. Folded, `noWrap` clips the column
+              visually only, so a truncated id still copies whole and the hover carries it. */}
           {/* Selectable, against the fold target it sits in: this is the one string on the
               card that gets copied out — into a CLI, a message, an issue — and a header that
               refuses the drag leaves retyping a timestamped id by hand as the only way. The
-              cursor stays the row's pointer; an I-beam would suggest a field that takes typing.
-              `noWrap` clips the column visually only, so a truncated id still copies whole. */}
+              cursor stays the row's pointer; an I-beam would suggest a field that takes typing. */}
           <CampaignOrigin origin={summary.origin}>
             <Typography
               variant="subtitle2"
-              noWrap
+              noWrap={collapsed}
               title={id}
               sx={{
                 fontFamily: 'monospace',
-                width: ID_COLUMN,
+                width: collapsed ? ID_COLUMN : 'auto',
                 flexShrink: 0,
                 userSelect: 'text',
               }}
