@@ -28,10 +28,12 @@ entry-point group.
 import contextvars
 import json
 import logging
+import time
 
 from fastmcp import FastMCP
 from mcp.types import Icon
 
+from . import tool_stats
 from .registry import load_plugins
 
 logger = logging.getLogger(__name__)
@@ -168,6 +170,42 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
     mcp.add_middleware(_DebugLoggingMiddleware())
 
 
+def _install_tool_stats(mcp: FastMCP) -> None:
+    """Record every tool call -- what was asked, what came back, how long it took.
+
+    One middleware for all of them: no tool counts itself, and a tool added tomorrow is
+    accounted for without knowing this exists. What it records and how much of a payload
+    it keeps is :mod:`robovast.mcp_server.tool_stats`; the admin page reads it back.
+
+    The recording is in a ``finally`` and cannot fail the call -- a failed call is the one
+    most worth having in the log, so the failure path records and re-raises.
+    """
+    from fastmcp.server.middleware import Middleware  # pylint: disable=import-outside-toplevel
+    from fastmcp.server.middleware import MiddlewareContext
+
+    class _ToolStatsMiddleware(Middleware):
+        async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+            started = time.perf_counter()
+            answer, ok = "", False
+            try:
+                result = await call_next(context)
+                answer, ok = tool_stats.render(_extract_result(result)), True
+                return result
+            except Exception as exc:
+                answer = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                tool_stats.LOG.record(
+                    context.message.name,
+                    (time.perf_counter() - started) * 1000.0,
+                    ok,
+                    args=tool_stats.render(context.message.arguments or {}),
+                    answer=answer,
+                )
+
+    mcp.add_middleware(_ToolStatsMiddleware())
+
+
 #: What every MCP client injects into the model's system prompt. This is the only text
 #: read before any tool is chosen, so it is where the server says what it is *for*.
 #:
@@ -246,6 +284,7 @@ def create_server(
     plugin_names = [p.name for p in plugins]
 
     _install_warning_forwarding(mcp)
+    _install_tool_stats(mcp)
 
     logger.info(
         f"Started MCP server: host={host}, port={port}, debug={debug}, plugins=[{', '.join(plugin_names)}]"

@@ -50,7 +50,9 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
-                                        ListWorkspacesResponse, LogChunk, PanelsSource,
+                                        ListWorkspacesResponse, LogChunk,
+                                        McpCall, McpCalls, McpToolStat, McpToolStats,
+                                        PanelsSource,
                                         UpgradeInfo, UsageHistory, UsageSample,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
@@ -788,6 +790,92 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return StreamingResponse(
             _sse_log_stream(request, service_log.read, _last_event_offset(request)),
             media_type="text/event-stream", headers=_sse_headers)
+
+    @app.get(Routes.ADMIN_MCP_TOOLS, response_model=McpToolStats, tags=["admin"])
+    def get_mcp_tool_stats() -> McpToolStats:
+        """Which MCP tools get called, how often, and how many of those calls failed.
+
+        The ranking is an aggregate over the call log rather than a counter kept beside it,
+        so it can never disagree with the rows the log below it shows.
+
+        Every registered tool appears, including the ones with no calls at all: a tool
+        nobody chooses costs an agent's context in every session, and an aggregate computed
+        only over calls that happened is exactly the view that cannot show it.
+        """
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import registry, tool_stats  # pylint: disable=import-outside-toplevel
+
+        registered = sorted({name for names in registry.get_plugin_tools().values()
+                             for name in names})
+        window = {"max_age_s": float(tool_stats.MAX_AGE_S), "max_rows": tool_stats.MAX_ROWS}
+        try:
+            stats = tool_stats.LOG.read_stats()
+        except IndexUnreachableError as exc:
+            return McpToolStats(status="index-unreachable", detail=str(exc), **window)
+        seen = {s.tool for s in stats}
+        rows = [McpToolStat(tool=s.tool, calls=s.calls, errors=s.errors, mean_ms=s.mean_ms,
+                            max_ms=s.max_ms, last_at=s.last_at) for s in stats]
+        rows += [McpToolStat(tool=name) for name in registered if name not in seen]
+        return McpToolStats(tools=rows, **window)
+
+    @app.get(Routes.ADMIN_MCP_CALLS, response_model=McpCalls, tags=["admin"])
+    def get_mcp_calls(limit: int = 200, tool: str = "",
+                      failed_only: bool = False) -> McpCalls:
+        """The MCP call log, newest first -- what each call was given and what it answered.
+
+        Arguments and answers are truncated where they are recorded, not here; the cap is
+        ``robovast.mcp_server.tool_stats``.
+        """
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
+
+        try:
+            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+        except IndexUnreachableError as exc:
+            return McpCalls(status="index-unreachable", detail=str(exc))
+        return McpCalls(calls=[McpCall(at=c.at, tool=c.tool, duration_ms=c.duration_ms,
+                                       ok=c.ok, args=c.args, answer=c.answer, actor=c.actor)
+                               for c in calls])
+
+    @app.get(Routes.ADMIN_MCP_CALLS_CSV, tags=["admin"])
+    def export_mcp_calls(limit: int = 2000, tool: str = "", failed_only: bool = False):
+        """The same log as a CSV download -- the repo's one export format.
+
+        It carries what the panel carries, truncation included, and only the retained
+        window: this is an export of the record, not of all history.
+        """
+        import csv  # pylint: disable=import-outside-toplevel
+        import io  # pylint: disable=import-outside-toplevel
+
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
+
+        try:
+            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+        except IndexUnreachableError as exc:
+            # A download cannot carry a status field the way the JSON routes do, so the
+            # unreachable index has to be the response rather than an empty file that
+            # reads as "no calls".
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def rows():
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(["at", "tool", "duration_ms", "ok", "args", "answer", "actor"])
+            for call in calls:
+                writer.writerow([call.at, call.tool, round(call.duration_ms, 3), call.ok,
+                                 call.args, call.answer, call.actor])
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+            yield buffer.getvalue()
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return StreamingResponse(
+            rows(), media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="mcp-calls-{stamp}.csv"'})
 
     # -- authoring help (static; config editor) -----------------------------
 

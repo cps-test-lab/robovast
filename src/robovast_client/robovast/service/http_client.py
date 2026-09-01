@@ -40,7 +40,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
                                         JobState, ListJobsResponse, ListWorkspacesResponse,
-                                        LogChunk,
+                                        LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
                                         ServiceError, UploadGrant,
@@ -161,6 +161,20 @@ class HTTPTransport(RobovastInterface):
         the wire client for a route that only a remote caller needs.
         """
         return LogChunk.model_validate(self._get(Routes.ADMIN_LOG, offset=offset))
+
+    def mcp_tool_stats(self) -> McpToolStats:
+        """Which MCP tools have been called, aggregated (see ``Routes.ADMIN_MCP_TOOLS``).
+
+        Not on :class:`RobovastInterface`, for the reason ``get_service_log`` is not: it
+        describes the serving process's own MCP surface rather than the campaigns it drives.
+        """
+        return McpToolStats.model_validate(self._get(Routes.ADMIN_MCP_TOOLS))
+
+    def mcp_calls(self, limit: int = 200, tool: str = "",
+                  failed_only: bool = False) -> McpCalls:
+        """The MCP call log, newest first (see ``Routes.ADMIN_MCP_CALLS``)."""
+        return McpCalls.model_validate(self._get(
+            Routes.ADMIN_MCP_CALLS, limit=limit, tool=tool, failed_only=failed_only))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).

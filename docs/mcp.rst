@@ -1185,6 +1185,43 @@ command *is* a shell, so ``| grep``, ``tail`` and ``sed`` are already available 
 strictly more expressive. ``tail`` trims the captured output through the same
 :func:`~robovast.mcp_server.log_view.view_log` filter those tools use.
 
+What was called, and what it answered
+-------------------------------------
+
+Every tool call is recorded once, by one middleware
+(:func:`robovast.mcp_server.server._install_tool_stats`), and no tool carries accounting code
+of its own -- a tool added tomorrow is in the record without knowing the record exists. The web
+UI's Admin page shows it under **MCP tools**: a ranking of which tools agents actually reach for,
+with a green/red bar per tool comparing call counts and failure share, and the calls behind it.
+
+The record is one row per call rather than a counter per tool, and that is the whole decision.
+Counts, error rates and durations would fit in ~70 upserted rows; the **arguments and the
+answer** would not, and those are what makes a failure debuggable once the process that served it
+is gone. So the ranking is an aggregate over the log rather than a number kept beside it.
+
+What it keeps, and does not:
+
+* ``args`` and ``answer`` are truncated where they are recorded --
+  :data:`robovast.mcp_server.tool_stats.MAX_LINES` lines and
+  :data:`~robovast.mcp_server.tool_stats.MAX_CHARS` characters, marked when cut. A
+  ``write_file`` body or a whole campaign summary never reaches the table. That module is the
+  single place deciding this, which makes it also the place to read when asking what the trail
+  could hold.
+* Rows age out at :data:`~robovast.mcp_server.tool_stats.MAX_AGE_S` (30 days) or
+  :data:`~robovast.mcp_server.tool_stats.MAX_ROWS`, whichever bites first. Age alone would not
+  bound the table -- one agent loop emits thousands of calls in an hour -- so a burst shortens
+  the retained window, and the panel says so rather than claiming a month it does not have.
+* Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
+  per call: a Postgres round-trip in front of every tool call would cost more than some of the
+  tools. They therefore survive a service restart but not the results store, which the index
+  shares a lifetime with.
+
+**Recording never fails a tool call.** Every path in
+:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the
+log, never the call. This is the same contract :class:`robovast.service.event_log.EventLog`
+states for itself, for the same reason: what is recorded is a description of the work, not the
+work.
+
 .. _mcp-tools:
 
 Available Tools

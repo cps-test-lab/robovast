@@ -1215,6 +1215,63 @@ class UsageHistory(BaseModel):
     step_s: float = 0.0
 
 
+class McpToolStat(BaseModel):
+    """One MCP tool's calls, aggregated over the log.
+
+    A tool that has never been called still gets a row, with :attr:`calls` at zero. That is
+    the row worth reading: a tool nobody chooses costs an agent's context on every session
+    and is invisible to any aggregate computed only over calls that happened.
+    """
+
+    tool: str
+    calls: int = 0
+    errors: int = 0
+    mean_ms: float = 0.0
+    max_ms: float = 0.0
+    last_at: Optional[float] = None
+
+
+class McpCall(BaseModel):
+    """One recorded MCP tool call.
+
+    :attr:`args` and :attr:`answer` are truncated where they are recorded, not here -- see
+    ``robovast.mcp_server.tool_stats``. What survives is a few lines, marked when cut, which
+    is enough to see what a call was given and what it said and never a whole file body.
+    """
+
+    at: float
+    tool: str
+    duration_ms: float
+    ok: bool
+    args: str = ""
+    answer: str = ""
+    actor: str = ""
+
+
+class McpToolStats(BaseModel):
+    """The ranking, plus what the record covers.
+
+    :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
+    no tool has been called yet, or the index that holds the log is unreachable and the
+    answer is unknown. A reader that drew the second as the first would be inventing a fact.
+    """
+
+    tools: list[McpToolStat] = Field(default_factory=list)
+    status: str = "ok"
+    detail: str = ""
+    #: The retained window, so a reader is never told a month when a burst left a day.
+    max_age_s: float = 0.0
+    max_rows: int = 0
+
+
+class McpCalls(BaseModel):
+    """A page of the call log, newest first."""
+
+    calls: list[McpCall] = Field(default_factory=list)
+    status: str = "ok"
+    detail: str = ""
+
+
 # -- workspaces (editable project inputs; independent of campaigns) ---------
 
 
@@ -1984,6 +2041,12 @@ class Routes:
     ADMIN_EVENTS = "/admin/events"
     ADMIN_LOG = "/admin/log"
     ADMIN_LOG_STREAM = "/admin/log/stream"
+    #: What the MCP tools were asked and what they answered: the per-tool ranking, the call
+    #: log behind it, and that log as a CSV export. Under ``/admin`` because it describes
+    #: this serving process's own surface rather than any campaign.
+    ADMIN_MCP_TOOLS = "/admin/mcp-tools"
+    ADMIN_MCP_CALLS = "/admin/mcp-calls"
+    ADMIN_MCP_CALLS_CSV = "/admin/mcp-calls.csv"
     CAMPAIGNS = "/campaigns"
     #: SSE stream of the campaign list — a server-side loop over the same
     #: ``list_campaigns`` pull (``CAMPAIGNS`` above stays the authoritative read for

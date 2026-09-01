@@ -13,6 +13,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
+import { McpToolsPanel } from './McpToolsPanel'
 import { ServiceEventsPanel } from './ServiceEventsPanel'
 import { useDialogs } from '@/components/DialogProvider'
 import { useToasts } from '@/components/ToastProvider'
@@ -97,6 +98,10 @@ export function AdminPage() {
   // "why did that not work?", which is a question somebody arrives with. Its query is gated
   // on the flag, so an unopened panel costs nothing.
   const [eventsOpen, setEventsOpen] = useState(false)
+  // Collapsed, like the two above: this answers "which tools do agents actually use, and
+  // what happened when they did?", which is a question somebody arrives with rather than
+  // one the page owes on every visit. Its two queries are gated on the flag.
+  const [mcpOpen, setMcpOpen] = useState(false)
 
   // This page is kept mounted once visited, so both readings are gated on it being the one on
   // screen: they then stop while it is not, and are re-read on the way back in — which is the
@@ -471,6 +476,27 @@ export function AdminPage() {
         {/* Mounted only while open, like the panels around it: the request is made the first
             time somebody asks rather than on every visit. */}
         {eventsOpen ? <ServiceEventsPanel /> : null}
+      </CollapsibleBox>
+
+      <CollapsibleBox
+        open={mcpOpen}
+        onToggle={() => setMcpOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'Every MCP tool call this deployment served \u2014 the ranking, and the calls '
+              + 'behind it with what each was given and what it answered, truncated to a few '
+              + 'lines. Kept in the central index, so it outlives this process but not the '
+              + 'results store.'
+            }
+          >
+            <span>MCP tools</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, like the panels around it. */}
+        {mcpOpen ? <McpToolsPanel active={active} /> : null}
       </CollapsibleBox>
 
       <CollapsibleBox
