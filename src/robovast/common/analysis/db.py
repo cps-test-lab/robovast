@@ -164,12 +164,11 @@ def _require_ingested(root: Path) -> None:
     Without this check a notebook would plot an empty frame and read it as a result.
     """
     from robovast.results_processing import index_query
-    from robovast.common.errors import IndexUnreachableError
-    try:
-        if index_query.campaign_is_ingested(root.name):
-            return
-    except IndexUnreachableError:
-        raise
+    # IndexUnreachableError propagates deliberately: "the index is down" and "this
+    # campaign was never ingested" are different answers, and only the second is a fact
+    # about the campaign.
+    if index_query.campaign_is_ingested(root.name):
+        return
     raise CampaignDataError(index_query.missing_campaign_note(root.name))
 
 
@@ -213,7 +212,7 @@ def list_tables(data_dir: Union[str, Path]) -> list:
     try:
         return _result_tables(conn, campaign_id(data_dir))
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
 def table_info(data_dir: Union[str, Path], table: str) -> "dict[str, str]":
@@ -226,7 +225,7 @@ def table_info(data_dir: Union[str, Path], table: str) -> "dict[str, str]":
     try:
         return _table_columns(conn, _sql_name(conn, table))
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
 def _result_tables(conn, campaign: str) -> list:
@@ -360,7 +359,7 @@ def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequenc
 
         frame = pd.read_sql(f'SELECT {selected} FROM "{sql_name}" {clause}', conn, params=values)
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
     return attach_params(frame, data_dir) if with_params else frame
 
@@ -477,4 +476,4 @@ def read_sql(data_dir: Union[str, Path], sql: str, params: Sequence = ()) -> pd.
     try:
         return pd.read_sql(sql, conn, params=bound)
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member

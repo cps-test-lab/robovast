@@ -806,7 +806,7 @@ def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
                                              or campaign_id_of(campaign_dir)])
     try:
         try:
-            cursor = conn.execute(index_dialect.translate(sql))
+            cursor = conn.execute(index_dialect.translate(sql))  # pylint: disable=no-member
         except psycopg.Error as exc:
             message = str(exc).strip()
             if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
@@ -834,7 +834,7 @@ def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
             writer.writerows(batch)
             yield _flush()
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
 # NOTE: the costmap-frame reader lived here; it moved to ``robovast_nav`` as a

@@ -63,7 +63,6 @@ def _isolated_environment():
     Snapshot-and-restore rather than stripping ``ROBOVAST_*``: tests that set these
     deliberately must keep working, and the leak is the *persistence*, not the value.
     """
-    import os  # pylint: disable=import-outside-toplevel
     before = dict(os.environ)
     yield
     if os.environ != before:
@@ -177,8 +176,10 @@ def pytest_collection_modifyitems(config, items):
 # module-level ``skipif``/``os.environ.get`` evaluated at import time, i.e. during
 # collection, by which point any fixture has not run yet.
 
-_pg_container = None
-_pg_unavailable: str | None = None
+# Module state on purpose: pytest_configure starts the container, pytest_unconfigure
+# stops it and pytest_report_header reports it, and hooks cannot share a fixture.
+_pg_container = None  # pylint: disable=invalid-name
+_pg_unavailable: str | None = None  # pylint: disable=invalid-name
 
 
 def pytest_configure(config):

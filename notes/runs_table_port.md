@@ -83,13 +83,13 @@ Typing (the decisions, not the SQLite spellings):
   from `campaign.db`'s `job.sysinfo_json` via `LEFT JOIN job ON run.job_id = job.id`
   (per *job*, so shared by the runs of a packed multi-config job), falling back to the
   `sysinfo` dict `read_run_outcome` attaches when the store has no `job` table. Notes:
-  - the key is **`available_mem`**, spelled exactly so, and its value is a
+  * the key is **`available_mem`**, spelled exactly so, and its value is a
     Kubernetes-style quantity (a plain byte count, or `"16Gi"` when the `.vast` set a
     limit). Normalize with `common.quantity.to_bytes` → `available_mem_bytes`. Reading it
     raw makes the column numeric in some runs and text in others. (A fixture once invented
     `available_mem_gb`, which no producer emits; the test passed while the column was NULL
     in every real campaign.)
-  - `node_label` is a *hash* of the node name (see `collect_sysinfo`), absent for local runs
+  * `node_label` is a *hash* of the node name (see `collect_sysinfo`), absent for local runs
     and for cluster runs recorded before the pod hashed one → NULL, never `""`. It is
     deliberately not called `node_name` (that means a behaviour-tree node in
     `nav2_behavior_tree`). It answers what `instance_type` cannot: on bare metal every node

@@ -847,7 +847,7 @@ repoints it on a deployment published before the move.
 .. _campaign-index-storage:
 
 The campaign index marker
-~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 One more thing lives in object storage, resolved exactly the same way and for the same
 reason: the **campaign index**, one zero-byte marker per campaign under

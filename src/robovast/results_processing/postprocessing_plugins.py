@@ -51,7 +51,6 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import yaml
 
 from robovast.common import log_summary, scenario_markers
 from robovast.common.campaign_data import PROBE_DIR

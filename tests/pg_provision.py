@@ -130,7 +130,7 @@ def start() -> tuple[str, str | None]:
         return existing, None
 
     try:
-        import psycopg  # noqa: F401,PLC0415
+        import psycopg  # noqa: F401,PLC0415  # pylint: disable=unused-import
     except ImportError as error:
         raise ProvisionError(
             "psycopg is not installed, so the index tests cannot connect to any "

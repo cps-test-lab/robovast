@@ -118,7 +118,7 @@ class RunDataContext:
         try:
             yield conn
         finally:
-            conn.close()
+            conn.close()  # pylint: disable=no-member
 
     def run_dir(self, config_name: str, run_id) -> Path:
         """Absolute path to one run's artifact directory

@@ -231,4 +231,4 @@ def test_an_empty_scope_is_refused_rather_than_read_as_the_whole_corpus(two_camp
         with pytest.raises(index_scope.ScopeNotEnforceable):
             index_scope.enter_scope(conn, ["", "  "])
     finally:
-        conn.close()
+        conn.close()  # pylint: disable=no-member

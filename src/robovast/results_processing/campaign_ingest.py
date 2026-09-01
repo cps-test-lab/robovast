@@ -128,7 +128,6 @@ def _scenario_verdict(rows) -> dict:
 #: Resolved lazily rather than as a literal set so that renaming one of the tables cannot
 #: leave a stale name here still reserved and the new one unguarded.
 def _reserved_tables() -> frozenset:
-    from robovast.results_processing import run_health  # pylint: disable=import-outside-toplevel
     return frozenset({RUNS_TABLE, POSTPROCESSING_STEPS_TABLE, run_health.TABLE})
 
 

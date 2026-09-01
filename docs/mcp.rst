@@ -393,7 +393,7 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   the validated config with defaults filled in.
 
 A query never fetches a campaign
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Results live in a central index, so a query is answered there for every campaign, on both
 lanes. Nothing is materialized in the service to answer one: no first-query transfer, and no

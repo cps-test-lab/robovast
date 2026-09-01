@@ -194,7 +194,7 @@ def run_counts(campaign_id: str) -> "dict | None":
         logger.debug("index run counts unavailable for %s", campaign_id, exc_info=True)
         return None
     try:
-        row = conn.execute(
+        row = conn.execute(  # pylint: disable=no-member
             "SELECT COUNT(*) AS num_runs, "
             "COUNT(*) FILTER (WHERE passed = 1) AS num_passed, "
             "COUNT(*) FILTER (WHERE status = 'failed') AS num_failed, "

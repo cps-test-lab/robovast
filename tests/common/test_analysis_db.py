@@ -61,7 +61,7 @@ def _behaviour_frame(rows=None) -> pd.DataFrame:
     return pd.DataFrame(list(BEHAVIOURS if rows is None else rows), columns=_COLUMNS)
 
 
-def _campaign_tree(tmp_path, name, behaviours=BEHAVIOURS):
+def _campaign_tree(tmp_path, name, behaviours=tuple(BEHAVIOURS)):
     """A campaign directory shaped like a real one: configs, runs, one CSV per run.
 
     No ``data.db`` any more -- the tree on disk is what a notebook's ``DATA_DIR`` points

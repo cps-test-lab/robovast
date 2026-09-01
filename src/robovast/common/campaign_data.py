@@ -546,7 +546,6 @@ def postprocessing_entries(record):
     """
     if record is None:
         return None
-    import yaml  # pylint: disable=import-outside-toplevel
     try:
         data = yaml.safe_load(record)
     except yaml.YAMLError as exc:

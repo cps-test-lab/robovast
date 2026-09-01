@@ -92,7 +92,7 @@ _SERVED_TEXT.update({
 
 def test_the_guard_has_something_to_check():
     """A rename emptying either set would pass every test below vacuously."""
-    assert _TS_STATEMENTS, f"no *_SQL constants found under {_UI_LIB}"
+    assert _TS_STATEMENTS, f"no *_SQL constants found under {_UI_SRC}"
     assert len(_SERVED_TEXT) > 5
 
 

@@ -49,7 +49,7 @@ ENTRIES = [
 ]
 
 
-def _campaign(tmp_path, name="camp", *, entries=ENTRIES, pose_columns=True):
+def _campaign(tmp_path, name="camp", *, entries=tuple(ENTRIES), pose_columns=True):
     """A results tree with two runs, and a postprocessing provenance record."""
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)

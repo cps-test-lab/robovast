@@ -32,6 +32,11 @@ willingly.
 
 from pathlib import Path
 
+#: Postprocessing's provenance record, campaign-relative. Written by
+#: ``results_processing.postprocessing`` and by nothing else, at the end of the
+#: command run, listing one entry per derived output with its sources and plugin.
+from robovast.common.campaign_data import POSTPROCESSING_RECORD
+
 from robovast.common.execution import is_campaign_dir
 
 __all__ = ["RAW", "POSTPROCESSED", "VARIANTS", "POSTPROCESSING_RECORD", "archive_name",
@@ -81,12 +86,6 @@ def parse_archive_name(basename: str):
             campaign_id = stem[: -len(token)]
             return (campaign_id, variant) if is_campaign_dir(campaign_id) else None
     return (stem, RAW) if is_campaign_dir(stem) else None
-
-
-#: Postprocessing's provenance record, campaign-relative. Written by
-#: ``results_processing.postprocessing`` and by nothing else, at the end of the command
-#: run, listing one entry per derived output with the sources and plugin it came from.
-from robovast.common.campaign_data import POSTPROCESSING_RECORD
 
 
 def variant_from_record(record) -> str:
