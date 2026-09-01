@@ -65,7 +65,21 @@ from . import run_slices
 FILENAME = "run_log.csv"
 
 #: The table's columns, in reading order: when, where from, how bad, what.
+#:
+#: ``seq`` is the merge's own ordering, written down rather than left implicit. This table
+#: is a MERGE of several containers' logs into one wall-clock order, so that order is a
+#: result of the merge and not recoverable from the row: ``wall_ts`` ties routinely (two
+#: containers logging in the same millisecond, or a whole burst sharing an inherited
+#: stamp), and a reader paging through with LIMIT/OFFSET needs a total order or it sees
+#: rows twice and misses others.
+#:
+#: It replaces SQLite's ``rowid``, which the log panel had been ordering by. That worked
+#: only because the rows happened to be stored in insertion order in a file nobody else
+#: wrote to; a table is a set, and no engine owes anyone that. Postgres has no ``rowid`` at
+#: all, so the panel failed outright -- which is the better failure, and this is the fix it
+#: asked for.
 FIELDNAMES = [
+    "seq",
     "sim_time", "wall_ts", "time_source", "in_window",
     "container", "node", "source", "level", "severity",
     "message", "file", "function", "line",
@@ -479,5 +493,12 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
 
 def write_run_log(path: str, rows: Sequence[dict]) -> None:
     """Write ``run_log.csv``. A header-only file is written when a run logged nothing, so
-    the table exists and the panel can say "no lines" instead of "no table"."""
-    run_slices.write_csv(path, FIELDNAMES, rows)
+    the table exists and the panel can say "no lines" instead of "no table".
+
+    ``seq`` is stamped here, at the one place the merged order exists: *rows* arrives in it,
+    and once written the file no longer carries it. Numbered per run, from 0, so it means
+    "the nth line of this run" rather than a global counter whose value depends on how many
+    other runs happened to be ingested first.
+    """
+    run_slices.write_csv(path, FIELDNAMES,
+                         [{**row, "seq": i} for i, row in enumerate(rows)])

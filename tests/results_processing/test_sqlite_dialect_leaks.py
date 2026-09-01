@@ -37,14 +37,25 @@ _SQLITE_CATALOG = re.compile(r"\bsqlite_master\b", re.IGNORECASE)
 _ADVICE = ("Use -> / ->> for a field (0-based for an array element) and "
            "jsonb_array_elements for a fan-out; information_schema for a schema probe.")
 
-_UI_LIB = Path(__file__).resolve().parents[2] / "frontend" / "ui" / "src" / "lib"
+_UI_SRC = Path(__file__).resolve().parents[2] / "frontend" / "ui" / "src"
 
 #: The UI files holding hand-written SQL. Named rather than globbed: a new file of query
 #: constants should be added here deliberately, and a glob over the whole tree would also
 #: sweep up prose in unrelated comments.
-_UI_SQL_FILES = ("resultsTree.ts", "campaignDetails.ts", "panels/dataProvider.ts")
+_UI_SQL_FILES = ("lib/resultsTree.ts", "lib/campaignDetails.ts",
+                 "lib/panels/dataProvider.ts", "components/runLog/useRunLog.ts")
 
 #: `const NAME_SQL = <one or more adjacent string literals joined by +>`.
+#: A backtick template literal that is SQL rather than prose -- it names a statement's own
+#: keywords. Comments are stripped first, so a comment *about* SQL is not mistaken for it.
+_TS_TEMPLATE = re.compile(r"`([^`]*)`", re.DOTALL)
+_LOOKS_LIKE_SQL = re.compile(r"\b(SELECT|FROM|ORDER\s+BY|GROUP\s+BY|WHERE)\b")
+_TS_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+
+#: SQLite's implicit row id, which Postgres does not have. ``lastrowid`` is excluded: that
+#: is the Python driver's cursor attribute and has nothing to do with a query.
+_SQLITE_ROWID = re.compile(r"(?<!last)\browid\b", re.IGNORECASE)
+
 _TS_SQL_CONST = re.compile(
     r"const\s+(\w*SQL\w*)\s*=\s*((?:\s*(?:'[^']*'|\"[^\"]*\")\s*\+?)+)")
 
@@ -52,11 +63,16 @@ _TS_SQL_CONST = re.compile(
 def _ts_sql_constants() -> dict:
     found = {}
     for name in _UI_SQL_FILES:
-        path = _UI_LIB / name
+        path = _UI_SRC / name
         assert path.exists(), f"{path} moved; this guard now checks nothing"
-        for const, body in _TS_SQL_CONST.findall(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        for const, body in _TS_SQL_CONST.findall(text):
             found[f"{name}:{const}"] = "".join(
                 lit[1:-1] for lit in re.findall(r"'[^']*'|\"[^\"]*\"", body))
+        code = _TS_COMMENT.sub(" ", text)
+        for i, lit in enumerate(_TS_TEMPLATE.findall(code)):
+            if _LOOKS_LIKE_SQL.search(lit):
+                found[f"{name}:template#{i}"] = lit
     return found
 
 
@@ -85,6 +101,11 @@ def test_no_ui_query_uses_sqlite_only_sql(name):
     sql = _TS_STATEMENTS[name]
     assert not _SQLITE_JSON_CALL.search(sql), f"{name} calls a SQLite JSON function. {_ADVICE}"
     assert not _SQLITE_CATALOG.search(sql), f"{name} reads sqlite_master. {_ADVICE}"
+    assert not _SQLITE_ROWID.search(sql), (
+        f"{name} names rowid, which Postgres does not have. It was only ever a stand-in for "
+        f"the order rows were written in -- order by a column that records that order "
+        f"(run_log has `seq`), because a table is a set and no engine owes a reader "
+        f"insertion order. {_ADVICE}")
 
 
 @pytest.mark.parametrize("name", sorted(_SERVED_TEXT))
