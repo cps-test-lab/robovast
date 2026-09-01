@@ -33,7 +33,9 @@ lazily so importing this module stays cheap.
 
 import collections
 import hmac
+import http
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -68,6 +70,17 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         WorkspaceInfo, WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+#: How long an identical refusal counts as the same one, for the durable record. A panel
+#: polling an endpoint that cannot answer it, or a client retrying without a token, produces
+#: one refusal per request; recorded each time, one such loop pushes everything else past the
+#: event log's row bound within the hour. The repeats are counted rather than dropped -- "and
+#: then 900 more" is the part of a loop worth keeping.
+REFUSAL_REPEAT_S = 60.0
+
+#: Distinct refusals tracked for the above, at most. Bounded because the key carries the
+#: message, and a message can carry an id.
+REFUSAL_MAX_TRACKED = 512
 
 # deliberately after the logger, see above
 # pylint: disable-next=wrong-import-position
@@ -331,7 +344,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     auth_token, _ephemeral = auth.resolve_token(auth_token)
     app.state.auth_token = auth_token
-    app.add_middleware(auth.AuthMiddleware, token=auth_token)
+
+    def _record_auth_refusal(path: str, detail: str) -> None:
+        """A caller turned away by the gate, before any route could see it.
+
+        Reported through a hook because the gate is ASGI middleware in front of the whole
+        app: its 401 is composed and sent without ever becoming an exception, so no handler
+        below can record it. No actor -- a request that failed to authenticate has said
+        nothing about itself this service is willing to write down as who it was.
+        """
+        _record_refusal(401, detail, method="", path=path)
+
+    app.add_middleware(auth.AuthMiddleware, token=auth_token,
+                       on_reject=_record_auth_refusal)
 
     if mcp_app is not None:
         # Not ``app.mount()``: a ``Mount`` requires a literal trailing slash after its
@@ -356,50 +381,165 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def _guard(fn):
         """Map interface exceptions to clean HTTP errors instead of 500s.
 
-        Also the one place every refusal passes through on its way out, which is why the
-        event log is written here rather than at the ~56 call sites: a refusal composed in a
-        request and rendered once is otherwise the only thing this service does that it keeps
-        no record of at all.
-
-        Only the refusals. A read that succeeds passes straight through, so the log stays a
-        record of what did not happen and not a request trace.
+        Mapping only. Recording the refusal belongs to the exception handlers below, which
+        see every one a client is actually sent: this covers the ~56 call sites that wrap an
+        interface call, and nothing else -- not a route that raises its own ``HTTPException``,
+        not the 422 FastAPI composes for a request that never reached a route, not the 500 an
+        unhandled exception becomes. Recorded here, exactly those were missing from the
+        record, which is to say the ones nobody could otherwise reconstruct.
         """
         from robovast.common.errors import \
             ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         try:
             return fn()
         except ValueError as e:            # bad input / not-initialized
-            _record_refusal(400, e)
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
             # ``str(KeyError("x"))`` is ``"'x'"``; take the message itself so the
             # detail is not delivered wrapped in stray quotes.
             detail = e.args[0] if e.args else str(e)
-            _record_refusal(404, detail)
             raise HTTPException(status_code=404, detail=str(detail)) from e
         except ObjectStoreUnreachableError as e:
             # Before the RuntimeError arm it subclasses: nothing about an unanswering
             # store is a conflict, and a 503 tells a client the call is worth retrying.
             # The message is already the whole diagnosis, so no traceback is logged.
             logger.warning("%s", e)
-            _record_refusal(503, e)
             raise HTTPException(status_code=503, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
-            _record_refusal(409, e)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
-    def _record_refusal(status: int, detail) -> None:
-        """Keep the reason somewhere a reload cannot take it.
+    # -- recording the refusals ---------------------------------------------
+    # A refusal is composed in the request that refused it, rendered once, and gone; the
+    # browser holds it for thirty seconds. What is recorded here is every refusal a client
+    # is actually sent, so the durable panel holds the same set of sentences the UI showed
+    # transiently. Successes pass through untouched: this stays a record of what did not
+    # happen, not a request trace.
 
-        ``_guard`` sees no request and no principal -- it is a bare callable -- so the actor is
-        not recorded here. Attribution needs the seam that has the ``Request``; this records
-        *what* was refused, which is the part that existed nowhere.
+    #: Distinct refusals seen recently: key -> [when it was recorded, how many since]. Per
+    #: app rather than module-level, like the usage ring above: two apps built in one process
+    #: refuse independently. The window and the bound are module constants
+    #: (:data:`REFUSAL_REPEAT_S`, :data:`REFUSAL_MAX_TRACKED`) because they are policy.
+    _refusal_seen: "collections.OrderedDict[tuple, list]" = collections.OrderedDict()
+    _refusal_guard = threading.Lock()
+
+    def _refusal_repeats(key) -> Optional[int]:
+        """How many identical refusals preceded this one, or ``None`` to suppress it."""
+        now = time.time()
+        with _refusal_guard:
+            seen = _refusal_seen.get(key)
+            if seen is not None and now - seen[0] < REFUSAL_REPEAT_S:
+                seen[1] += 1
+                return None
+            repeats = seen[1] if seen is not None else 0
+            _refusal_seen[key] = [now, 0]
+            _refusal_seen.move_to_end(key)
+            while len(_refusal_seen) > REFUSAL_MAX_TRACKED:
+                _refusal_seen.popitem(last=False)
+            return repeats
+
+    def _is_composed(status: int, message: str) -> bool:
+        """Whether this refusal says anything this service chose to say.
+
+        Starlette fills a bare ``HTTPException`` with the status code's own phrase, which is
+        what the router raises for a URL matching no route and a method no route allows.
+        Those are a caller's mistake about the address space rather than an action this
+        service considered and would not do, and anything that scans produces them without
+        bound. A status this Python does not know is kept: an unrecognised code is far more
+        likely to be ours than to be a phrase collision.
         """
         try:
-            _events.append("request.refused", severity="error", message=str(detail),
-                           payload={"status": status})
+            phrase = http.HTTPStatus(status).phrase
+        except ValueError:
+            return True
+        return message.strip() != phrase
+
+    def _actor_of(request) -> str:
+        """Who was refused, where the request says so.
+
+        The seam that has the ``Request`` is the seam that can attribute one -- which the
+        ~56 wrapped call sites could not, being bare callables. A caller who gave no name
+        stays nameless: with a shared secret, "somebody" is the honest answer.
+        """
+        try:
+            principal = (request.scope.get("state") or {}).get("principal")
+        except Exception:  # noqa: BLE001 - attribution must never be the thing that fails
+            return ""
+        return getattr(principal, "display_name", None) or ""
+
+    def _record_refusal(status: int, detail, *, actor: str = "", method: str = "",
+                        path: str = "") -> None:
+        """Keep the reason somewhere a reload cannot take it."""
+        message = str(detail)
+        if not _is_composed(status, message):
+            return
+        repeats = _refusal_repeats((status, message))
+        if repeats is None:
+            return
+        payload = {"status": status}
+        if method:
+            payload["method"] = method
+        if path:
+            payload["path"] = path
+        if repeats:
+            payload["repeated"] = repeats
+        try:
+            _events.append("request.refused", severity="error", message=message,
+                           actor=actor, payload=payload)
         except Exception:  # noqa: BLE001 - a record of work must never break the work
             logger.debug("could not record a refusal", exc_info=True)
+
+    # The seams every refusal inside the app leaves by -- the gate's own 401, in front of
+    # all of them, reports itself through ``on_reject`` above. Registering handlers rather
+    # than recording at each raise is what makes the set complete: a handler cannot be
+    # forgotten by the next route, and it sees the two kinds of refusal no route composes
+    # at all -- the 422 for a request that never parsed, and the 500 an unhandled
+    # exception becomes.
+    from fastapi.exception_handlers import (  # pylint: disable=import-outside-toplevel
+        http_exception_handler, request_validation_exception_handler)
+    from fastapi.exceptions import \
+        RequestValidationError  # pylint: disable=import-outside-toplevel
+    from fastapi.responses import \
+        PlainTextResponse  # pylint: disable=import-outside-toplevel
+    from starlette.exceptions import \
+        HTTPException as StarletteHTTPException  # pylint: disable=import-outside-toplevel
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _refused_http(request: Request, exc: StarletteHTTPException):
+        """Everything ``_guard`` maps, plus every ``HTTPException`` a route raises itself."""
+        _record_refusal(exc.status_code, exc.detail, actor=_actor_of(request),
+                        method=request.method, path=request.url.path)
+        return await http_exception_handler(request, exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def _refused_validation(request: Request, exc: RequestValidationError):
+        """FastAPI's own 422, for a request that never reached the route.
+
+        Flattened to one line here. The response keeps the structured errors a client can
+        act on; the record wants the sentence a person reads, which is which field was
+        wrong and why -- a nested error list in a log panel is neither.
+        """
+        try:
+            message = "; ".join(
+                f"{'.'.join(str(part) for part in err.get('loc', ()))}: {err.get('msg', '')}"
+                for err in exc.errors()) or str(exc)
+        except Exception:  # noqa: BLE001 - the record must not depend on the error's shape
+            message = str(exc)
+        _record_refusal(422, message, actor=_actor_of(request),
+                        method=request.method, path=request.url.path)
+        return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def _refused_unhandled(request: Request, exc: Exception):
+        """The refusal nobody composed: a 500 the client sees as a failure like any other.
+
+        The type and message, not the traceback -- Starlette re-raises after this, so the
+        traceback still reaches the service log, which is where a traceback is readable.
+        What belongs in a durable record is the one line that says which call died and how,
+        for a restart that has already thrown the log away.
+        """
+        _record_refusal(500, f"{type(exc).__name__}: {exc}", actor=_actor_of(request),
+                        method=request.method, path=request.url.path)
+        return PlainTextResponse("Internal Server Error", status_code=500)
 
     # -- SSE log streaming --------------------------------------------------
     # The browser streams logs over Server-Sent Events; MCP/CLI keep the pull

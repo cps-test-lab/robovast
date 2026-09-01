@@ -628,7 +628,41 @@ class LocalTransport(RobovastInterface):
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore(workspace_dir=workspace_dir)
         self.store = store
+        #: This service's durable event log, opened lazily. See :meth:`_event_log`.
+        self._events = None
+        self._events_guard = threading.Lock()
         self._sweep_staged_projects()
+
+    # -- the durable record -------------------------------------------------
+
+    def _event_log(self):
+        """Where a campaign driven from here says what it did, kept across restarts.
+
+        Addressed by **path**, beside the workspace registry, which is the same place and
+        the same fallback the app serving ``/admin/events`` resolves — so the two agree on
+        which file the log is without either having to hold the other's handle. A second
+        SQLite handle on one file is what that costs, and it costs nothing: every append is
+        one small INSERT under a busy timeout.
+        """
+        with self._events_guard:
+            if self._events is None:
+                from robovast.service import event_log
+                from robovast.service.workspaces import default_workspaces_root
+                try:
+                    root = Path(self.store.registry.root)
+                except Exception:  # noqa: BLE001 - a transport need not have a store
+                    root = Path(default_workspaces_root())
+                self._events = event_log.EventLog(root / event_log.EVENTS_FILENAME)
+            return self._events
+
+    def _notifier(self, campaign_id: str):
+        """A campaign's notifier, wired to both sinks.
+
+        The one place the service builds one, so no lane can announce a campaign's life to
+        a phone and leave nothing behind on the machine that ran it.
+        """
+        from robovast.execution.notify import Notifier
+        return Notifier.from_env(campaign_id, events=self._event_log())
 
     def _sweep_staged_projects(self) -> None:
         """Collect staged retrigger trees a killed service left behind.
@@ -1890,7 +1924,6 @@ class LocalTransport(RobovastInterface):
         that needs the transport — which directory this lane reads the source from, the
         single-flight guard, and making sure a refusal leaves nothing staged behind.
         """
-        from robovast.execution.notify import Notifier
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
@@ -1918,7 +1951,7 @@ class LocalTransport(RobovastInterface):
         # re-run is the one who cannot otherwise learn which id the re-run got. The new
         # campaign announces its own start; this is not that message, and not a terminal
         # one -- the source is unmodified. Best-effort like every other send.
-        Notifier.from_env(campaign_id).retriggered(ref.campaign_id)
+        self._notifier(campaign_id).retriggered(ref.campaign_id)
         return ref
 
     def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
@@ -2105,13 +2138,12 @@ class LocalTransport(RobovastInterface):
         def _drive_campaign():
             from robovast.execution.backends import CampaignStopped
             from robovast.execution.controller import end_campaign
-            from robovast.execution.notify import Notifier
             backend = None
             # Built here, not left to the builder, because on this lane the worker is
             # the campaign's outermost scope (see options.finalize_phase): the builder
             # returns while postprocessing is still to come, so the one notification
             # that says "this campaign is over" has to be sent from out here.
-            notifier = Notifier.from_env(campaign_id)
+            notifier = self._notifier(campaign_id)
             try:
                 # Before anything that can fail, so every later outcome — a doomed build
                 # included — belongs to a campaign that can be found again.
@@ -4177,7 +4209,6 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
-            from robovast.execution.notify import Notifier
             from robovast.execution.status_recovery import record_step_outcome
             handler = None
             try:
@@ -4199,7 +4230,7 @@ class LocalTransport(RobovastInterface):
             # Same one-shot notifier as a re-triggered share: this op runs from disk with
             # no live entry to inherit one from, and it reports on a campaign that ended
             # long ago -- so neither branch is the campaign's terminal message.
-            notifier = Notifier.from_env(request.campaign_id)
+            notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
             else:

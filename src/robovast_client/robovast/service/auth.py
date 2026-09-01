@@ -42,6 +42,7 @@ instead of touching every route. ``oauth2-proxy`` in front of the Ingress would 
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -63,6 +64,12 @@ NAME_COOKIE = "robovast_user"
 
 #: Header the CLI and MCP present the token in.
 AUTH_HEADER = "authorization"
+
+#: What an unauthenticated API caller is told. A constant because the gate reports its own
+#: refusals to whoever asked to hear them (see :class:`AuthMiddleware`), and a record that
+#: paraphrased the reply would be a second wording of the same refusal.
+UNAUTHENTICATED_DETAIL = ("not authenticated: present the shared token as "
+                          "'Authorization: Bearer <token>', or run 'vast login <url>'")
 
 #: Header carrying the caller's self-declared name. Not a credential and never treated
 #: as one: it says who someone *claims* to be, which with a shared secret is all anyone
@@ -191,9 +198,16 @@ class AuthMiddleware:
     reach the browser byte-by-byte.
     """
 
-    def __init__(self, app, token: str):
+    def __init__(self, app, token: str, on_reject=None):
         self.app = app
         self.token = token
+        #: Called with ``(path, detail)`` for each caller turned away with a 401, or ``None``.
+        #: The gate runs in front of the app, outside every exception handler that app
+        #: installs, so this refusal is the one that reaches a client without passing through
+        #: them -- without the hook it is invisible to anything recording what was refused.
+        #: A callable rather than a log: this package is the client, and must not learn what
+        #: the service keeps its records in.
+        self.on_reject = on_reject
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -225,10 +239,16 @@ class AuthMiddleware:
             location = "/login?next=" + _quote(target)
             await _send_simple(send, 303, b"", [(b"location", location.encode())])
             return
+        # Only this branch. The html branch above redirects to the login page, which is the
+        # sign-in flow working rather than an action anyone was refused.
+        if self.on_reject is not None:
+            try:
+                self.on_reject(scope.get("path", ""), UNAUTHENTICATED_DETAIL)
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("could not report an auth refusal", exc_info=True)
         await _send_simple(
             send, 401,
-            b'{"detail":"not authenticated: present the shared token as '
-            b'\'Authorization: Bearer <token>\', or run \'vast login <url>\'"}',
+            json.dumps({"detail": UNAUTHENTICATED_DETAIL}).encode(),
             [(b"content-type", b"application/json"),
              # Named scheme, so a generic HTTP client reports "unauthorized" rather than
              # inventing a challenge nobody offered.
