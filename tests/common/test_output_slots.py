@@ -704,3 +704,27 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     assert instances[0]["pos"] == [1.0, 2.0]
     # 'box' is the placement plugin's own default, so it is not restated per instance.
     assert "shape" not in instances[0]
+
+
+def test_a_density_is_refused_where_a_single_obstacle_is_required():
+    """`amount_per_m` resolves against a path length, so at config time it states no
+    number -- and this variation accepts only 1. Summing it reached `0 + None` and raised
+    a TypeError about int and NoneType, which names neither the key nor the variation."""
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTriggerConfig)
+
+    def _cfg(**oc):
+        return ObstacleVariationWithDistanceTriggerConfig(
+            scenario={"objects": "dynamic_objects", "trigger_point": "p",
+                      "trigger_threshold": "t"},
+            obstacle_configs=[{"max_distance": 0.1, "model": "m", **oc}],
+            trigger_distance=2.0, seed=1, robot_diameter=0.35)
+
+    with pytest.raises(ValidationError, match="write 'amount: 1'"):
+        _cfg(amount_per_m=0.2)
+
+    # The count it CAN state is still checked, and still by its own message.
+    with pytest.raises(ValidationError, match="only supports a single obstacle"):
+        _cfg(amount=3)
+
+    assert _cfg(amount=1).obstacle_configs[0].amount == 1

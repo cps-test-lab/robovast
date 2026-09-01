@@ -41,7 +41,7 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [hidden, setHidden] = useState<Set<string>>(new Set())
 
-  const { status, error: resolveError, url, buildingText } = useSceneGeometry(
+  const { status, error: resolveError, url, buildingText, buildingDetail } = useSceneGeometry(
     () => robovast.workspaceSceneStatus(source.workspaceId, source.vastPath),
     () => robovast.runWorkspaceScene(source.workspaceId, source.vastPath),
     `${source.workspaceId}/${source.vastPath}`,
@@ -142,6 +142,9 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
         >
           {buildingText}. Built once per world, then cached — every configuration, and every
           campaign that uses this world, is instant afterwards.
+          {buildingDetail ? (
+            <Box sx={{ mt: 0.5, fontSize: '0.85em', opacity: 0.85 }}>{buildingDetail}</Box>
+          ) : null}
         </Alert>
       ) : null}
 

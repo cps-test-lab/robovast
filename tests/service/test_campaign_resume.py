@@ -12,6 +12,7 @@ campaigns owed work, and deciding which of them can be picked up at all.
 
 import logging
 import types
+from pathlib import Path
 
 import pytest
 import yaml
@@ -22,10 +23,13 @@ from robovast.execution.cluster_execution import campaign_resume
 class _FakeService:
     """A ClusterService stubbed down to what the resume touches."""
 
-    def __init__(self, tmp_path, index, endings=()):
+    def __init__(self, tmp_path, index, endings=(), store=None):
         self.root = tmp_path
         self._index = dict(index)
         self._endings = set(endings)
+        #: The object store's copy of one campaign, as a directory. ``None`` where a test
+        #: pre-places the records on disk and only the fetch's *scope* is of interest.
+        self.store = store
         self.launched = []
         self.fetched = []
         self.includes = []
@@ -46,6 +50,15 @@ class _FakeService:
         # difference between a restart that takes seconds and one the liveness probe kills.
         self.fetched.append((campaign_id, str(dest)))
         self.includes.append(include)
+        # And, where a store is given, honoured: what the fetch leaves behind is what the
+        # plan is then made from, so a fake that accepts the predicate and copies nothing
+        # cannot tell a correct scope from one that fetches the wrong half.
+        for src in sorted(self.store.rglob("*") if self.store is not None else []):
+            rel = src.relative_to(self.store).as_posix()
+            if not src.is_file() or (include is not None and not include(rel)):
+                continue
+            (Path(dest) / rel).parent.mkdir(parents=True, exist_ok=True)
+            (Path(dest) / rel).write_bytes(src.read_bytes())
         return dest
 
     def _launch_campaign(self, request, target):
@@ -218,6 +231,69 @@ def test_a_strategy_that_declares_itself_unresumable_is_left_alone(tmp_path, mon
     _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
 
     assert "not resumable" in refusal and "random" in refusal
+
+
+# -- the same decision, asked before a deliberate roll ------------------------------------
+
+def _running_campaign(tmp_path, cid, **launch):
+    """A campaign as it exists mid-flight: launch record on disk, ``_config/`` in the store.
+
+    The split is the lane's, not the test's. ``_execution/launch.yaml`` is written into the
+    campaign root when the campaign is launched, while the config tree is staged into a
+    temporary directory and uploaded (``KubernetesBackend.run_batch_in_pod``); it reaches the
+    root only when the first batch's results are downloaded. Every campaign is in this state
+    from its launch until then.
+    """
+    root = tmp_path / cid
+    (root / "_execution").mkdir(parents=True)
+    (root / "_execution" / "launch.yaml").write_text(yaml.dump(
+        {"runs": 2, "images": {"scenario": "reg.example.com/e@sha256:a"}, **launch}))
+    store = tmp_path / "store" / cid
+    (store / "_config").mkdir(parents=True)
+    (store / "_config" / "pilot.vast").write_text(yaml.safe_dump(_vast()))
+    (store / "_config" / "scenario.osc").write_text("scenario pilot:\n")
+    (store / "campaign.db").write_bytes(b"the store's older copy")
+    return root, store
+
+
+def test_a_campaign_in_its_first_batch_is_not_lost_by_a_roll(tmp_path):
+    """The regression: refusing to roll over campaigns nothing was wrong with.
+
+    Planning against whatever the campaign root happens to hold reported every campaign
+    before its first batch as unresumable -- for a frozen config that was not missing, only
+    still in the object store -- and told the operator that rolling would stop live
+    campaigns for good.
+    """
+    root, store = _running_campaign(tmp_path, "camp-a")
+    svc = _FakeService(tmp_path, {}, store=store)
+
+    assert campaign_resume.would_be_lost(svc, "camp-a") is None
+    assert (root / "_config" / "pilot.vast").is_file(), (
+        "the check restores what it plans from, where the successor will look for it")
+
+
+def test_the_check_leaves_the_store_of_a_running_campaign_alone(tmp_path):
+    """``campaign.db`` is open, and being written, in the process asking the question.
+
+    Planning never reads it — a missing store costs the description and nothing else — so
+    the fetch that answers "would a roll lose this?" must not drop the object store's older
+    copy on top of the live file.
+    """
+    root, store = _running_campaign(tmp_path, "camp-a")
+    (root / "campaign.db").write_bytes(b"the live store")
+    svc = _FakeService(tmp_path, {}, store=store)
+
+    assert campaign_resume.would_be_lost(svc, "camp-a") is None
+    assert (root / "campaign.db").read_bytes() == b"the live store"
+
+
+def test_a_campaign_with_no_records_anywhere_is_still_reported_as_lost(tmp_path):
+    """The refusal has to keep firing where it is right: nothing to re-launch from."""
+    store = tmp_path / "store" / "camp-a"
+    store.mkdir(parents=True)
+    svc = _FakeService(tmp_path, {}, store=store)
+
+    assert "launch.yaml" in campaign_resume.would_be_lost(svc, "camp-a")
 
 
 # -- end to end through the fake --------------------------------------------------------
