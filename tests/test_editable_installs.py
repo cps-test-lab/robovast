@@ -46,10 +46,17 @@ def test_the_suite_runs_against_this_checkout(module_name, distribution):
     module = importlib.import_module(module_name)
     location = Path(module.__file__).resolve()
     assert REPO in location.parents, (
-        f"{module_name} was imported from {location}, not from this checkout.\n"
-        f"{distribution} is installed as a *copy* rather than editable, so it shadows the "
-        f"source being edited and the suite is testing the installed version.\n"
-        f"Fix: pip install --no-deps -e src/<that package>  (or: make venv)"
+        f"{module_name} was imported from {location}, not from this checkout ({REPO}).\n"
+        f"Whatever the suite just tested, it was not the source being edited. Two causes, "
+        f"and the path above tells them apart:\n"
+        f"  * inside site-packages -- {distribution} is installed as a *copy* rather than "
+        f"editable, so it shadows this tree for exactly the modules it owns.\n"
+        f"    Fix: pip install --no-deps -e src/<that package>  (or: make venv)\n"
+        f"  * inside another checkout of this repo -- the distributions are being mixed "
+        f"across trees, which is what a worktree plus a hand-set PYTHONPATH produces. The "
+        f"halves then disagree about symbols that moved, and it surfaces as an ImportError "
+        f"or a failure in a package nobody touched.\n"
+        f"    Fix: put EVERY src/* of this checkout on the path, or run 'make venv' here."
     )
 
 
