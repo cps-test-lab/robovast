@@ -269,7 +269,7 @@ async def search_run_logs(
     grep: str = "",
     min_severity: str = "",
     campaign_regex: bool = False,
-    extra_campaign_ids: list | None = None,
+    extra_campaign_ids: list[str] | None = None,
     max_campaigns: int = _DEFAULT_MAX_CAMPAIGNS,
     config_filter: str = "",
     run_id: int | None = None,
