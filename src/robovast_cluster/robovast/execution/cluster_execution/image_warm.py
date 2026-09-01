@@ -245,8 +245,12 @@ def family_refs_to_warm() -> list:
     not the set it is being pointed away from.
     """
     from robovast.common.execution import family_image_ref, resolve_family_image
+    # No floating-tag warning: prewarming *is* "put whatever the default points at onto
+    # every node", and this module is the thing built to make a floating tag current
+    # (stamped restart + imagePullPolicy: Always). One warning per member would also say
+    # the same thing three times over, all from one `default_image_tag()`.
     return [resolve_family_image(family_image_ref(member),
-                                 role=f"prewarm of {member}")
+                                 role=f"prewarm of {member}", warn=False)
             for member in WARM_FAMILY_MEMBERS]
 
 
