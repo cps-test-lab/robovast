@@ -33,7 +33,7 @@ import {
 } from '@/lib/eta'
 import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
-import { runMeterFailed, runMeterSegments, runMeterText } from '@/lib/runMeter'
+import { runMeterFailedText, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock, formatLocalTime } from '@/lib/time'
 import { NEUTRAL, withAlpha } from '@/colors'
@@ -106,11 +106,11 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
  *  as the one above and a change to either must be made looking at the other.
  *
  *  The track's label follows the campaign's tense (see `runMeterText`): the share done while it
- *  runs, the size of the campaign once it is over. Beside it, the number of runs that failed, and
- *  only when there is one -- red on the bar with no number against it leaves the reader counting
- *  pixels. One color for the whole label: the segments under it already carry the red, and a label
- *  in two colors reads as two labels. The rest -- the counts, the two failure axes apart, the wall
- *  clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
+ *  runs, the size of the campaign once it is over. Beside it, what failed, in that same unit and
+ *  only when there is something -- `28.3% (3.2% x)` on a running campaign, `156 (5 failed)` on a
+ *  finished one (see `runMeterFailedText`). One color for the whole label: the segments under it
+ *  already carry the red, and a label in two colors reads as two labels. The rest -- the counts,
+ *  the two failure axes apart, the wall clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
  *  single row.
  */
 export function MiniRunMeter({
@@ -134,7 +134,7 @@ export function MiniRunMeter({
   const done = finishedRuns(status, counts)
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
-  const failed = runMeterFailed(status, counts)
+  const failedText = runMeterFailedText(status, counts)
   return (
     // The ring's slot is reserved whether or not there is a ring, so this whole group is a
     // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
@@ -169,7 +169,7 @@ export function MiniRunMeter({
           text={
             <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
               {runMeterText(status, counts)}
-              {failed > 0 ? ` (${failed} failed)` : ''}
+              {failedText ? ` (${failedText})` : ''}
             </Box>
           }
         />
