@@ -24,9 +24,15 @@ import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 // minimised objective would report the worst draw of every round as its best. It is a scalar
 // subselect rather than a second request: one row's worth of campaign metadata, on a query
 // that is already per-campaign.
+//
+// The index is Postgres: `->`/`->>` rather than SQLite's `json_extract`, which does not exist
+// there. `config_json` is a TEXT column, hence the `::jsonb`; `-> 0` is the first objective
+// (Postgres array indexing is 0-based like the `$…[0]` path it replaces), and `->>` yields the
+// direction as text, which is what the client compares against 'minimize'/'maximize'. A campaign
+// without a search block yields NULL rather than an error at every step.
 export const CAMPAIGN_RUNS_SQL =
   'SELECT config_name, run_id, status, passed, objective, batch, ' +
-  "(SELECT json_extract(config_json, '$.search.objectives[0].direction') " +
+  "(SELECT config_json::jsonb -> 'search' -> 'objectives' -> 0 ->> 'direction' " +
   'FROM campaign.campaign LIMIT 1) AS objective_direction ' +
   'FROM run_view ORDER BY batch, config_name, run_id'
 

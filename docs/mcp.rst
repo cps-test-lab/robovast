@@ -382,8 +382,9 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   runs, so on a stopped or partially-run campaign it omits exactly the ones worth
   inspecting.
 * **Do not** ``SELECT config_json``. It is the whole ``.vast`` in one cell, exceeds the
-  per-cell limit, and returns truncated. Use ``config_view``, ``json_extract`` for a known
-  path, or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
+  per-cell limit, and returns truncated. Use ``config_view``, the Postgres JSON operators
+  for a known path (``config_json::jsonb -> 'execution' -> 'containers' -> 'scenario' ->>
+  'image'`` -- the index has no SQLite ``json_extract``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 

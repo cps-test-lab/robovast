@@ -572,8 +572,11 @@ One index holds every campaign, so spanning them is a ``WHERE`` clause rather th
     from robovast.results_processing import \
         index_query  # pylint: disable=import-outside-toplevel
 
-    del campaign_dir  # scoping is a WHERE clause now, not a file to open
-    return index_query.open_index(readonly=True, row_factory=True)
+    # The scope the directory carried is real again, and enforced by the index rather
+    # than by the plugin remembering it: this connection sees only the campaign the
+    # directory names, whatever SQL the plugin writes.
+    return index_query.open_index(readonly=True, row_factory=True,
+                                  campaigns=[campaign_id_of(campaign_dir)])
 
 
 # What an LLM needs to write a correct query against a table it cannot see: what one row
@@ -721,7 +724,9 @@ _TABLE_DESCRIPTIONS = {
         "did not ask for. "
         "One run: WHERE config_name='goal-1' AND run_id=0. "
         "Pass/fail per config: SELECT config_name, status, COUNT(*) FROM run_view "
-        "GROUP BY 1,2. A run's CPU: json_extract(sysinfo_json,'$.cpu_name'). "
+        "GROUP BY 1,2. A run's CPU: sysinfo_json::jsonb ->> 'cpu_name' (the index is Postgres: "
+        "->> for a JSON field, and the ::jsonb because the column is TEXT; a missing key is "
+        "NULL, not an error). "
         "Per-run metrics: join a metric table on (config_name, run_id). "
         "params_json holds each parameter as the scenario received it, so a file-valued "
         "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
@@ -755,7 +760,8 @@ _TABLE_DESCRIPTIONS = {
         "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.containers.scenario.image'), key, "
         "parent, type, value. value is NULL on 'object' and 'array' rows — descend with "
         "fullkey LIKE '$.execution%' instead of expecting a subtree. Use this to explore; "
-        "when the path is known, json_extract(campaign.config_json,'$.execution.containers.scenario.image') is "
+        "when the path is known, campaign.campaign.config_json::jsonb -> 'execution' -> 'containers' "
+        "-> 'scenario' ->> 'image' is "
         "cheaper. "
         "This is the config AS RUN, with defaults filled in — a defaulted key is "
         "indistinguishable from one the author wrote, and comments and anchors are gone. "
@@ -816,8 +822,10 @@ _TABLE_DESCRIPTIONS = {
     ("campaign", "job"): (
         "One row per execution job, holding that job's host record. Several runs can share "
         "one job, so this answers 'did these runs run on the same machine?'. "
-        "sysinfo_json: json_extract(sysinfo_json,'$.cpu_name'), '$.available_cpus', "
-        "'$.platform'. job_dir is campaign-relative. Join campaign.run on job_id — or use "
+        "sysinfo_json is TEXT holding JSON: sysinfo_json::jsonb ->> 'cpu_name', ->> 'available_cpus', "
+        "->> 'platform'. ->> yields TEXT, so cast before comparing a number: "
+        "(sysinfo_json::jsonb ->> 'available_cpus')::int. job_dir is campaign-relative. "
+        "Join campaign.run on job_id — or use "
         "run_view, which already has. NULL sysinfo_json means the job recorded none."),
     ("main", "scenario_timestamps"): (
         "One row per run: when its scenario reached a terminal state, from the first "
@@ -832,7 +840,9 @@ _TABLE_DESCRIPTIONS = {
     ("main", "runs"): (
         "Per-run dimension table: status/passed/duration_s/errors/failures, the "
         "scalar objective, each scenario parameter as a param_* column (non-scalar "
-        "params are JSON-encoded — use json_extract/json_each), and the host it ran on "
+        "params are JSON-encoded TEXT — read a field with param_x::jsonb ->> 'key' or an element "
+        "with param_x::jsonb -> 0, and fan a list out with "
+        "jsonb_array_elements(param_x::jsonb)), and the host it ran on "
         "(node_label — which machine, NULL for a local run; instance_type, cpu_name, "
         "available_cpus, available_mem_bytes — bytes, so "
         "divide by 1024*1024*1024 for GiB). shm_peak_bytes/shm_limit_bytes are the run's "
@@ -860,12 +870,14 @@ _TABLE_DESCRIPTIONS = {
         "campaigns: robovast_version, execution_type (local|cluster), image, "
         "image_revision (the repo@sha256 the runs used), execution_started_at, elapsed_s. "
         "execution_json holds the rest of the execution record "
-        "(json_extract(execution_json,'$.cluster_info'), '$.env'). These are NULL until "
+        "(execution_json::jsonb -> 'cluster_info', -> 'env'; -> keeps the subobject as JSON, "
+        "->> renders it as text). These are NULL until "
         "the campaign has executed. One row per campaign, so WHERE campaign_id IN (...) "
         "asks whether two campaigns' runs used the same image. "
         "stop_kind/stop_reason/batches explain why a search terminated. strategy_state is "
         "an opaque BLOB (masked in results). "
-        "config_json is the whole .vast: json_extract(config_json,'$.execution.containers.scenario.image') for "
+        "config_json is the whole .vast, as TEXT: config_json::jsonb -> 'execution' -> 'containers' "
+        "-> 'scenario' ->> 'image' for "
         "a known path, but do NOT 'SELECT config_json' — it exceeds the per-cell limit and "
         "returns truncated. Use config_view to explore it."),
     ("campaign", "batch"): (
@@ -983,10 +995,16 @@ _DESCRIBE_NOTE = (
     "note that a data.db built before typed ingest has TEXT everywhere (rerun "
     "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
     "does not tell the whole story — read it before aggregating that column. "
-    "Extra aggregate functions are available beyond SQLite's built-ins: STDDEV, VARIANCE, "
-    "MEDIAN, and PERCENTILE(col, p) where p is 0..100. REGEXP(pattern, col) and SQRT(x) "
-    "are also registered — SQRT is always present here, whereas SQLite's own is a "
-    "compile-time option, so use it for distances rather than assuming."
+    "JSON columns (config_json, execution_json, sysinfo_json, params_json, a non-scalar "
+    "param_* column) are TEXT holding JSON, and this is Postgres — not SQLite, so there is "
+    "no json_extract/json_each/json_tree. Read a field with col::jsonb -> 'a' -> 'b' ->> 'c' "
+    "(-> descends and keeps JSON, ->> ends the path and yields TEXT), index an array 0-based "
+    "with -> 0, and fan one out with jsonb_array_elements(col::jsonb). A missing key is NULL "
+    "rather than an error, and ->> is TEXT — cast it ((col::jsonb ->> 'n')::double precision) "
+    "before comparing or ordering numerically. "
+    "Extra aggregate functions are available: STDDEV, VARIANCE, MEDIAN, and "
+    "PERCENTILE(col, p) where p is 0..100. REGEXP(pattern, col) and SQRT(x) are also "
+    "registered."
 )
 
 
@@ -1177,11 +1195,14 @@ def campaign_id_of(campaign_dir) -> str:
 
 
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
-                  max_bytes: int | None = None) -> dict:
+                  max_bytes: int | None = None, campaigns=None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
     A query spanning campaigns (an A/B comparison, a whole search arm) needs no second
-    handle: every campaign is in the one index, so it is a ``campaign_id`` predicate.
+    handle: every campaign is in the one index. It does need to *say so* -- *campaigns*
+    names the ids the session may see. Without it the session is confined to
+    *campaign_dir*'s campaign by the index itself, because a cross-campaign read reached
+    by forgetting a predicate is indistinguishable from the answer that was wanted.
 
     *max_bytes* overrides :data:`_MAX_RESULT_BYTES`. That default is sized for a caller
     who has to *read* the reply into a context window; a caller that renders it — the run
@@ -1200,7 +1221,7 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
     try:
         return index_query.query_index(
             sql, max_rows=max_rows, max_bytes=max_bytes,
-            campaign_id=campaign_id_of(campaign_dir))
+            campaign_id=campaign_id_of(campaign_dir), campaigns=campaigns)
     except index_query.IndexQueryError as exc:
         raise DataQueryError(str(exc)) from exc
 
@@ -1268,10 +1289,12 @@ def stream_query_csv(campaign_dir, sql: str):
     from robovast.results_processing import (  # pylint: disable=import-outside-toplevel
         index_dialect, index_query)
 
-    del campaign_dir  # the rows are not in a directory any more; the WHERE clause scopes
     import psycopg  # pylint: disable=import-outside-toplevel
 
-    conn = index_query.open_index(readonly=True)
+    # Scoped exactly like the JSON path -- a second query entry point must not be a second
+    # scoping decision any more than it is a second read-only decision.
+    conn = index_query.open_index(readonly=True,
+                                  campaigns=[campaign_id_of(campaign_dir)])
     try:
         try:
             cursor = conn.execute(index_dialect.translate(sql))

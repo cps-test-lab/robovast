@@ -720,8 +720,9 @@ Two consequences worth stating. A **file** is never *also* a table: putting
 ``configurations.yaml`` in the DB would create a second source of truth for the resolved
 configuration list. And a **document in a cell** is not a queryable artifact:
 ``campaign.config_json`` holds the whole ``.vast``, which exceeds the per-cell limit and
-comes back truncated, so it is queried through ``json_extract`` or the ``config_view``
-rows — never ``SELECT config_json``.
+comes back truncated, so it is queried through the index's JSON operators
+(``config_json::jsonb -> 'execution' ->> 'image'``; the index is Postgres, which has no
+SQLite ``json_extract``) or the ``config_view`` rows — never ``SELECT config_json``.
 
 Querying results
 ----------------
