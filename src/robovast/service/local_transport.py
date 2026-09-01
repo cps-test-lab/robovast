@@ -4123,6 +4123,7 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
+            from robovast.execution.notify import Notifier
             from robovast.execution.status_recovery import record_step_outcome
             handler = None
             try:
@@ -4141,6 +4142,14 @@ class LocalTransport(RobovastInterface):
             state.update(postprocessed=status.postprocessed,
                          postprocessing_error=status.postprocessing_error)
             state.set_phase(Phase.FINISHED)
+            # Same one-shot notifier as a re-triggered share: this op runs from disk with
+            # no live entry to inherit one from, and it reports on a campaign that ended
+            # long ago -- so neither branch is the campaign's terminal message.
+            notifier = Notifier.from_env(request.campaign_id)
+            if ok:
+                notifier.postprocessed()
+            else:
+                notifier.postprocessing_failed(message)
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
