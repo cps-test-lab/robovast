@@ -1367,7 +1367,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def query_campaign_data_sql(
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
-        extra_campaign_ids: list[str] = Body(default_factory=list, embed=True),
         max_bytes: int | None = Body(None, embed=True),
     ) -> DataQueryResult:
         """Run a read-only ``SELECT``.
@@ -1377,11 +1376,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
         """
         return _guard(lambda: impl.query_campaign_data_sql(
-            campaign_id, sql, max_rows, extra_campaign_ids, max_bytes))
+            campaign_id, sql, max_rows, max_bytes))
 
     @app.get(Routes.campaign_query_csv("{campaign_id}"), tags=["results"])
-    def query_campaign_data_csv(campaign_id: str, sql: str,
-                                extra_campaign_ids: str = ""):
+    def query_campaign_data_csv(campaign_id: str, sql: str):
         """Stream the same read-only ``SELECT`` as CSV, with no row cap.
 
         The JSON query clamps at 5000 rows and says ``truncated``; this is where the rest
@@ -1389,10 +1387,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         ends, and an MCP tool can hand over this URL instead of spending context on rows.
         """
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
-        extras = [c for c in extra_campaign_ids.split(",") if c]
         # Called inside _guard so a rejected (non-read) query is a 400 with the same
         # message the JSON path gives, rather than a 500 mid-stream.
-        rows = _guard(lambda: impl.stream_campaign_query_csv(campaign_id, sql, extras))
+        rows = _guard(lambda: impl.stream_campaign_query_csv(campaign_id, sql))
         return StreamingResponse(
             rows, media_type="text/csv",
             headers={"Content-Disposition":

@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read-only SQL over a campaign's ``data.db`` — a **directory-based** helper.
+"""Read-only SQL over a campaign's results — a **directory-based** helper.
 
 This is the single implementation of "describe / query a campaign's results",
 parameterized by the campaign **directory** so it serves both callers:
@@ -25,10 +25,13 @@ parameterized by the campaign **directory** so it serves both callers:
   on :class:`~robovast.service.interface.RobovastInterface`), which resolves the
   dir per transport — local disk, or an object-store fetch on the cluster.
 
-Only ``SELECT`` is allowed (a ``sqlite3`` authorizer + ``mode=ro``); the campaign's
-``campaign.db`` is attached read-only as schema ``campaign`` so params/objectives
-join in one query. The ``vast eval gui`` notebook path reads the same ``data.db``
-directly and is unaffected.
+The rows themselves live in the central index now (:mod:`.index_query`), which is why the
+directory is only a *name* here: it identifies the campaign, and scoping to it is a
+``WHERE campaign_id = …`` clause the caller writes. Read-only is enforced by the index
+session rather than by a ``sqlite3`` authorizer. The campaign record is still written by
+the per-campaign ``campaign.db`` (unchanged, still SQLite) and is mirrored into the index
+under a schema literally named ``campaign``, so ``FROM campaign.unit`` -- the spelling
+every existing query and every doc uses -- resolves as it always did.
 """
 
 import json
@@ -545,7 +548,7 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     return conn
 
 
-def open_data_db(campaign_dir, extra_dirs: dict | None = None):
+def open_data_db(campaign_dir):
     """Open the index **read-only** — the public seam for package-provided endpoints.
 
     Returns a live connection, as before, so a plugin can read a table untruncated. The
@@ -563,16 +566,12 @@ def open_data_db(campaign_dir, extra_dirs: dict | None = None):
     problem, rather than quietly returning something plausible. Rows come back as dicts,
     which is what ``row["timestamp"]`` already assumed.
 
-    *extra_dirs* is gone: one index holds every campaign, so spanning them is a ``WHERE``
-    clause rather than an attach.
+One index holds every campaign, so spanning them is a ``WHERE`` clause rather than an
+    attach -- there is nothing left for a caller to open beyond this connection.
     """
     from robovast.results_processing import \
         index_query  # pylint: disable=import-outside-toplevel
 
-    if extra_dirs:
-        raise DataQueryError(
-            "extra_dirs is no longer needed: every campaign is in one index, so a query "
-            "spanning campaigns filters on campaign_id instead of attaching a database.")
     del campaign_dir  # scoping is a WHERE clause now, not a file to open
     return index_query.open_index(readonly=True, row_factory=True)
 
@@ -858,8 +857,8 @@ _TABLE_DESCRIPTIONS = {
         "image_revision (the repo@sha256 the runs used), execution_started_at, elapsed_s. "
         "execution_json holds the rest of the execution record "
         "(json_extract(execution_json,'$.cluster_info'), '$.env'). These are NULL until "
-        "the campaign has executed. Attach another campaign with extra_campaign_ids to ask "
-        "whether two runs used the same image. "
+        "the campaign has executed. One row per campaign, so WHERE campaign_id IN (...) "
+        "asks whether two campaigns' runs used the same image. "
         "stop_kind/stop_reason/batches explain why a search terminated. strategy_state is "
         "an opaque BLOB (masked in results). "
         "config_json is the whole .vast: json_extract(config_json,'$.execution.containers.scenario.image') for "
@@ -1174,12 +1173,11 @@ def campaign_id_of(campaign_dir) -> str:
 
 
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
-                  extra_dirs: dict | None = None,
                   max_bytes: int | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
-    *extra_dirs* (schema alias → campaign dir) attaches further campaigns so one
-    query can span several (e.g. an A/B comparison); see :func:`_open_db`.
+    A query spanning campaigns (an A/B comparison, a whole search arm) needs no second
+    handle: every campaign is in the one index, so it is a ``campaign_id`` predicate.
 
     *max_bytes* overrides :data:`_MAX_RESULT_BYTES`. That default is sized for a caller
     who has to *read* the reply into a context window; a caller that renders it — the run
@@ -1195,14 +1193,6 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
     from robovast.results_processing import \
         index_query  # pylint: disable=import-outside-toplevel
 
-    if extra_dirs:
-        # One index holds every campaign, so comparing them is a WHERE clause. Attaching
-        # was the workaround for per-campaign files, and it cost a fetch per campaign --
-        # ~10 GB to answer one question about a nine-campaign arm.
-        raise DataQueryError(
-            "extra_dirs is no longer needed: every campaign is in one index, so a query "
-            "spanning campaigns filters on campaign_id instead of attaching a second "
-            "database.")
     try:
         return index_query.query_index(
             sql, max_rows=max_rows, max_bytes=max_bytes,
@@ -1254,7 +1244,7 @@ def _legacy_query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         conn.close()
 
 
-def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
+def stream_query_csv(campaign_dir, sql: str):
     """Yield the same ``SELECT`` as CSV text, row by row and with **no row cap**.
 
     :func:`query_data_db` clamps to 5000 rows because its result is a JSON payload someone
@@ -1263,8 +1253,8 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
     than memory is fine at both ends, and an MCP tool can hand over the URL instead of
     reporting ``truncated`` and leaving the rest unreachable.
 
-    Same authorizer, so it is exactly as read-only as the JSON path — a second query entry
-    point must not be a second security decision. Cells are **not** width-capped here: the
+    Same read-only index session as the JSON path, so it is exactly as read-only — a second
+    query entry point must not be a second security decision. Cells are **not** width-capped here: the
     cap exists to keep a JSON reply readable, and truncating an exported value would
     corrupt the export.
     """
@@ -1273,12 +1263,6 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
 
     from robovast.results_processing import (  # pylint: disable=import-outside-toplevel
         index_dialect, index_query)
-
-    if extra_dirs:
-        raise DataQueryError(
-            "extra_dirs is no longer needed: every campaign is in one index, so a query "
-            "spanning campaigns filters on campaign_id instead of attaching a second "
-            "database.")
 
     del campaign_dir  # the rows are not in a directory any more; the WHERE clause scopes
     import psycopg  # pylint: disable=import-outside-toplevel

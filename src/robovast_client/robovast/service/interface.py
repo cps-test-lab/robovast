@@ -1695,7 +1695,7 @@ class DataTable(BaseModel):
 
 
 class DataDescribe(BaseModel):
-    """Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).
+    """Schema of a campaign's tables in the index (+ the ``campaign`` schema).
 
     Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
     the query helper verbatim — kept as a dict so ``schema`` stays that key across
@@ -2971,7 +2971,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_campaign_data(self, campaign_id: str) -> DataDescribe:
-        """Describe a campaign's ``data.db`` schema (+ attached ``campaign.db``).
+        """Describe a campaign's tables in the index (+ the ``campaign`` schema).
 
         The dir is resolved per transport (local disk / object-store fetch); the
         query logic is shared with the MCP ``run_data`` plugin
@@ -2981,10 +2981,13 @@ class RobovastInterface(ABC):
     @abstractmethod
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids: Optional[list[str]] = None,
         max_bytes: Optional[int] = None,
     ) -> DataQueryResult:
-        """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached).
+        """Run a read-only ``SELECT`` over a campaign's data.
+
+        The campaign record is reachable in the same query as schema ``campaign``, and a
+        query may span campaigns with a ``campaign_id`` predicate: the rows of every
+        campaign live in one index.
 
         The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
         size. The size ceiling defaults to a *context* budget, because the caller that
@@ -2993,10 +2996,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def stream_campaign_query_csv(
-        self, campaign_id: str, sql: str,
-        extra_campaign_ids: Optional[list[str]] = None,
-    ):
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str):
         """The same ``SELECT``, yielded as CSV text with **no row cap**.
 
         :meth:`query_campaign_data_sql` clamps at 5000 rows and reports ``truncated``,

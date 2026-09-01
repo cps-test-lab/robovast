@@ -59,8 +59,8 @@ per-run and per-configuration detail:
    `runs` (or `run_view`) to any metric table on `(config_name, run_id)`. Besides
    the built-ins, `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and
    `REGEXP(pat, col)` are available; use `json_extract` / `json_each` for
-   JSON-encoded (non-scalar) params. Pass `extra_campaign_ids` to compare
-   campaigns in one query.
+   JSON-encoded (non-scalar) params. Every campaign lives in one index, so
+   comparing campaigns is a `WHERE campaign_id IN (...)` predicate.
 3. `list_campaign_plots(campaign_id)` – the plots the campaign author declared,
    each a runnable `query` plus a Vega-Lite spec. A good first look at what matters.
 

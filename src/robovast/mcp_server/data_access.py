@@ -151,31 +151,25 @@ def _with_fetch(result: dict, campaign_id: str, client, status, notice) -> dict:
     return result
 
 
-def query(campaign_id: str, sql: str, max_rows: int = 500,
-          extra_campaign_ids: list | None = None, preflight=None) -> dict:
+def query(campaign_id: str, sql: str, max_rows: int = 500, preflight=None) -> dict:
     """Run a read-only ``SELECT``; ``{campaign_id, columns, rows, ...}`` or ``{error}``.
 
     See :func:`describe` for *preflight* — it keeps the pending-fetch announcement to one
     probe when an async caller has already made it.
     """
-    aliases = {f"c{i + 1}": cid for i, cid in enumerate(extra_campaign_ids or [])}
     client = service_access.service_client()
     status, notice = (preflight if preflight is not None
                       else announce_pending_fetch(campaign_id, client))
     try:
         if client is not None:
             result = client.query_campaign_data_sql(
-                campaign_id, sql, max_rows, list(aliases.values())).model_dump()
+                campaign_id, sql, max_rows).model_dump()
         else:
             campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            extra_dirs = {alias: results_resolver.resolve_campaign_path(cid)
-                          for alias, cid in aliases.items()}
             result = {"campaign_id": campaign_id,
-                      **query_data_db(campaign_dir, sql, max_rows, extra_dirs=extra_dirs)}
+                      **query_data_db(campaign_dir, sql, max_rows)}
     except _REPORTED as e:
         return {"error": _message(e, client)}
-    if aliases:
-        result["attached"] = aliases
     return _with_fetch(result, campaign_id, client, status, notice)
 
 

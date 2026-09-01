@@ -299,7 +299,8 @@ metric tables already used:
 
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
   question is written down**. Read its ``note`` first.
-* ``query_campaign_data_sql`` — one ``SELECT``, optionally spanning several campaigns.
+* ``query_campaign_data_sql`` — one ``SELECT``. Every campaign's rows live in one index,
+  so a query spans campaigns with a ``WHERE campaign_id IN (...)`` predicate.
 
 The entry points are two flat views, queried unqualified:
 
@@ -851,8 +852,7 @@ Python there is no ``shutdown_dropped`` to report, so every response instead *sa
 ``note`` that only the trial was searched. What it adds is *scope*: ``config_filter``, ``run_id``,
 ``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
 separate "during the trial" from "while the simulator was being reset around it". Set
-``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids, or name further campaigns
-in ``extra_campaign_ids``.
+``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids.
 
 Three shapes, one per question:
 

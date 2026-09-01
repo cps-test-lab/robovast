@@ -204,13 +204,6 @@
       },
       "Body_query_campaign_data_sql_campaigns__campaign_id__query_post": {
         "properties": {
-          "extra_campaign_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Extra Campaign Ids",
-            "type": "array"
-          },
           "max_bytes": {
             "anyOf": [
               {
@@ -233,7 +226,6 @@
           }
         },
         "required": [
-          "extra_campaign_ids",
           "max_bytes",
           "max_rows",
           "sql"
@@ -875,7 +867,7 @@
         "type": "object"
       },
       "DataDescribe": {
-        "description": "Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).\n\nEach ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from\nthe query helper verbatim \u2014 kept as a dict so ``schema`` stays that key across\nevery client path).",
+        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from\nthe query helper verbatim \u2014 kept as a dict so ``schema`` stays that key across\nevery client path).",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -5983,16 +5975,6 @@
             "required": true,
             "schema": {
               "title": "Sql",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "extra_campaign_ids",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Extra Campaign Ids",
               "type": "string"
             }
           }

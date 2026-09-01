@@ -1637,8 +1637,6 @@ export interface components {
         };
         /** Body_query_campaign_data_sql_campaigns__campaign_id__query_post */
         Body_query_campaign_data_sql_campaigns__campaign_id__query_post: {
-            /** Extra Campaign Ids */
-            extra_campaign_ids: string[];
             /** Max Bytes */
             max_bytes: number | null;
             /**
@@ -2089,7 +2087,7 @@ export interface components {
         };
         /**
          * DataDescribe
-         * @description Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).
+         * @description Schema of a campaign's tables in the index (+ the ``campaign`` schema).
          *
          *     Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
          *     the query helper verbatim — kept as a dict so ``schema`` stays that key across
@@ -5296,7 +5294,6 @@ export interface operations {
         parameters: {
             query: {
                 sql: string;
-                extra_campaign_ids?: string;
             };
             header?: never;
             path: {

@@ -379,7 +379,6 @@ async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
 
 
 async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
-                                  extra_campaign_ids: list | None = None,
                                   ctx: Context | None = None) -> dict:
     """Run one read-only ``SELECT`` over a campaign's data. This answers most questions.
 
@@ -396,11 +395,9 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         campaign_id: Campaign identifier or absolute path (schema ``main``).
         sql: A single ``SELECT``.
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
-        extra_campaign_ids: Campaigns to attach as ``c1``, ``c2``, … (their
-            ``campaign.db`` as ``c1_campaign``, …) so one query can compare campaigns.
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated, fetch[, attached, csv_url]}``
+        ``{campaign_id, columns, rows, row_count, truncated, fetch[, csv_url]}``
         or ``{error}``. See ``describe_campaign_data`` for what ``fetch`` costs.
 
     Examples::
@@ -410,14 +407,13 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
           ON r.config_name = m.config_name AND r.run_id = m.run_id
         GROUP BY r.param_wind_strength
 
-        -- with extra_campaign_ids=["campaign-B"]
-        SELECT 'A' AS campaign, AVG(objective) FROM runs
-        UNION ALL SELECT 'B', AVG(objective) FROM c1.runs
+        -- comparing campaigns: they live in one index, so it is a WHERE clause
+        SELECT campaign_id, AVG(objective) FROM runs
+        WHERE campaign_id IN ('campaign-A', 'campaign-B') GROUP BY campaign_id
     """
     result = await _announced(
         ctx, campaign_id,
-        lambda pf: data_access.query(campaign_id, sql, limit, extra_campaign_ids,
-                                     preflight=pf))
+        lambda pf: data_access.query(campaign_id, sql, limit, preflight=pf))
     # Only when it was actually capped: an uncapped result needs no second way to get it,
     # and offering one anyway trains a reader to ignore the field.
     if result.get("truncated"):
@@ -425,9 +421,7 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         url = service_access.web_url(
             service_access.service_client(), Routes.campaign_query_csv(campaign_id))
         if url:
-            result["csv_url"] = f"{url}?sql={quote(sql)}" + (
-                "&extra_campaign_ids=" + quote(",".join(extra_campaign_ids))
-                if extra_campaign_ids else "")
+            result["csv_url"] = f"{url}?sql={quote(sql)}"
     return result
 
 

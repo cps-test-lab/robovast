@@ -457,8 +457,7 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_describe(campaign_id),
             timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
-    def stream_campaign_query_csv(self, campaign_id: str, sql: str,
-                                  extra_campaign_ids=None):
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str):
         """Stream the CSV export through, chunk by chunk.
 
         Not ``_get``: that decodes a JSON body, and the point of this route is that the
@@ -467,8 +466,6 @@ class HTTPTransport(RobovastInterface):
         the JSON query does.
         """
         params = {"sql": sql}
-        if extra_campaign_ids:
-            params["extra_campaign_ids"] = ",".join(extra_campaign_ids)
         resp = self.session.get(f"{self.base_url}{Routes.campaign_query_csv(campaign_id)}",
                             params=params, timeout=self.DATA_TIMEOUT, stream=True)
         self.raise_for_status(resp)
@@ -570,12 +567,10 @@ class HTTPTransport(RobovastInterface):
             "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
 
     def query_campaign_data_sql(
-        self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids=None, max_bytes=None,
+        self, campaign_id: str, sql: str, max_rows: int = 500, max_bytes=None,
     ) -> "DataQueryResult":
         from robovast.service.interface import DataQueryResult
-        body = {"sql": sql, "max_rows": max_rows,
-                "extra_campaign_ids": extra_campaign_ids or []}
+        body = {"sql": sql, "max_rows": max_rows}
         # Only sent when asked for: an older service rejects an unknown body key, and the
         # default is the one this client's callers (MCP tools) want anyway.
         if max_bytes is not None:
