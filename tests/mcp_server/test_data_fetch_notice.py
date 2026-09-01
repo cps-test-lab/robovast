@@ -34,7 +34,7 @@ class _Client:
         from robovast.service.interface import CampaignDataStatus
         return CampaignDataStatus(campaign_id=campaign_id, **self._status)
 
-    def query_campaign_data_sql(self, campaign_id, sql, max_rows, extras):
+    def query_campaign_data_sql(self, campaign_id, sql, max_rows):
         from robovast.service.interface import DataQueryResult
         self.queries += 1
         return DataQueryResult(campaign_id=campaign_id, columns=["n"],

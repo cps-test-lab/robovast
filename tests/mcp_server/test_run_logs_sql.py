@@ -11,37 +11,47 @@ import sqlite3
 
 import pytest
 
-from robovast.mcp_server.plugins.run_logs import _shutdown_term
+from robovast.mcp_server.plugins.run_logs import _campaign_term, _shutdown_term
 
-# (config_name, run_id, wall_ts, message)
+#: The campaign under test, and a second one sharing its configuration names -- the index
+#: holds every campaign in one table, so a term that forgets ``campaign_id`` reads both.
+_CAMPAIGN = "camp-a"
+_OTHER = "camp-b"
+
+# (campaign_id, config_name, run_id, wall_ts, message)
 _LOG_ROWS = [
-    ("cfg-a", 0, 100.0, "goal reached"),
-    ("cfg-a", 0, 101.0, "Scenario 'trial' succeeded."),
-    ("cfg-a", 0, 102.0, "transform failure"),          # shutdown
-    ("cfg-b", 0, 200.0, "goal reached"),
-    ("cfg-b", 0, 201.0, "Unable to start transition"),  # no verdict for this run
-    ("cfg-c", 0, 300.0, "goal reached"),
-    ("cfg-c", 0, 301.0, "transform failure"),           # verdict has no wall_ts
+    (_CAMPAIGN, "cfg-a", 0, 100.0, "goal reached"),
+    (_CAMPAIGN, "cfg-a", 0, 101.0, "Scenario 'trial' succeeded."),
+    (_CAMPAIGN, "cfg-a", 0, 102.0, "transform failure"),          # shutdown
+    (_CAMPAIGN, "cfg-b", 0, 200.0, "goal reached"),
+    (_CAMPAIGN, "cfg-b", 0, 201.0, "Unable to start transition"),  # no verdict for this run
+    (_CAMPAIGN, "cfg-c", 0, 300.0, "goal reached"),
+    (_CAMPAIGN, "cfg-c", 0, 301.0, "transform failure"),           # verdict has no wall_ts
+    (_OTHER, "cfg-a", 0, 400.0, "another campaign's line"),
 ]
 
-# (config_name, run_id, wall_ts)
-_VERDICTS = [("cfg-a", 0, 101.0), ("cfg-c", 0, None)]
+# (campaign_id, config_name, run_id, wall_ts)
+_VERDICTS = [(_CAMPAIGN, "cfg-a", 0, 101.0), (_CAMPAIGN, "cfg-c", 0, None),
+             # Earlier than every line of camp-a's cfg-b: an uncorrelated term would
+             # let this campaign's verdict trim the other campaign's log.
+             (_OTHER, "cfg-b", 0, 1.0)]
 
 
 @pytest.fixture
 def db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE run_log (config_name TEXT, run_id INTEGER, "
-                 "wall_ts REAL, message TEXT)")
-    conn.execute("CREATE TABLE scenario_timestamps (config_name TEXT, run_id INTEGER, "
-                 "wall_ts REAL)")
-    conn.executemany("INSERT INTO run_log VALUES (?, ?, ?, ?)", _LOG_ROWS)
-    conn.executemany("INSERT INTO scenario_timestamps VALUES (?, ?, ?)", _VERDICTS)
+    conn.execute("CREATE TABLE run_log (campaign_id TEXT, config_name TEXT, "
+                 "run_id INTEGER, wall_ts REAL, message TEXT)")
+    conn.execute("CREATE TABLE scenario_timestamps (campaign_id TEXT, config_name TEXT, "
+                 "run_id INTEGER, wall_ts REAL)")
+    conn.executemany("INSERT INTO run_log VALUES (?, ?, ?, ?, ?)", _LOG_ROWS)
+    conn.executemany("INSERT INTO scenario_timestamps VALUES (?, ?, ?, ?)", _VERDICTS)
     return conn
 
 
 def _messages(conn: sqlite3.Connection) -> list:
-    sql = f"SELECT l.message FROM run_log l WHERE {_shutdown_term(0)} ORDER BY l.wall_ts"
+    sql = (f"SELECT l.message FROM run_log l WHERE {_campaign_term(_CAMPAIGN)} "
+           f"AND {_shutdown_term()} ORDER BY l.wall_ts")
     return [r[0] for r in conn.execute(sql)]
 
 
@@ -78,10 +88,13 @@ def test_the_term_scopes_per_run_not_across_the_table(db):
     assert len([m for m in kept if m == "goal reached"]) == 3
 
 
-def test_the_attached_schema_prefix_reaches_the_verdict_table():
-    """A cross-campaign search attaches the others as c1., c2.… The term names a table,
-    so it must carry that prefix -- unprefixed it would read the primary campaign's
-    verdicts while filtering an attached campaign's log."""
-    assert "c2.scenario_timestamps" in _shutdown_term(2)
-    assert "scenario_timestamps" in _shutdown_term(0)
-    assert "c0." not in _shutdown_term(0)
+def test_the_search_reads_only_the_campaign_it_was_asked_about(db):
+    """One index holds every campaign's log, so scoping is the query's job. Without the
+    campaign term a search of one campaign silently returns the corpus."""
+    assert "another campaign's line" not in _messages(db)
+
+
+def test_the_verdict_lookup_is_correlated_on_the_campaign_too(db):
+    """camp-b records a verdict at wall_ts 1.0 for cfg-b. Correlated only on
+    (config_name, run_id), it would trim every one of camp-a's cfg-b lines."""
+    assert "Unable to start transition" in _messages(db)

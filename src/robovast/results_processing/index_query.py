@@ -252,7 +252,12 @@ def list_tables(conn, campaign_id: str | None = None) -> list:
                 (campaign_id,)).fetchone()[0]
         else:
             count = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-        out.append({"schema_": schema or "main", "table": table,
+        # "schema", not "schema_". The trailing underscore exists only inside the pydantic
+        # model (`DataTable.schema_`, aliased to "schema"), because the bare name collides
+        # with a BaseModel attribute -- it is a Python-side workaround, never the wire name.
+        # Emitting it here made every consumer read a key that was not there: the empty-result
+        # note and the nav plugin both look up "schema" and silently found nothing.
+        out.append({"schema": schema or "main", "table": table,
                     "columns": columns, "rows": count})
     return out
 
@@ -302,7 +307,7 @@ def _entries_for(conn, relations, campaign_id, notes, kind) -> list:
         # The descriptions are keyed by where the relation used to live: the flat views
         # were TEMP views and the record was the attached `campaign` schema. Looked up
         # under both so the prose survives the move rather than being retyped.
-        entry = {"schema_": "temp" if kind == "view" else (schema or "main"),
+        entry = {"schema": "temp" if kind == "view" else (schema or "main"),
                  "table": name, "columns": cols, "rows": count}
         description = (_TABLE_DESCRIPTIONS.get(("temp", name))
                        or _TABLE_DESCRIPTIONS.get((schema, name))
@@ -337,7 +342,7 @@ def describe_index(campaign_id: str | None = None) -> dict:
             (current,)).fetchall()}
         views = [(current, v) for v in view_order if v in present_views]
 
-        tables = [(t["schema_"] if t["schema_"] != "main" else current, t["table"])
+        tables = [(t["schema"] if t["schema"] != "main" else current, t["table"])
                   for t in list_tables(conn, campaign_id)]
 
         entries = (_entries_for(conn, views, campaign_id, notes, "view")

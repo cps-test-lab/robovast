@@ -169,7 +169,7 @@ def test_describe_lists_runs_and_the_campaign_record(campaign_dir):
     ``campaign.db``, so the qualified name a caller writes is the same one.
     """
     desc = describe_data_db(campaign_dir)
-    schemas = {(t["schema_"], t["table"]) for t in desc["tables"]}
+    schemas = {(t["schema"], t["table"]) for t in desc["tables"]}
     assert (SCHEMA, "runs") in schemas
     assert ("campaign", "campaign") in schemas
 
@@ -187,7 +187,7 @@ def test_describe_without_measurements_still_returns_the_campaign_schema(
         campaign_dir_no_data):
     """Before postprocessing, describe must still expose the campaign record."""
     desc = describe_data_db(campaign_dir_no_data)
-    schemas = {(t["schema_"], t["table"]) for t in desc["tables"]}
+    schemas = {(t["schema"], t["table"]) for t in desc["tables"]}
     assert ("campaign", "campaign") in schemas
 
 
@@ -211,7 +211,7 @@ def test_the_strategy_blob_never_reaches_a_reply(campaign_dir):
     """
     desc = describe_data_db(campaign_dir)
     record = next(t for t in desc["tables"]
-                  if (t["schema_"], t["table"]) == ("campaign", "campaign"))
+                  if (t["schema"], t["table"]) == ("campaign", "campaign"))
     assert not any(c.startswith("strategy_state") for c in record["columns"])
 
     with pytest.raises(DataQueryError):
