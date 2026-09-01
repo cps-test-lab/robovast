@@ -35,6 +35,12 @@ loads them. What is saved is the whole ``data.db`` materialisation, which was th
 half anyway: measured on a real campaign, ``COPY`` was 0.35 s of a 4.6 s ingest, and the
 read dominated.
 
+**And the dimension table beside them.** ``runs`` -- one row per run, the outcome, the host,
+and every scenario parameter flattened into a typed ``param_*`` column -- is what an analysis
+joins its metrics against on ``(config_name, run_id)``. It is built here rather than left to
+``run_view`` over ``params_json``, because a parameter is only a *filterable, orderable*
+column once its type has been inferred from the values; see ``notes/runs_table_port.md``.
+
 **One file, one table, still with nothing registered.** Drop a ``*.csv`` or ``*.jsonl`` in a
 run directory and it becomes a table named after its stem. That is how a scenario, a
 simulator, or a third-party plugin contributes data, and it is the documented
@@ -49,11 +55,13 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import yaml
+
 from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
 from robovast.common.quantity import to_bytes
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
-                                         resource_usage)
+                                         resource_usage, run_health)
 from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, widen
 # Reused rather than reimplemented: these decide what a data file *is* -- the JSONL format
 # registry, the yaw derivation, the table-name rule -- and a second copy of any of them
@@ -471,6 +479,184 @@ def build_runs_table(sink, campaign_dir: str) -> int:
     return written
 
 
+#: How each table in the index was produced, one row per postprocessing step.
+POSTPROCESSING_STEPS_TABLE = "postprocessing_steps"
+
+#: Its columns. Declared rather than inferred, so the table has its full shape even for a
+#: campaign that ran no postprocessing at all -- an empty ``postprocessing_steps`` still
+#: tells a caller the provenance question has a home, while a missing one reads as a broken
+#: index.
+_POSTPROCESSING_STEPS_COLUMNS = {
+    "step_idx": INTEGER, "plugin": TEXT, "output": TEXT, "table_name": TEXT,
+    "sources_json": TEXT, "params_json": TEXT,
+}
+
+
+def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict) -> int:
+    """Write ``postprocessing_steps`` for one campaign; return rows written.
+
+    The index holds one table per data-file stem but says nothing about their derivation,
+    while ``_transient/postprocessing.yaml`` records exactly that (``plugin`` / ``output`` /
+    ``sources`` / ``params`` per step) in a form no query can reach. This projects those
+    entries into SQL so the provenance edge is joinable to the data:
+
+        SELECT DISTINCT plugin, params_json FROM postprocessing_steps
+         WHERE campaign_id = ... AND table_name = 'poses'
+
+    ``table_name`` is resolved here rather than left to the caller, because this is where
+    both halves are known -- the entry's output path and *name_map*, the display-name to
+    SQL-name mapping the file walk built. A caller would have to re-derive a stem-to-table
+    match and guess the sanitisation. It is NULL for a step whose output is not a data file
+    that became a table (a plot, a video, a merged artifact), which is a fact about the
+    step, not a failure.
+
+    The YAML remains the source of truth and is not replaced: it is what the FAIR/PROV-O
+    export reads.
+    """
+    root = Path(campaign_dir)
+    path = root / "_transient" / "postprocessing.yaml"
+    rows = []
+    if path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            # The record exists and cannot be read: that is a corrupt provenance record, not
+            # an absent one, and silently ingesting zero steps would report a campaign whose
+            # metrics have no derivation.
+            raise ValueError(
+                f"{path} exists but could not be read as postprocessing provenance: "
+                f"{exc}") from exc
+        for idx, entry in enumerate(data.get("entries") or []):
+            if not isinstance(entry, dict):
+                continue
+            output = entry.get("output") or ""
+            rows.append({
+                "step_idx": idx,
+                "plugin": entry.get("plugin") or None,
+                "output": output or None,
+                "table_name": name_map.get(Path(output).stem) if output else None,
+                "sources_json": json.dumps(entry.get("sources") or [], default=str),
+                "params_json": json.dumps(entry.get("params") or {}, default=str),
+            })
+    # A campaign with no such file ran no postprocessing, or it produced nothing. The table
+    # is still created (zero rows), because absent and empty say different things.
+    return sink.write(POSTPROCESSING_STEPS_TABLE, rows,
+                      context={"config_name": None, "run_id": None},
+                      types=dict(_POSTPROCESSING_STEPS_COLUMNS),
+                      source=f"{root.name}/_transient/postprocessing.yaml")
+
+
+#: Notes for a table that follows the POSE CONTRACT (see ``docs/results_processing.rst``).
+#: Keyed on the column, and attached to any table carrying a ``stamp`` column rather than to
+#: a list of table names -- the contract is what a table *has*, not what it is called, so a
+#: new producer's table is annotated without registering it here.
+#:
+#: These three are exactly where an agent writing SQL against a pose table goes wrong.
+_POSE_CONTRACT_NOTES = {
+    "timestamp": (
+        "ARRIVAL time, and the join key every other table in this campaign shares -- use it "
+        "to read poses against costmaps, behaviors and run_log, and to place a row on the "
+        "run view's timeline. Do NOT difference it: it is quantized to the simulator's "
+        "/clock grid and jittered by delivery, so a speed derived from it measures the "
+        "transport rather than the robot. Use `stamp` for that."),
+    "stamp": (
+        "MEASUREMENT time -- when the pose was actually true, from the publisher's own "
+        "header. This is the correct base for any derivative (speed, rate, dt); sort by it "
+        "too, since ordering by `timestamp` leaves rows within one arrival tick in arbitrary "
+        "order. NULL where the producer could not state one (a latched /tf_static "
+        "transform)."),
+    "orientation.yaw": (
+        "DERIVED at ingest from orientation.x/y/z/w, and a planar projection: correct for a "
+        "body in the plane, insufficient for one that pitches or rolls (a drone, a tilting "
+        "arm, a robot on a ramp). The quaternion is what the producer emitted -- read that "
+        "when the body is not flat."),
+}
+
+#: Notes keyed on ``(table, column)``, for columns whose name gives no hint of how they must
+#: be read. ``runs.probed`` belonged here too and is attached by :data:`_PROBED_NOTE` where
+#: that column is declared, so the note sits beside the column it warns about.
+_STATIC_COLUMN_NOTES: dict = {
+    ("resource_usage", "cpu_percent"): (
+        "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
+        "comparing, or an average reads as a per-process figure. Per-core, so >100 is "
+        "normal -- full saturation is 100 * runs.available_cpus, which is the denominator to "
+        "normalise by before comparing runs on different hosts."),
+    ("resource_usage", "memory_rss_bytes"): (
+        "summed RSS, so pages shared between a process and its forks are counted more than "
+        "once. An upper bound -- read it as a trend, not as an absolute footprint."),
+}
+
+
+def record_column_notes(conn, tables) -> int:
+    """Attach the curated column notes to the columns of *tables*; return notes written.
+
+    *tables* is the set of table names this campaign actually wrote. Restricting to them is
+    what keeps a note from describing a table the corpus has never held -- a warning about
+    ``poses.timestamp`` in a campaign with no poses is a documented column that does not
+    exist. The columns themselves come from the type registry, which is the index's own
+    record of what each table holds.
+
+    Notes are index-wide, not per campaign (:data:`index_schema.COLUMN_NOTES_TABLE` has no
+    ``campaign_id``), and deliberately so: they document a column's meaning, which does not
+    change between campaigns. Re-attaching them on every ingest is therefore idempotent.
+    """
+    written = 0
+    for table in sorted(tables):
+        columns = set(index_schema.read_verdicts(conn, table))
+        if not columns:
+            continue
+        for (note_table, column), note in _STATIC_COLUMN_NOTES.items():
+            if note_table == table and column in columns:
+                index_schema.record_note(conn, table, column, note,
+                                         kind=index_schema.NOTE_DOC)
+                written += 1
+        # What marks a table as following the pose contract: a measurement clock AND a
+        # position. `stamp` alone is not enough -- rosout carries one too, and would collect
+        # notes that talk about poses. Without `stamp`, the `timestamp` note would point at
+        # a column that is not there.
+        if not {"stamp", "position.x"} <= columns:
+            continue
+        for column, note in _POSE_CONTRACT_NOTES.items():
+            if column in columns:
+                index_schema.record_note(conn, table, column, note,
+                                         kind=index_schema.NOTE_DOC)
+                written += 1
+    return written
+
+
+def build_run_health(sink, conn, campaign_dir: str, campaign_id: str) -> int:
+    """Grade this campaign's runs with the health checks it declared; return rows written.
+
+    Best-effort by construction: a campaign's runs are the deliverable, and a stack plugin
+    that cannot load must not cost them their place in the index. What it must never do is
+    fail *silently* -- a missing row means "not checked" (see
+    :mod:`robovast.results_processing.run_health`), so a swallowed error would be
+    indistinguishable from a clean bill of health.
+
+    The declaration is read from the campaign's own ``.vast``, not from this machine's
+    installed plugins: nothing runs undeclared, and the record of what was *meant* to run is
+    what tells a missing row from a plugin that was absent wherever the postprocessing ran.
+    """
+    declared, config_dir = None, None
+    try:
+        from robovast.common.common import load_config  # noqa: PLC0415
+        from robovast.common.results_utils import campaign_vast  # noqa: PLC0415
+        vast = campaign_vast(campaign_dir)
+        config_dir = str(Path(vast).parent)
+        results = load_config(str(vast), subsection="results_processing",
+                              allow_missing=True) or {}
+        declared = results.get("health_checks")
+    except Exception as exc:  # noqa: BLE001 - a campaign need not declare any
+        logger.debug("no declared health checks for %s: %s", campaign_dir, exc)
+
+    checks = run_health.load_health_checks(declared=declared, config_dir=config_dir)
+    written = run_health.build_run_health_table(sink, conn, campaign_id, checks)
+    if checks:
+        logger.info("index: run_health %s rows from %s check(s) for %s",
+                    written, len(checks), campaign_id)
+    return written
+
+
 def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
     """Load a whole campaign -- its record and its data files -- into the index.
 
@@ -523,6 +709,22 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str) -> dict:
                    context={"config_name": None, "run_id": None},
                    types={"display_name": TEXT, "sql_name": TEXT},
                    source=campaign_id)
+
+    # LAST, and after the file walk on purpose: ``name_map`` is what resolves a step's
+    # output file to the table it became, and it is only complete once every run directory
+    # has been walked. Built before the walk (where ``runs`` is built) it would resolve
+    # ``table_name`` to NULL for every step, silently turning the provenance edge into a
+    # list of plugin names.
+    totals[POSTPROCESSING_STEPS_TABLE] = build_postprocessing_steps_table(
+        sink, str(root), name_map)
+
+    # LAST of all the builders, and that ordering is load-bearing twice over: a check reads
+    # the campaign's derived tables (``run_log``, ``runs``), so they must already be in the
+    # index, and the grades are the only rows here written by code this package does not own.
+    totals[run_health.TABLE] = build_run_health(sink, conn, str(root), campaign_id)
+
+    # Same reason: which columns exist is known only after the walk declared them.
+    record_column_notes(conn, set(totals))
 
     # Recorded even when the campaign produced no rows at all: "ingested and empty" is a
     # different answer from "never ingested", and only the registry can tell them apart.

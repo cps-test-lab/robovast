@@ -989,6 +989,11 @@ class ResultsConfig(BaseModel):
     #: local ``./path.py:Class`` ref, which is how a system under test ships a check without
     #: packaging it.
     #:
+    #: A check is called ``check(conn, campaign_id)`` against the central index and must
+    #: scope every statement it issues to that campaign -- one set of tables holds the whole
+    #: corpus. The argument is required, so a check written for the old ``check(conn)``
+    #: signature is refused rather than left to grade every campaign at once.
+    #:
     #: **Nothing runs undeclared.** A check that ran everywhere would grade campaigns it
     #: knows nothing about: nav2's control-loop check finds no misses in a MoveIt 2 campaign
     #: and would write ``ok`` for every run of it -- a clean bill for a stack that was never

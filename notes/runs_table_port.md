@@ -1,5 +1,32 @@
 # Porting the `runs` dimension table to the central index
 
+**Status: done.** `runs` is built in the central index by
+`campaign_ingest.build_runs_table`, called from `ingest_campaign` before the metric files so
+a partial ingest still says which runs exist. Everything below is what it reproduces, kept
+as the record of *why* each column looks the way it does; the tests are
+`tests/results_processing/test_runs_table.py`, which also covers `read_runs` and
+`read_table(..., with_params=True)` end to end.
+
+Two things about the port rather than the table:
+
+* The `param_*` columns are declared through `index_schema.ensure_table`, so a campaign
+  whose `speed` is numeric and another's that is `'n/a'` share one column that widens to
+  text and records a widening note. Under `data.db` that was a per-campaign warning; in one
+  index it is a cross-campaign fact.
+* Every row carries `campaign_id` (from `index_schema.CONTEXT_COLUMNS`, written by the
+  sink), and `clear_campaign` removes exactly this campaign's rows before a re-ingest — the
+  reproducibility invariant is a test, not a claim.
+
+Two things it deliberately does **not** do, because the retired writer's rule no longer
+holds in a shared index:
+
+* It does not `DROP TABLE runs`. The table holds every campaign; dropping it to rebuild one
+  would take the corpus with it.
+* The `param_` collision skip is kept verbatim from the original, and is vacuous in
+  practice: no fixed column name starts with `param_`, so a scenario parameter called
+  `status` lands in `param_status` and cannot shadow the run's outcome. Kept anyway, since
+  the fixed column set is what may grow.
+
 Written while retiring the `data.db` writer. `runs` existed **only** in
 `postprocessing_plugins._build_runs_table` (plus its helpers `_clock_map_info`, `_shm_info`,
 `_max_bytes`), which this change deletes. The index has `campaign.run` mirrored from
@@ -119,7 +146,27 @@ has the equivalent UNION arm; the port should reuse that rule rather than restat
 
 `tests/results_processing/test_runs_table.py` (the timing/sysinfo columns and the
 `param_*` typing) and one case in `tests/common/test_interventions.py`
-(`probed` is set without touching `status`). Both are worth re-creating against the
-index once `runs` exists there; the fixtures show the exact on-disk shapes
-(`test.xml` with a `start_time` *property*, `sysinfo.yaml` with `available_mem` as a
-K8s quantity).
+(`probed` is set without touching `status`). Both are re-created against the index in
+`tests/results_processing/test_runs_table.py`, which drives `campaign.db` directly
+rather than through `test.xml` — the `available_mem` quantity trap included, and one
+case that pins the `test.xml` fallback for a run directory the store never recorded.
+
+## Still missing from the index
+
+`postprocessing_steps` **is now ported** —
+`campaign_ingest.build_postprocessing_steps_table`, called at the *end* of
+`ingest_campaign` because `name_map` is only complete after the file walk; building it
+where `runs` is built would resolve `table_name` to NULL for every step. The curated
+`_STATIC_COLUMN_NOTES` / `_POSE_CONTRACT_NOTES` went with the same writer and are restored
+alongside it as `campaign_ingest.record_column_notes`, registered through
+`index_schema.record_note(..., NOTE_DOC)` and attached only to tables this campaign
+actually wrote. Tests: `tests/results_processing/test_postprocessing_steps.py`.
+
+`run_health` was built by the same retired writer and is **not** ported. It is still a live
+surface (`data_query._TABLE_DESCRIPTIONS`, the MCP results prompts,
+`config.results_processing.health_checks`, `robovast_nav`'s check plugin), so it is a
+regression, but it is not part of `runs` and it is not mechanical. A check is `check(conn)`
+and issues its own SQL against the campaign's derived tables (`robovast_nav.health_checks`),
+which under one index means Postgres placeholders *and* a campaign predicate the plugin has
+no way to know. Porting it is a change to the health-check plugin contract, not a change to
+an ingest.

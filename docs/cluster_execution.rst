@@ -1327,7 +1327,12 @@ The gain is the spread between your fastest and slowest node; on a homogeneous c
 is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
 under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
 ``execution.sizing: calibrated``, one with ``fixed``, everything else equal — measures it
-directly, and ``run_health`` says whether the tighter ceilings cost the stack anything.
+directly, and ``run_health`` says whether the tighter ceilings cost the stack anything --
+provided the campaigns declared a check under ``results_processing.health_checks``. Nothing
+runs undeclared, so an empty ``run_health`` for the pair means *not graded*, never *not
+degraded*; that is the same rule as everywhere else in the table. Both campaigns' grades sit
+in the one index, so compare them with ``WHERE campaign_id IN (...)`` rather than expecting a
+per-campaign database.
 
 **Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
 is what says whether a tighter allocation cost the simulator its pacing, and a campaign whose

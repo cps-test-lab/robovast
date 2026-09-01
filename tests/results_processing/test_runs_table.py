@@ -225,15 +225,16 @@ def test_every_config_gets_every_siblings_param_column(conn, tmp_path):
     assert rows[1]["param_wind"] == 3.0 and rows[1]["param_speed"] is None
 
 
-def test_a_param_colliding_with_a_fixed_column_is_skipped(conn, tmp_path):
-    """``param_status`` would be a second column named for the run's outcome."""
+def test_the_param_prefix_keeps_a_param_named_like_a_fixed_column_apart(conn, tmp_path):
+    """The prefix is what makes the namespaces disjoint: a scenario parameter called
+    ``status`` lands in ``param_status`` and cannot shadow the run's outcome."""
     tree = _campaign(tmp_path, units=[
         ("goal-1", {"status": "sneaky", "speed": 1.0}, None, "ok", "ps-1")])
     campaign_ingest.ingest_campaign(conn, str(tree), "camp-a")
 
     row = _runs(conn)[0]
-    assert "param_status" not in row
-    assert row["status"] == "passed" and row["param_speed"] == 1.0
+    assert row["status"] == "passed", "the run's outcome, not the parameter"
+    assert row["param_status"] == "sneaky" and row["param_speed"] == 1.0
 
 
 def test_a_param_disagreeing_in_type_widens_the_column(conn, tmp_path):
@@ -378,3 +379,91 @@ def test_a_campaign_without_a_record_still_gets_its_runs(conn, tmp_path):
     assert [(r["config_name"], r["run_id"], r["status"]) for r in rows] == [
         ("goal-1", 0, "unknown")]
     assert not [c for c in rows[0] if c.startswith("param_")]
+
+
+# -- what the analysis helpers do with it -----------------------------------
+#
+# ``read_runs``, ``attach_params`` and ``read_table(..., with_params=True)`` are the whole
+# reason ``runs`` is a table rather than a view over ``params_json``: they were broken while
+# it did not exist, and a unit test of the ingest alone would not have noticed.
+
+@pytest.fixture(name="ingested")
+def _ingested(tmp_path_factory):
+    """Two campaigns in an index the analysis helpers can open, as ``(this, other)``.
+
+    Two, because ``runs`` now holds every campaign and both use the same configuration name
+    and run ids -- a single-campaign fixture cannot tell a scoped read from an unscoped one.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    from robovast.results_processing import index_query
+
+    schema = "runs_analysis_test"
+    previous = os.environ.get("ROBOVAST_INDEX_DSN")
+    os.environ["ROBOVAST_INDEX_DSN"] = f"{DSN} options=-csearch_path={schema}"
+    with psycopg.connect(DSN, autocommit=True) as setup:
+        for statement in (f"DROP SCHEMA IF EXISTS {schema} CASCADE",
+                          "DROP SCHEMA IF EXISTS campaign CASCADE",
+                          f"CREATE SCHEMA {schema}"):
+            setup.execute(statement)
+
+    base = tmp_path_factory.mktemp("runs-analysis")
+    this = _campaign(base, "camp-a-2026-08-10-07150919")
+    other = _campaign(base, "camp-b-2026-08-10-07150920",
+                      units=[("goal-1", {"speed": 9.5, "map_file": "other.yaml"},
+                              None, "ok", "ps-9")])
+    with index_query.open_index(readonly=False) as conn:
+        campaign_ingest.ingest_campaign(conn, str(this), this.name)
+        campaign_ingest.ingest_campaign(conn, str(other), other.name)
+
+    yield this, other
+
+    with psycopg.connect(DSN, autocommit=True) as teardown:
+        teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        teardown.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
+    if previous is None:
+        os.environ.pop("ROBOVAST_INDEX_DSN", None)
+    else:
+        os.environ["ROBOVAST_INDEX_DSN"] = previous
+
+
+def test_read_runs_returns_the_dimension_table_for_this_campaign(ingested):
+    from robovast.common.analysis import read_runs
+
+    this, _ = ingested
+    frame = read_runs(this)
+
+    assert frame["run_id"].tolist() == [0, 1]
+    assert frame["param_speed"].tolist() == [0.5, 0.5]
+    assert frame["campaign_id"].unique().tolist() == [this.name]
+
+
+def test_read_runs_narrows_to_the_selected_node(ingested):
+    from robovast.common.analysis import read_runs
+
+    this, _ = ingested
+    assert read_runs(this / "goal-1" / "1")["run_id"].tolist() == [1]
+
+
+def test_read_table_with_params_joins_the_parameters_onto_a_metric(ingested):
+    """The query ``runs`` exists for: "how does <param> affect <metric>", in one call."""
+    from robovast.common.analysis import read_table
+
+    this, _ = ingested
+    frame = read_table(this, "nav_metrics", with_params=True)
+
+    assert len(frame) == 2
+    # The ``param_`` prefix is dropped: a plot reads ``df["speed"]`` rather than carrying
+    # the storage layout into the analysis.
+    assert frame["speed"].tolist() == [0.5, 0.5]
+    assert frame["map_file"].tolist() == ["warehouse.yaml", "warehouse.yaml"]
+
+
+def test_another_campaigns_runs_never_reach_this_campaigns_frame(ingested):
+    """Both campaigns have a ``goal-1`` with runs 0 and 1, so an unscoped read returns a
+    frame of the right shape, the right columns and the wrong experiment."""
+    from robovast.common.analysis import read_runs, read_table
+
+    this, other = ingested
+    assert read_runs(other)["param_speed"].tolist() == [9.5, 9.5]
+    assert read_table(this, "nav_metrics", with_params=True)["speed"].tolist() == [0.5, 0.5]
+    assert read_table(other, "nav_metrics", with_params=True)["speed"].tolist() == [9.5, 9.5]
