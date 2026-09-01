@@ -3440,6 +3440,11 @@ export interface components {
              */
             stage: string;
             /**
+             * Stage Detail
+             * @default
+             */
+            stage_detail: string;
+            /**
              * Url
              * @default
              */

@@ -1720,9 +1720,21 @@ the first view of **every other run, and every other campaign that used the same
 compiles once, not 25 times.
 
 Because a build is seconds (≈8 s on a warm cluster node) and can be a couple of minutes when the node
-must first pull the image, the panel **names what it is waiting for** rather than spinning: *Fetching the
-simulation image onto the node*, *Compiling the world geometry*, *Copying the scene back from the
-container*. The rest of the run view stays usable meanwhile — the capture, the timeline and the
+must first pull the image, the panel **names what it is waiting for** rather than spinning: *Waiting for
+a node to build on*, *Fetching the simulation image onto the node*, *Starting the build container*,
+*Compiling the world geometry*. Each is reported by whoever performs it — on a cluster the build runs in
+a pod on the campaign's own image, and the pod is the only thing that knows which of those it is on — so
+the stage is read rather than assumed.
+
+Under the stage, when the lane has one, comes **its own words for the wait**: the pod's
+``ImagePullBackOff`` and the registry's message, say. That is the difference between a cold start and a
+wait that will never end, and it is the case to know about for a campaign **imported from another
+cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the
+registry it ran against. Where this host cannot pull that image there is no 3D view for that campaign,
+and the panel now says so in seconds instead of at the build's deadline. Nothing else about the campaign
+is affected — its logs, tables, plots and capture playback need no image.
+
+The rest of the run view stays usable meanwhile — the capture, the timeline and the
 table-fed panels need no geometry, so playback and the costmap keep working — and a failure stops polling
 and shows its reason.
 

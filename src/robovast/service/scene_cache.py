@@ -89,6 +89,23 @@ _locks_guard = threading.Lock()
 _failures: "dict[str, str]" = {}
 _failures_guard = threading.Lock()
 
+#: The steps a build reports, in the order they happen. Only what a lane can actually observe is
+#: named: a stage no code can ever set is a promise to a client that nothing keeps, and a client
+#: written against it waits for a message that never comes.
+STAGE_QUEUED = "queued"        #: no node has taken the build yet
+STAGE_PULLING = "pulling"      #: the campaign's image is being fetched onto the node
+STAGE_STARTING = "starting"    #: the image is on the node and the container has not come up
+STAGE_COMPILING = "compiling"  #: the exporter is running
+STAGES = (STAGE_QUEUED, STAGE_PULLING, STAGE_STARTING, STAGE_COMPILING)
+
+#: What each in-flight build is doing, as ``key -> (stage, detail)``. A 2 GB pull and a 9 s compile
+#: are indistinguishable from outside the service and differ by an order of magnitude, so naming one
+#: while the other is happening turns a slow pull -- or one that will never finish -- into what reads
+#: as a hang. Written by whoever performs the step: the lane owns everything up to the container
+#: coming up, this module owns the compile.
+_stages: "dict[str, tuple[str, str]]" = {}
+_stages_guard = threading.Lock()
+
 
 class SceneUnavailable(RuntimeError):
     """Geometry cannot be produced for this run, with a reason a viewer can show verbatim."""
@@ -546,6 +563,29 @@ def clear_failure(key: str) -> None:
         _failures.pop(key, None)
 
 
+def set_stage(key: str, stage: str, detail: str = "") -> None:
+    """Record which step this key's build is on, one of :data:`STAGES`.
+
+    *detail* is the lane's own words for it — a pod's ``ImagePullBackOff`` message, say. It is
+    shown *beside* the stage and never in place of it: the stage is what a client can branch on,
+    the detail is what only a human can read.
+    """
+    with _stages_guard:
+        _stages[key] = (stage, detail)
+
+
+def clear_stage(key: str) -> None:
+    """Forget a build's stage — it has ended, whether it produced a descriptor or a reason."""
+    with _stages_guard:
+        _stages.pop(key, None)
+
+
+def current_stage(key: str) -> "tuple[str, str]":
+    """``(stage, detail)`` for a build in flight, ``("", "")`` when none is."""
+    with _stages_guard:
+        return _stages.get(key, ("", ""))
+
+
 def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = None) -> str:
     """The command that compiles this world, asked of the campaign's simulator backend.
 
@@ -659,6 +699,9 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
     cluster the factory is backed by a pod, and whoever creates that pod has to close it. The local lane
     passes nothing: an absent factory makes the generator fall back to an ephemeral ``docker run``,
     which is exactly right there.
+
+    Reports its progress through :func:`set_stage` for as long as it runs, so a viewer polling the
+    status is told which cost it is waiting on rather than watching one undifferentiated spinner.
     """
     import contextlib
 
@@ -676,13 +719,22 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
         # do not exist here, so that cache can never hit (see the module docstring). Our own key already
         # decided this is a miss.
         try:
+            # Entering the context is where the cluster creates the pod that will run the build and
+            # waits for the campaign's image to land on its node -- minutes on a cold node, and the
+            # step that fails outright when that image cannot be pulled at all. So it is a stage of
+            # its own, refined from the pod itself by the lane's own callback; locally there is no
+            # separable pull to watch, and claiming one would be a guess.
+            set_stage(key, STAGE_QUEUED if runner_context else STAGE_COMPILING)
             context = runner_context() if runner_context else contextlib.nullcontext(None)
             with context as factory:
+                set_stage(key, STAGE_COMPILING)
                 run_input_generators(cache_root(), [entry], progress_update_callback=progress,
                                      container_runner_factory=factory, use_cache=False)
         except Exception as err:  # noqa: BLE001 - every failure must reach the viewer as a reason
             shutil.rmtree(out_dir, ignore_errors=True)
             raise SceneUnavailable(f"could not build the scene descriptor: {err}") from err
+        finally:
+            clear_stage(key)
         if not is_cached(key):
             shutil.rmtree(out_dir, ignore_errors=True)
             raise SceneUnavailable(

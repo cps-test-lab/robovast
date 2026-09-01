@@ -547,7 +547,7 @@ class AuxPodSession:
     def __init__(self, campaign_id, specs, namespace, core_v1=None,
                  ready_timeout: float = 300.0, pull_secret: str = "",
                  storage=None, bucket: str = "", s3: tuple | None = None,
-                 kube_context: str | None = None):
+                 kube_context: str | None = None, on_pending=None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
         self.specs = list(specs or [])
@@ -560,6 +560,9 @@ class AuxPodSession:
         # valid — the same failure the container-exec lane has a regression test for.
         self._kube_context = kube_context
         self._ready_timeout = ready_timeout
+        # Reported on every poll of the ready wait, so a caller with somebody watching can name
+        # what the pod is stuck on rather than only what it timed out on. See `wait_pod_ready`.
+        self._on_pending = on_pending
         self._created = False
         # All three or none: a pod built with ``mc`` but no client to stage through (or
         # the reverse) fails at the first ``run()``, deep inside a plugin, instead of
@@ -618,7 +621,7 @@ class AuxPodSession:
         # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
         # which matters now that a spec may name the campaign's own private image.
         wait_pod_ready(core, self.namespace, self.pod_name,
-                       timeout_s=self._ready_timeout)
+                       timeout_s=self._ready_timeout, on_pending=self._on_pending)
         return self
 
     def runner_factory(self):
