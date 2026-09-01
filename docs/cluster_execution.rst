@@ -802,9 +802,26 @@ service-lifetime state.** ``robovast-service`` is a Deployment, and every ``vast
 upgrade`` rolls it — so a version bump of the controller image restarted the registry and
 the database, and both volumes followed the Deployment rather than the cluster. In the
 store pod they are created once at setup, are pinned to the data node with the campaign
-store, and are removed only by ``vast cluster cleanup``. Losing them there is deliberate
-and cheap: images are rebuilt on demand, and the index is re-ingested from the campaign
-data in the object store.
+store, and are pinned to the data node with the campaign store. Losing them is
+deliberate and cheap: images are rebuilt on demand, and the index is re-ingested from the
+campaign data.
+
+**The index's volume is an ``emptyDir``, and that is the point.** It shares this pod with
+the object store, whose volume is also an ``emptyDir`` — so the two are destroyed by the
+same event and a derived index can never outlive the results it was derived from. The
+invariant is structural rather than something cleanup has to remember.
+
+It was briefly a ``hostPath``, on the reasoning that a restart should not drop the index
+because re-ingesting a corpus takes hours. That premise was false, and the way it failed
+is worth recording: the object store is itself an ``emptyDir``, so a restart destroys the
+results in the same instant. Re-ingest was not slow, it was impossible. Observed on a live
+deployment — 66 campaigns' directories gone, while the index still served one campaign's
+10448 pose rows. An index that outlives its sources is worse than no index: it answers
+questions about campaigns nobody can reproduce or check, and it answers them confidently.
+
+Note what this makes of the object store: a **transfer buffer**, not the durable home for
+results — which is what ``store_is_node_local``'s comment has said all along. Anything that
+must survive a restart belongs in an archive (``vast share``), not in the store.
 
 All four ports (``s3``, ``console``, ``registry``, ``index``) are on the pod's single
 ClusterIP Service. It already selects exactly this pod, so extra Service objects would

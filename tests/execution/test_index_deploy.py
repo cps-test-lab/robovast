@@ -61,16 +61,24 @@ def test_the_index_port_is_not_on_the_services_own_service():
 
 
 def test_the_volume_is_never_an_emptydir():
-    """With an emptyDir any restart of the store pod would drop the index.
+    """The index must not outlive the results it is derived from, and this is how.
 
-    Re-ingesting the existing corpus from the object store is hours of work, and a crash,
-    an eviction or a node reboot are not events an operator asked for.
+    It shares the store pod with `minio-storage`, which is an emptyDir, so an emptyDir
+    here means the two are destroyed by the same event and the derived data can never
+    survive its source. Enforced by construction rather than by cleanup code, which only
+    covers the one path an operator takes deliberately.
+
+    This reverses an earlier hostPath, whose stated reason -- that a restart would drop
+    the index and "re-ingesting the corpus is hours" -- rested on the object store being
+    durable. It is not. Re-ingest was never slow, it was impossible: the source died in
+    the same instant. Measured on a live cluster: 66 campaigns' directories gone, the
+    index still serving one campaign's 10448 pose rows.
     """
     volume = index_deploy.index_volume()
 
-    assert "emptyDir" not in volume
-    assert volume["hostPath"]["path"] == index_deploy.DEFAULT_INDEX_HOST_PATH
-    assert index_deploy.index_volume("/data/idx")["hostPath"]["path"] == "/data/idx"
+    assert volume["emptyDir"] == {}
+    assert "hostPath" not in volume, (
+        "a durable index over an ephemeral store is the inversion this prevents")
 
 
 def test_the_data_directory_is_below_the_mount_not_the_mount():
@@ -172,12 +180,16 @@ def test_an_explicit_dsn_in_env_is_not_overridden():
     assert env[DSN_ENV] == "host=elsewhere port=5432 dbname=rv"
 
 
-def test_the_index_hostpath_follows_the_workspaces_store():
-    """A deployer who moved the workspaces store moved the node-local data."""
-    assert index_deploy.index_host_path("/mnt/big/robovast-workspaces") == \
-        "/mnt/big/robovast-index"
-    assert index_deploy.index_host_path("") == index_deploy.DEFAULT_INDEX_HOST_PATH
+def test_a_storage_path_no_longer_places_the_index_anywhere():
+    """The path is still threaded through by callers, and is now inert.
 
+    Kept accepted rather than removed so this can revert without touching every caller --
+    and an emptyDir is on the node's own filesystem regardless, which is what the path was
+    steering. What must not happen is the argument appearing to work: a manifest naming a
+    directory nothing writes to would read as durable storage.
+    """
     volume = next(v for v in _store_pod_spec(index_storage_path="/mnt/big/robovast-index")
                   ["volumes"] if v["name"] == index_deploy.INDEX_VOLUME_NAME)
-    assert volume["hostPath"]["path"] == "/mnt/big/robovast-index"
+
+    assert volume["emptyDir"] == {}
+    assert "hostPath" not in volume

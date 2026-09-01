@@ -186,23 +186,34 @@ def index_container() -> dict:
     }
 
 
-def index_volume(storage_path: str = DEFAULT_INDEX_HOST_PATH) -> dict:
-    """The volume backing the index: a hostPath on the node the store pod is pinned to.
+def index_volume(storage_path: str = "") -> dict:
+    """The volume backing the index: an ``emptyDir``, living exactly as long as the pod.
 
-    ``emptyDir`` is refused because it would drop the index whenever the pod restarts --
-    a crash, an eviction, a node reboot -- and re-ingesting the corpus from the object
-    store is hours. A hostPath survives all three.
+    **The index must not outlive the campaign results it is derived from.** That is the
+    whole reason for this choice, and it is structural rather than enforced by cleanup
+    code: the index sits in the same pod as the object store, on a volume of the same
+    kind, so the two are created and destroyed together and no sequence of restarts,
+    evictions or operator mistakes can separate them.
 
-    **No PVC, and no StorageClass switch.** The index is deliberately torn down with the
-    store pod by ``vast cluster cleanup``, so a claim would buy durability across exactly
-    the event we have decided not to survive, while adding an object that must be created
-    before the pod, deleted after it, and reconciled when neither happened. The rows are
-    derivable; the store pod they sit in is node-pinned by the same placement that pins the
-    campaign data, so the path stays under one node's control.
+    This deliberately reverses an earlier decision, and the reasoning that overturned it
+    is worth keeping. A hostPath was chosen so a pod restart would not "drop the index,
+    and re-ingesting the corpus from the object store is hours". That premise was wrong:
+    ``minio-storage`` is itself an ``emptyDir``, so the results are destroyed by the very
+    same restart. Re-ingest was never slow -- it was impossible, because the source had
+    gone at the same instant.
+
+    Observed on a live cluster before this was fixed: 66 campaigns' directories vanished
+    while the index still served one campaign's 10448 pose rows. A derived index outliving
+    its sources is worse than no index, because it answers questions about campaigns that
+    can no longer be reproduced, re-ingested or checked -- confidently, and with nothing to
+    compare against.
+
+    *storage_path* is accepted and ignored, so the callers that thread a node path through
+    do not have to change if this reverts. It is not a lie about behaviour: an emptyDir is
+    on the node's own filesystem either way, which is what that path was steering.
     """
-    return {"name": INDEX_VOLUME_NAME,
-            "hostPath": {"path": storage_path or DEFAULT_INDEX_HOST_PATH,
-                         "type": "DirectoryOrCreate"}}
+    del storage_path  # see above: an emptyDir has no path to place
+    return {"name": INDEX_VOLUME_NAME, "emptyDir": {}}
 
 
 def index_host_path(workspaces_storage_path: str = "") -> str:
