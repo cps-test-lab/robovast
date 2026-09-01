@@ -281,11 +281,15 @@ a 403. ``vast service upgrade`` is the command that reconciles all of
 it, and the credential Secrets in particular can *only* be done there — they are rebuilt
 from the operator's environment, which the pod does not have.
 
-So the button is for "new bytes are published and nothing else changed". It refuses while
-campaigns are live, naming them, because the controller driving them runs in the pod being
-replaced; confirming the dialog is what overrides that. Kubernetes starts the new pod
-before stopping the old, so the API stays up, and the page waits for the running digest to
-change rather than trusting the request it just made.
+So the button is for "new bytes are published and nothing else changed". A live campaign is
+**not** by itself a reason to refuse: its Jobs keep running and the replacement pod
+re-attaches to them. What the service refuses is the narrower case its own resume planner
+cannot answer for -- the campaigns that could *not* be picked up again -- and the refusal
+names each one with the reason it gives, which is what an operator would have to act on.
+Only then does the page offer to force, quoting that refusal; the first confirmation is not
+an override, because at that point there is nothing yet to override. Kubernetes starts the
+new pod before stopping the old, so the API stays up, and the page waits for the running
+digest to change rather than trusting the request it just made.
 
 Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
 cluster from outside it — there is no button, just the reason. The chart and the log work
