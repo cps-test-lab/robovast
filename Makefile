@@ -200,9 +200,11 @@ build: ui-stage
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "CONFIG_WRITE=1 writes ROBOVAST_PROJECT/ROBOVAST_PROJECT_TAG into ~/.config/robovast/env; by default the two lines are only printed."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>] [UBUNTU_MIRROR=<url>] [UBUNTU_SNAPSHOT=<stamp|none>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "CONFIG_WRITE=1 writes ROBOVAST_PROJECT/ROBOVAST_PROJECT_TAG into ~/.config/robovast/env; by default the two lines are only printed."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; echo "UBUNTU_MIRROR fetches the dated Ubuntu archive from a mirror of the snapshot service instead (the two ROS images only). It swaps the host and nothing else -- same pinned versions, and the published images name the snapshot service, not the mirror."; echo "UBUNTU_SNAPSHOT=none goes with a mirror of the ROLLING archive: it drops the dated path and installs what that archive serves today, so the images are labelled unrebuildable. A deliberate trade, not a speed-up."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,--ask-push) \
 		$(if $(TAG),--tag "$(TAG)",) \
+		$(if $(UBUNTU_MIRROR),--ubuntu-mirror "$(UBUNTU_MIRROR)",) \
+		$(if $(UBUNTU_SNAPSHOT),--ubuntu-snapshot "$(UBUNTU_SNAPSHOT)",) \
 		$(if $(ROQSIM_REF),--roqsim-ref "$(ROQSIM_REF)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",) \
@@ -233,11 +235,12 @@ release-image-controller:
 # release_images.sh passes it the same way; a flag here would be silently ignored.
 .PHONY: release-image-roqsim
 release-image-roqsim:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-image-roqsim PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_SRC=<path> | ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>]"; echo "Builds ONLY robovast-roqsim. It is FROM <PROJECT>/robovast:<TAG>, so that base must already be published there -- the build fails loudly if it is not."; echo "The rest of the family must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-roqsim PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_SRC=<path> | ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>] [UBUNTU_MIRROR=<url>]"; echo "Builds ONLY robovast-roqsim. It is FROM <PROJECT>/robovast:<TAG>, so that base must already be published there -- the build fails loudly if it is not."; echo "The rest of the family must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; echo "UBUNTU_MIRROR fetches the dated Ubuntu archive from a mirror of the snapshot service; it swaps the host only, and the built image ships the canonical URI."; exit 1; }
 	$(if $(ROQSIM_REF),ROQSIM_REF="$(ROQSIM_REF)",) ./container/robovast/build.sh --image roqsim \
 		--project "$(PROJECT)" --tag "$(if $(TAG),$(TAG),latest)" \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
+		$(if $(UBUNTU_MIRROR),--ubuntu-mirror "$(UBUNTU_MIRROR)",) \
 		$(if $(PUSH),--push,--ask-push)
 
 .PHONY: image-digests

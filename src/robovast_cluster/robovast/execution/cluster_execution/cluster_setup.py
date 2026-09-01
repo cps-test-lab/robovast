@@ -70,7 +70,7 @@ def _controller_rbac_manifests(namespace):
                 # between a usable GPU and a device the container cannot render on. Also
                 # cluster-scoped, so it belongs here rather than on the namespaced Role.
                 # Without it the check reads "no such RuntimeClass" for a 403 and the pod
-                # loses the field silently, which is how this was found.
+                # loses the field silently.
                 {"apiGroups": ["node.k8s.io"], "resources": ["runtimeclasses"],
                  "verbs": ["get", "list"]},
             ],

@@ -325,13 +325,11 @@ class CampaignImageRecord:
     **One reader for four questions.** Retrigger asks what a new run can start from, the scene
     cache asks what identifies these bytes, postprocessing asks what it can run here, and the
     publication gate asks whether an outsider could obtain them. Those want different answers
-    from the *same* record -- so what is shared is the reading, and each policy stays with the
+    from the *same* record, so what is shared is the reading and each policy stays with the
     caller that owns it.
 
-    They used to share nothing. Four functions re-derived the same fields with their own
-    precedence, and their docstrings cross-referenced each other explaining the divergence --
-    which is how the publication gate came to call a campaign opaque that retrigger called
-    pinnable, about one file, on one disk.
+    Deriving the fields separately at each caller is what this prevents: the precedences drift
+    apart, and two callers then disagree about one file, on one disk.
     """
 
     lane: str
@@ -699,8 +697,7 @@ def read_interventions(campaign_dir: Path, kind: str = "") -> list[dict[str, Any
     """The campaign's intervention ledger, optionally only one *kind*; ``[]`` when there is none.
 
     An empty list is the overwhelmingly common case -- the file does not exist unless someone
-    reached into a campaign -- and every caller is on a path that otherwise behaves exactly as it
-    did before this record existed.
+    reached into a campaign -- and no caller changes what it does when the ledger is empty.
     """
     path = Path(campaign_dir) / "_execution" / _INTERVENTIONS_FILENAME
     if not path.is_file():
@@ -1022,8 +1019,8 @@ def read_plugins_record(campaign_dir) -> "dict | None":
     re-run as safely pinned when nothing about its plugins was ever captured.
 
     An **empty** file is the opposite answer and returns ``{}``: the campaign was asked and
-    declared none. ``or None`` here collapsed the two, which is what made every campaign without
-    plugins read as unknown.
+    declared none. The two must not be collapsed -- ``or None`` over the parsed value would
+    make every campaign without plugins read as unknown.
     """
     path = Path(campaign_dir) / "_execution" / _PLUGINS_FILENAME
     if not path.exists():

@@ -9,14 +9,15 @@
 #   container/robovast/build.sh    (base + roqsim, via --image all)
 #   container/controller/build.sh  (controller)
 #
-# The sidecar has no build.sh, so it is built with buildx directly. It used to be left
-# out for that reason -- which meant a release to a dev registry published three images and
-# silently kept the public sidecar. That gap is why the family is published as a *set*: one
-# ROBOVAST_PROJECT moves all four, so there is no longer a per-image knob to forget.
+# The sidecar has no build.sh, so it is built with buildx directly -- and is released here all
+# the same. Leaving it out publishes three images to a dev registry while silently keeping the
+# public sidecar, which is why the family is published as a *set*: one ROBOVAST_PROJECT moves
+# all four, so there is no per-image knob to forget.
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--config-write] \
-#                                  [--ros-distro <distro>] \
+#                                  [--ros-distro <distro>] [--ubuntu-mirror <url>] \
+#                                  [--ubuntu-snapshot <stamp|none>] \
 #                                  [--roqsim-ref <ref> | --roqsim-src <path>] \
 #                                  [-- <extra docker build args>]
 #
@@ -30,6 +31,18 @@
 # Without a terminal to ask on it does not publish, which is the same thing as passing neither
 # flag: a script that inherited this command must not push because nobody was there to say no.
 #
+# --ubuntu-mirror reaches the two ROS images only -- they are the Ubuntu-based half of the
+# family; the controller is Debian and the sidecar Alpine, and neither reads this archive. It
+# swaps the host the dated Ubuntu archive is fetched from, for a network with a slow or blocked
+# path to the snapshot service, and changes nothing about which package versions are installed or
+# what the finished images record: the pinned stamp is appended to the mirror, and the images ship
+# the canonical URI. Defaults from UBUNTU_SNAPSHOT_MIRROR, which build.sh reads directly.
+#
+# --ubuntu-snapshot none goes with a mirror of the ROLLING archive, which is what most sites have:
+# it drops the dated path, installs what that archive serves today, and labels the images `none`
+# so a campaign's provenance says they cannot be rebuilt to the same versions. A published family
+# built this way is not reproducible -- worth it for a dev registry, a real cost for a release.
+#
 # --roqsim-src builds the simulator image from a checkout on disk instead of cloning, for
 # a caller that already has one -- a superproject holding roqsim as a submodule, or an
 # unpushed commit. It is the same option container/robovast/build.sh takes; this script
@@ -41,6 +54,8 @@ PROJECT=""
 PUSH=""
 ASK_PUSH=""
 ROS_DISTRO="jazzy"
+UBUNTU_MIRROR=""
+UBUNTU_SNAPSHOT_ARG=""
 ROQSIM_REF="main"
 ROQSIM_SRC=""
 # `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
@@ -78,6 +93,14 @@ while [[ $# -gt 0 ]]; do
       ROS_DISTRO="$2"
       shift 2
       ;;
+    --ubuntu-mirror)
+      UBUNTU_MIRROR="$2"
+      shift 2
+      ;;
+    --ubuntu-snapshot)
+      UBUNTU_SNAPSHOT_ARG="$2"
+      shift 2
+      ;;
     --roqsim-ref)
       ROQSIM_REF="$2"
       ROQSIM_REF_SET=1
@@ -100,7 +123,7 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--config-write] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--config-write] [--ros-distro <distro>] [--ubuntu-mirror <url>] [--ubuntu-snapshot <stamp|none>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project ghcr.io/cps-test-lab --push" >&2
   echo "Pinned:  $0 --project ghcr.io/cps-test-lab --tag 2026-08-17 --push" >&2
 }
@@ -151,6 +174,10 @@ SIDECAR_TAG="${PROJECT}robovast-sidecar:${TAG}"
 
 SRC_FLAG=()
 [[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
+
+MIRROR_FLAG=()
+[[ -n "$UBUNTU_MIRROR" ]] && MIRROR_FLAG=(--ubuntu-mirror "$UBUNTU_MIRROR")
+[[ -n "$UBUNTU_SNAPSHOT_ARG" ]] && MIRROR_FLAG+=(--ubuntu-snapshot "$UBUNTU_SNAPSHOT_ARG")
 
 # shellcheck source=container/platforms.env
 . "$BASEDIR/platforms.env"
@@ -204,7 +231,8 @@ echo "== base + roqsim =="
 # mid-push; FAILED collects it instead.
 CHAIN_STATUS=0
 ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
-  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS \
+  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${MIRROR_FLAG[@]}" \
+  "${PUSH_FLAG[@]}" -- $EXTRA_ARGS \
   || CHAIN_STATUS=$?
 
 CONTROLLER_STATUS=0

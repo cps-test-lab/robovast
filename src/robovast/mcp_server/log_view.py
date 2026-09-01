@@ -81,10 +81,15 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     Returns:
         Two shapes, one key apart, because a summary is not a shorter log:
 
-        * lines — ``{content, lines, lines_total, dropped, shutdown_dropped,
-          truncated}``
-        * summary — ``{patterns, patterns_total, severity_counts, lines,
+        * lines — ``{content, lines, matched, lines_total, dropped,
+          shutdown_dropped, truncated}``
+        * summary — ``{patterns, patterns_total, severity_counts, lines, matched,
           lines_total, dropped, shutdown_dropped}``
+
+        ``lines`` is what came back and ``matched`` is what survived the filters — the
+        same number until ``tail`` cuts, and it is ``matched`` the accounting balances
+        on: ``matched + dropped + shutdown_dropped == lines_total``. Reporting only
+        ``lines`` made a ``tail=50`` read of a 5000-line log say fifty lines matched.
 
         ``content`` is **absent** from a summary rather than empty, which would read
         as "nothing matched". ``dropped`` is how many lines ``grep`` and
@@ -118,17 +123,21 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
         kept = [ln for ln in kept
                 if log_summary.severity_rank(log_summary.severity_of(ln)) >= floor]
     # Counted against what the filters were *given*, not against the whole log, so the
-    # two exclusions stay separable: `lines + dropped + shutdown_dropped == lines_total`.
+    # two exclusions stay separable: `matched + dropped + shutdown_dropped == lines_total`.
     # Folding them together would report a grep that matched everything it was shown as
     # having dropped the teardown.
     dropped = len(lines) - len(kept)
+    # What the filters kept, before `tail` narrows it to a window. `lines` below is the
+    # window; this is what that window is a window ONTO, and the invariant is stated over
+    # this one -- with `tail`, `lines` is a page size and cannot balance the accounting.
+    matched = len(kept)
 
     if summarize:
         # Counting happens on the *raw* lines: the summarizer normalizes them itself
         # (it needs the prefix to attribute a pattern to its node), so collapsing
         # first would throw that away.
         return {**log_summary.summarize(kept, top=top), "lines": len(kept),
-                "lines_total": total, "dropped": dropped,
+                "matched": matched, "lines_total": total, "dropped": dropped,
                 "shutdown_dropped": shutdown_dropped}
 
     truncated = False
@@ -149,6 +158,7 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     return {
         "content": content,
         "lines": len(kept),
+        "matched": matched,
         "lines_total": total,
         "dropped": dropped,
         "shutdown_dropped": shutdown_dropped,

@@ -12,15 +12,15 @@ ARG ROS_DISTRO=jazzy
 # guard right after the FROM makes forgetting that loud instead of silent.
 #
 # This must be the digest of a multi-arch INDEX, never of one platform's manifest. `ros` publishes
-# an index; `osrf/ros`, which this used to name, does not -- see the FROM below.
+# an index; `osrf/ros` does not, which is why the FROM below names `ros`.
 ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4
 
 # Where scenario-execution comes from, defaulted HERE so this Dockerfile builds on its own.
 #
-# The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a commit
-# that only ever existed on a feature branch; once that branch was merged and deleted the
-# commit became unreachable, and every build from a clean clone failed with "fatal: reference
-# is not a tree". A pin whose commit can disappear is not a pin.
+# The pin must be a commit on a **durable** ref -- main, or a tag. A commit that exists only on
+# a feature branch becomes unreachable once that branch is merged and deleted, and every build
+# from a clean clone then fails with "fatal: reference is not a tree". A pin whose commit can
+# disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
 ARG SCENARIO_EXECUTION_REF=ac1759c7b3b80df5db5e82c42df957164adb7202
 
@@ -116,6 +116,19 @@ ARG ROS_SNAPSHOT=2026-06-18
 # (The upstream key really does carry a misspelled "ROS Spanshot builder" uid beside the correct
 # one. That is upstream, not a substitution.)
 ARG ROS_SNAPSHOT_FPR=4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
+# WHERE those archives are fetched from, as opposed to WHICH bytes the pins above name. A build on
+# a network with a slow or blocked path to the snapshot service can point this at a mirror of it,
+# without changing a single installed version.
+#
+# By default it must mirror the SNAPSHOT service, not a rolling archive: the stamp is appended to
+# it, so a rolling mirror answers 404 rather than quietly installing today's packages into an
+# image whose labels claim a dated one. A rolling mirror is usable, but only by saying so --
+# UBUNTU_SNAPSHOT=none, which drops the stamp and gives up rebuildability; see the step below.
+#
+# Supplied per build (`build.sh --ubuntu-mirror`, or the UBUNTU_SNAPSHOT_MIRROR environment
+# variable) and never written into this file, which would put one site's hostname in a public
+# repository -- and the shipped image carries a canonical URI either way, restored below.
+ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
 # grep -R, not -r: the base ships ros2.sources as a SYMLINK into /usr/share/ros-apt-source/, and
 # -r skips symlinks found while recursing. With -r the rolling repo silently survives, apt then
 # prefers whichever version is higher, and the snapshot pin quietly does nothing -- which is why
@@ -126,8 +139,21 @@ ARG ROS_SNAPSHOT_FPR=4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
 RUN . /etc/os-release \
  && grep -Rl -e archive.ubuntu.com -e security.ubuntu.com -e packages.ros.org \
       /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f \
- && printf 'Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/%s\nSuites: %s %s-updates %s-backports %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-      "${UBUNTU_SNAPSHOT}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" \
+ && if [ "${UBUNTU_SNAPSHOT}" = none ]; then \
+      if [ "${UBUNTU_SNAPSHOT_MIRROR}" = "https://snapshot.ubuntu.com/ubuntu" ]; then \
+        echo "ERROR: UBUNTU_SNAPSHOT=none needs an archive to install from: the snapshot" >&2; \
+        echo "       service serves dated paths only. Pass --ubuntu-mirror <rolling archive>." >&2; \
+        exit 1; \
+      fi; \
+      UBUNTU_URI="${UBUNTU_SNAPSHOT_MIRROR%/}"; \
+      echo "ubuntu archive: UNPINNED -- versions are whatever this archive serves today, so this"; \
+      echo "                image cannot be rebuilt to the same software later"; \
+    else \
+      UBUNTU_URI="${UBUNTU_SNAPSHOT_MIRROR%/}/${UBUNTU_SNAPSHOT}"; \
+    fi \
+ && printf 'Types: deb\nURIs: %s\nSuites: %s %s-updates %s-backports %s-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
+      "${UBUNTU_URI}" \
+      "${VERSION_CODENAME}" "${VERSION_CODENAME}" "${VERSION_CODENAME}" \
       "${VERSION_CODENAME}" > /etc/apt/sources.list.d/ubuntu.sources \
  && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${ROS_SNAPSHOT_FPR}" \
       | gpg --dearmor -o /usr/share/keyrings/ros-snapshot.gpg \
@@ -136,20 +162,24 @@ RUN . /etc/os-release \
  && echo "deb [signed-by=/usr/share/keyrings/ros-snapshot.gpg] http://snapshots.ros.org/${ROS_DISTRO}/${ROS_SNAPSHOT}/ubuntu ${VERSION_CODENAME} main" \
       > /etc/apt/sources.list.d/ros2.list \
  && apt-get update \
- && if apt-cache policy | grep -E -q "archive\.ubuntu\.com|security\.ubuntu\.com|packages\.ros\.org"; then \
+ && ROLLING="packages\.ros\.org" \
+ && if [ "${UBUNTU_SNAPSHOT}" != none ]; then \
+      ROLLING="archive\.ubuntu\.com|security\.ubuntu\.com|${ROLLING}"; \
+    fi \
+ && if apt-cache policy | grep -E -q "${ROLLING}"; then \
       echo "ERROR: a rolling apt archive survived the snapshot switch, so this build would not" >&2; \
       echo "       be reproducible. Surviving source(s):" >&2; \
-      apt-cache policy | grep -E "archive\.ubuntu\.com|security\.ubuntu\.com|packages\.ros\.org" >&2; \
+      apt-cache policy | grep -E "${ROLLING}" >&2; \
       exit 1; \
     fi
 
 ##############################################################
-####          What the base no longer brings              ####
+####          What the base does not bring                ####
 ##############################################################
-# The desktop-full package set, which used to arrive baked into osrf/ros:*-desktop-full. That tag
-# has no arm64 build (see the FROM above), so the content is installed here instead -- from the
-# snapshot pinned just above, which means these versions are now fixed by a dated archive rather
-# than by whenever the base image was last rebuilt.
+# The desktop-full package set. `osrf/ros:*-desktop-full` carries it but has no arm64 build (see
+# the FROM above), so the content is installed here instead -- from the snapshot pinned just
+# above, which fixes these versions to a dated archive rather than to whenever the base image
+# was last rebuilt.
 #
 # `ros-${ROS_DISTRO}-desktop-full` is the same metapackage the old base installed, so this is the
 # same set rather than a guess at it. Both architectures resolve it from the pinned ROS snapshot;
@@ -253,11 +283,10 @@ RUN mkdir -p /ws/src
 # From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
 # working tree when a build overrides it (see the stage definition at the top of this file).
 #
-# This used to be ``COPY scenario-execution-src ...`` of a directory build.sh created, empty,
-# in a temp context. Git cannot track an empty directory, so the COPY had nothing to resolve
-# against in a plain checkout -- and CI builds with ``context: .``, which means this image's own
-# workflow could never have produced it. A Dockerfile that only builds through one particular
-# wrapper is a Dockerfile whose CI job is decorative.
+# Not a ``COPY`` of a directory a build script creates in a temp context: git cannot track an
+# empty directory, so such a COPY resolves against nothing in a plain checkout -- and CI builds
+# with ``context: .``, so this image's own workflow could not produce it. A Dockerfile that only
+# builds through one particular wrapper is a Dockerfile whose CI job is decorative.
 COPY --from=scenario-execution-src / /ws/src/scenario-execution
 
 # Declared in the global scope above, like scenario-execution's, so the bare re-declaration at the
@@ -265,9 +294,9 @@ COPY --from=scenario-execution-src / /ws/src/scenario-execution
 # in-stage default.
 ARG SCENARIO_EXECUTION_SERVER_REPO
 ARG SCENARIO_EXECUTION_SERVER_REF
-# No --depth: it used to be `--depth=1` followed by a checkout of a sha, which works only while
-# that sha is still the branch tip. The moment main moves, a rebuild of THIS commit fails with
-# "reference is not a tree" -- a pin that only resolves today is not a pin.
+# No --depth: `--depth=1` followed by a checkout of a sha resolves only while that sha is still
+# the branch tip. The moment main moves, a rebuild of THIS commit fails with "reference is not a
+# tree" -- a pin that only resolves today is not a pin.
 # hadolint ignore=DL3003
 RUN  cd /ws && \
      git clone "$SCENARIO_EXECUTION_SERVER_REPO" /ws/src/scenario-execution-server && \
@@ -313,9 +342,8 @@ RUN mkdir -p /out && chmod 777 /out
 # ONE marker, and it is a label: `docker inspect` reads it without starting a container, and
 # the registry serves it for a *remote* image without pulling — which is what a pre-flight on a
 # year-old campaign needs, since the whole question is whether this host can still drive bytes
-# it does not have. The same value used to be written to a file inside the image as well, read
-# by starting a container to `cat` one integer; that could not be read remotely at all, and a
-# workload inspecting its own image is not how admission is decided anywhere else here.
+# it does not have. A file inside the image cannot answer that: reading one costs a container
+# start, and cannot be done at all for an image this machine does not hold.
 # Passed in rather than written here, like ROBOVAST_GIT_REVISION below: a constant copied by
 # hand into each Dockerfile drifts, which is why it needed a CI gate comparing the copies.
 # container/image_stamp.sh derives it from COMPAT_VERSION and refuses to build without it.
@@ -343,6 +371,21 @@ ARG SCENARIO_EXECUTION_REF
 LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
 ARG SCENARIO_EXECUTION_SERVER_REF
 LABEL org.robovast.scenario-execution-server-ref="${SCENARIO_EXECUTION_SERVER_REF}"
+
+# A mirror is a fetch path, not a property of the image, so whatever this build downloaded from,
+# the shipped apt source names an archive anyone can reach: the dated snapshot this installed
+# from, or -- for an unpinned build, which has no dated archive to name -- the rolling one. An
+# image that kept a site's mirror would carry a host nobody outside that network can resolve,
+# every `apt-get update` in a campaign container failing on it, while the labels below name an
+# archive that image cannot reach.
+# The result is asserted rather than assumed: an unrewritten source is invisible until a pull.
+RUN if [ "${UBUNTU_SNAPSHOT}" = none ]; then \
+      CANONICAL="http://archive.ubuntu.com/ubuntu"; \
+    else \
+      CANONICAL="https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}"; \
+    fi \
+ && sed -i "s|^URIs: .*|URIs: ${CANONICAL}|" /etc/apt/sources.list.d/ubuntu.sources \
+ && grep -qx "URIs: ${CANONICAL}" /etc/apt/sources.list.d/ubuntu.sources
 
 # What a rebuild would have to start FROM, as opposed to which bytes this is. A digest is
 # reproducible exactly as long as the registry keeps it; these are what survive that.
