@@ -495,7 +495,7 @@
         "type": "object"
       },
       "CampaignPanelsResponse": {
-        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's ``data.db``.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
+        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's results tables.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
