@@ -1153,11 +1153,20 @@ It happens whenever the free cores are spread across nodes and no single node ho
 
 The pin is the label ``robovast.io/node-id``, whose value is the same hash a run records as
 ``runs.node_label`` — so the selector that placed a run and the record of the machine it ran
-on are provably the same node, and no hostname appears in any pod spec. ``setup`` applies
-it, and an **unlabelled node still takes work**: it simply cannot be named, so its jobs are
-created without a selector and the scheduler places them. A cluster upgraded without
-re-running ``setup``, or a node that joined since, therefore behaves exactly as it did
-before per-node placement existed rather than refusing to run anything.
+on are provably the same node, and no hostname appears in any pod spec. ``setup`` and
+``vast service upgrade`` both apply it — the latter beside the RBAC it reconciles, so an
+operator never has to know the label exists — and an **unlabelled node still takes work**:
+it simply cannot be named, so its jobs are created without a selector and the scheduler
+places them. A node that joined since therefore behaves exactly as it did before per-node
+placement existed rather than refusing to run anything.
+
+**An unlabelled node is still counted as its own node.** Accounting keys on the node's
+identity, which is the label's value where the label is there and is *computed* where it is
+not (it is an unsalted digest of the node name, so it can be recomputed rather than looked
+up). Only the *pin* depends on the label being present. This matters most exactly where
+unlabelled nodes are routine: when every one of them shared a single "no identity" key, a
+pool of them collapsed into one slot in the budget and all but one node's free capacity was
+never offered to any campaign — silently, and the more nodes the worse.
 
 A pinned pod whose node is momentarily full is **contention, not a fault**. It waits for
 that node — the fifteen-minute window, not the sixty-second one — because it is waiting for
@@ -1616,13 +1625,14 @@ does not have.** Admission runs inside that pod, whose image ships neither ``gcl
 static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
 is not where admission runs.
 
-**Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
-is what pins a job to the node its capacity was reserved on, and what a calibration probe
-measures against. A managed node pool replaces nodes constantly — autoscaling, auto-upgrade,
-auto-repair, spot reclaim — and every replacement arrives unlabelled. Such a node still takes
-work (refusing it would turn adding capacity into an outage), but it cannot be pinned to and
-cannot be probed, so its jobs run at the declared sizing beside calibrated ones. Re-run
-``vast exec cluster setup`` after the pool changes to bring new nodes back under
+**Node identity labels are applied at ``setup`` and ``upgrade``, not continuously.**
+``robovast.io/node-id`` is what pins a job to the node its capacity was reserved on, and what
+a calibration probe measures against. A managed node pool replaces nodes constantly —
+autoscaling, auto-upgrade, auto-repair, spot reclaim — and every replacement arrives
+unlabelled. Such a node still takes work (refusing it would turn adding capacity into an
+outage) and still counts as its own node for capacity, but it cannot be pinned to and cannot
+be probed, so its jobs run at the declared sizing beside calibrated ones. Re-run ``vast exec
+cluster setup`` after the pool changes to bring new nodes back under
 :ref:`cluster-node-calibration`.
 
 **The CPU governor DaemonSet usually cannot work on a cloud VM** — and the way it fails is not

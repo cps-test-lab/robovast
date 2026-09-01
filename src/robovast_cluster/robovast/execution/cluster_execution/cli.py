@@ -998,6 +998,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     Campaign data lives in the object store and survives both.
     """
     from .cluster_setup import apply_controller_rbac
+    from .node_placement import apply_node_id_labels
     from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  wait_for_rollout, wait_for_service_ready)
@@ -1026,11 +1027,25 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         before = running_image_digest(namespace, kube_context)
         click.echo("  reconciling RBAC...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+        # The same migration, for the same reason RBAC is reconciled here: a version that
+        # needs cluster state the last one did not would otherwise deploy and misbehave at
+        # runtime. Nodes get their identity label at `setup` and nowhere else, so a cluster
+        # upgraded rather than re-set-up -- or one that gained a node since -- ran with
+        # unlabelled nodes, which costs the pin and, until they were counted one by one,
+        # most of the cluster's admissible capacity. Idempotent by value: an already
+        # labelled cluster patches nothing, which is what makes it safe on every upgrade.
+        #
+        # Deliberately NOT a placement decision. `resolve_placement` is what an upgrade must
+        # not do (it would move the data it was asked to leave alone); stamping identities
+        # moves nothing and chooses nothing.
+        labelled = apply_node_id_labels(kube_context=kube_context)
+        if labelled:
+            click.echo(f"  labelled {len(labelled)} node(s) with their identity")
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  added the registry's /v2 route to the existing Ingress")
         # --no-restart stops here, and everything above this line is why it can: RBAC is
-        # evaluated by the API server per request, and
-        # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
+        # evaluated by the API server per request, a node label is the node's own state, and
+        # an Ingress route is the gateway's own state -- so the RUNNING pod picks all four
         # up with no roll. Only the image and the env Secrets need a restart, and this flag
         # promises neither.
         #

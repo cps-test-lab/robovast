@@ -105,6 +105,8 @@ def _run_upgrade(before, after, rollout_error=None):
             running_image_digest=MagicMock(side_effect=lambda *a, **k: next(digests))), \
             patch("robovast.execution.cluster_execution.cluster_setup."
                   "apply_controller_rbac", MagicMock()), \
+            patch("robovast.execution.cluster_execution.node_placement."
+                  "apply_node_id_labels", MagicMock(return_value={})), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."
                   "apply_buildkitd", MagicMock()), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."

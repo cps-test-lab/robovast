@@ -401,3 +401,28 @@ def test_a_cordoned_node_does_not_make_a_cluster_look_growable(monkeypatch):
     b = p.budget()
     assert [n.node_id for n in b.nodes] == ["node-n1"]
     assert b.growable is False
+
+
+def test_every_node_gets_an_identity_and_only_labelled_ones_are_pinnable(monkeypatch):
+    """The identity is the accounting key, so it cannot be the thing that is missing.
+
+    A node the last ``setup`` has not labelled used to report ``node_id=None``, and every
+    such node reported the same one -- so the admission controller, which keys its per-node
+    dicts on it, saw one node where the cluster had several. Half of a two-node cluster's
+    free capacity was never offered to anybody, silently, and the campaign just ran slowly.
+
+    So the identity is computed where the label is absent (``node_label`` is an unsalted
+    digest of the name, which is exactly what makes it recomputable), and the label decides
+    only ``pinnable`` -- whether a ``nodeSelector`` can name it.
+    """
+    from robovast.execution.data.collect_sysinfo import node_label
+
+    p, _ = _provider([_node("n1", cpu="8"),
+                      _node("n2", cpu="8", node_id=False),
+                      _node("n3", cpu="8", node_id=False)], [], monkeypatch)
+    nodes = p.budget().nodes
+    assert len({n.node_id for n in nodes}) == 3, "three nodes, three distinct identities"
+    assert [n.pinnable for n in nodes] == [True, False, False]
+    assert [n.node_id for n in nodes] == ["node-n1", node_label("n2"), node_label("n3")], (
+        "an unlabelled node's identity is the value a later setup would stamp on it, so a "
+        "reservation held across that setup keeps its key")

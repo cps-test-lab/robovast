@@ -294,6 +294,9 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
     monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path",
                         lambda **k: False)
+    # Upgrade stamps node identities too; unstubbed it reaches a real API server.
+    from robovast.execution.cluster_execution import node_placement
+    monkeypatch.setattr(node_placement, "apply_node_id_labels", mock.Mock(return_value={}))
 
     result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
 
@@ -339,6 +342,9 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
     monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
     monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
+    # Upgrade stamps node identities too; unstubbed it reaches a real API server.
+    from robovast.execution.cluster_execution import node_placement
+    monkeypatch.setattr(node_placement, "apply_node_id_labels", mock.Mock(return_value={}))
 
     result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
     assert result.exit_code == 0, result.output
@@ -348,3 +354,47 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     assert kwargs.get("public_origin") == "http://robovast.example.org"
     # And the host still reaches the registry config, which is what it was read for first.
     assert kwargs.get("registry_host") == "robovast.example.org"
+
+
+def test_upgrade_stamps_the_node_identity_label(monkeypatch):
+    """An operator must not have to know this label exists.
+
+    It was stamped at `setup` and nowhere else, so a cluster moved forward with `upgrade`
+    -- the command for rolling out a version -- kept whatever labelling it had. A node
+    added since, or a deployment older than the label, therefore ran unlabelled: the pin
+    is lost, calibration cannot measure the node, and until unlabelled nodes were counted
+    one by one most of the cluster's admissible capacity went with it.
+
+    Reconciled beside the RBAC and for the same reason, which also puts it above the
+    `--no-restart` line: it is the node's own state, so the running pod picks it up with
+    no roll and an operator missing it need not roll a service to get it.
+    """
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import (cluster_setup, node_governor,
+                                                      node_placement)
+
+    label = mock.Mock(return_value={"n1": "node-abc"})
+    monkeypatch.setattr(node_placement, "apply_node_id_labels", label)
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: ("rke2", {"namespace": "default"}))
+    monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
+    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor", mock.Mock(return_value=False))
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
+    monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
+
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default", "--no-restart"])
+
+    assert result.exit_code == 0, result.output
+    assert label.called, "upgrade left the node identity labels unreconciled"
+    assert label.call_args.kwargs["kube_context"] is None
+    assert "labelled 1 node(s)" in result.output, result.output
