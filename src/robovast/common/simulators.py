@@ -928,8 +928,13 @@ def _validated_cfg(backend: SimulatorBackend, block: dict, name: str):
 #: stayed behind would describe a container that no longer names one. Leaving it out also
 #: made it a *simulator* key, which is worse than untidy -- a backend CONFIG_CLASS forbids
 #: extras, so every roqsim campaign was rejected the moment the field existed.
-_CONTAINER_KEYS = ("image", "command", "resources", "system_packages", "python_packages",
-                   "ros_packages", "provenance")
+#:
+#: ``calibration`` belongs here for the same reason as the ``resources`` it shapes: it says
+#: how a measurement becomes that container's allocation, so it has to travel with the block
+#: carrying the allocation, and a folded container would otherwise keep a ceiling whose
+#: sizing rule was left behind.
+_CONTAINER_KEYS = ("image", "command", "resources", "calibration", "system_packages",
+                   "python_packages", "ros_packages", "provenance")
 
 #: Keys of the ``simulation`` block that belong to RoboVAST, not to the backend. A
 #: backend's CONFIG_CLASS forbids extras, so offering it these would reject every
