@@ -9,14 +9,13 @@
 #   ROS (mode: ros2)      the simulator runs in a container of its own -- from this image
 #                         too, because it is the only one that can.
 #
-# That second line is the part worth knowing, because it used to be otherwise. Neither
-# other image can do the job:
+# That second line is the part worth knowing. Neither other image can do the job:
 #
 #   robovast    carries the RoboVAST contract (the org.robovast.compat-version label,
 #               scenario-execution, the /out mount) but no simulator.
 #   roqsim-ros  roqsim's own image: carries roqsim but not that contract, so the runner
-#               rejects it before a scenario starts -- and no workflow has ever published
-#               the tag the ROS shape used to default to.
+#               rejects it before a scenario starts -- and no workflow publishes the tag the
+#               ROS shape would otherwise default to.
 #
 # Built by ``container/robovast/build.sh --image roqsim`` and by CI, on top of a *resolved*
 # base tag (BASE_IMAGE) so the two images cannot drift apart. The compat version is
@@ -62,9 +61,9 @@ ARG ROQSIM_REF
 # commits; that is the cost of a default that is not a pin.
 #
 # The token is optional and arrives as a BuildKit secret. roqsim is PUBLIC now, so an anonymous
-# clone works and the secret is only needed for a fork that is not -- it used to be required, and
-# without it the clone failed with "could not read Username for 'https://github.com'", which is
-# git asking for a password on a terminal that does not exist. A secret rather than a build arg so
+# clone works and the secret is only needed for a fork that is not. Without one, a clone of a
+# private fork fails with "could not read Username for 'https://github.com'", which is git asking
+# for a password on a terminal that does not exist. A secret rather than a build arg so
 # the value is not recorded in the image history; only this command's text is, and the value is
 # read from the mount at run time.
 #
@@ -100,6 +99,29 @@ FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 USER root
+
+##############################################################
+####          Point-in-time apt archives, mirrored        ####
+##############################################################
+# The base image already carries the dated Ubuntu and ROS sources every apt-get below installs
+# from, so there is nothing to pin here. What this does is repoint the Ubuntu one at a mirror of
+# the snapshot service for the duration of this build, the same knob and the same reason as in the
+# base image: a network with a slow or blocked path to the snapshot service would otherwise have a
+# mirror for the base image's installs and none for this image's, which are the heavier half.
+#
+# Only the host is replaced. The dated stamp is read back out of the source the base wrote rather
+# than pinned again here, which keeps one pin in one file: two ARGs to keep in agreement is how
+# the flavour ends up installing from a different day than the image it is FROM. A base built
+# unpinned (UBUNTU_SNAPSHOT=none) has no stamp in its URI, and then neither does this.
+#
+# The original file is kept and moved back at the end -- see there for why the shipped image must
+# not name the mirror.
+ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
+RUN cp -a /etc/apt/sources.list.d/ubuntu.sources /etc/apt/ubuntu.sources.canonical \
+ && STAMP=$(sed -n 's|^URIs: .*/\([0-9]\{8\}T[0-9]\{6\}Z\)$|\1|p' \
+      /etc/apt/sources.list.d/ubuntu.sources) \
+ && sed -i "s|^URIs: .*|URIs: ${UBUNTU_SNAPSHOT_MIRROR%/}${STAMP:+/${STAMP}}|" \
+      /etc/apt/sources.list.d/ubuntu.sources
 
 ##############################################################
 ####            MuJoCo's runtime GL libraries             ####
@@ -177,8 +199,8 @@ COPY --from=roqsim-src / /opt/roqsim
 #
 # One pip pass over all of them, so a package's dependency on a sibling resolves against
 # that sibling rather than against PyPI -- where `roqsim` is an unrelated project. This is
-# the same reason the campaigns that used to carry a wheel list installed them as one
-# group; the difference is that nobody has to maintain the list any more.
+# the same reason a campaign carrying a wheel list installs them as one group -- except that
+# here nobody has to maintain the list.
 #
 # `scenario_execution_roqsim` is the substrate's OSC action library, and it is in this list for a
 # reason worth knowing: a campaign whose scenario writes `import osc.roqsim` fails at scenario PARSE
@@ -212,9 +234,9 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # mean.
 #
 # Note the asymmetry with roqsim's *ROS* image, which installs torch unconditionally. This
-# image serves the ROS shape now, so a legged-robot ROS campaign needs this switch on
-# where it previously got torch for free. That is the deliberate trade: the default image
-# stays small for the mobile campaigns that are the common case.
+# image serves the ROS shape, so a legged-robot ROS campaign has to switch this on rather than
+# getting torch for free. That is the deliberate trade: the default image stays small for the
+# mobile campaigns that are the common case.
 #
 # torch on its own line and with --index-url, not --extra-index-url: the CPU wheel index
 # does not carry the roqsim packages' other dependencies, so a single pass that mixed them
@@ -250,6 +272,17 @@ RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge &&
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
     colcon build --packages-select roqsim_ros_bridge roqsim_nav2_example
+
+# Back to the archive the base image shipped, whatever this build fetched through. An image that
+# kept a site's mirror would carry a host nobody outside that network can resolve, so every
+# `apt-get update` in a campaign container would fail on it -- while the inherited
+# org.robovast.ubuntu-snapshot label still claims the base's own archive. Restoring the saved file
+# rather than rewriting the URI keeps this correct for a pinned and an unpinned base alike.
+# Asserted against both canonical forms, because an unrewritten source shows up only on a pull.
+# Before the switch to the unprivileged user below: /etc/apt is root-owned.
+RUN mv /etc/apt/ubuntu.sources.canonical /etc/apt/sources.list.d/ubuntu.sources \
+ && grep -Eq "^URIs: https?://(snapshot|archive)\.ubuntu\.com/ubuntu" \
+      /etc/apt/sources.list.d/ubuntu.sources
 
 USER ubuntu:ubuntu
 

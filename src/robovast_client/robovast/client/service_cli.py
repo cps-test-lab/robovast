@@ -183,8 +183,8 @@ def info(namespace, context):
 
     ``robovast_version``, the field the compatibility handshake compares, is not printed:
     it resolves to a revision when there is one and to the semver otherwise, so it is
-    always already on one of these two lines. It used to be printed as ``version``, which
-    made both lines show the same SHA on every deployed service.
+    always already on one of these two lines. Printing it as ``version`` as well would show
+    the same SHA twice on every deployed service.
     """
     try:
         with service_client(namespace, context) as (client, label):

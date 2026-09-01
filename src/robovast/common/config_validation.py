@@ -834,8 +834,8 @@ def _scenario_parameter_names(scenario_file):
 def _unresolved_variation_problem(exc, vast_dir, declared_plugins, config_name):
     """Turn an unresolved variation name into the *true* statement about it, or ``None``.
 
-    Three different situations reach here, and reporting them identically is what made a
-    correct ``.vast`` look broken:
+    Three different situations reach here, and reporting them identically makes a correct
+    ``.vast`` look broken:
 
     * **A staged plugin registers the name.** The project's ``.robovast_plugins/`` already
       holds the package (``vast workspace update``, or any earlier composition), so the name
@@ -1393,7 +1393,7 @@ def _search_composition_report(config_path):
                            for item in sample["infeasible"])
         problems.append(_problem(
             "search-composition",
-            f"{len(sample['infeasible'])} of {sample['sampled']} sampled parameter "
+            f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
             f"set(s) could not be composed: {listed}. The campaign skips such draws "
             "and continues, but a high rate here means much of the search space is "
             "infeasible — check the search_space bounds against the variation's "

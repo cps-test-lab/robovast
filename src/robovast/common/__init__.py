@@ -2,8 +2,8 @@
 """Shared building blocks, re-exported **lazily**.
 
 These names are the convenient spelling for the campaign-composition core, and callers
-have used ``from robovast.common import load_config`` for a long time. Importing them
-eagerly here, though, made the package ``__init__`` reach ``.common`` -> ``numpy`` and
+use ``from robovast.common import load_config``. Importing them eagerly here, though, makes
+the package ``__init__`` reach ``.common`` -> ``numpy`` and
 ``scenario_execution``, and Python runs a parent ``__init__`` before *any* submodule. So
 ``import robovast.client.status`` -- a pydantic model with no other dependency -- cost 528
 modules and half a second, and every module under ``robovast.common`` inherited the

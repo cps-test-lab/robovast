@@ -128,29 +128,56 @@ class Minimax(SearchStrategy):
             value = ev.objectives.get(name)
             if index is None or value is None:
                 continue
-            # The adversary's job is to find the WORST, so a tuning's score is the minimum
-            # its inner search reached -- not the mean, which would let a tuning that fails
-            # catastrophically once look acceptable because it usually copes.
-            self._worst[index] = min(self._worst.get(index, float('inf')), float(value))
+            # The adversary's job is to find the WORST environment for this tuning, so a
+            # tuning's score is the most extreme value its inner search reached -- not the
+            # mean, which would let a tuning that fails catastrophically once look
+            # acceptable because it usually copes.
+            #
+            # "Most extreme" is whichever end the campaign DECLARED, because the inner
+            # search is the adversary: a campaign minimizing robustness is already hunting
+            # the low end, and one maximizing a failure rate is hunting the high end.
+            # `objective_value` orients that once -- higher is always the direction the
+            # campaign is pushing -- so the adversary keeps the MAXIMUM of it and needs no
+            # branch on direction. Comparing the raw value instead was correct only for
+            # `minimize`, the direction this example happens to declare; under `maximize`
+            # the adversary kept the mildest environment it had found, and did so silently.
+            self._worst[index] = max(self._worst.get(index, float('-inf')),
+                                     self.objective_value(ev))
             self._history.append(ev)
         self._batches_done += 1
+
+    def _raw(self, oriented: float) -> float:
+        """An oriented worst case back in the objective's own units, for reporting.
+
+        The two orderings are done on oriented values so neither needs to know the
+        direction; the report has to undo that, or a minimized objective would be published
+        with its sign flipped and every number in it would disagree with the campaign's own
+        data.
+        """
+        return -oriented if self.single_objective.direction == 'minimize' else oriented
 
     def report(self) -> SearchReport:
         # Only tunings whose adversary actually ran. A tuning with no evaluations has no
         # worst case, and reporting one as unbeaten would make an untested candidate the
         # winner -- the most dangerous possible failure of this strategy.
-        scored = [(i, w) for i, w in self._worst.items() if w != float('inf')]
-        ranked = sorted(scored, key=lambda item: item[1], reverse=True)
+        scored = [(i, w) for i, w in self._worst.items() if w != float('-inf')]
+        # Best-defended tuning first: the one whose adversary got LEAST far, which on the
+        # oriented scale is the smallest worst case. Ascending, and with no branch on
+        # direction for the same reason `tell` needs none. Sorting the raw value descending
+        # was the matching half of the same bug -- right for `minimize`, and under
+        # `maximize` it crowned the least robust tuning and reported it as the answer.
+        ranked = sorted(scored, key=lambda item: item[1])
         extra = {
             "batches": self._batches_done,
             "tunings_scored": len(scored),
             "tunings_total": len(self._tunings),
             # THE ANSWER, and it is here rather than in `best` because the controller's
             # scalar best folds the flat inner objective, which is a different quantity.
-            "outer_best": ranked[0][1] if ranked else None,
+            "outer_best": self._raw(ranked[0][1]) if ranked else None,
             "robust_tuning": self._tunings[ranked[0][0]] if ranked else None,
             "worst_case_by_tuning": [
-                {"tuning": self._tunings[i], "worst_robustness": w} for i, w in ranked
+                {"tuning": self._tunings[i], "worst_robustness": self._raw(w)}
+                for i, w in ranked
             ],
         }
         best = None

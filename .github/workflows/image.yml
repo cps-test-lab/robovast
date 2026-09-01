@@ -446,9 +446,9 @@ jobs:
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
           # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
-          # this job needs no checkout of it and the context is not read at all. It used to be
-          # passed to a Dockerfile that declared no such ARG and did no cloning, while that
-          # Dockerfile's `COPY roqsim` needed a directory `context: .` does not contain: the
+          # this job needs no checkout of it and the context is not read at all. Passing it to
+          # a Dockerfile that declares no such ARG and does no cloning leaves that Dockerfile's
+          # `COPY roqsim` needing a directory `context: .` does not contain: the
           # job could not have succeeded, which is why nothing ever published this image.
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}

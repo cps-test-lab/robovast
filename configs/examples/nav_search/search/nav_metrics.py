@@ -54,8 +54,15 @@ _COLLISION_FILES = ('rosbag2_collision.csv', 'collision.csv')
 _BEHAVIOR_FILES = ('nav2_behaviors.csv', 'behaviors.csv')
 
 
-def _rows(path: Path) -> list[dict]:
-    if not path.exists():
+def _rows(path: Path | None) -> list[dict]:
+    """Every row of *path*, or ``[]`` when there is no such table.
+
+    ``None`` is accepted because every caller passes a :func:`_first` result, which is
+    ``None`` for a table this run does not have. A guard at the call site is the obvious
+    alternative and it is the one that failed: written inside a generator expression, where
+    the source is evaluated before any condition runs, it never guarded anything.
+    """
+    if path is None or not path.exists():
         return []
     with open(path, newline='', encoding='utf-8') as handle:
         return list(csv.DictReader(handle))
@@ -111,8 +118,7 @@ def _metrics_for_run(run_dir: Path, poses_file: str, gt_frame: str, goal) -> dic
     # is a configuration mistake rather than an infinitely safe run -- reported as an empty
     # cell so the extractor drops that margin instead of scoring a fabricated one.
     clearance_csv = _first(run_dir, _CLEARANCE_FILES)
-    clearances = _floats(_rows(clearance_csv), 'data', 'current', 'clearance') \
-        if clearance_csv else []
+    clearances = _floats(_rows(clearance_csv), 'data', 'current', 'clearance')
 
     collision_csv = _first(run_dir, _COLLISION_FILES)
     if collision_csv is None:
@@ -126,9 +132,11 @@ def _metrics_for_run(run_dir: Path, poses_file: str, gt_frame: str, goal) -> dic
     collided = any((r.get('data') or '').strip().lower() in ('true', '1')
                    for r in _rows(collision_csv))
 
-    behaviour_csv = _first(run_dir, _BEHAVIOR_FILES)
+    # Optional, unlike the two above: a run that needed no recovery behaviour records no
+    # transitions, and `recovery_count` is a QD measure rather than part of the verdict. So
+    # an absent table means zero recoveries -- which is what happened -- and not a defect.
     recoveries = sum(
-        1 for r in _rows(behaviour_csv) if behaviour_csv
+        1 for r in _rows(_first(run_dir, _BEHAVIOR_FILES))
         if any(k in (r.get('behavior_name') or '').lower()
                for k in ('spin', 'backup', 'wait', 'clear'))
         and (r.get('status_name') or '').upper().startswith('RUNNING'))

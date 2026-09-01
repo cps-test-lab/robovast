@@ -72,6 +72,10 @@ jobs:
       - name: Pull the image being checked
         run: docker pull '${{ steps.target.outputs.image }}'
 
+      # No build cache, and it must stay that way. Layers cached from the build being checked
+      # would be reused wholesale, so the comparison would pass without installing anything --
+      # the check would confirm only that the cache works. A cold rebuild of the whole stack
+      # from the dated archives is what takes the time here, and is the thing being tested.
       - name: Rebuild from the recorded recipe and compare the software
         run: |
           python3 "$RUNNER_TEMP/rebuild_from_recipe.py" \

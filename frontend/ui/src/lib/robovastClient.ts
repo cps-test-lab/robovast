@@ -2,9 +2,9 @@
 // the Python HTTPTransport binds. The UI never talks to anything but the service.
 //
 // The **types** are generated from the service's own OpenAPI schema
-// (`npm run generate:api` → api.generated.ts) and re-exported below. They used to be
-// hand-written: 41 interfaces mirroring pydantic models with nothing tying them together,
-// so a field renamed in interface.py stayed "correct" here until something broke at
+// (`npm run generate:api` → api.generated.ts) and re-exported below, rather than
+// hand-written: interfaces mirroring pydantic models with nothing tying them together leave
+// a field renamed in interface.py looking "correct" here until something breaks at
 // runtime. The **functions** stay hand-written — they carry real behaviour (SSE URLs, the
 // upload side channel, error mapping) that codegen has no opinion about.
 //
@@ -29,6 +29,8 @@ export type VersionInfo = Schemas['VersionInfo']
 export type ResourceUsage = Schemas['ResourceUsage']
 export type UsageHistory = Schemas['UsageHistory']
 export type UsageSample = Schemas['UsageSample']
+export type ServiceEvents = Schemas['ServiceEvents']
+export type ServiceEvent = Schemas['ServiceEvent']
 export type UpgradeInfo = Schemas['UpgradeInfo']
 export type ServiceConfig = Schemas['ServiceConfig']
 export type ServiceSetting = Schemas['ServiceSetting']
@@ -388,6 +390,12 @@ export const robovast = {
   // empty first hour is the start of the record rather than an idle cluster.
   usageHistory: (window: '1h' | '24h') =>
     request<UsageHistory>('GET', `/usage/history?window=${window}`),
+
+  // What the service DID, from a cursor. Durable, unlike the log and the usage samples: it
+  // outlives the process, which is the whole reason it is a separate route rather than a
+  // section of either. Oldest-first from `since`, so a caller resumes rather than re-reads.
+  serviceEvents: (since = 0, limit = 200) =>
+    request<ServiceEvents>('GET', `/admin/events?since=${since}&limit=${limit}`),
 
   upgradeInfo: () => request<UpgradeInfo>('GET', '/admin/upgrade'),
 
