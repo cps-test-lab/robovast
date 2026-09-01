@@ -80,7 +80,21 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
 
     @model_validator(mode='after')
     def validate_single_obstacle(self):
-        """Raise an error if the total obstacle amount is not exactly 1."""
+        """Raise an error if the total obstacle amount is not exactly 1.
+
+        ``amount_per_m`` is refused rather than summed. It is a density, resolved as
+        ``floor(amount_per_m x path_length)`` once a path exists, so at config time it
+        states no number at all -- and the one number this variation accepts is 1, which
+        a density can only reach by accident of the path it lands on.
+        """
+        per_m = [c for c in self.obstacle_configs if c.amount_per_m is not None]
+        if per_m:
+            raise ValueError(
+                "ObstacleVariationWithDistanceTrigger places a single obstacle at a "
+                "trigger distance, so it needs an obstacle_configs entry that states one: "
+                "write 'amount: 1'. 'amount_per_m' is a density resolved against the path "
+                "length, which is not known here and which no single value of it fixes at 1."
+            )
         total = sum(c.amount for c in self.obstacle_configs)
         if total != 1:
             raise ValueError(
