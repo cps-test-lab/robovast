@@ -295,8 +295,8 @@ class CampaignController:
         In the ``finally`` of :meth:`run` for the same reasons as
         :meth:`_record_execution_provenance`, and one sharper one: the campaign this exists
         for is the one that DIED. A campaign that fails mid-batch records no ``run`` rows
-        at all and never postprocesses, so ``data.db`` is never built -- and the query
-        interface fetches only ``campaign.db`` and ``_execution/data.db``. Writing here is
+        at all and never postprocesses, so it never reaches the index -- and the query
+        interface fetches only ``campaign.db``. Writing here is
         what makes the evidence reachable by SQL for exactly the campaigns that need it.
 
         The JSON file stays the record; this is an index into it. Best-effort throughout:
@@ -1229,8 +1229,8 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     """Run analysis postprocessing in-cluster, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
-    ``campaign.db`` is flushed — ``generate_data_db``'s ``runs`` table reads it) and
-    **before** :func:`_finalize`, so the resulting ``data.db``/CSVs ride the existing
+    ``campaign.db`` is flushed — the index ingest mirrors it) and
+    **before** :func:`_finalize`, so the resulting CSVs ride the existing
     campaign upload instead of needing one of their own.
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
@@ -1246,7 +1246,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
     # A campaign this process RESUMED holds only its control plane until now (see
-    # cluster_execution.campaign_resume), and ``data.db`` is derived from the whole tree.
+    # cluster_execution.campaign_resume), and the derived data comes from the whole tree.
     # Here rather than in the caller's tail because this is the first reader that needs it:
     # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
     # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
@@ -1352,7 +1352,7 @@ def outcome_summary(snap) -> tuple[str, bool]:
 
     Built here rather than at each reader because "did this campaign succeed?" cannot
     be answered from ``phase`` alone — a campaign whose trials all passed but whose
-    postprocessing failed stays ``finished`` with no CSVs and no ``data.db``. A channel
+    postprocessing failed stays ``finished`` with no CSVs and nothing queryable. A channel
     answering from ``phase`` alone reports that as a clean success.
     """
     runs = snap.runs
@@ -1372,7 +1372,7 @@ def outcome_summary(snap) -> tuple[str, bool]:
     degraded = bool(runs.failed or runs.no_result)
     if snap.postprocessing_error:
         parts.append(f"POSTPROCESSING FAILED ({snap.postprocessing_error}) — "
-                     "no CSVs or data.db")
+                     "no CSVs, nothing queryable")
         degraded = True
     elif snap.postprocessed:
         parts.append("postprocessed")
@@ -1517,14 +1517,20 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         backend.share_campaign(campaign_root, options,
                                progress_callback=make_upload_progress_cb(state))
     except Exception as e:  # pylint: disable=broad-except
-        logger.warning("Upload-to-share failed; continuing with the campaign.",
-                       exc_info=True)
+        # A provider's own refusal (bad credentials, a URL that is not the share, a
+        # remote that said no) is self-contained and opts out of the tail via
+        # ``include_traceback = False`` — the frames through ``requests`` name nothing
+        # its sentence does not, and a stack here reads as a crash rather than as the
+        # configuration answer it is. Anything else is a bug and keeps its traceback.
+        detail = failure_detail(e)
+        logger.warning("Upload-to-share failed; continuing with the campaign.\n%s",
+                       detail, exc_info=getattr(e, "include_traceback", True))
         # Record the reason on its own field (not swallowed) so it survives to the
         # durable outcome _finish_campaign writes and can be re-triggered from disk
         # (service run_share). The phase is left for postprocessing/finalize to set —
         # a share failure keeps the campaign finished, it is not a run failure.
         if state is not None:
-            state.update(share_error=failure_detail(e))
+            state.update(share_error=detail)
         return
     if state is not None:
         state.update(share_error=None)
@@ -1764,7 +1770,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         store.close()
         _campaign_root = os.path.join(results_dir, campaign_id)
         # After store.close() (campaign.db flushed, which data.db's `runs` table
-        # reads) and before _finalize, so data.db rides the existing upload.
+        # reads) and before _finalize, so the derived data rides the existing upload.
         _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)
 
 
@@ -1969,5 +1975,5 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             store.close()
             _campaign_root = os.path.join(results_dir, campaign_id)
             # After store.close() (campaign.db flushed, which data.db's `runs` table
-            # reads) and before _finalize, so data.db rides the existing upload.
+            # reads) and before _finalize, so the derived data rides the existing upload.
             _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)

@@ -299,7 +299,12 @@ metric tables already used:
 
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
   question is written down**. Read its ``note`` first.
-* ``query_campaign_data_sql`` — one ``SELECT``, optionally spanning several campaigns.
+* ``query_campaign_data_sql`` — one ``SELECT``, **confined to the campaign it names**.
+  Every campaign's rows live in one index, so a query that omits ``WHERE campaign_id =
+  ...`` would otherwise answer with the corpus, in the same columns and with nothing in
+  the reply to say it had; the index enforces the scope instead of the caller remembering
+  it. Spanning campaigns is still one query and is now asked for: name the ids in the
+  call's ``campaigns`` argument.
 
 The entry points are two flat views, queried unqualified:
 
@@ -339,7 +344,7 @@ and to ``poses`` for what the robot was doing at the time. The two read alike an
 different questions, so ``describe_campaign_data`` names the table and says which is which.
 
 **The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
-``nav_get_path_deviation`` and ``nav_get_action_feedback`` query ``data.db`` — the tables
+``nav_get_path_deviation`` and ``nav_get_action_feedback`` query the results index — the tables
 postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``.
 Re-parsing ``poses.csv`` off local disk instead answers "campaign not found" for every
 cluster campaign, transfers a whole recording to compute eight numbers, and reads
@@ -381,36 +386,26 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   runs, so on a stopped or partially-run campaign it omits exactly the ones worth
   inspecting.
 * **Do not** ``SELECT config_json``. It is the whole ``.vast`` in one cell, exceeds the
-  per-cell limit, and returns truncated. Use ``config_view``, ``json_extract`` for a known
-  path, or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
+  per-cell limit, and returns truncated. Use ``config_view``, the Postgres JSON operators
+  for a known path (``config_json::jsonb -> 'execution' -> 'containers' -> 'scenario' ->>
+  'image'`` -- the index has no SQLite ``json_extract``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
-The first query on a campaign can be slow
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A query never fetches a campaign
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A cluster campaign's durable home is the object store, so the service materializes its two
-query databases into a local cache the first time something asks for them — **inside** that
-request. On a local ``vast serve`` this never happens; against a cluster reached through a
-``kubectl port-forward`` it is the difference between a query answering immediately and one
-taking a few seconds. Every query after it reads the cache.
+Results live in a central index, so a query is answered there for every campaign, on both
+lanes. Nothing is materialized in the service to answer one: no first-query transfer, and no
+per-campaign database that has to exist before a question can be asked.
 
-That is reported rather than left to be guessed at:
+``describe_campaign_data(preflight_only=True)`` therefore reports ``fetch_required: false``
+and ``transfer: none``, which is what "the question does not apply" looks like. It remains a
+cheap pre-flight worth calling before a batch of queries, and the ``fetch`` field on a query
+result reports the same — a client that used to explain a wait now has nothing to explain.
 
-* Before the wait, as a log notification naming the size and the transport, so a client that
-  renders MCP notifications shows *why* it is waiting instead of appearing to hang.
-* With the result, as a ``fetch`` field — ``{source, transfer, cold[, seconds, bytes]}`` —
-  which is the measured cost of that call, not an estimate. It also reaches clients that
-  ignore notifications, via the warning channel every tool result carries.
-* On demand, from ``describe_campaign_data(preflight_only=True)`` — a cheap pre-flight (two metadata lookups)
-  worth calling before a *batch* of queries against a campaign you have not touched yet.
-  ``fetch_required: false`` means the question does not apply. ``transfer`` separates
-  ``cluster-network`` (in-pod, fast) from ``port-forward`` (off-cluster driver, slow): the
-  same object store reached two ways, differing by orders of magnitude.
-
-A query fetches **only** those two databases (``_execution/data.db`` and ``campaign.db``),
-never the campaign's run artifacts — the same rule ``read_file`` follows for ``/results``.
-The cost therefore tracks the size of the metrics, not of the rosbags beside them.
+Cost tracks the rows a query touches, not the rosbags beside them — the same rule
+``read_file`` follows for ``/results``.
 
 
 .. _mcp-files:
@@ -443,9 +438,9 @@ is the **real on-disk path**, so what a listing shows is what you can read:
 
    /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
                          _execution/  launch.yaml, outcome.json, execution.yaml,
-                                      controller.log, postprocessing.log,
-                                      data.db (query it with SQL)
-                         _transient/  configurations.yaml, entrypoint.sh
+                                      controller.log, postprocessing.log
+                         _transient/  configurations.yaml, entrypoint.sh,
+                                      postprocessing.yaml
                          _jobs/job-N/ sysinfo.yaml, logs/system.log
                          <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
 
@@ -862,8 +857,7 @@ Python there is no ``shutdown_dropped`` to report, so every response instead *sa
 ``note`` that only the trial was searched. What it adds is *scope*: ``config_filter``, ``run_id``,
 ``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
 separate "during the trial" from "while the simulator was being reset around it". Set
-``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids, or name further campaigns
-in ``extra_campaign_ids``.
+``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids.
 
 Three shapes, one per question:
 
@@ -873,11 +867,10 @@ Three shapes, one per question:
 * ``summarize=True`` — patterns and counts, so "what flooded this sweep" costs one call. The
   summary scans far more rows than it returns, because it returns counts.
 
-Two costs it reports rather than hides. Every response carries ``campaigns`` (with what each
-transfer cost) and ``campaigns_skipped``: on the cluster the first query of a campaign
-materializes its ``data.db`` from the object store, so a cross-campaign search pays one transfer
-per *cold* campaign — hence ``max_campaigns`` defaults to 5. And SQLite attaches at most 10 extra
-databases, so a wider search is batched, never silently trimmed.
+Two costs it reports rather than hides. Every response carries ``campaigns`` and
+``campaigns_skipped``: the rows live in the central index, so a campaign costs no transfer, but
+``grep`` is still a regex over every log line of every campaign it spans — hence
+``max_campaigns`` defaults to 5, and what it leaves out is named rather than silently trimmed.
 
 Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
 ``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
@@ -1140,7 +1133,7 @@ reach a live job, and the difference between them is who chooses the command:
   is recorded. That property holds *because* the commands are ours: they read files the run is
   already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
-  campaign instead: every run the job covers is marked ``probed`` in ``data.db``.
+  campaign instead: every run the job covers is marked ``probed`` in the results index.
 
 That makes this tool the right *first* move rather than the only one, because it answers the
 same question against a copy at no cost to the campaign. A fault that does not reproduce here
@@ -1191,6 +1184,43 @@ There are no ``grep`` / ``min_severity`` parameters, unlike the three log tools:
 command *is* a shell, so ``| grep``, ``tail`` and ``sed`` are already available and
 strictly more expressive. ``tail`` trims the captured output through the same
 :func:`~robovast.mcp_server.log_view.view_log` filter those tools use.
+
+What was called, and what it answered
+-------------------------------------
+
+Every tool call is recorded once, by one middleware
+(:func:`robovast.mcp_server.server._install_tool_stats`), and no tool carries accounting code
+of its own -- a tool added tomorrow is in the record without knowing the record exists. The web
+UI's Admin page shows it under **MCP tools**: a ranking of which tools agents actually reach for,
+with a green/red bar per tool comparing call counts and failure share, and the calls behind it.
+
+The record is one row per call rather than a counter per tool, and that is the whole decision.
+Counts, error rates and durations would fit in ~70 upserted rows; the **arguments and the
+answer** would not, and those are what makes a failure debuggable once the process that served it
+is gone. So the ranking is an aggregate over the log rather than a number kept beside it.
+
+What it keeps, and does not:
+
+* ``args`` and ``answer`` are truncated where they are recorded --
+  :data:`robovast.mcp_server.tool_stats.MAX_LINES` lines and
+  :data:`~robovast.mcp_server.tool_stats.MAX_CHARS` characters, marked when cut. A
+  ``write_file`` body or a whole campaign summary never reaches the table. That module is the
+  single place deciding this, which makes it also the place to read when asking what the trail
+  could hold.
+* Rows age out at :data:`~robovast.mcp_server.tool_stats.MAX_AGE_S` (30 days) or
+  :data:`~robovast.mcp_server.tool_stats.MAX_ROWS`, whichever bites first. Age alone would not
+  bound the table -- one agent loop emits thousands of calls in an hour -- so a burst shortens
+  the retained window, and the panel says so rather than claiming a month it does not have.
+* Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
+  per call: a Postgres round-trip in front of every tool call would cost more than some of the
+  tools. They therefore survive a service restart but not the results store, which the index
+  shares a lifetime with.
+
+**Recording never fails a tool call.** Every path in
+:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the
+log, never the call. This is the same contract :class:`robovast.service.event_log.EventLog`
+states for itself, for the same reason: what is recorded is a description of the work, not the
+work.
 
 .. _mcp-tools:
 

@@ -492,16 +492,28 @@ ARCHIVE_UPLOAD_TTL_SECONDS = 600
 
 
 def _archive_has_metrics(archive_path) -> bool:
-    """Whether the archive already carries ``_execution/data.db``, from the tar index.
+    """Whether the archive carries derived data, from the tar index alone.
 
-    Postprocessing writes that file and nothing else does, so its presence is the whole
-    raw-versus-postprocessed question -- answerable from the member list, without
-    extracting anything, before the import even starts.
+    Read from postprocessing's provenance record, which is what says a campaign has been
+    postprocessed now that the rows go to the central index. Answerable from the member
+    list, without extracting anything, before the import even starts.
+
+    It used to look for ``_execution/data.db``. That file is not written any more, so the
+    answer became permanently "no" and every archive was announced as raw -- the same
+    inversion that made the import re-postprocess archives which arrived complete. Matched
+    on the member list only: whether the record has ENTRIES needs its bytes, and the
+    difference (a campaign that ran postprocessing and derived nothing) is not worth
+    reading the archive twice for. The chain that follows re-asks properly with
+    ``campaign_has_derived_data``.
     """
     import tarfile  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.campaign_data import \
+        POSTPROCESSING_RECORD  # pylint: disable=import-outside-toplevel
     try:
         with tarfile.open(archive_path, "r:*") as tar:
-            return any(name.endswith("/_execution/data.db") for name in tar.getnames())
+            return any(name.endswith("/" + POSTPROCESSING_RECORD)
+                       for name in tar.getnames())
     except (tarfile.TarError, OSError):
         # Unreadable is not "postprocessed"; the extraction that follows will say so
         # properly, and until then the safe answer is the one that runs postprocessing.
@@ -1373,15 +1385,22 @@ class LocalTransport(RobovastInterface):
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
         """Chain postprocessing when the imported campaign has none of its own.
 
-        ``_execution/data.db`` is postprocessing's output and nothing else writes it, so its
-        absence is the question already answered: this archive is a raw one -- what the
-        share holds -- and a campaign with no metric tables is not one anybody can ask
-        anything. A postprocessed archive is left exactly as it arrived.
+        Asked of postprocessing's provenance record, which is what says a campaign has
+        derived data now that the rows go to the central index.
+
+        It used to ask whether ``_execution/data.db`` existed. That file no longer exists
+        anywhere, so the test was permanently false and EVERY import re-postprocessed --
+        including archives that arrived complete, whose rows the import had just finished
+        ingesting. On a cluster that also dispatched the rosbag steps into the service pod,
+        where there is no Docker to run them.
         """
         from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
             record_step_outcome, reconstruct_status_from_disk)
 
-        if (target / "_execution" / "data.db").exists():
+        from robovast.common.campaign_data import \
+            campaign_has_derived_data  # pylint: disable=import-outside-toplevel
+
+        if campaign_has_derived_data(target):
             logger.info("%s arrived postprocessed; nothing to compute", campaign_id)
         else:
             logger.info("%s arrived raw; running postprocessing", campaign_id)
@@ -4004,12 +4023,47 @@ class LocalTransport(RobovastInterface):
             raise RuntimeError(
                 f"Campaign {campaign_id!r} is still running; stop it before deleting.")
 
+    def _forget_in_index(self, campaign_id: str) -> None:
+        """Drop the campaign's rows from the central index. Shared by every lane.
+
+        Deleting a campaign has to reach the index, or the index outlives what it
+        describes: rows are derived, and a derived copy that survives its source is worse
+        than none -- it answers questions about a campaign nobody can reach or check, with
+        nothing left to compare against.
+
+        It also removes the ingest registry entry, so the campaign reads as *never
+        ingested* rather than as ingested-and-empty. Those are different answers, and only
+        one of them is true after a delete.
+
+        Never raises. A delete that removed the campaign's data but reported failure
+        because the index was unreachable would invite a retry against a campaign that is
+        already gone; the orphaned rows are re-cleared by the next ingest of that id, and
+        by ``index_scope``'s repair sweep.
+        """
+        from robovast.common import index_db  # pylint: disable=import-outside-toplevel
+        from robovast.common.errors import \
+            IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing import \
+            index_schema  # pylint: disable=import-outside-toplevel
+        try:
+            with index_db.connect() as conn:
+                deleted = index_schema.forget_campaign(conn, campaign_id)
+        except IndexUnreachableError:
+            logger.warning("index unreachable; %s's rows remain indexed", campaign_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("could not remove %s from the index", campaign_id)
+        else:
+            if deleted:
+                logger.info("index: removed %d row(s) for deleted campaign %s",
+                            sum(deleted.values()), campaign_id)
+
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Delete the campaign's directory under the results root (see interface)."""
         self._ensure_deletable(campaign_id)
         campaign_dir = self._campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
         shutil.rmtree(campaign_dir, ignore_errors=True)
+        self._forget_in_index(campaign_id)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
         return ActionResult(
@@ -4123,6 +4177,7 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
+            from robovast.execution.notify import Notifier
             from robovast.execution.status_recovery import record_step_outcome
             handler = None
             try:
@@ -4141,6 +4196,14 @@ class LocalTransport(RobovastInterface):
             state.update(postprocessed=status.postprocessed,
                          postprocessing_error=status.postprocessing_error)
             state.set_phase(Phase.FINISHED)
+            # Same one-shot notifier as a re-triggered share: this op runs from disk with
+            # no live entry to inherit one from, and it reports on a campaign that ended
+            # long ago -- so neither branch is the campaign's terminal message.
+            notifier = Notifier.from_env(request.campaign_id)
+            if ok:
+                notifier.postprocessed()
+            else:
+                notifier.postprocessing_failed(message)
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
@@ -4401,29 +4464,36 @@ class LocalTransport(RobovastInterface):
     def describe_campaign_data(self, campaign_id: str) -> "DataDescribe":
         from robovast.results_processing.data_query import describe_data_db
         from robovast.service.interface import DataDescribe
-        result = describe_data_db(self._query_dir(campaign_id))
+        result = describe_data_db(self._query_dir(campaign_id),
+                                  campaign_id=campaign_id)
         return DataDescribe(campaign_id=campaign_id, **result)
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids=None, max_bytes: int | None = None,
+        max_bytes: int | None = None, campaigns: list | None = None,
     ) -> "DataQueryResult":
+        """Run a read-only ``SELECT`` against *campaign_id*, and only against it.
+
+        The index confines the session to that campaign, so a query that forgets
+        ``WHERE campaign_id = ...`` -- which the web UI's results tree did, and served
+        another campaign's runs with it -- returns this campaign's rows rather than the
+        corpus.
+
+        *campaigns* is the deliberate way out, for the comparison this one index exists to
+        make cheap: name every campaign the query may see and it may see them.
+        """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
-        extra_dirs = {f"c{i + 1}": self._query_dir(cid)
-                      for i, cid in enumerate(extra_campaign_ids or [])}
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
-                               extra_dirs=extra_dirs, max_bytes=max_bytes)
+                               max_bytes=max_bytes, campaigns=campaigns)
         return DataQueryResult(campaign_id=campaign_id, **result)
 
-    def stream_campaign_query_csv(self, campaign_id: str, sql: str,
-                                  extra_campaign_ids=None):
-        # Resolved through _query_dir like the JSON path, so the cluster service's
-        # object-store fetch happens here too rather than needing its own override.
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str):
+        # Resolved through _query_dir like the JSON path, so both lanes name the campaign
+        # the same way rather than this one needing its own override.
         from robovast.results_processing.data_query import stream_query_csv
-        extra_dirs = {f"c{i + 1}": self._query_dir(cid)
-                      for i, cid in enumerate(extra_campaign_ids or [])}
-        return stream_query_csv(self._query_dir(campaign_id), sql, extra_dirs=extra_dirs)
+        return stream_query_csv(self._query_dir(campaign_id), sql,
+                                campaign_id=campaign_id)
 
     def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
         """Local: a query never transfers anything, so there is nothing to warn about.
@@ -4443,8 +4513,8 @@ class LocalTransport(RobovastInterface):
         Locally this is a directory on disk and everything below can share it. On the
         cluster there is no such thing: the campaign lives in the object store, and any
         answer here would have to materialise it. ``ClusterService`` therefore **refuses**
-        this call and each caller states what it needs instead — :meth:`_query_dir` (two
-        databases), :meth:`_config_dir` (the frozen ``.vast``), or
+        this call and each caller states what it needs instead — :meth:`_query_dir` (the
+        campaign a query names), :meth:`_config_dir` (the frozen ``.vast``), or
         :meth:`_whole_campaign_dir` (everything, said out loud).
 
         That refusal is the point. While this method silently answered "the whole
@@ -4474,13 +4544,13 @@ class LocalTransport(RobovastInterface):
         return Path(self._data_dir(campaign_id)) / "_config"
 
     def _query_dir(self, campaign_id: str):
-        """Dir a **query** reads: it needs only ``_execution/data.db`` + ``campaign.db``
-        (see ``data_query._open_db``).
+        """Dir a **query** names. The rows come from the central index; all this has to
+        carry is which campaign is being asked about.
 
-        Locally identical to :meth:`_data_dir`. Separate from it because on the cluster a
-        query needs two objects and the campaign may be terabytes, so ``ClusterService``
-        overrides this one alone. Callers needing more say which more: the frozen config
-        via :meth:`_config_dir`, or everything via :meth:`_whole_campaign_dir`."""
+        Locally identical to :meth:`_data_dir`. Separate from it because ``ClusterService``
+        refuses ``_data_dir`` — there a campaign dir means an object-store transfer, and a
+        query needs none. Callers needing actual files say which: the frozen config via
+        :meth:`_config_dir`, or everything via :meth:`_whole_campaign_dir`."""
         return self._data_dir(campaign_id)
 
     def resolve_data_dir(self, campaign_id: str):
@@ -5015,13 +5085,22 @@ class LocalTransport(RobovastInterface):
             entry.thread is not None and not entry.thread.is_alive())
 
     #: Every file a campaign's summary or reconstructed status is derived from. ``campaign.db``
-    #: carries the run tallies and the mode; ``outcome.json`` the terminal outcome; ``data.db``
-    #: is what ``postprocessed`` is derived from (see _derive_postprocessed). The SQLite
-    #: sidecars are listed because a store in WAL mode commits into ``-wal`` and can leave the
-    #: main file's mtime standing still -- no journal_mode is set today, so this is insurance
-    #: against a later change silently freezing every card rather than a current requirement.
+    #: carries the run tallies and the mode; ``outcome.json`` the terminal outcome;
+    #: ``_transient/postprocessing.yaml`` is what ``postprocessed`` is derived from (see
+    #: :func:`~robovast.common.campaign_data.campaign_has_derived_data`).
+    #:
+    #: This is a stat fingerprint, so an entry that can never exist is worse than a missing
+    #: one: it contributes nothing that can change. It listed ``_execution/data.db`` until
+    #: that file was retired, and the consequence was invisible -- postprocessing finishing
+    #: changed nothing in the tuple, so a card could sit at "not postprocessed" over a
+    #: campaign whose tables were all there, until some unrelated file's mtime moved.
+    #:
+    #: The SQLite sidecars are listed because a store in WAL mode commits into ``-wal`` and
+    #: can leave the main file's mtime standing still -- no journal_mode is set today, so
+    #: this is insurance against a later change silently freezing every card rather than a
+    #: current requirement.
     _REST_FILES = ("campaign.db", "campaign.db-wal", "campaign.db-journal",
-                   "_execution/outcome.json", "_execution/data.db")
+                   "_execution/outcome.json", "_transient/postprocessing.yaml")
 
     def _rest_dir(self, cid: str) -> Optional[Path]:
         """The campaign's record directory **if it is already on local disk**, else ``None``.
@@ -5170,6 +5249,20 @@ class LocalTransport(RobovastInterface):
                 logger.debug("run-row backfill failed for %s: %s", campaign_dir, e)
         if counts is not None and counts["num_runs"] > 0:
             return counts
+        # The index, before the disk walk. A campaign that was IMPORTED is extracted,
+        # ingested, published to the object store and its local copy removed -- so there is
+        # no campaign.db here to read and no directory to walk, and the walk reports zero
+        # runs for a campaign that has two. Its rows are in the index either way, because
+        # importing ingests.
+        #
+        # Below the store rather than above it: campaign.db is this campaign's own record
+        # and is authoritative for what it ran, while the index is a copy of it. They agree
+        # when both exist; when they disagree the file is the one to believe.
+        from robovast.results_processing import \
+            index_query  # pylint: disable=import-outside-toplevel
+        indexed = index_query.run_counts(Path(campaign_dir).name)
+        if indexed is not None:
+            return indexed
         return self._walk_counts(campaign_dir)
 
     @staticmethod

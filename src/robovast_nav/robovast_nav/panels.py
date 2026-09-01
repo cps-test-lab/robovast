@@ -35,7 +35,7 @@ It declares three attributes (duck-typed, like variation types' ``WEB_PREVIEW``)
 
 The panels' React implementation lives in ``robovast_nav/web`` and is built into
 ``WEB_PANEL`` (shipped as package data). Each implements the run view's ``PanelProps``
-contract (``{spec, clock, data}``), so it is time-synced and queries the run's ``data.db``
+contract (``{spec, clock, data}``), so it is time-synced and queries the run's results tables
 exactly like a built-in panel.
 """
 

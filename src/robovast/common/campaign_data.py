@@ -526,46 +526,77 @@ def _is_pullable(image: str) -> bool:
 
 #: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized
 #: beside ``controller.log`` in ``_execution/``. Written on terminal exit so a controller
-#: crash that never builds ``data.db`` still leaves a durable, queryable reason.
+#: crash that never produces derived data still leaves a durable, queryable reason.
 _OUTCOME_FILENAME = "outcome.json"
 
 
-#: SQLite keeps a WAL database's committed-but-uncheckpointed pages in ``<db>-wal`` and its
-#: shared index in ``<db>-shm``, and removes both when the last connection closes; a
-#: rollback-journal database uses ``<db>-journal`` the same way. Their presence therefore
-#: means a writer still holds the database open — which is exactly the difference between
-#: "the results are built" and "the build has started".
-_DATA_DB_SIDECARS = ("-wal", "-shm", "-journal")
+#: Postprocessing's own provenance record, relative to the campaign directory. Written by
+#: ``results_processing.postprocessing`` as the **last** step, after the index ingest, and
+#: by nothing else. Both readers of "is this campaign postprocessed?" -- this module and
+#: ``execution.share_providers.naming`` -- resolve it, so the two cannot disagree.
+POSTPROCESSING_RECORD = "_transient/postprocessing.yaml"
+
+
+def postprocessing_entries(record):
+    """The provenance entries in *record* (the record file's bytes), or ``None`` if absent.
+
+    *record* is ``None`` when the campaign has no such file. A malformed one raises rather
+    than answering: it is postprocessing's own output in a format postprocessing wrote, so a
+    broken one is a real defect, and both silent answers available here would be inventions.
+    """
+    if record is None:
+        return None
+    try:
+        data = yaml.safe_load(record)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{POSTPROCESSING_RECORD} is not readable as YAML: {exc}") from exc
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError(f"{POSTPROCESSING_RECORD} is not a mapping "
+                         f"(got {type(data).__name__}); it is not a provenance record.")
+    entries = data.get("entries") or []
+    if not isinstance(entries, list):
+        raise ValueError(f"{POSTPROCESSING_RECORD} has a non-list 'entries' "
+                         f"({type(entries).__name__}); it is not a provenance record.")
+    return entries
 
 
 def campaign_has_derived_data(campaign_dir) -> bool:
-    """Does this campaign hold a **finished** ``_execution/data.db``?
+    """Has this campaign's postprocessing **finished**, leaving derived data behind?
 
     The single evidence test behind ``Status.postprocessed``, shared by the disk-recovery
-    path and the live-snapshot one so that the same bytes cannot be given two answers.
+    path and the live-snapshot one so that the same campaign cannot be given two answers.
 
-    Existence alone is not that evidence, and reading it as such is a false positive that
-    reads as a clean bill of health. ``build_data_db`` unlinks any previous database and then
-    connects, so the file appears at 0%: a 9 GB build across 1870 runs reported
-    ``postprocessed: true`` for the twenty minutes it was being written, and a *re*-postprocess
-    reports it right through the window where the previous results have already been deleted
-    and the new ones do not exist yet. The sidecars are what tell those apart, and they are
-    deliberate rather than incidental — ``build_data_db`` sets ``journal_mode=WAL`` explicitly
-    and closes the connection from a ``finally``.
+    This used to prove it from a finished ``_execution/data.db``: the file's existence alone
+    was a false positive that read as a clean bill of health -- the builder unlinked the old
+    database and connected, so it appeared at 0%, and a 9 GB build across 1870 runs reported
+    ``postprocessed: true`` for the twenty minutes it was being written. SQLite's WAL and
+    journal sidecars were what told a build in progress from a finished one.
 
-    Errs towards ``False``: a build killed outright leaves its sidecars behind, so a truncated
-    database reads as "no data" rather than as results. That is the recoverable direction —
-    ``run_postprocessing`` rebuilds it from the run directories, which are kept — where the
-    other one hands a reader half a database and calls it the campaign's results.
+    Derived data now lives in the central index, and neither of those props survives: there
+    is no per-campaign file to stat, and querying the index would make a campaign's *status*
+    depend on a service being up -- so a campaign would read as un-postprocessed whenever the
+    index was down, which is a statement about the index, not the campaign.
+
+    What replaces both is **when** the provenance record is written: postprocessing writes it
+    last, after the ingest, so its presence carries the same "finished" guarantee the missing
+    sidecars did. It is read from the campaign directory, so this stays answerable offline and
+    without the index -- the same requirement the archive variant has.
+
+    Errs towards ``False``: a postprocessing run killed part-way has written no record, so it
+    reads as "no data" rather than as results. That is the recoverable direction --
+    ``run_postprocessing`` rebuilds from the run directories, which are kept -- where the
+    other hands a reader a half-built campaign and calls it the campaign's results.
     """
-    data_db = Path(campaign_dir) / "_execution" / "data.db"
+    record_path = Path(campaign_dir) / POSTPROCESSING_RECORD
     try:
-        if not data_db.is_file():
-            return False
-        return not any(data_db.with_name(data_db.name + suffix).exists()
-                       for suffix in _DATA_DB_SIDECARS)
+        record = record_path.read_bytes()
+    except FileNotFoundError:
+        return False
     except OSError:
         return False      # an unreadable record dir is not evidence of results
+    return bool(postprocessing_entries(record))
 
 
 def write_execution_outcome(campaign_root: Path, status) -> None:

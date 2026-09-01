@@ -11,9 +11,11 @@ import types
 
 import pytest
 
-from robovast.execution.cluster_execution.node_governor import (DAEMONSET_NAME, PERFORMANCE,
+from robovast.execution.cluster_execution.node_governor import (ABSENT, DAEMONSET_NAME, FAILED,
+                                                                PERFORMANCE, REMOVED,
                                                                 ensure_cpu_governor,
-                                                                manifest, refusal_message)
+                                                                manifest, refusal_message,
+                                                                remove_daemonset)
 
 
 class _ApiException(Exception):
@@ -44,7 +46,7 @@ class _Apps:
     def replace_namespaced_daemon_set(self, name, namespace, body):
         self.replaced.append(body)
 
-    def delete_namespaced_daemon_set(self, name, namespace):
+    def delete_namespaced_daemon_set(self, name, namespace, body=None):
         self.deleted.append(name)
 
 
@@ -135,7 +137,7 @@ def test_asking_for_nothing_removes_a_previously_configured_daemonset():
 
 def test_removing_one_that_was_never_there_is_not_an_error():
     class _Missing(_Apps):
-        def delete_namespaced_daemon_set(self, name, namespace):
+        def delete_namespaced_daemon_set(self, name, namespace, body=None):
             raise _ApiException(404, "not found")
 
     assert ensure_cpu_governor(_Missing(), "default", False) is False
@@ -165,3 +167,33 @@ def test_a_plain_setup_installs_nothing():
 
 
 # -- per-node calibration default ----------------------------------------------------------
+
+
+# -- teardown ------------------------------------------------------------------------------
+
+def test_cleanup_removes_the_daemonset_not_its_pods():
+    """The pods are owned by the DaemonSet, so deleting them recreates them at once. Only
+    removing the owner ends them -- and foreground propagation means the call does not
+    return before they are going."""
+    apps = _Apps()
+    assert remove_daemonset(apps, "ns1") == REMOVED
+    assert apps.deleted == [DAEMONSET_NAME]
+
+
+def test_cleanup_is_idempotent_when_the_daemonset_is_already_gone():
+    """A teardown must be re-runnable: a 404 is the end state cleanup wanted, not an error."""
+    class _Missing(_Apps):
+        def delete_namespaced_daemon_set(self, name, namespace, body=None):
+            raise _ApiException(404, "not found")
+
+    assert remove_daemonset(_Missing(), "ns1") == ABSENT
+
+
+def test_cleanup_reports_a_failure_rather_than_raising_or_hiding_it():
+    """A teardown must not abandon the remaining objects, and must not claim to have removed
+    what is still running -- the caller prints the difference."""
+    class _Broken(_Apps):
+        def delete_namespaced_daemon_set(self, name, namespace, body=None):
+            raise _ApiException(500, "boom")
+
+    assert remove_daemonset(_Broken(), "ns1") == FAILED

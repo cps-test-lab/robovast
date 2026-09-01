@@ -13,13 +13,14 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
+import { McpToolsPanel } from './McpToolsPanel'
 import { ServiceEventsPanel } from './ServiceEventsPanel'
 import { useDialogs } from '@/components/DialogProvider'
 import { useToasts } from '@/components/ToastProvider'
 import * as browserNotify from '@/lib/browserNotify'
 import { LogPanel } from '@/components/LogPanel'
 import { useActiveView } from '@/lib/activeView'
-import { robovast, type UpgradeInfo } from '@/lib/robovastClient'
+import { robovast, RobovastError, type UpgradeInfo } from '@/lib/robovastClient'
 import { formatAge, formatLocalTime } from '@/lib/time'
 import { ServiceConfigPanel } from './ServiceConfigPanel'
 import { UsageHistoryChart } from './UsageHistoryChart'
@@ -97,6 +98,10 @@ export function AdminPage() {
   // "why did that not work?", which is a question somebody arrives with. Its query is gated
   // on the flag, so an unopened panel costs nothing.
   const [eventsOpen, setEventsOpen] = useState(false)
+  // Collapsed, like the two above: this answers "which tools do agents actually use, and
+  // what happened when they did?", which is a question somebody arrives with rather than
+  // one the page owes on every visit. Its two queries are gated on the flag.
+  const [mcpOpen, setMcpOpen] = useState(false)
 
   // This page is kept mounted once visited, so both readings are gated on it being the one on
   // screen: they then stop while it is not, and are re-read on the way back in — which is the
@@ -151,8 +156,7 @@ export function AdminPage() {
     const live = info.active_campaigns
     const ok = await confirm({
       title: 'Upgrade RoboVAST now?',
-      danger: live.length > 0,
-      confirmLabel: live.length > 0 ? 'Upgrade anyway' : 'Upgrade now',
+      confirmLabel: 'Upgrade now',
       // Written for someone who has never heard of Kubernetes, and kept to three lines:
       // what happens, what it costs, what it does not cover. The image ref is not repeated
       // here -- the `image` field sits directly above this button.
@@ -164,8 +168,10 @@ export function AdminPage() {
           </p>
           {live.length > 0 && (
             <p>
-              <b>{live.length} campaign(s) are still running</b> and will be stopped for
-              good: {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}
+              <b>{live.length} campaign(s) are still running.</b> Their jobs keep running and
+              the replacement re-attaches to them: {live.map((c) => `${c.campaign_id} (${c.phase})`).join(', ')}.
+              If any of them could not be picked up again, the server refuses the restart and
+              says which -- there is nothing to decide here yet.
             </p>
           )}
           <p>
@@ -205,14 +211,42 @@ export function AdminPage() {
 
     setRolling(true)
     try {
-      // `force` is exactly the dialog's answer: the only thing the server refuses is a
-      // roll over live campaigns, and confirming above with campaigns listed IS the
-      // override. Sending it unconditionally would make the server's guard unreachable.
-      await robovast.upgradeService(live.length > 0)
+      // Never `force` on the first attempt. The server refuses (409) only for the campaigns
+      // its own resume planner says the replacement could NOT pick up again -- and a live
+      // campaign is not itself one of those. This page cannot make that call: `active_campaigns`
+      // carries no resumability. So it asks without `force`, which is what makes the guard
+      // reachable at all, and lets the refusal supply the text the override is decided on.
+      await robovast.upgradeService(false)
     } catch (e) {
       setRolling(false)
-      setRollNote(String(e))
-      return
+      if (!(e instanceof RobovastError) || e.status !== 409) {
+        setRollNote(String(e))
+        return
+      }
+      // The one refusal that has an override. Its message names each campaign that would be
+      // lost and why, so it is shown verbatim rather than summarised -- the reason is what
+      // the operator would have to act on, and this page does not know it any other way.
+      const override = await confirm({
+        title: 'Upgrade anyway?',
+        danger: true,
+        confirmLabel: 'Upgrade anyway',
+        message: (
+          <>
+            <p>RoboVAST refused the restart:</p>
+            <p>{e.message}</p>
+            <p>Forcing it stops those campaigns for good.</p>
+          </>
+        ),
+      })
+      if (!override) return
+      setRolling(true)
+      try {
+        await robovast.upgradeService(true)
+      } catch (forced) {
+        setRolling(false)
+        setRollNote(String(forced))
+        return
+      }
     }
     // Watch for the handover rather than trusting the POST: it returns as soon as the roll
     // is asked for. `running_image_digest` reads the newest Running pod, so this answers
@@ -442,6 +476,27 @@ export function AdminPage() {
         {/* Mounted only while open, like the panels around it: the request is made the first
             time somebody asks rather than on every visit. */}
         {eventsOpen ? <ServiceEventsPanel /> : null}
+      </CollapsibleBox>
+
+      <CollapsibleBox
+        open={mcpOpen}
+        onToggle={() => setMcpOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'Every MCP tool call this deployment served \u2014 the ranking, and the calls '
+              + 'behind it with what each was given and what it answered, truncated to a few '
+              + 'lines. Kept in the central index, so it outlives this process but not the '
+              + 'results store.'
+            }
+          >
+            <span>MCP tools</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, like the panels around it. */}
+        {mcpOpen ? <McpToolsPanel active={active} /> : null}
       </CollapsibleBox>
 
       <CollapsibleBox

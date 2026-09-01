@@ -388,10 +388,25 @@ def _campaign_next_step(result: dict) -> str:
     if result.get("stalled") is True:
         return result.get("stall_reason", "")
     if result.get("status") == "finished" and result.get("postprocessed") is False:
-        # A campaign can finish green with no CSVs and no data.db; saying "finished" alone
-        # sends the caller looking for results that were never written.
-        return ("finished, but postprocessing did not run: there are no CSVs and no "
-                "data.db yet. run_postprocessing fixes that without re-running trials")
+        # A campaign can finish green and still have nothing derived; saying "finished"
+        # alone sends the caller looking for results that were never written.
+        #
+        # But "postprocessed is false" covers two states that need opposite actions, and
+        # collapsing them told a reader the wrong one. A step that RAISES leaves the
+        # campaign not-postprocessed while the steps beside it already derived their data
+        # and loaded it: measured on such a campaign, one plugin of four failed and 10252
+        # pose rows, its logs and its behaviour tree were all queryable. Reporting "there
+        # are no CSVs" there is simply false, and it invites re-running everything to
+        # recover what is already there.
+        error = result.get("postprocessing_error")
+        if error:
+            return (f"finished, but postprocessing reported an error: {error}. What the "
+                    f"steps that DID succeed derived is already loaded and queryable "
+                    f"(describe_campaign_data); run_postprocessing re-runs the failed "
+                    f"step without re-running any trial")
+        return ("finished, but postprocessing did not run: nothing was derived from the "
+                "runs yet, so only the campaign's own record (run_view, campaign.*) will "
+                "answer. run_postprocessing fixes that without re-running trials")
     return ""
 
 
@@ -417,7 +432,7 @@ def get_campaign_status(campaign_id: str) -> dict:
 
     ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
     deliverable, so a campaign whose postprocessing failed still finishes, with
-    ``postprocessing_error`` and no CSVs or ``data.db``. ``run_postprocessing`` fixes that
+    ``postprocessing_error``, no CSVs and nothing queryable. ``run_postprocessing`` fixes that
     without re-running anything.
 
     **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
@@ -764,7 +779,7 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     same configuration and perturbs nothing, and a fault that does **not** reproduce there is
     itself the finding that sends you here (contention, a particular draw, a long warm-up).
 
-    **This marks the run as probed** (``runs.probed`` in ``data.db``), recorded before the command
+    **This marks the run as probed** (``runs.probed`` in the results index), recorded before the command
     runs. Confirming a cause is the point; making a wedged run go green is not -- the fix belongs
     in the ``.vast`` and the number to a clean relaunch, with this run dropped.
 

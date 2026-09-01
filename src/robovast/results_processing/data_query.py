@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read-only SQL over a campaign's ``data.db`` — a **directory-based** helper.
+"""Read-only SQL over a campaign's results — a **directory-based** helper.
 
 This is the single implementation of "describe / query a campaign's results",
 parameterized by the campaign **directory** so it serves both callers:
@@ -25,10 +25,16 @@ parameterized by the campaign **directory** so it serves both callers:
   on :class:`~robovast.service.interface.RobovastInterface`), which resolves the
   dir per transport — local disk, or an object-store fetch on the cluster.
 
-Only ``SELECT`` is allowed (a ``sqlite3`` authorizer + ``mode=ro``); the campaign's
-``campaign.db`` is attached read-only as schema ``campaign`` so params/objectives
-join in one query. The ``vast eval gui`` notebook path reads the same ``data.db``
-directly and is unaffected.
+The rows themselves live in the central index now (:mod:`.index_query`), which is why the
+directory is only a *name* here: it identifies the campaign, and that name is what the
+session is scoped to. Scoping is **not** a predicate the caller writes -- the index
+enforces it (:mod:`.index_scope`), because an index holding every campaign turns a
+forgotten ``WHERE campaign_id`` into a silently larger answer rather than an error.
+Spanning campaigns is possible and explicit: pass ``campaigns``. Read-only is enforced by
+the index session rather than by a ``sqlite3`` authorizer. The campaign record is still written by
+the per-campaign ``campaign.db`` (unchanged, still SQLite) and is mirrored into the index
+under a schema literally named ``campaign``, so ``FROM campaign.unit`` -- the spelling
+every existing query and every doc uses -- resolves as it always did.
 """
 
 import json
@@ -70,20 +76,6 @@ _MAX_RESULT_BYTES = 64 * 1024
 
 class DataQueryError(ValueError):
     """No queryable data, or a rejected/invalid query (maps to HTTP 400)."""
-
-
-# Actions a pure read query needs; everything else (INSERT/UPDATE/DELETE/CREATE/
-# DROP/ATTACH/DETACH/PRAGMA-writes/...) is denied by the authorizer.
-_ALLOWED_ACTIONS = {
-    sqlite3.SQLITE_SELECT,
-    sqlite3.SQLITE_READ,
-    sqlite3.SQLITE_FUNCTION,
-    sqlite3.SQLITE_RECURSIVE,
-}
-
-
-def _readonly_authorizer(action, _arg1, _arg2, _dbname, _trigger):
-    return sqlite3.SQLITE_OK if action in _ALLOWED_ACTIONS else sqlite3.SQLITE_DENY
 
 
 def _regexp(pattern: str, value) -> bool:
@@ -209,352 +201,37 @@ def _register_aggregates(conn: sqlite3.Connection) -> None:
     conn.create_function("SQRT", 1, _sqrt)
 
 
-def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
-    """Attach *db_path* read-only under *alias*, best-effort (logs on failure)."""
-    try:
-        conn.execute(f'ATTACH DATABASE ? AS "{alias}"', (f"file:{db_path}?mode=ro",))
-    except sqlite3.Error as e:
-        logger.debug("could not attach %s as %s: %s", db_path, alias, e)
+def open_data_db(campaign_dir, campaign_id: str | None = None):
+    """Open the index **read-only** — the public seam for package-provided endpoints.
 
+    Returns a live connection, as before, so a plugin can read a table untruncated. The
+    caller must ``close()`` it (or use :meth:`RunDataContext.open_db`, which does).
 
-#: Flat views created per attached ``campaign.db``, as ``{name: SQL body}``.
-#:
-#: They exist because every per-run question needs ``run JOIN unit`` (``run_id`` is only
-#: unique *within* a config) and now ``LEFT JOIN job`` for the host record. A forgotten
-#: join does not raise — it silently returns rows from the wrong configs — so the join is
-#: made a property of the schema rather than something the caller has to remember.
-#:
-#: They are **TEMP views on the connection**, not objects in the file, for three reasons:
-#: the store is attached read-only so nothing may be written to it; an existing store
-#: predating the ``job`` table would carry a view referencing a table it does not have;
-#: and defining them here means a change to a view never needs a schema migration. The
-#: cost is that they must be created for each attached alias, which
-#: :func:`_create_campaign_views` does.
-#: Names of the views, in listing order. The bodies are built per store by
-#: :func:`_campaign_view_sql`, which adapts to the tables that store actually has.
-_CAMPAIGN_VIEW_NAMES = ("run_view", "config_view", "container_failure_view")
+    **This is the one contract the move to a central index could not preserve, and it is
+    better to say so than to fake it.** What comes back is a Postgres connection, not a
+    ``sqlite3.Connection``, and the two differ in ways a shim would only paper over
+    briefly: parameters are ``%s`` rather than ``?``, there is no ``sqlite_master`` to
+    probe for a table, and ``CAST(x AS REAL)`` means a 4-byte float here (see
+    :mod:`robovast.results_processing.index_dialect`). An adapter translating those would
+    be a second dialect nobody documented, failing in new ways at the edges.
 
-#: The same treatment for the metrics store (``data.db``, schema ``main``) rather than the
-#: campaign store. Separate because the two are attached independently -- a campaign that has
-#: not been postprocessed has ``campaign`` and no ``main`` tables, and one imported without its
-#: store has the reverse -- so a view over one must not fail to be created because the other
-#: is absent.
-_MAIN_VIEW_NAMES = ("run_validity_view",)
+    So a plugin carrying SQLite SQL breaks **loudly**, with a syntax error naming the
+    problem, rather than quietly returning something plausible. Rows come back as dicts,
+    which is what ``row["timestamp"]`` already assumed.
 
-
-def _tables_in(conn: sqlite3.Connection, schema: str) -> set:
-    """Table names present in an attached *schema*."""
-    try:
-        return {r["name"] for r in conn.execute(
-            f"SELECT name FROM {schema}.sqlite_master WHERE type='table'")}
-    except sqlite3.Error:
-        return set()
-
-
-def _columns_in(conn: sqlite3.Connection, schema: str, table: str) -> set:
-    """Column names of one table in an attached *schema*, empty when it has none.
-
-    Needed beside :func:`_tables_in` because a probe may be added to the sampler at any time,
-    so ``system_usage`` does not have a fixed column set: two campaigns a month apart have
-    different ones, and a view naming a column the older store lacks is created happily and
-    then fails at query time -- taking the columns it COULD have answered down with it.
+One index holds every campaign, so spanning them is a ``WHERE`` clause rather than an
+    attach -- there is nothing left for a caller to open beyond this connection.
     """
-    try:
-        return {r[1] for r in conn.execute(f"PRAGMA {schema}.table_info({table})")}
-    except sqlite3.Error:
-        return set()
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
 
-
-def _campaign_view_sql(schema: str, have: set) -> dict:
-    """``{view_name: SELECT}`` for the tables *schema* actually has.
-
-    A store on disk may predate the ``job`` table — ``data_query`` attaches read-only and
-    so never migrates it — and ``CREATE TEMP VIEW`` does *not* resolve its body, so a view
-    over a missing table is created happily and then fails at query time with a confusing
-    ``no such table: campaign.job``. Hence the tables are checked here instead.
-
-    When ``job`` or ``batch`` is absent its columns are selected as NULL rather than dropped,
-    so ``run_view`` has the **same column set** on every store version: the caller writes one
-    query, and a missing host record (or batch row) reads as NULL instead of as a different
-    schema.
-    """
-    views = {}
-    if {"run", "unit"} <= have:
-        if "job" in have:
-            host = "j.job_dir, j.sysinfo_json"
-            join = f"LEFT JOIN {schema}.job j ON r.job_id = j.id"
-        else:
-            host = "NULL AS job_dir, NULL AS sysinfo_json"
-            join = ""
-        # Which search round proposed this configuration. LEFT JOIN rather than an inner one
-        # even though `unit.batch_id` is NOT NULL: an orphan id would then silently *drop
-        # runs*, the failure class this view exists to prevent. NULL reads as "not recorded",
-        # the rule the host columns above already follow.
-        if "batch" in have:
-            batch = "b.idx AS batch"
-            bjoin = f"LEFT JOIN {schema}.batch b ON u.batch_id = b.id"
-        else:
-            batch = "NULL AS batch"
-            bjoin = ""
-        # A composition-failed unit (a search draw whose parameters could not be
-        # realized) has no `run` rows at all, so the join alone drops it -- and with
-        # it the only record that the draw was ever attempted. It is added back as a
-        # single run-less row: without it a search campaign silently reports itself as
-        # if it had only ever proposed the draws that happened to work. It carries
-        # `batch` too, so a round whose every draw failed to compose is still a round.
-        views["run_view"] = f"""
-            SELECT u.config_name, r.run_id, r.status, r.passed, r.duration_s,
-                   r.errors, r.failures, r.tests, r.start_time, r.failure_message,
-                   u.params_json, u.objective, u.paramset_id, {batch}, {host}
-            FROM {schema}.run r
-            JOIN {schema}.unit u ON r.unit_id = u.id
-            {bjoin}
-            {join}
-            UNION ALL
-            SELECT COALESCE(NULLIF(u.config_name, ''), u.paramset_id) AS config_name,
-                   NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s,
-                   NULL AS errors, NULL AS failures, NULL AS tests,
-                   NULL AS start_time, NULL AS failure_message,
-                   u.params_json, u.objective, u.paramset_id, {batch},
-                   NULL AS job_dir, NULL AS sysinfo_json
-            FROM {schema}.unit u
-            {bjoin}
-            WHERE u.status = 'composition_failed'
-        """
-    if "container_failure" in have:
-        # What a container died of, expanded to one row per RUN it took down, so the
-        # question "which runs were invalidated, and by what?" is one query and joins
-        # straight onto run_view on ``config_name || '/' || run_id``.
-        #
-        # The UNION ALL is the same guard run_view uses for composition_failed units, and
-        # for the same reason: ``json_each('[]')`` yields NO rows, so a failure whose runs
-        # could not be resolved would vanish entirely from the view -- silently, and
-        # exactly in the case where something already went wrong enough that the runner
-        # could not name them.
-        views["container_failure_view"] = f"""
-            SELECT cf.*, je.value AS run_key
-            FROM {schema}.container_failure cf, json_each(cf.runs_json) je
-            UNION ALL
-            SELECT cf.*, NULL AS run_key
-            FROM {schema}.container_failure cf
-            WHERE cf.runs_json IS NULL OR json_array_length(cf.runs_json) = 0
-        """
-    if "campaign" in have:
-        # The .vast as rows. ``atom`` (not ``value``) is load-bearing: it is NULL for
-        # objects and arrays, so a container row cannot return a serialized subtree that
-        # _cap_cell would truncate into a config looking complete but is not. A caller
-        # descends by fullkey instead, and every row stays small.
-        views["config_view"] = f"""
-            SELECT t.fullkey, t.key, t.parent, t.type, t.atom AS value
-            FROM {schema}.campaign c, json_tree(c.config_json) t
-        """
-    return views
-
-
-def _main_view_sql(schema: str, have: set, columns: set = frozenset()) -> dict:
-    """Flat views over the metrics store, keyed by view name.
-
-    One view so far: ``run_validity_view``, which turns the cgroup counters into the
-    question a reader of a campaign actually has -- *was this run a clean observation of
-    the system under test, or partly a measurement of its CPU quota?*
-
-    **``quota_bound`` measures a container hitting its OWN ceiling, not competition.** CFS
-    bandwidth control throttles a cgroup when it exhausts the quota its ``limits.cpu`` buys
-    inside one ~100ms period; a busy neighbour does not cause that. Neighbours show up as
-    scheduling *latency* instead, and the two point opposite ways -- on a contended node a
-    container may never reach its quota, so it throttles less while running worse. Hence
-    ``quota_bound`` rather than a name suggesting it was starved by other work: the remedy
-    is a larger limit, not a quieter cluster.
-
-    **``contended`` is the other half, and it is what makes that latency measurable.** Once a
-    container may reserve less than its limit, "slow because of what it
-    asked for" and "slow because of what else was on the node" are different diagnoses with
-    different remedies, and the throttle counter answers only the first -- so a campaign could
-    report every container clean while the system under test was being crowded out. PSI
-    (``cpu.pressure``) is the counter that says so: ``full`` is time when EVERY task in the
-    cgroup was runnable and none was running. Throttling raises it too, which is why the flag
-    is the residue -- stall above the threshold *without* the container being quota_bound --
-    rather than a reading of the stall column alone. A container can be both; the ceiling is
-    attributed first because its remedy is a line in the campaign's own file.
-
-    It exists because the raw form is a trap in three ways, and every consumer was
-    re-deriving it. ``nr_throttled`` and ``nr_periods`` are **monotonic counters**, so a
-    ``SUM`` over the tick rows is meaningless and a plain ``MAX`` counts whatever the
-    container did before the trial window; the honest reading is a delta within
-    ``in_window``. The *ratio* is what carries meaning, not the count -- ``nr_periods = 0``
-    means no quota was enforced at all, which is a different fact from a quota that was
-    never hit. And the threshold that separates "binding" from "noise" is calibrated
-    (:data:`~robovast.results_processing.advice.THROTTLE_WARN_RATIO`) rather than obvious:
-    a measured 0.79% cost six runs of fifty, so a reader guessing at 1% would have called
-    that campaign clean.
-
-    **It flags, and never filters.** A capped run stays in the results with ``quota_bound =
-    1`` beside it, because a run silently dropped is worse than one labelled honestly --
-    and because throttling is a *screen*, not a verdict: it says a resource explanation is
-    available for a failure, not that the stack misbehaved. Pairing it with the stack's own
-    health signals is what makes it conclusive, and those are per-stack and not known here.
-
-    One row per (run, container), not per run: the SUT is the container whose starvation
-    invalidates a functional result, but the simulator and scenario are visible in the same
-    shape rather than hidden, since a reader comparing them is exactly how one learns that
-    a squeezed simulator cost nothing (its realtime factor held) while a squeezed SUT cost
-    runs.
-    """
-    from .advice import STALL_WARN_RATIO, THROTTLE_WARN_RATIO  # noqa: PLC0415 - import cycle
-
-    views = {}
-    if "system_usage" in have:
-        # Selected as NULL when the sampler that recorded this campaign had no PSI probe --
-        # the same treatment ``_campaign_view_sql`` gives a missing ``job`` table, and for the
-        # same reason: the view keeps ONE column set across store versions, so a reader writes
-        # one query and an older campaign answers "not measured" instead of "no contention".
-        if "cpu_stall_full_usec" in columns:
-            stall_full = ("MAX(cpu_stall_full_usec) - MIN(cpu_stall_full_usec) "
-                          "AS stalled_full_usec")
-        else:
-            stall_full = "NULL AS stalled_full_usec"
-        stall_some = (("MAX(cpu_stall_some_usec) - MIN(cpu_stall_some_usec) "
-                       "AS stalled_some_usec") if "cpu_stall_some_usec" in columns
-                      else "NULL AS stalled_some_usec")
-        views["run_validity_view"] = f"""
-            WITH per_run AS (
-                SELECT config_name, run_id, container,
-                       MAX(nr_periods) - MIN(nr_periods) AS periods,
-                       MAX(nr_throttled) - MIN(nr_throttled) AS throttled,
-                       MAX(throttled_usec) - MIN(throttled_usec) AS throttled_usec,
-                       {stall_some},
-                       {stall_full},
-                       -- The window's own wall span, and the only honest denominator for a
-                       -- stall total: a microsecond count means nothing without the time it
-                       -- was drawn from, exactly as a throttle count means nothing without
-                       -- nr_periods. CAST because the sampler writes the stamp formatted.
-                       (MAX(CAST(wall_ts AS REAL))
-                        - MIN(CAST(wall_ts AS REAL))) * 1000000.0 AS span_usec
-                FROM {schema}.system_usage
-                WHERE in_window = 1 AND nr_periods IS NOT NULL
-                GROUP BY config_name, run_id, container)
-            SELECT config_name, run_id, container, periods, throttled, throttled_usec,
-                   stalled_some_usec, stalled_full_usec,
-                   CASE WHEN periods > 0
-                        THEN CAST(throttled AS REAL) / periods END AS throttle_ratio,
-                   CASE WHEN span_usec > 0 AND stalled_full_usec IS NOT NULL
-                        THEN stalled_full_usec / span_usec END AS stall_ratio,
-                   CASE WHEN periods > 0
-                             AND CAST(throttled AS REAL) / periods >= {THROTTLE_WARN_RATIO}
-                        THEN 1 ELSE 0 END AS quota_bound,
-                   -- Contention is what is LEFT once the container's own ceiling is ruled
-                   -- out. Throttling raises the stall counter too, so the two cannot be
-                   -- separated by subtraction; the ceiling is attributed first because its
-                   -- remedy is a line in the campaign's own file, while this one is not.
-                   -- NULL, not 0, where the probe is absent: silence is not a pass.
-                   CASE WHEN stalled_full_usec IS NULL OR span_usec <= 0 THEN NULL
-                        WHEN stalled_full_usec / span_usec >= {STALL_WARN_RATIO}
-                             AND NOT (periods > 0
-                                      AND CAST(throttled AS REAL) / periods
-                                          >= {THROTTLE_WARN_RATIO})
-                        THEN 1 ELSE 0 END AS contended
-            FROM per_run
-        """
-    return views
-
-
-def _create_campaign_views(conn: sqlite3.Connection, schema: str,
-                           prefix: str = "") -> None:
-    """Create the flat views over *schema* as ``TEMP`` views on this connection.
-
-    *prefix* namespaces them for an extra attached campaign (``c1_run_view``), since temp
-    views share one namespace across the connection.
-
-    A view whose tables are missing is not created at all, so ``describe_data_db`` does not
-    list it and a query naming it fails with ``no such table: run_view`` — the honest
-    report that this store cannot answer that question.
-    """
-    for name, body in _campaign_view_sql(schema, _tables_in(conn, schema)).items():
-        try:
-            conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
-        except sqlite3.Error as e:
-            logger.debug("could not create view %s%s over %s: %s", prefix, name, schema, e)
-
-
-def _create_main_views(conn: sqlite3.Connection, schema: str, prefix: str = "") -> None:
-    """Create the flat views over the metrics store *schema*, same contract as above.
-
-    Split from :func:`_create_campaign_views` because the two stores are attached
-    independently: a campaign that has not been postprocessed has no ``main`` tables at all,
-    and one whose ``data.db`` is present but whose ``campaign.db`` is not has the reverse.
-    Creating both from one call would tie a view over either store to the presence of the
-    other, and the missing one is exactly when a reader most needs what is there.
-    """
-    for name, body in _main_view_sql(schema, _tables_in(conn, schema),
-                                     _columns_in(conn, schema, "system_usage")).items():
-        try:
-            conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
-        except sqlite3.Error as e:
-            logger.debug("could not create view %s%s over %s: %s", prefix, name, schema, e)
-
-
-def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
-    """Open a campaign's queryable databases read-only.
-
-    Prefers ``<campaign_dir>/_execution/data.db`` (the postprocessed metrics). When
-    it is absent — postprocessing has not run, or the campaign is still live — falls
-    back to an empty in-memory ``main`` so ``campaign.db`` (the live store: config,
-    objectives, batch progress) is still reachable rather than raising. Either way
-    ``<campaign_dir>/campaign.db`` is attached read-only as schema ``campaign`` when
-    present, and ``REGEXP`` + the statistical aggregates are registered.
-
-    *extra_dirs* maps a SQL schema alias → another campaign directory; each such
-    campaign's ``data.db`` is attached under that alias (and its ``campaign.db`` as
-    ``<alias>_campaign``), so several campaigns can be compared in one query.
-
-    Raises :class:`DataQueryError` only when the primary campaign has neither database.
-    """
-    campaign_dir = Path(campaign_dir)
-    data_db = campaign_dir / "_execution" / "data.db"
-    campaign_db = campaign_dir / "campaign.db"
-
-    if data_db.exists():
-        conn = sqlite3.connect(f"file:{data_db}?mode=ro", uri=True)
-    elif campaign_db.exists():
-        # No metrics yet, but the live store is queryable via schema `campaign`.
-        conn = sqlite3.connect("file::memory:", uri=True)
-    else:
-        raise DataQueryError(
-            "No data.db or campaign.db found for this campaign. "
-            "Run postprocessing first, or start the campaign.")
-
-    conn.row_factory = sqlite3.Row
-    conn.create_function("REGEXP", 2, _regexp)
-    _register_aggregates(conn)
-    if campaign_db.exists():
-        _attach_ro(conn, campaign_db, "campaign")
-        _create_campaign_views(conn, "campaign")
-    # Unconditional: `main` is either the real data.db or the empty in-memory stand-in above,
-    # and the view is simply not created when the store has no system_usage table.
-    _create_main_views(conn, "main")
-    for alias, other in (extra_dirs or {}).items():
-        other = Path(other)
-        other_data = other / "_execution" / "data.db"
-        if other_data.exists():
-            _attach_ro(conn, other_data, alias)
-            _create_main_views(conn, alias, prefix=f"{alias}_")
-        other_campaign = other / "campaign.db"
-        if other_campaign.exists():
-            _attach_ro(conn, other_campaign, f"{alias}_campaign")
-            _create_campaign_views(conn, f"{alias}_campaign", prefix=f"{alias}_")
-    return conn
-
-
-def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
-    """Open a campaign's queryable databases **read-only** — the public seam.
-
-    Thin public wrapper over the internal opener, for package-provided service endpoints
-    (``robovast.service_endpoints``) that read a campaign's ``data.db``/``campaign.db``
-    directly (e.g. to serve a postprocessed table untruncated). The caller must ``close()``
-    the returned connection (or use :meth:`RunDataContext.open_db`, which does). Raises
-    :class:`DataQueryError` when the campaign has neither database.
-    """
-    return _open_db(campaign_dir, extra_dirs)
+    # The scope the directory carried is real again, and enforced by the index rather
+    # than by the plugin remembering it: this connection sees only one campaign's rows,
+    # whatever SQL the plugin writes. *campaign_id* is for the caller that already knows
+    # which campaign it serves and whose directory is not the campaign root -- the
+    # endpoint-plugin seam is handed both, and the id it was routed with is the truth.
+    return index_query.open_index(readonly=True, row_factory=True,
+                                  campaigns=[campaign_id or campaign_id_of(campaign_dir)])
 
 
 # What an LLM needs to write a correct query against a table it cannot see: what one row
@@ -606,7 +283,7 @@ _POSE_ORIENTATION = (
 _TABLE_DESCRIPTIONS = {
     ("main", "run_health"): (
         "HOW WELL did each run go, graded by the stack under test rather than by RoboVAST: "
-        "config_name, run_id, check_name, level (ok|warn|error), value, unit, detail, source. "
+        "campaign_id, config_name, run_id, check_name, level (ok|warn|error), value, unit, detail, source. "
         "The scenario's pass/fail says WHETHER; this says HOW WELL, which is what a resource "
         "floor or a reproduction-fidelity question actually needs. "
         "ABSENCE IS NOT A PASS. A run with no row for a check was not checked -- no plugin "
@@ -619,10 +296,14 @@ _TABLE_DESCRIPTIONS = {
         "It NEVER decides pass/fail: run_view.status is the verdict, this grades it. A run "
         "can be level='error' here and passed=1 there, and that is not a contradiction. "
         "Worst level per run: SELECT config_name, run_id, MAX(CASE level WHEN 'error' THEN 2 "
-        "WHEN 'warn' THEN 1 ELSE 0 END) FROM run_health GROUP BY 1,2. "
+        "WHEN 'warn' THEN 1 ELSE 0 END) FROM run_health WHERE campaign_id = <id> "
+        "GROUP BY 1,2. "
         "Pair with run_validity_view to tell a resource artifact from a real fault: "
         "quota_bound=1 AND health degraded means the CPU limit is a live explanation; "
         "quota_bound=1 AND health clean means the clipping cost nothing. "
+        "ONE INDEX HOLDS EVERY CAMPAIGN: always scope with WHERE campaign_id = <id> unless "
+        "you mean to compare campaigns. An unscoped aggregate here reads as this campaign's "
+        "grades and is not. "
         "Join on (config_name, run_id)."),
     ("temp", "run_validity_view"): (
         "WAS THIS RUN A CLEAN OBSERVATION? One row per (run, container) saying whether the "
@@ -698,7 +379,9 @@ _TABLE_DESCRIPTIONS = {
         "did not ask for. "
         "One run: WHERE config_name='goal-1' AND run_id=0. "
         "Pass/fail per config: SELECT config_name, status, COUNT(*) FROM run_view "
-        "GROUP BY 1,2. A run's CPU: json_extract(sysinfo_json,'$.cpu_name'). "
+        "GROUP BY 1,2. A run's CPU: sysinfo_json::jsonb ->> 'cpu_name' (the index is Postgres: "
+        "->> for a JSON field, and the ::jsonb because the column is TEXT; a missing key is "
+        "NULL, not an error). "
         "Per-run metrics: join a metric table on (config_name, run_id). "
         "params_json holds each parameter as the scenario received it, so a file-valued "
         "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
@@ -732,7 +415,8 @@ _TABLE_DESCRIPTIONS = {
         "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.containers.scenario.image'), key, "
         "parent, type, value. value is NULL on 'object' and 'array' rows — descend with "
         "fullkey LIKE '$.execution%' instead of expecting a subtree. Use this to explore; "
-        "when the path is known, json_extract(campaign.config_json,'$.execution.containers.scenario.image') is "
+        "when the path is known, campaign.campaign.config_json::jsonb -> 'execution' -> 'containers' "
+        "-> 'scenario' ->> 'image' is "
         "cheaper. "
         "This is the config AS RUN, with defaults filled in — a defaulted key is "
         "indistinguishable from one the author wrote, and comments and anchors are gone. "
@@ -784,8 +468,8 @@ _TABLE_DESCRIPTIONS = {
         "scenario_timestamps. A run with no rows either had no locatable job artifacts or "
         "shares a job and never wrote test.xml."),
     ("main", "postprocessing_steps"): (
-        "How each table in this data.db was produced. One row per step: plugin, output, "
-        "table_name (the data.db table it became; NULL when the output was not a CSV that "
+        "How each of this campaign's tables was produced. One row per step: plugin, output, "
+        "table_name (the index table it became; NULL when the output was not a CSV that "
         "became a table), sources_json, params_json. "
         "SELECT DISTINCT plugin, params_json FROM postprocessing_steps WHERE "
         "table_name='poses'. Use DISTINCT: a step is recorded once per run. A table with "
@@ -793,8 +477,10 @@ _TABLE_DESCRIPTIONS = {
     ("campaign", "job"): (
         "One row per execution job, holding that job's host record. Several runs can share "
         "one job, so this answers 'did these runs run on the same machine?'. "
-        "sysinfo_json: json_extract(sysinfo_json,'$.cpu_name'), '$.available_cpus', "
-        "'$.platform'. job_dir is campaign-relative. Join campaign.run on job_id — or use "
+        "sysinfo_json is TEXT holding JSON: sysinfo_json::jsonb ->> 'cpu_name', ->> 'available_cpus', "
+        "->> 'platform'. ->> yields TEXT, so cast before comparing a number: "
+        "(sysinfo_json::jsonb ->> 'available_cpus')::int. job_dir is campaign-relative. "
+        "Join campaign.run on job_id — or use "
         "run_view, which already has. NULL sysinfo_json means the job recorded none."),
     ("main", "scenario_timestamps"): (
         "One row per run: when its scenario reached a terminal state, from the first "
@@ -809,7 +495,9 @@ _TABLE_DESCRIPTIONS = {
     ("main", "runs"): (
         "Per-run dimension table: status/passed/duration_s/errors/failures, the "
         "scalar objective, each scenario parameter as a param_* column (non-scalar "
-        "params are JSON-encoded — use json_extract/json_each), and the host it ran on "
+        "params are JSON-encoded TEXT — read a field with param_x::jsonb ->> 'key' or an element "
+        "with param_x::jsonb -> 0, and fan a list out with "
+        "jsonb_array_elements(param_x::jsonb)), and the host it ran on "
         "(node_label — which machine, NULL for a local run; instance_type, cpu_name, "
         "available_cpus, available_mem_bytes — bytes, so "
         "divide by 1024*1024*1024 for GiB). shm_peak_bytes/shm_limit_bytes are the run's "
@@ -837,12 +525,14 @@ _TABLE_DESCRIPTIONS = {
         "campaigns: robovast_version, execution_type (local|cluster), image, "
         "image_revision (the repo@sha256 the runs used), execution_started_at, elapsed_s. "
         "execution_json holds the rest of the execution record "
-        "(json_extract(execution_json,'$.cluster_info'), '$.env'). These are NULL until "
-        "the campaign has executed. Attach another campaign with extra_campaign_ids to ask "
-        "whether two runs used the same image. "
+        "(execution_json::jsonb -> 'cluster_info', -> 'env'; -> keeps the subobject as JSON, "
+        "->> renders it as text). These are NULL until "
+        "the campaign has executed. One row per campaign, so WHERE campaign_id IN (...) "
+        "asks whether two campaigns' runs used the same image. "
         "stop_kind/stop_reason/batches explain why a search terminated. strategy_state is "
         "an opaque BLOB (masked in results). "
-        "config_json is the whole .vast: json_extract(config_json,'$.execution.containers.scenario.image') for "
+        "config_json is the whole .vast, as TEXT: config_json::jsonb -> 'execution' -> 'containers' "
+        "-> 'scenario' ->> 'image' for "
         "a known path, but do NOT 'SELECT config_json' — it exceeds the per-cell limit and "
         "returns truncated. Use config_view to explore it."),
     ("campaign", "batch"): (
@@ -956,130 +646,40 @@ _DESCRIBE_NOTE = (
     "on (config_name, run_id). campaign.db is attached as schema 'campaign'. "
     "Each column is listed as 'name TYPE': numeric CSV columns are stored as "
     "INTEGER/REAL, so compare and ORDER BY them directly. A TEXT column holds text — "
-    "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first, and "
-    "note that a data.db built before typed ingest has TEXT everywhere (rerun "
-    "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
+    "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first. A table's 'column_notes' flags a column whose type "
     "does not tell the whole story — read it before aggregating that column. "
-    "Extra aggregate functions are available beyond SQLite's built-ins: STDDEV, VARIANCE, "
-    "MEDIAN, and PERCENTILE(col, p) where p is 0..100. REGEXP(pattern, col) and SQRT(x) "
-    "are also registered — SQRT is always present here, whereas SQLite's own is a "
-    "compile-time option, so use it for distances rather than assuming."
+    "JSON columns (config_json, execution_json, sysinfo_json, params_json, a non-scalar "
+    "param_* column) are TEXT holding JSON, and this is Postgres — not SQLite, so there is "
+    "no json_extract/json_each/json_tree. Read a field with col::jsonb -> 'a' -> 'b' ->> 'c' "
+    "(-> descends and keeps JSON, ->> ends the path and yields TEXT), index an array 0-based "
+    "with -> 0, and fan one out with jsonb_array_elements(col::jsonb). A missing key is NULL "
+    "rather than an error, and ->> is TEXT — cast it ((col::jsonb ->> 'n')::double precision) "
+    "before comparing or ordering numerically. "
+    "Extra aggregate functions are available: STDDEV, VARIANCE, MEDIAN, and "
+    "PERCENTILE(col, p) where p is 0..100. REGEXP(pattern, col) and SQRT(x) are also "
+    "registered."
 )
 
 
-#: Internal bookkeeping tables in ``data.db``: not results, so not listed as tables —
+#: Internal bookkeeping tables: not results, so not listed as tables —
 #: ``_column_notes`` is folded into the owning table's entry instead.
 _INTERNAL_TABLES = ("_table_name_map", "_column_notes")
 
 
-def _column_notes(conn: sqlite3.Connection, schema: str) -> dict:
-    """``{table: {column: note}}`` from *schema*'s ``_column_notes``.
-
-    Caveats the declared type cannot carry — currently a column that is numeric in
-    some runs and text in others, where an aggregate silently reads the text rows as
-    0. Absent in a ``data.db`` built before typed ingest, which is not an error.
-    """
-    notes: dict[str, dict[str, str]] = {}
-    try:
-        rows = conn.execute(
-            f"SELECT table_name, column_name, note FROM {schema}._column_notes").fetchall()
-    except sqlite3.Error:
-        return notes
-    for r in rows:
-        notes.setdefault(r["table_name"], {})[r["column_name"]] = r["note"]
-    return notes
-
-
-def _list_campaign_views(conn: sqlite3.Connection) -> list[dict]:
-    """The flat views (:func:`_create_campaign_views`), listed **first**.
-
-    They come first deliberately: they are where a caller should start, and a schema dump
-    is read top-down. Reported with schema ``temp`` because that is where they live and
-    what makes ``temp.run_view`` a valid name — they are also reachable unqualified as
-    ``run_view``, which the descriptions say.
-    """
-    views = []
-    try:
-        rows = conn.execute(
-            "SELECT name FROM temp.sqlite_master WHERE type='view' ORDER BY name").fetchall()
-    except sqlite3.Error:
-        return views
-    # Listing order: run_view before config_view, extra-campaign aliases after both.
-    def _order(name: str) -> tuple:
-        for i, base in enumerate(_CAMPAIGN_VIEW_NAMES + _MAIN_VIEW_NAMES):
-            if name == base:
-                return (0, i, name)
-            if name.endswith(f"_{base}"):
-                return (1, i, name)
-        return (2, 0, name)
-
-    for r in sorted((r["name"] for r in rows), key=_order):
-        cols = [f'{c["name"]} {c["type"]}'.strip()
-                for c in conn.execute(f'PRAGMA table_info("{r}")').fetchall()]
-        try:
-            n = conn.execute(f'SELECT COUNT(*) FROM temp."{r}"').fetchone()[0]
-        except sqlite3.Error:
-            n = None
-        entry = {"schema": "temp", "table": r, "columns": cols, "rows": n}
-        desc = _TABLE_DESCRIPTIONS.get(("temp", r))
-        if desc:
-            entry["description"] = desc
-        views.append(entry)
-    return views
-
-
-def _list_tables(conn: sqlite3.Connection) -> list[dict]:
-    """Return ``[{schema, table, columns, rows, description}]`` across attached DBs.
-
-    Each ``columns`` entry is ``"name TYPE"`` (bare ``"name"`` when the column was
-    declared without a type). A table with recorded caveats also carries
-    ``column_notes`` (see :func:`_column_notes`).
-    """
-    tables = _list_campaign_views(conn)
-    # Every attached schema except `temp`, whose views are listed above; keep
-    # `main`/`campaign` first for readability, then extra-campaign aliases in attach order.
-    names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()
-             if r["name"] != "temp"]
-    ordered = [s for s in ("main", "campaign") if s in names]
-    schemas = ordered + [s for s in names if s not in ordered]
-    for schema in schemas:
-        internal = ", ".join(f"'{t}'" for t in _INTERNAL_TABLES)
-        rows = conn.execute(
-            f"SELECT name FROM {schema}.sqlite_master "
-            "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-            f"AND name NOT IN ({internal}) ORDER BY name").fetchall()
-        notes = _column_notes(conn, schema)
-        for tr in rows:
-            name = tr["name"]
-            # "name TYPE" per column: the type is what tells a caller whether a
-            # column can be compared/ordered directly or is text needing a CAST.
-            cols = [f'{r["name"]} {r["type"]}'.strip() for r in conn.execute(
-                f'PRAGMA {schema}.table_info("{name}")').fetchall()]
-            try:
-                n = conn.execute(f'SELECT COUNT(*) FROM {schema}."{name}"').fetchone()[0]
-            except sqlite3.Error:
-                n = None
-            entry = {"schema": schema, "table": name, "columns": cols, "rows": n}
-            desc = _TABLE_DESCRIPTIONS.get((schema, name))
-            if desc:
-                entry["description"] = desc
-            if name in notes:
-                entry["column_notes"] = notes[name]
-            tables.append(entry)
-    return tables
-
-
-def describe_data_db(campaign_dir) -> dict:
+def describe_data_db(campaign_dir, campaign_id: str | None = None) -> dict:
     """Return ``{tables: [{schema, table, columns, rows, description}], note}``.
 
-    Works before postprocessing: when ``data.db`` is absent, the attached
-    ``campaign`` schema (config/objectives/batch progress) is still described.
+    Works before postprocessing: when the campaign has no rows in the index, the
+    attached ``campaign`` schema (config/objectives/batch progress) is still described.
     """
-    conn = _open_db(campaign_dir)
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
+
     try:
-        return {"tables": _list_tables(conn), "note": _DESCRIBE_NOTE}
-    finally:
-        conn.close()
+        return index_query.describe_index(
+            campaign_id or campaign_id_of(campaign_dir))
+    except index_query.IndexQueryError as exc:
+        raise DataQueryError(str(exc)) from exc
 
 
 def _cap_cell(value):
@@ -1090,22 +690,6 @@ def _cap_cell(value):
         return value.encode("utf-8", "replace")[:_MAX_CELL_BYTES].decode(
             "utf-8", "ignore") + f"…<truncated, {len(value)} chars total>"
     return value
-
-
-def _empty_result_note(conn: sqlite3.Connection) -> str:
-    """Explain a 0-row result: list non-empty base tables so a broken JOIN/filter
-    is distinguishable from a genuinely empty dataset."""
-    non_empty = []
-    for t in _list_tables(conn):
-        if t.get("rows"):
-            qualified = t["table"] if t["schema"] == "main" else f'{t["schema"]}.{t["table"]}'
-            non_empty.append(f"{qualified}: {t['rows']}")
-    if not non_empty:
-        return "Query matched 0 rows, and no base table has any rows."
-    return (
-        "Query matched 0 rows. This may be correct, or a filter/JOIN-key mismatch. "
-        "Non-empty tables (rows): " + ", ".join(non_empty) + "."
-    )
 
 
 def _cap_result_size(rows: list, max_bytes: int = _MAX_RESULT_BYTES) -> tuple:
@@ -1126,13 +710,47 @@ def _cap_result_size(rows: list, max_bytes: int = _MAX_RESULT_BYTES) -> tuple:
     return rows, False
 
 
+def campaign_id_of(campaign_dir) -> str:
+    """The campaign a path belongs to, from anywhere inside it.
+
+    The directory name *is* the campaign id, and a caller may hand in the campaign root,
+    one configuration, or one run -- the notebook surface routinely does, and has nothing
+    else to go on.
+
+    **A caller that already knows the id should pass it instead**, and the service does.
+    Deriving it from a path asks the filesystem a question that ingestion has already
+    answered: the rows are in the index, so the campaign needs no directory here at all,
+    and on the cluster lane the "directory" is a cache the service deliberately never
+    fills. Measured: an imported campaign left an EMPTY cache dir, which exists -- so the
+    guard below does not fire -- and carries no ``campaign.db`` to walk up to, so every
+    query against it was refused while its 38838 rows sat in the index.
+    """
+    from robovast.common.analysis.db import (  # pylint: disable=import-outside-toplevel
+        campaign_root)
+
+    path = Path(campaign_dir)
+    if not path.exists():
+        # The cluster lane resolves a query to the campaign's cache dir *without fetching
+        # it* -- there is nothing left to fetch, the rows are in the index -- so the path
+        # names a campaign that has no directory on this machine at all. Walking up for
+        # campaign.db would refuse every such query. A path that does not exist carries no
+        # structure to walk, so its name is the id; an existing path that is not a campaign
+        # still raises below.
+        return path.name
+
+    return campaign_root(path).name
+
+
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
-                  extra_dirs: dict | None = None,
-                  max_bytes: int | None = None) -> dict:
+                  max_bytes: int | None = None, campaigns=None,
+                  campaign_id: str | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
-    *extra_dirs* (schema alias → campaign dir) attaches further campaigns so one
-    query can span several (e.g. an A/B comparison); see :func:`_open_db`.
+    A query spanning campaigns (an A/B comparison, a whole search arm) needs no second
+    handle: every campaign is in the one index. It does need to *say so* -- *campaigns*
+    names the ids the session may see. Without it the session is confined to
+    *campaign_dir*'s campaign by the index itself, because a cross-campaign read reached
+    by forgetting a predicate is indistinguishable from the answer that was wanted.
 
     *max_bytes* overrides :data:`_MAX_RESULT_BYTES`. That default is sized for a caller
     who has to *read* the reply into a context window; a caller that renders it — the run
@@ -1142,46 +760,22 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
 
     Raises :class:`DataQueryError` for a rejected (non-read) or invalid query.
     """
-    conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
-    max_rows = max(1, min(int(max_rows), 5000))
-    max_bytes = _MAX_RESULT_BYTES if max_bytes is None else max(1024, int(max_bytes))
+    # The rows live in the central index now. The signature is unchanged because the
+    # scoping a campaign_dir carried is still real -- it is simply a WHERE clause the
+    # caller writes rather than a file that has to be fetched and opened.
+    from robovast.results_processing import \
+        index_query  # pylint: disable=import-outside-toplevel
+
     try:
-        conn.set_authorizer(_readonly_authorizer)
-        try:
-            cursor = conn.execute(sql)
-        except sqlite3.DatabaseError as e:
-            msg = str(e)
-            if "not authorized" in msg.lower():
-                raise DataQueryError(
-                    f"Only read-only SELECT queries are allowed (rejected: {msg}).") from e
-            raise DataQueryError(f"SQL error: {msg}") from e
-        if cursor.description is None:
-            raise DataQueryError("query returned no result set (only SELECT is supported)")
-        columns = [d[0] for d in cursor.description]
-        fetched = cursor.fetchmany(max_rows + 1)
-        truncated = len(fetched) > max_rows
-        rows = [{c: _cap_cell(v) for c, v in zip(columns, r)}
-                for r in fetched[:max_rows]]
-        rows, size_capped = _cap_result_size(rows, max_bytes)
-        result = {"columns": columns, "row_count": len(rows),
-                  "truncated": truncated or size_capped, "rows": rows}
-        if size_capped:
-            result["note"] = (
-                f"stopped at {len(rows)} rows: the reply reached the "
-                f"{max_bytes // 1024} KB ceiling. Rows are capped separately from "
-                f"size, and a wide table reaches this long before max_rows. Aggregate in "
-                f"SQL (COUNT/AVG/MIN/MAX, GROUP BY) or select the columns you need — or "
-                f"export the whole result as CSV instead of reading it here.")
-        if not rows:
-            conn.set_authorizer(None)  # _empty_result_note runs its own COUNT(*)s
-            result["note"] = _empty_result_note(conn)
-        return result
-    finally:
-        conn.set_authorizer(None)
-        conn.close()
+        return index_query.query_index(
+            sql, max_rows=max_rows, max_bytes=max_bytes,
+            campaign_id=campaign_id or campaign_id_of(campaign_dir),
+            campaigns=campaigns)
+    except index_query.IndexQueryError as exc:
+        raise DataQueryError(str(exc)) from exc
 
 
-def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
+def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
     """Yield the same ``SELECT`` as CSV text, row by row and with **no row cap**.
 
     :func:`query_data_db` clamps to 5000 rows because its result is a JSON payload someone
@@ -1190,25 +784,33 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
     than memory is fine at both ends, and an MCP tool can hand over the URL instead of
     reporting ``truncated`` and leaving the rest unreachable.
 
-    Same authorizer, so it is exactly as read-only as the JSON path — a second query entry
-    point must not be a second security decision. Cells are **not** width-capped here: the
+    Same read-only index session as the JSON path, so it is exactly as read-only — a second
+    query entry point must not be a second security decision. Cells are **not** width-capped here: the
     cap exists to keep a JSON reply readable, and truncating an exported value would
     corrupt the export.
     """
     import csv
     import io
 
-    conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
+    from robovast.results_processing import (  # pylint: disable=import-outside-toplevel
+        index_dialect, index_query)
+
+    import psycopg  # pylint: disable=import-outside-toplevel
+
+    # Scoped exactly like the JSON path -- a second query entry point must not be a second
+    # scoping decision any more than it is a second read-only decision.
+    conn = index_query.open_index(readonly=True,
+                                  campaigns=[campaign_id
+                                             or campaign_id_of(campaign_dir)])
     try:
-        conn.set_authorizer(_readonly_authorizer)
         try:
-            cursor = conn.execute(sql)
-        except sqlite3.DatabaseError as e:
-            msg = str(e)
-            if "not authorized" in msg.lower():
+            cursor = conn.execute(index_dialect.translate(sql))  # pylint: disable=no-member
+        except psycopg.Error as exc:
+            message = str(exc).strip()
+            if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
                 raise DataQueryError(
-                    f"Only read-only SELECT queries are allowed (rejected: {msg}).") from e
-            raise DataQueryError(f"SQL error: {msg}") from e
+                    f"Only read-only SELECT queries are allowed (rejected: {message}).") from exc
+            raise DataQueryError(f"SQL error: {message}") from exc
         if cursor.description is None:
             raise DataQueryError("query returned no result set (only SELECT is supported)")
 
@@ -1221,7 +823,7 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
             buffer.truncate(0)
             return text
 
-        writer.writerow([d[0] for d in cursor.description])
+        writer.writerow([d.name for d in cursor.description])
         yield _flush()
         while True:
             batch = cursor.fetchmany(1000)
@@ -1230,8 +832,7 @@ def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
             writer.writerows(batch)
             yield _flush()
     finally:
-        conn.set_authorizer(None)
-        conn.close()
+        conn.close()  # pylint: disable=no-member
 
 
 # NOTE: the costmap-frame reader lived here; it moved to ``robovast_nav`` as a

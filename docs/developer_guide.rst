@@ -1264,6 +1264,15 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
    with a cheap authenticated check so a bad configuration fails the pre-flight
    credential check before any batches run.
 
+   Raise :class:`~robovast.execution.share_providers.base.ShareError` for everything
+   the remote or the configuration refuses, and put the setting to change in the
+   message. The share step is best-effort — the campaign keeps its data and finishes
+   either way — so that message is the whole report: it is what the campaign log
+   shows, what ``share_error`` carries into the durable outcome, and what ``vast
+   share`` prints. A ``ShareError`` is recorded without a stack trace for that
+   reason, so a message that only quotes a status code leaves the reader with
+   nothing to act on.
+
 3. **Register the provider** in your package's ``pyproject.toml``:
 
    .. code-block:: toml
@@ -1283,6 +1292,9 @@ Share provider API reference
 .. autoclass:: robovast.execution.share_providers.base.BaseShareProvider
    :members:
    :undoc-members:
+
+.. autoclass:: robovast.execution.share_providers.base.ShareError
+   :members:
 
 .. autoclass:: robovast.execution.share_providers.nextcloud.NextcloudShareProvider
    :members:
@@ -1519,11 +1531,11 @@ listing campaigns is cheap. ``test.xml`` (JUnit, one per run) is the runner's
 on-disk contract; the controller already parses it at record time, so capturing a
 ``run`` row there is free. Pass/fail counts are then one ``GROUP BY status`` over
 ``run`` — no filesystem walk — and are available **live**, before postprocessing.
-The postprocessed ``_execution/data.db`` ``runs`` table is the analytics-wide
-*view* over these rows (joining sysinfo, exploding params into ``param_*``
-columns); ``generate_data_db`` reads outcomes from ``campaign.db.run`` rather than
-re-parsing every ``test.xml``. Heavy per-run measurement data (metric time-series)
-stays in ``data.db`` only — ``campaign.db`` remains the lightweight live store.
+The central index's ``run_view`` is the analytics-wide *view* over these rows
+(joining sysinfo and the unit's params); the ingest mirrors ``campaign.db`` rather
+than re-parsing every ``test.xml``. Heavy per-run measurement data (metric
+time-series) is streamed into the index — ``campaign.db`` remains the lightweight
+live store.
 
 ::
 
@@ -1531,7 +1543,7 @@ stays in ``data.db`` only — ``campaign.db`` remains the lightweight live store
       -> captured live at record time (data already in hand)
     campaign.db.run  operational source of truth — queryable DURING the run
       -> postprocessing joins sysinfo/params/metrics
-    data.db.runs     analytics-ready wide view (param_* columns, metrics) — DERIVED
+    index runs view  analytics-ready wide view (param_* columns, metrics) — DERIVED
 
 .. note::
 
@@ -1661,7 +1673,7 @@ Status: phase and stage
      - Streaming the raw pre-postprocessing archive to the configured share (only when
        ``upload_to_share`` was set).
    * - ``postprocessing``
-     - Chained analysis postprocessing (rosbag→CSV Job + ``data.db``) running.
+     - Chained analysis postprocessing (rosbag→CSV Job + index ingest) running.
    * - ``finished``
      - Done; the campaign is published to the object store. **A post-run step may still
        have failed:** the runs are the deliverable, so a failed upload-to-share or
@@ -1760,7 +1772,7 @@ recorded facts — ``_summary_for``, ``_started_at_for``, ``_description_for``,
 materializes exactly two small objects — ``campaign.db`` and ``_execution/outcome.json``
 — into the campaign's cache dir, after which every inherited reader is correct with no
 second implementation. Deliberately
-a **single-object** fetch (``_materialize``, shared with ``_query_dir``) and never
+a **single-object** fetch (``_materialize``) and never
 ``fetch_campaign``: a 2 KB record must not drag a 1 TB campaign. It is skipped for a
 campaign this process is driving (its driver owns ``campaign.db``), for one whose local dir
 already has it, and for one the index does not list — that last check is what keeps a
@@ -2208,7 +2220,7 @@ descriptor, which ``RemotePreview.tsx`` loads at runtime (sharing the host's Rea
 Built-ins ship no assets; a type with neither shows just the resolved parameters.
 
 **Results viewer** (``frontend/ui/src/pages/results/``): pick a
-campaign, browse its ``data.db`` schema, run read-only SQL, and chart the result with
+campaign, browse its results schema, run read-only SQL, and chart the result with
 **Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
 **promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
@@ -2357,12 +2369,13 @@ table in an existing schema still gets a type of its own, but derives the panel.
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
 ``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
-core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
-``data.db`` table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
+core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes an
+index table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
 points. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
 (``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
 plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
-``ctx.open_db()`` (read-only sqlite over ``data.db``, from the public ``data_query.open_data_db``),
+``ctx.open_db()`` (a read-only connection to the central index, from the public
+``data_query.open_data_db``),
 ``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
 ``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
 resolves the campaign dir through the public ``impl.resolve_data_dir(campaign_id)`` seam, which
@@ -2403,11 +2416,11 @@ Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make t
 Analysis postprocessing: local vs cluster
 -----------------------------------------
 
-``data.db`` (what the eval viewer and ``query_campaign_data_sql`` read) is produced by *analysis*
-postprocessing. It splits along a natural seam: **only the batched ``rosbags_*`` → CSV step needs
-ROS2**; everything after it (``generate_data_db``, metadata) is plain Python.
+The rows ``query_campaign_data_sql`` reads are produced by *analysis* postprocessing. It splits
+along a natural seam: **only the batched ``rosbags_*`` → CSV step needs ROS2**; everything after it
+(the index ingest, metadata) is plain Python.
 
-**What ``generate_data_db`` ingests.** One table per data file, discovered per run directory:
+**What the index ingest reads.** One table per data file, discovered per run directory:
 ``*.csv``, and ``*.jsonl`` for producers that need more than a flat table can express. A JSONL
 file declares its layout in the ``format`` key of its **first record**, and ``_JSONL_READERS``
 maps that to the function turning its records into rows — dispatch on the file's own declaration
@@ -2460,7 +2473,7 @@ driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
   root, i.e. "beside the bag", so the local path is unchanged. The Job then mirrors ``/out``
   wholesale to a ``<campaign_prefix>_postproc/`` staging prefix; no rosbag is ever re-uploaded.
 
-Stage 2 (``data.db`` + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
+Stage 2 (index ingest + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
 skipped (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence.
 
 Two entry points share that one implementation (``postprocess_campaign``):
@@ -2468,7 +2481,7 @@ Two entry points share that one implementation (``postprocess_campaign``):
 * **auto-chain** — the campaign driver, when ``create_campaign(postprocess=True)`` sets
   ``RunOptions.postprocess`` (an option, not a process-global env var, so concurrent campaigns in the
   one service process stay distinct). It runs **after ``store.close()``** (``campaign.db`` must be
-  flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the results ride
+  flushed — the index's ``runs`` table is built from it) and **before ``_finalize``**, so the results ride
   the campaign's existing upload rather than needing one of their own.
 * **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local

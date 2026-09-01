@@ -1,23 +1,21 @@
 // The SQL a panel's `source` binding turns into. Worth a spec although it is one string builder,
 // because every way it can be wrong renders as a *plausible chart* rather than as an error: a
 // dropped GROUP BY key silently deletes whole series, a bad `hz` silently rebuckets the run, and the
-// decimated shape has to stay byte-identical for the prebuilt costmap remote that already uses it.
+// decimated shape has to keep one row per bucket for the prebuilt costmap remote that already uses it.
 import { describe, expect, it } from 'vitest'
-import { buildSeriesSql, DECIMATE_ALIAS } from './dataProvider'
+import { buildSeriesSql } from './dataProvider'
 
 const WHERE = "config_name = 'cfg' AND run_id = 3"
 
 describe('buildSeriesSql', () => {
   it('selects everything in time order, with no aggregate, when nothing is asked of it', () => {
-    const { sql, sentinel } = buildSeriesSql('poses', WHERE, {})
-    expect(sql).toBe(
+    expect(buildSeriesSql('poses', WHERE, {})).toBe(
       `SELECT * FROM "poses" WHERE ${WHERE} ORDER BY CAST("timestamp" AS REAL)`,
     )
-    expect(sentinel).toBeNull()
   })
 
   it('ANDs t0/t1 and match onto the run scope', () => {
-    const { sql } = buildSeriesSql('poses', WHERE, {
+    const sql = buildSeriesSql('poses', WHERE, {
       t0: 1,
       t1: 9.5,
       match: { frame: 'base_link', level: 2 },
@@ -30,46 +28,59 @@ describe('buildSeriesSql', () => {
     )
   })
 
-  // The costmap panel remote (src/robovast_nav/web/) is a prebuilt bundle calling this path. Its SQL
-  // must not move: aggregate aliased back to the time column, so the row shape is undecimated's.
-  it('keeps the columns-given decimation exactly as the remote knows it', () => {
-    const { sql, sentinel } = buildSeriesSql('poses', WHERE, {
+  // The costmap panel remote (src/robovast_nav/web/) is a prebuilt bundle calling this path, so the
+  // decimated row shape is its contract: one row per bucket, carrying the requested columns.
+  it('picks each bucket\'s earliest row when columns are given', () => {
+    const sql = buildSeriesSql('poses', WHERE, {
       columns: ['timestamp', 'position.x', 'position.y'],
       match: { frame: 'base_link' },
       decimate: { hz: 10 },
     })
     expect(sql).toBe(
-      'SELECT "position.x", "position.y", MIN(CAST("timestamp" AS REAL)) AS "timestamp" ' +
+      'SELECT * FROM (SELECT DISTINCT ON (CAST(CAST("timestamp" AS REAL) * 10 AS INTEGER)) ' +
+        '"timestamp", "position.x", "position.y" ' +
         `FROM "poses" WHERE ${WHERE} AND "frame" = 'base_link' ` +
-        'GROUP BY CAST(CAST("timestamp" AS REAL) * 10 AS INTEGER) ' +
+        'ORDER BY CAST(CAST("timestamp" AS REAL) * 10 AS INTEGER), CAST("timestamp" AS REAL)) t ' +
         'ORDER BY CAST("timestamp" AS REAL)',
     )
-    expect(sentinel).toBeNull()
   })
 
-  // The vega panel: an author-written spec may read any column, so `SELECT *` stays and the
-  // deterministic-pick aggregate rides along under an alias the provider strips again.
-  it('hides the aggregate under an alias when the caller wants every column', () => {
-    const { sql, sentinel } = buildSeriesSql('poses', WHERE, { decimate: { hz: 5 } })
+  // The vega panel: an author-written spec may read any column, so `SELECT *` stays. DISTINCT ON
+  // returns the row itself, so nothing has to ride along in it and be stripped again.
+  it('keeps every column when the caller asks for none in particular', () => {
+    const sql = buildSeriesSql('poses', WHERE, { decimate: { hz: 5 } })
     expect(sql).toBe(
-      `SELECT *, MIN(CAST("timestamp" AS REAL)) AS "${DECIMATE_ALIAS}" ` +
+      'SELECT * FROM (SELECT DISTINCT ON (CAST(CAST("timestamp" AS REAL) * 5 AS INTEGER)) * ' +
         `FROM "poses" WHERE ${WHERE} ` +
-        'GROUP BY CAST(CAST("timestamp" AS REAL) * 5 AS INTEGER) ' +
+        'ORDER BY CAST(CAST("timestamp" AS REAL) * 5 AS INTEGER), CAST("timestamp" AS REAL)) t ' +
         'ORDER BY CAST("timestamp" AS REAL)',
     )
-    expect(sentinel).toBe(DECIMATE_ALIAS)
   })
 
-  it('groups by the key first on a multi-keyed table, so no series is thinned away', () => {
-    const { sql } = buildSeriesSql('poses', WHERE, { decimate: { hz: 2, key: 'frame' } })
-    expect(sql).toContain('GROUP BY "frame", CAST(CAST("timestamp" AS REAL) * 2 AS INTEGER)')
+  it('keys by the series column first on a multi-keyed table, so no series is thinned away', () => {
+    const sql = buildSeriesSql('poses', WHERE, { decimate: { hz: 2, key: 'frame' } })
+    expect(sql).toContain(
+      'DISTINCT ON ("frame", CAST(CAST("timestamp" AS REAL) * 2 AS INTEGER))',
+    )
+    expect(sql).toContain(
+      'ORDER BY "frame", CAST(CAST("timestamp" AS REAL) * 2 AS INTEGER), CAST("timestamp" AS REAL)',
+    )
   })
 
   it('honours a non-default time column throughout', () => {
-    const { sql } = buildSeriesSql('nav', WHERE, { timeCol: 'sim_time', decimate: { hz: 4 } })
-    expect(sql).toContain('MIN(CAST("sim_time" AS REAL))')
-    expect(sql).toContain('GROUP BY CAST(CAST("sim_time" AS REAL) * 4 AS INTEGER)')
+    const sql = buildSeriesSql('nav', WHERE, { timeCol: 'sim_time', decimate: { hz: 4 } })
+    expect(sql).toContain('DISTINCT ON (CAST(CAST("sim_time" AS REAL) * 4 AS INTEGER))')
     expect(sql).toContain('ORDER BY CAST("sim_time" AS REAL)')
+  })
+
+  // The time column is what the outer ORDER BY reads out of the subquery, so it has to be selected
+  // even when the binding did not ask for it.
+  it('adds the time column to the inner select when the caller omitted it', () => {
+    const sql = buildSeriesSql('poses', WHERE, {
+      columns: ['position.x'],
+      decimate: { hz: 1 },
+    })
+    expect(sql).toContain('"position.x", "timestamp" FROM "poses"')
   })
 
   // `hz` arrives from a .vast, so every one of these would otherwise be interpolated into the SQL:
@@ -84,7 +95,7 @@ describe('buildSeriesSql', () => {
   )
 
   it('accepts a numeric string for hz, since YAML hands one over', () => {
-    const { sql } = buildSeriesSql('poses', WHERE, { decimate: { hz: '2.5' as unknown as number } })
+    const sql = buildSeriesSql('poses', WHERE, { decimate: { hz: '2.5' as unknown as number } })
     expect(sql).toContain('CAST(CAST("timestamp" AS REAL) * 2.5 AS INTEGER)')
   })
 })

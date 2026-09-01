@@ -99,6 +99,8 @@ def _run_upgrade(before, after, rollout_error=None):
             read_service_config_from_cluster=MagicMock(return_value=("rke2", {})),
             published_url=MagicMock(return_value="https://robovast.example"),
             reconcile_registry_ingress_path=MagicMock(return_value=False),
+            # Reads the live store pod: an unstubbed call reaches a real API server.
+            verify_store_pod_infrastructure=MagicMock(return_value=None),
             deploy_service=MagicMock(),
             wait_for_service_ready=MagicMock(),
             wait_for_rollout=rollout,

@@ -25,12 +25,11 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Callable
 
-import click
 import requests
 
 from .naming import parse_archive_name
 
-from .base import BaseShareProvider, UploadProgressReader
+from .base import BaseShareProvider, ShareError, UploadProgressReader
 
 __all__ = ["NextcloudShareProvider"]
 
@@ -79,7 +78,7 @@ class NextcloudShareProvider(BaseShareProvider):
     ) -> None:
         """Upload *archive_path* to the public Nextcloud share via WebDAV ``PUT``."""
         if not os.path.isfile(archive_path):
-            raise click.UsageError(f"archive not found: {archive_path}")
+            raise ShareError(f"archive not found: {archive_path}")
 
         webdav_url, _ = self._parse_share_url()
         file_url = webdav_url + urllib.parse.quote(object_name, safe="")
@@ -99,11 +98,11 @@ class NextcloudShareProvider(BaseShareProvider):
                 with urllib.request.urlopen(req, timeout=300):  # nosec B310 - configured share URL
                     pass
             except urllib.error.HTTPError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"HTTP {exc.code} uploading {object_name} to Nextcloud: {exc.reason}"
                 ) from exc
             except urllib.error.URLError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"Upload to Nextcloud failed: {exc.reason}") from exc
 
     def upload_archive_stream(self, fileobj, object_name, progress_callback=None) -> None:
@@ -129,11 +128,11 @@ class NextcloudShareProvider(BaseShareProvider):
             with urllib.request.urlopen(req, timeout=None):  # nosec B310 - configured share URL
                 pass
         except urllib.error.HTTPError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"HTTP {exc.code} uploading {object_name} to Nextcloud: {exc.reason}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Upload to Nextcloud failed: {exc.reason}") from exc
 
     # ------------------------------------------------------------------
@@ -187,12 +186,12 @@ class NextcloudShareProvider(BaseShareProvider):
                     headers={"Depth": "0"}, timeout=30,
                 )
         except requests.RequestException as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot reach Nextcloud share at {webdav_url!r}: {exc}\n"
                 "Check network connectivity and ROBOVAST_SHARE_URL."
             ) from exc
         if resp.status_code != 207:
-            raise click.UsageError(
+            raise ShareError(
                 f"Nextcloud share is not accessible (HTTP {resp.status_code}). "
                 "Check ROBOVAST_SHARE_URL points at a public share with "
                 "'Allow upload and editing' enabled."
@@ -227,7 +226,7 @@ class NextcloudShareProvider(BaseShareProvider):
             )
 
         if resp.status_code not in (207,):
-            raise click.UsageError(
+            raise ShareError(
                 f"Nextcloud PROPFIND failed with HTTP {resp.status_code}: {resp.text[:300]}"
             )
 
@@ -322,7 +321,7 @@ class NextcloudShareProvider(BaseShareProvider):
         with self._session() as session:
             resp = session.delete(file_url, timeout=30)
         if resp.status_code not in (200, 204):
-            raise click.UsageError(
+            raise ShareError(
                 f"Nextcloud DELETE failed for '{object_name}': "
                 f"HTTP {resp.status_code}: {resp.text[:300]}"
             )

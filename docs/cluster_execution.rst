@@ -210,6 +210,13 @@ the job node pool when one is configured. Leaving it off is supported: RoboVAST 
 ``cpu_governor_scaling`` warning per campaign, so the effect shows up in the results rather
 than silently.
 
+``vast cluster cleanup`` removes that DaemonSet — the owner, not its pods, which a DaemonSet
+would recreate at once — and says so. **It does not put the nodes back.** The pods do not
+restore the previous governor when they stop, and nothing recorded what it was, so a node
+stays on ``performance`` until something changes it; a reboot returns it to its own
+configured default. On shared hardware that is a real lasting side effect, which is why
+cleanup prints it rather than reporting a clean teardown.
+
 .. warning::
 
    **On a cloud VM this usually cannot work, and the failure is not the one setup detects.**
@@ -478,6 +485,15 @@ To tear everything down after use:
 Cleanup removes the device plugin too, but never the ``nvidia`` RuntimeClass or the host's
 driver and toolkit: those belong to the cluster and its node administrator.
 
+Cleanup deletes named objects rather than the namespace, so what it removes is a list rather
+than a sweep: the campaign Jobs and their pods, the image-warm DaemonSet, buildkitd, the
+``robovast-service`` Deployment and Service, the controller RBAC, the CPU governor DaemonSet,
+the NVIDIA device plugin, and whatever the cluster config's own ``cleanup_cluster`` owns.
+Deliberately kept: the object store (the durable data home), buildkitd's volume claim, the
+node identity labels, and the placement labels — see :ref:`cluster-node-local-storage`, and
+``--forget-placement`` for the last of those. The one thing it cannot undo is the CPU
+governor setting itself; see :ref:`cluster-cpu-governor`.
+
 
 Running Scenarios
 -----------------
@@ -582,7 +598,7 @@ campaign is genuinely over, *after* postprocessing rather than when the last run
 stops, and it carries what the campaign actually produced: the run tally, and any
 postprocessing or upload failure. A campaign whose trials all passed but whose
 postprocessing failed is reported as "finished WITH PROBLEMS" — it has no CSVs
-and no ``data.db``, and reporting that as a clean finish made a campaign with no
+and nothing queryable, and reporting that as a clean finish made a campaign with no
 metrics look identical to a complete one on the one screen nobody re-reads.
 
 Notifications outlive whatever started the campaign, which is what makes them the
@@ -606,8 +622,9 @@ Experiment image builds (registry)
 Agent-built experiment images (a project's :ref:`build section
 <config-containers>`) are built **in-cluster** by a BuildKit Job and pushed to a
 container registry the cluster can pull from. **RoboVAST runs that registry itself**, as
-a second container in the service pod, so there is nothing to configure and no site
-prerequisite: a deployment can always build.
+a container in the ``robovast`` pod ``vast cluster setup`` creates, so there is nothing to
+configure and no site prerequisite: a deployment can always build. See
+:ref:`the-robovast-pod` for why it lives there rather than beside the service.
 
 The registry is published on ``/v2`` of the host the service already answers on, and the
 image prefix *is* that host — ``robovast.example.org/<tag>:<hash>``. That is not a
@@ -761,10 +778,76 @@ buckets, so builds there **require** the deployment's bucket to be configured
 guessed at. In-cluster builds do **not** require external-S3 mode, and enabling them
 never changes how campaign results are stored.
 
+.. _the-robovast-pod:
+
+Where the registry and the index run
+-------------------------------------
+
+``vast cluster setup`` creates one ``robovast`` pod per deployment. Besides the object
+store (MinIO, or nothing at all where campaign data goes to an external bucket) it carries
+two more containers:
+
+``registry``
+   the container registry experiment images are built into, published on ``/v2`` of the
+   service's own Ingress host.
+
+``index``
+   the Postgres holding every campaign's rows — one index, so a query across a search arm
+   is one ``WHERE`` clause rather than a per-campaign database. The service reaches it at
+   ``robovast.<namespace>.svc:5432``; the DSN is assembled from the Service name and the
+   namespace and handed to the service as ``ROBOVAST_INDEX_DSN``.
+
+Both used to be extra containers in the ``robovast-service`` pod. **They are not
+service-lifetime state.** ``robovast-service`` is a Deployment, and every ``vast service
+upgrade`` rolls it — so a version bump of the controller image restarted the registry and
+the database, and both volumes followed the Deployment rather than the cluster. In the
+store pod they are created once at setup, are pinned to the data node with the campaign
+store, and are pinned to the data node with the campaign store. Losing them is
+deliberate and cheap: images are rebuilt on demand, and the index is re-ingested from the
+campaign data.
+
+**The index's volume is an ``emptyDir``, and that is the point.** It shares this pod with
+the object store, whose volume is also an ``emptyDir`` — so the two are destroyed by the
+same event and a derived index can never outlive the results it was derived from. The
+invariant is structural rather than something cleanup has to remember.
+
+It was briefly a ``hostPath``, on the reasoning that a restart should not drop the index
+because re-ingesting a corpus takes hours. That premise was false, and the way it failed
+is worth recording: the object store is itself an ``emptyDir``, so a restart destroys the
+results in the same instant. Re-ingest was not slow, it was impossible. Observed on a live
+deployment — 66 campaigns' directories gone, while the index still served one campaign's
+10448 pose rows. An index that outlives its sources is worse than no index: it answers
+questions about campaigns nobody can reproduce or check, and it answers them confidently.
+
+Note what this makes of the object store: a **transfer buffer**, not the durable home for
+results — which is what ``store_is_node_local``'s comment has said all along. Anything that
+must survive a restart belongs in an archive (``vast share``), not in the store.
+
+All four ports (``s3``, ``console``, ``registry``, ``index``) are on the pod's single
+ClusterIP Service. It already selects exactly this pod, so extra Service objects would
+duplicate the selector and add names that must agree with the DSN and the Ingress rule,
+for no isolation — a ClusterIP is not a security boundary.
+
+**No image ref changed with the registry's move.** The prefix is still the service's
+published host, because an image ref is resolved twice — by BuildKit in a pod and by the
+kubelet on a node — and only a real published name works for both. What moved is the
+Ingress' ``/v2`` backend, from the service's Service to this one. ``vast service upgrade``
+repoints it on a deployment published before the move.
+
+.. warning::
+
+   **An existing cluster does not gain these containers by re-running setup.** The store
+   pod is deliberately kept as it is when it already exists (recreating it would discard
+   the campaign store), so a cluster set up before the move keeps a pod without them.
+   ``vast cluster setup`` and ``vast service upgrade`` both refuse in that state and say
+   so, rather than deploying a service whose ``/v2`` route and index DSN point at
+   containers that are not there. The remedy is ``vast cluster cleanup`` followed by
+   ``vast cluster setup``.
+
 .. _campaign-index-storage:
 
-The campaign index
-~~~~~~~~~~~~~~~~~~
+The campaign index marker
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 One more thing lives in object storage, resolved exactly the same way and for the same
 reason: the **campaign index**, one zero-byte marker per campaign under
@@ -1327,7 +1410,13 @@ The gain is the spread between your fastest and slowest node; on a homogeneous c
 is nothing to recover, and on an unlike one it is bounded by how much of a pod is the system
 under test, whose ceiling calibration does not lower. A matched pair of campaigns — one with
 ``execution.sizing: calibrated``, one with ``fixed``, everything else equal — measures it
-directly, and ``run_health`` says whether the tighter ceilings cost the stack anything.
+directly, and ``run_health`` says whether the tighter ceilings cost the stack anything --
+provided the campaigns declared a check under ``results_processing.health_checks``. Nothing
+runs undeclared, so an empty ``run_health`` for the pair means *not graded*, never *not
+degraded*; that is the same rule as everywhere else in the table. Both campaigns' grades sit
+in the one index, so compare them in one query -- naming both ids in the query call's
+``campaigns`` argument -- rather than expecting a per-campaign database. A query that names
+only one campaign sees only that one, whatever its ``WHERE`` clause says.
 
 **Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
 is what says whether a tighter allocation cost the simulator its pacing, and a campaign whose
@@ -1824,8 +1913,9 @@ Archive names
 ^^^^^^^^^^^^^
 
 ``<campaign-id>.raw.tar.gz`` or ``<campaign-id>.postprocessed.tar.gz``. Nobody is
-asked which: it is read off the campaign (``_execution/data.db`` is postprocessing's
-output and nothing else writes it), so the campaign-end upload and a later
+asked which: it is read off the campaign (``_transient/postprocessing.yaml`` is
+postprocessing's own provenance record, written last and by nothing else), so the
+campaign-end upload and a later
 ``vast share export`` cannot disagree. An archive uploaded before the name carried a
 variant is read as ``raw``, which is what it is.
 

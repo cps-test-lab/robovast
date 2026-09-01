@@ -14,12 +14,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The container registry RoboVAST runs for itself, beside the service.
+"""The container registry RoboVAST runs for itself, in the object-store pod.
 
 Experiment images (a project's ``build:`` section) have to be pushed somewhere the
 cluster can pull them back from. Requiring an external registry made that a site
 prerequisite -- and a site without one could not build at all. This runs one in the
-service pod instead, so a build target always exists.
+``robovast`` pod ``vast cluster setup`` creates (:mod:`.store_pod`), so a build target
+always exists.
+
+**Why not the service pod, where it started.** ``robovast-service`` is a Deployment rolled
+by every ``vast service upgrade``, so the registry restarted on each version bump and its
+blob volume followed the Deployment rather than the cluster. The blobs are what
+already-submitted campaigns are pulled from: they are cluster-lifetime state, created at
+setup and discarded only by ``vast cluster cleanup``.
+
+Moving it changes **no image ref**. The prefix is still the service's published Ingress
+host (see below); what moved is the Ingress' ``/v2`` backend, from the service's Service
+to the store pod's. Push and pull both go on resolving the same public name.
 
 **Why it rides the service's own Ingress rather than a Service DNS name.** An image ref
 is a single string used twice: BuildKit pushes to it from inside a pod (pod network,
@@ -47,10 +58,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 #: The registry listens here inside the pod. Not 5000-on-the-host: nothing publishes this
-#: port directly, it is reached through the Service and the Ingress' ``/v2`` rule.
+#: port directly, it is reached through the store pod's Service and the Ingress' ``/v2``
+#: rule.
 REGISTRY_PORT = 5000
 
-#: Container name inside the robovast-service pod.
+#: Container name inside the store pod.
 REGISTRY_CONTAINER_NAME = "registry"
 
 #: Upstream registry. Pinned to a major tag rather than a digest because it is
@@ -66,6 +78,22 @@ REGISTRY_VOLUME_NAME = "registry-data"
 
 #: Default host path backing the registry when no StorageClass is available.
 DEFAULT_REGISTRY_HOST_PATH = "/var/lib/robovast-registry"
+
+#: What the scheduler reserves for the registry, and what it may grow to.
+#:
+#: The request is deliberately tiny: ``registry:2`` streams uploads and downloads to and
+#: from disk rather than buffering them, and an idle one sits in the low tens of MiB. Every
+#: milli-core requested here is one campaign jobs cannot be admitted against, so this is a
+#: floor rather than a comfortable estimate.
+#:
+#: The memory limit has headroom for concurrent layer transfers but is not open-ended: a
+#: registry that is OOMKilled mid-push fails a build, which is cheap to retry -- unlike the
+#: index, whose failure lands at the end of a campaign. No CPU limit, for the same reason
+#: the index has none: throttling a push is a slow build with no visible cause.
+REGISTRY_RESOURCES = {
+    "requests": {"cpu": "10m", "memory": "32Mi"},
+    "limits": {"memory": "1Gi"},
+}
 
 #: The Ingress path that makes this a registry. The Docker registry API lives at ``/v2/``
 #: by protocol, so routing that prefix to this container is what turns the service's
@@ -88,7 +116,7 @@ def registry_prefix(ingress_host):
 
 
 def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH):
-    """The registry container to run alongside the service in its pod.
+    """The registry container to run in the object-store pod.
 
     *storage_path* is unused here (the volume carries it) and accepted so callers read
     as a pair with :func:`registry_volume`.
@@ -109,6 +137,7 @@ def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH):
         ],
         "volumeMounts": [{"name": REGISTRY_VOLUME_NAME,
                           "mountPath": REGISTRY_DATA_DIR}],
+        "resources": REGISTRY_RESOURCES,
         "readinessProbe": {
             "httpGet": {"path": "/v2/", "port": REGISTRY_PORT},
             "initialDelaySeconds": 2, "periodSeconds": 10},
@@ -121,14 +150,19 @@ def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH):
 def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
     """The volume backing the registry: a PVC when one can be provisioned, else hostPath.
 
-    ``emptyDir`` is not offered. Every upgrade now restarts the pod (see
-    ``service_deploy.RESTART_ANNOTATION``), which with an emptyDir would discard every
-    built image on each version bump -- and campaign Jobs already submitted against those
-    refs would go straight to ImagePullBackOff rather than fail honestly.
+    ``emptyDir`` is not offered: any restart of the store pod would discard every built
+    image, and campaign Jobs already submitted against those refs would go straight to
+    ImagePullBackOff rather than fail honestly. Upgrades no longer restart this pod, but a
+    crash, an eviction and a node reboot still do.
+
+    A claim is still offered here, unlike the index's volume, and the asymmetry is
+    deliberate: losing the index costs a re-ingest of data that still exists in the object
+    store, while losing the blobs strands refs that submitted campaigns are already being
+    pulled from. So a deployment that *has* a StorageClass may put the registry on it.
 
     hostPath is the default because a stock RKE2 cluster ships no StorageClass at all, so
     a PVC there stays Pending forever. It pins the registry's data to one node, which is
-    why the pod carries the ``robovast.io/data-node`` selector
+    why the store pod carries the ``robovast.io/data-node`` selector
     (:mod:`.node_placement`).
     """
     if storage_class:
@@ -181,10 +215,19 @@ def registry_ingress_path():
     Ordered before the catch-all ``/`` rule by the caller. The service itself registers
     no ``/v2`` route, and nginx picks the path before either backend sees the request, so
     the UI's root mount is unaffected.
+
+    The backend is the **store pod's** Service, which is where the registry now runs. One
+    Ingress can front two Services on one hostname -- the rule names a backend per path --
+    so the published name, its certificate and every image ref built from it are unchanged
+    by the move. A deployment created before it carries a ``/v2`` rule pointing at the
+    service's Service, which is a dead route rather than a wrong one; see
+    :func:`service_deploy.registry_ingress_defects`.
     """
+    from . import store_pod  # pylint: disable=import-outside-toplevel
+
     return {
         "path": REGISTRY_INGRESS_PATH,
         "pathType": "Prefix",
-        "backend": {"service": {"name": "robovast-service",
+        "backend": {"service": {"name": store_pod.STORE_SERVICE_NAME,
                                 "port": {"number": REGISTRY_PORT}}},
     }

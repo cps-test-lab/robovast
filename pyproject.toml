@@ -99,6 +99,18 @@ robovast-sim-roqsim = {path = "src/robovast_sim_roqsim", optional = true}
 # capability it can decline. The direction matters and is the whole reason the split is
 # safe -- robovast-client depends on nothing of ours, so this edge cannot become a cycle.
 robovast-client = {path = "src/robovast_client"}
+# The central index driver. Not optional: every campaign's data lives in Postgres now, so
+# a robovast without it can neither ingest nor read -- and pretending otherwise would
+# surface as an ImportError from somewhere deep instead of the one sentence
+# IndexUnreachableError already says.
+#
+# Deliberately NOT in robovast-client. That package exists to run four HTTP verbs in ~30 MB
+# against a service that does the work; a database driver there would be the fourth
+# dependency its own comment refuses without a reason surviving "could the service do this
+# instead?" -- and the service does.
+#
+# The binary wheel so an image needs no libpq or compiler at build time.
+psycopg = {extras = ["binary"], version = "^3.2"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"

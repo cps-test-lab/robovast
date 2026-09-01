@@ -20,11 +20,17 @@ Two sources, chosen by what actually holds the fact, and never by what is easies
 open from here:
 
 **The database.** Trajectories, action feedback and everything derived from them are read
-with SQL over the campaign's ``data.db``, exactly as the core ``results`` plugin reads
-everything else. Postprocessing already ingests each CSV it produces into a table keyed on
-``(config_name, run_id)``, so re-parsing ``poses.csv`` was a second reader of the same
-fact — one that only worked when the run happened to sit on this host's disk, and that
-pulled a whole file to answer a question about eight numbers.
+with SQL over the central index, exactly as the core ``results`` plugin reads everything
+else. Postprocessing already ingests each CSV it produces into a table keyed on
+``(campaign_id, config_name, run_id)``, so re-parsing ``poses.csv`` was a second reader of
+the same fact — one that only worked when the run happened to sit on this host's disk, and
+that pulled a whole file to answer a question about eight numbers.
+
+**Every query here names its campaign.** The index holds one ``poses`` table for the whole
+corpus, so ``(config_name, run_id)`` alone is not a run: two campaigns that both have run 0
+of ``nominal`` merge into one trajectory, and into its distance and its maximum speed. That
+is a plausible wrong number rather than an error, which is why the predicate is not
+optional in any statement below.
 
 **Files, through the address space.** Maps, videos and the resolved scenario parameters are
 artifacts with no table behind them. They are reached by their ``/results/<campaign_id>/…``
@@ -51,6 +57,7 @@ from matplotlib import patches as mpatches
 
 from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import data_access, service_access
+from robovast.results_processing import index_schema
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  # pylint: disable=wrong-import-position,ungrouped-imports
@@ -162,17 +169,33 @@ def _lit(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+#: Schemas whose relations are not metric tables. ``campaign`` mirrors ``campaign.db``
+#: (the dimension record, still SQLite upstream) and ``temp`` is what ``describe`` labels
+#: the index's convenience views. Everything else the describe reports lives in the
+#: connection's own metric schema -- ``public``, or a test's own -- whose *name* this must
+#: not hard-code: it is whatever ``search_path`` points at, and filtering on a fixed name
+#: (``main``, as the sqlite version did) matches nothing and reports every campaign as
+#: having no tables at all.
+_NON_METRIC_SCHEMAS = frozenset({index_schema.CAMPAIGN_SCHEMA, "temp"})
+
+
 def _tables(campaign_id: str) -> dict[str, list[str]]:
-    """``{table_name: [column, …]}`` for the campaign's queryable data.
+    """``{table_name: [column, …]}`` for the metric tables the index can be asked about.
 
     Consulted before every query so a missing table becomes "postprocessing has not run
-    this step" — which names the fix — instead of SQLite's "no such table".
+    this step" — which names the fix — instead of Postgres' "relation does not exist".
+
+    The tables are the index's, not one campaign's: they exist as soon as *any* campaign
+    ingested that stem. Presence is therefore not evidence that this campaign has rows,
+    which is why every caller still scopes its own query and refuses by name when the
+    campaign contributes nothing (see :func:`_require_poses`).
     """
     described = data_access.describe(campaign_id)
     if "error" in described:
         raise NavDataError(described["error"])
     return {t["table"]: [c.split(" ", 1)[0] for c in t.get("columns", [])]
-            for t in described.get("tables", []) if t.get("schema") == "main"}
+            for t in described.get("tables", [])
+            if t.get("schema") not in _NON_METRIC_SCHEMAS}
 
 
 def _require_table(campaign_id: str, name: str, produced_by: str) -> list[str]:
@@ -181,8 +204,8 @@ def _require_table(campaign_id: str, name: str, produced_by: str) -> list[str]:
     if name not in tables:
         available = ", ".join(sorted(tables)) or "(none)"
         raise NavDataError(
-            f"campaign {campaign_id!r} has no {name!r} table, so this cannot be "
-            f"answered. It is created by the {produced_by!r} postprocessing step — "
+            f"the index has no {name!r} table, so this cannot be answered for campaign "
+            f"{campaign_id!r}. It is created by the {produced_by!r} postprocessing step — "
             f"configure it in the .vast and re-run postprocessing with the "
             f"run_postprocessing tool. Tables present: {available}.")
     return tables[name]
@@ -197,8 +220,8 @@ def _find_table(campaign_id: str, patterns: tuple, produced_by: str) -> str:
     if not matches:
         available = ", ".join(sorted(tables)) or "(none)"
         raise NavDataError(
-            f"campaign {campaign_id!r} has no table matching {list(patterns)}, so this "
-            f"cannot be answered. Such a table is created by the {produced_by!r} "
+            f"the index has no table matching {list(patterns)}, so this cannot be "
+            f"answered for campaign {campaign_id!r}. Such a table is created by the {produced_by!r} "
             f"postprocessing step — configure it in the .vast and re-run postprocessing "
             f"with the run_postprocessing tool. Tables present: {available}.")
     return matches[0]
@@ -220,6 +243,9 @@ def _stride_sql(inner: str, order_by: str, limit: int) -> str:
     hundred. ``total_points`` rides along on every row so the reply can state what the
     stride was taken from — a thinned trajectory that does not say so reads as the whole
     one.
+
+    ``GREATEST``, not ``MAX``: in Postgres ``MAX`` is strictly an aggregate, so the sqlite
+    spelling is a syntax error here rather than a stride of one.
     """
     return f"""
         WITH src AS ({inner}),
@@ -227,7 +253,7 @@ def _stride_sql(inner: str, order_by: str, limit: int) -> str:
                             COUNT(*) OVER () AS _n
                      FROM src)
         SELECT * FROM idx
-        WHERE _n <= {limit} OR _i % MAX(1, (_n + {limit} - 1) / {limit}) = 0
+        WHERE _n <= {limit} OR _i % GREATEST(1, (_n + {limit} - 1) / {limit}) = 0
         ORDER BY _i
         LIMIT {limit}
     """
@@ -236,23 +262,37 @@ def _stride_sql(inner: str, order_by: str, limit: int) -> str:
 def _pose_source(campaign_id: str, config_name: str, run_id: int, frame: str) -> str:
     """The ``SELECT`` yielding one run's poses in a frame, typed and named uniformly.
 
-    ``CAST`` is not optional: a ``data.db`` built before typed ingest stores every column
-    as TEXT, where ``MAX`` and ``ORDER BY`` compare lexicographically ('10.02' < '9.5')
-    and would report a wrong maximum without failing.
+    ``campaign_id`` is the first predicate and the least negotiable one: ``poses`` holds
+    every campaign in the corpus, so without it this returns the poses of every campaign
+    that happens to have this configuration and run id, concatenated into one trajectory
+    whose distance and maximum speed are dominated by the jump between them.
 
-    ``t`` is the MEASUREMENT time (``stamp``) when the producer supplied one, falling back to the
-    arrival time. It matters here for one figure in particular: ``max_speed_m_s`` is a
-    ``MAX(distance/dt)``, which structurally selects whichever sample got the smallest ``dt`` --
-    so on an arrival clock it reports the worst quantisation artefact in the run rather than the
-    robot's fastest moment. The distances and the deviation geometry are time-free and unaffected.
+    ``CAST`` is not optional either: a column the ingest could not type -- one campaign
+    writing ``'n/a'`` widens the stem's column to text for everyone -- would otherwise be
+    ordered and maximised lexicographically ('10.02' < '9.5'), a wrong answer that does not
+    fail. It casts to ``double precision`` rather than ``REAL``: Postgres' ``REAL`` is four
+    bytes, which rounds an epoch stamp to tens of seconds while still looking like a time.
+
+    ``t`` is the MEASUREMENT time (``stamp``) when the producer supplied one, falling back to
+    the arrival time. The two are ``COALESCE``d after casting, not before: the columns may
+    have different declared types, and the empty-string idiom the sqlite version used
+    (``NULLIF("stamp", '')``) is both wrong here -- an empty CSV cell is ingested as NULL,
+    never as ``''`` -- and fatal, since ``''`` has no ``double precision`` reading.
+
+    It matters here for one figure in particular: ``max_speed_m_s`` is a ``MAX(distance/dt)``,
+    which structurally selects whichever sample got the smallest ``dt`` -- so on an arrival
+    clock it reports the worst quantisation artefact in the run rather than the robot's
+    fastest moment. The distances and the deviation geometry are time-free and unaffected.
     """
     return f"""
-        SELECT CAST(COALESCE(NULLIF("stamp", ''), "timestamp") AS REAL) AS t,
-               CAST("position.x" AS REAL) AS x,
-               CAST("position.y" AS REAL) AS y,
-               CAST("orientation.yaw" AS REAL) AS yaw
+        SELECT COALESCE(CAST("stamp" AS double precision),
+                        CAST("timestamp" AS double precision)) AS t,
+               CAST("position.x" AS double precision) AS x,
+               CAST("position.y" AS double precision) AS y,
+               CAST("orientation.yaw" AS double precision) AS yaw
         FROM poses
-        WHERE config_name = {_lit(config_name)}
+        WHERE campaign_id = {_lit(campaign_id)}
+          AND config_name = {_lit(config_name)}
           AND CAST(run_id AS INTEGER) = {int(run_id)}
           AND frame = {_lit(frame)}
     """
@@ -276,7 +316,8 @@ def _require_poses(campaign_id: str, config_name: str, run_id: int, frame: str) 
             f"{columns}. This is a different recording than rosbags_tf_to_csv produces.")
     present = _query(campaign_id, f"""
         SELECT DISTINCT frame FROM poses
-        WHERE config_name = {_lit(config_name)}
+        WHERE campaign_id = {_lit(campaign_id)}
+          AND config_name = {_lit(config_name)}
           AND CAST(run_id AS INTEGER) = {int(run_id)}
     """)
     frames = [r["frame"] for r in present]
@@ -489,10 +530,15 @@ def nav_get_action_feedback(
     columns = [c for c in _tables(campaign_id)[table] if not c.startswith("_")]
     limit = max(1, limit)
     quoted = ", ".join(f'"{c}"' for c in columns)
-    order = '"timestamp"' if "timestamp" in columns else "rowid"
+    # Postgres has no ``rowid``, so the sqlite fallback ordering is gone. The stride needs a
+    # deterministic order, not a meaningful one: the recording's own time column when it has
+    # one, else every column, which is the only tie-free ordering available without a physical
+    # row identifier. An unordered stride samples a different subset on each call.
+    order = '"timestamp"' if "timestamp" in columns else quoted
     rows = _query(campaign_id, _stride_sql(
-        f'SELECT {quoted}, rowid FROM "{table}" '
-        f'WHERE config_name = {_lit(config_name)} '
+        f'SELECT {quoted} FROM "{table}" '
+        f'WHERE campaign_id = {_lit(campaign_id)} '
+        f'AND config_name = {_lit(config_name)} '
         f'AND CAST(run_id AS INTEGER) = {int(run_id)}',
         order, limit), limit=limit)
     total = rows[0]["_n"] if rows else 0

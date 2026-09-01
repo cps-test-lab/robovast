@@ -6,7 +6,7 @@ import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
-import { useTheme } from '@mui/material/styles'
+import { useTheme, type Theme } from '@mui/material/styles'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
@@ -33,7 +33,7 @@ import {
 } from '@/lib/eta'
 import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
-import { runMeterFailed, runMeterSegments, runMeterText } from '@/lib/runMeter'
+import { runMeterFailedText, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock, formatLocalTime } from '@/lib/time'
 import { NEUTRAL, withAlpha } from '@/colors'
@@ -106,11 +106,11 @@ function estimateUploadEtaSeconds(upload: UploadProgress): number {
  *  as the one above and a change to either must be made looking at the other.
  *
  *  The track's label follows the campaign's tense (see `runMeterText`): the share done while it
- *  runs, the size of the campaign once it is over. Beside it, the number of runs that failed, and
- *  only when there is one -- red on the bar with no number against it leaves the reader counting
- *  pixels. One color for the whole label: the segments under it already carry the red, and a label
- *  in two colors reads as two labels. The rest -- the counts, the two failure axes apart, the wall
- *  clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
+ *  runs, the size of the campaign once it is over. Beside it, what failed, in that same unit and
+ *  only when there is something -- `28.3% (3.2% x)` on a running campaign, `156 (5 failed)` on a
+ *  finished one (see `runMeterFailedText`). One color for the whole label: the segments under it
+ *  already carry the red, and a label in two colors reads as two labels. The rest -- the counts,
+ *  the two failure axes apart, the wall clock -- is on the hover: a bar 140px wide holds one short label, and the rest is asked of a
  *  single row.
  */
 export function MiniRunMeter({
@@ -134,7 +134,7 @@ export function MiniRunMeter({
   const done = finishedRuns(status, counts)
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
-  const failed = runMeterFailed(status, counts)
+  const failedText = runMeterFailedText(status, counts)
   return (
     // The ring's slot is reserved whether or not there is a ring, so this whole group is a
     // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
@@ -169,7 +169,7 @@ export function MiniRunMeter({
           text={
             <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
               {runMeterText(status, counts)}
-              {failed > 0 ? ` (${failed} failed)` : ''}
+              {failedText ? ` (${failedText})` : ''}
             </Box>
           }
         />
@@ -237,17 +237,9 @@ function SearchRing({
               transform="rotate(-90 20 20)"
               sx={{
                 fill: 'none',
-                // The arc's LENGTH is the budget spent; its COLOUR says whether the budget is
-                // what will actually end the campaign. When a stopping criterion is about to
-                // fire, "67% spent" still implies a third left to run, and it will not be run.
-                // The verdict is the service's (`stopping_soon_report`), never re-derived here.
-                //
-                // Colour alone would be a reserved-status violation, and it is not alone: the
-                // time cell in the same row reads "may stop early" whenever this is set, and
-                // the hover carries the criterion's own sentence.
-                stroke: status.stopping_soon === true
-                  ? theme.palette.warning.main
-                  : theme.palette.secondary.main,
+                // The arc's LENGTH is the budget spent; its COLOUR is the search's state --
+                // see `ringArcRole`.
+                stroke: ringArcPalette(theme, ringArcRole(status)),
                 strokeWidth: stroke,
                 strokeDasharray: `${share} ${100 - share}`,
               }}
@@ -274,6 +266,35 @@ function SearchRing({
       </Box>
     </Tooltip>
   )
+}
+
+/** The role the ring's arc paints in: what the search IS, not how far it got.
+ *
+ *  While the search runs the arc is `info` -- the same blue every in-progress indicator in the
+ *  scheme uses -- so a moving ring reads as "under way" and nothing more. Amber stays reserved for
+ *  the one thing about a live search worth flagging: a stopping criterion about to fire, where
+ *  "67% spent" implies a third left to run that will not be run. That verdict is the service's
+ *  (`stopping_soon_report`), never re-derived here, and colour is not carrying it alone -- the
+ *  time cell in the same row reads "may stop early" and the hover carries the criterion's sentence.
+ *
+ *  Once the campaign is over the arc becomes the OUTCOME, which is what a finished card is read
+ *  for: green when the search finished and found an objective, red when it failed, was stopped or
+ *  crashed, neutral when it ended without ever scoring one (`unknown` -- a driver lost to a service
+ *  restart -- included: that is an absent verdict, not a failed one). `stopping_soon` is dropped
+ *  on a terminal campaign: whether it *was about to* stop early is stale the moment it has stopped.
+ */
+export type RingArcRole = 'info' | 'warning' | 'success' | 'error' | 'neutral'
+
+export function ringArcRole(status: Status): RingArcRole {
+  if (!isTerminalPhase(status.phase)) return status.stopping_soon === true ? 'warning' : 'info'
+  if (status.phase === 'finished') return status.best_objective != null ? 'success' : 'neutral'
+  if (status.phase === 'unknown') return 'neutral'
+  return 'error'
+}
+
+/** The role as a concrete colour: SVG presentation properties do not resolve palette paths. */
+function ringArcPalette(theme: Theme, role: RingArcRole): string {
+  return role === 'neutral' ? NEUTRAL : theme.palette[role].main
 }
 
 /** How a budget row reads on the ring's hover: its unit, its position and its scope.

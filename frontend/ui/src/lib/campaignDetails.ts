@@ -58,7 +58,7 @@ export const DETAILS_CPU_SQL =
 
 /** The containers the `.vast` declares, and the cpu it reserved for each.
  *
- *  From `config_view` (the campaign's own config as `json_tree` rows) rather than
+ *  From `config_view` (the campaign's own config flattened to one row per key) rather than
  *  `runs.available_cpus`: the declared value is literally the line the user will edit, whereas
  *  `available_cpus` is the Kubernetes downward API's report of it, which rounds a fractional
  *  request UP to the next whole core.
@@ -72,8 +72,9 @@ export const DETAILS_CPU_SQL =
  *  rows, isolated by excluding anything with a further dot (LIKE's `%` spans dots, so
  *  `NOT LIKE '….%.%'` is what makes the first pattern mean "one segment deep").
  *
- *  Not `parent = '$.execution.containers'`, which reads like the obvious filter and matches
- *  nothing: `config_view.parent` is `json_tree`'s integer node id, not a path. */
+ *  The `fullkey` filter, not `parent = '$.execution.containers'`: `parent` is the parent's
+ *  fullkey on the Postgres index, but it was an opaque node id on the SQLite view this query
+ *  was written against, so matching on `fullkey` is the spelling that holds either way. */
 export const DETAILS_DECLARED_CPU_SQL =
   "SELECT fullkey, value FROM config_view WHERE " +
   "(fullkey LIKE '$.execution.containers.%' AND fullkey NOT LIKE '$.execution.containers.%.%') " +

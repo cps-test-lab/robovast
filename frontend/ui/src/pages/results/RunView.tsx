@@ -163,7 +163,7 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   )
 }
 
-/** The run capture a panel replays, if any -- the run's own time base, needing no `data.db`.
+/** The run capture a panel replays, if any -- the run's own time base, needing no postprocessed data.
  *
  *  Read straight from the panel specs rather than plumbed up from the panel: the manifest is a small
  *  JSON at a URL the panel is about to fetch anyway, so the browser serves the second read from cache.
@@ -171,7 +171,8 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
  *  A `scene3d` panel counts even when it declares no `capture:` block, which is the documented complete
  *  form of it -- geometry resolves from the world the capture names, so there is nothing to bind. Keying
  *  this on a declared block alone meant the canonical `- scene3d:` fell through to the postprocessed
- *  tables below, and a campaign with no `data.db` -- the case the capture time base exists for -- got no
+ *  tables below, and a campaign with no postprocessed tables -- the case the capture time base exists
+ *  for -- got no
  *  range at all and never animated.
  */
 function capturePathOf(panels: { type: string; config: Record<string, unknown> }[]): string | null {
@@ -277,7 +278,7 @@ export function RunView({
   const bare = !!panels.data?.transport_only
 
   // Discover the timeline range and set it on the clock, in order of authority:
-  //   1. a run capture's own time base -- the run's ground truth, and available with no data.db;
+  //   1. a run capture's own time base -- the run's ground truth, available without postprocessing;
   //   2. an explicit `visualization.timeline` (a sim's own table with a `t` column);
   //   3. the union of the standard postprocessed nav time tables.
   // Depend on scalars rather than object identity, which churns on every panels refetch.
@@ -501,8 +502,8 @@ export function RunView({
         <CircularProgress size={24} />
       ) : noData ? (
         <Alert severity="info" variant="outlined">
-          This campaign has no store to read: no <code>campaign.db</code> and no{' '}
-          <code>data.db</code>, so it either never started or ended before recording anything.
+          This campaign has no store to read: no <code>campaign.db</code>, so it either never
+          started or ended before recording anything.
         </Alert>
       ) : !provider ? (
         <Alert severity="info" variant="outlined">

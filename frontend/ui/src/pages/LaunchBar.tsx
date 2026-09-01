@@ -53,7 +53,9 @@ export function LaunchBar() {
   const [description, setDescription] = useState('')
   const [runs, setRuns] = useState(1)
   const [postprocess, setPostprocess] = useState(true)
-  const [uploadToShare, setUploadToShare] = useState(true)
+  // Off by default: uploading streams the campaign to an external share, which is a
+  // deliberate act of publication rather than a step of running one.
+  const [uploadToShare, setUploadToShare] = useState(false)
   const [configPath, setConfigPath] = useState('')
   const [showOptions, setShowOptions] = useState(false)
 

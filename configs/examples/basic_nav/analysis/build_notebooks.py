@@ -83,7 +83,7 @@ def status_overview(scope: str) -> str:
     """Cell: the pass/fail table, which every scope shows the same way."""
     return f"""\
 # Pass/fail comes from each run's test.xml, the one artifact every run writes -- so this
-# table is populated even when postprocessing failed and data.db is absent.
+# table is populated even when postprocessing failed and the campaign is not in the index.
 statuses = read_run_statuses(DATA_DIR)
 if statuses.empty:
     note('no test.xml under DATA_DIR - has any run finished?')

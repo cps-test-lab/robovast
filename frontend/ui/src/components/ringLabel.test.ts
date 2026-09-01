@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { ringLabel, ringLabelField, ringLabelWidth } from './StatusView'
+import { ringArcRole, ringLabel, ringLabelField, ringLabelWidth } from './StatusView'
+import type { Status } from '@/lib/robovastClient'
 
 const CHECK = '\u2713'
 
@@ -55,5 +56,38 @@ describe('ringLabel', () => {
   it('shows the round count when nothing bounds the search', () => {
     // No denominator, so no share -- and no sign either, which the hover disambiguates.
     expect(ringLabel(null, 12)).toBe('12')
+  })
+})
+
+describe('ringArcRole', () => {
+  const status = (over: Partial<Status>): Status =>
+    ({ ...({ phase: 'running', best_objective: null } as unknown as Status), ...over })
+
+  it('is the neutral in-progress blue while the search runs', () => {
+    expect(ringArcRole(status({ phase: 'running' }))).toBe('info')
+  })
+
+  it('keeps amber for the one live thing worth flagging', () => {
+    expect(ringArcRole(status({ phase: 'running', stopping_soon: true }))).toBe('warning')
+  })
+
+  it('drops the stopping-soon amber once the campaign is over', () => {
+    // "about to stop early" is stale on a campaign that has stopped.
+    expect(ringArcRole(status({ phase: 'finished', stopping_soon: true, best_objective: 3 }))).toBe('success')
+  })
+
+  it('reads a finished search by whether it scored an objective', () => {
+    expect(ringArcRole(status({ phase: 'finished', best_objective: 0 }))).toBe('success')
+    expect(ringArcRole(status({ phase: 'finished', best_objective: null }))).toBe('neutral')
+  })
+
+  it('paints a search that did not finish red', () => {
+    for (const phase of ['failed', 'stopped', 'crashed']) {
+      expect(ringArcRole(status({ phase }))).toBe('error')
+    }
+  })
+
+  it('leaves an absent verdict neutral rather than calling it a failure', () => {
+    expect(ringArcRole(status({ phase: 'unknown' }))).toBe('neutral')
   })
 })

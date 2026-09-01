@@ -196,7 +196,8 @@ def test_a_raw_archive_reports_the_analysis_db_as_recoverable(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "campaign_store", "analysis_db"}
+    assert set(report["stages"]) == {"layout", "config", "campaign_store", "index",
+                                     "analysis_db"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -249,3 +250,203 @@ def test_the_export_check_reads_object_keys_as_readily_as_a_tree():
     assert missing_for_import(["_config/nav.vast", "_execution/data.db"]) == []
     # Absence of derived data is not incompleteness: raw is the normal thing to share.
     assert missing_for_import(["_config/nav.vast"]) == []
+
+
+# -- the index stage: importing IS ingesting ---------------------------------
+
+DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
+pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+
+
+def test_an_unreachable_index_degrades_the_import_rather_than_failing_it(
+        campaign, monkeypatch):
+    """The campaign imported fine and its files are intact; only the queryable copy is not.
+
+    Discarding a campaign somebody already has, to keep a boolean clean, is the trade this
+    module refuses everywhere else. But it must not be SILENT either -- a campaign that
+    lists and opens and answers nothing, with no stage saying why, is exactly what this
+    stage exists to make visible.
+    """
+    from robovast.common.errors import IndexUnreachableError
+
+    monkeypatch.setattr("robovast.common.index_db.connect",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")))
+
+    report = ingest_campaign(campaign)
+
+    assert report["ok"] is True, "an unreachable index must not discard the campaign"
+    stage = report["stages"]["index"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    assert "not queryable" in stage["detail"]
+    assert "ROBOVAST_INDEX_DSN" in stage["detail"], "it must name what is wrong"
+
+
+@pg
+def test_importing_a_campaign_loads_its_rows_without_running_postprocessing(
+        campaign, monkeypatch):
+    """An imported campaign must be queryable, and the archive already holds what it takes.
+
+    Before this, the import only REPORTED that the rows were absent and pointed at
+    postprocessing -- which re-runs the plugin pipeline against the campaign's own image to
+    regenerate derived files the archive already carries. Ingestion is not a command a user
+    issues; it happens wherever results arrive, and an import is one of those places.
+    """
+    import psycopg
+
+    from robovast.results_processing import index_schema
+
+    schema = "import_index_test"
+    with psycopg.connect(DSN, autocommit=True) as setup:
+        for stmt in (f"DROP SCHEMA IF EXISTS {schema} CASCADE",
+                     f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE",
+                     f"CREATE SCHEMA {schema}"):
+            setup.execute(stmt)
+    monkeypatch.setenv("ROBOVAST_INDEX_DSN", f"{DSN} options=-csearch_path={schema}")
+
+    run_dir = campaign / "nominal" / "0"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metrics.csv").write_text("value\n1.5\n2.5\n", encoding="utf-8")
+
+    report = ingest_campaign(campaign)
+
+    assert report["stages"]["index"]["verdict"] == STAGE_OK, report["stages"]["index"]
+    with psycopg.connect(f"{DSN} options=-csearch_path={schema}", autocommit=True) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM metrics WHERE campaign_id = %s",
+                            (campaign.name,)).fetchone()[0]
+    assert rows == 2, "the archive's own derived files are what make it queryable"
+
+    with psycopg.connect(DSN, autocommit=True) as teardown:
+        teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        teardown.execute(f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE")
+
+
+def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
+    """A delete that removed the files and left the rows is a half-delete.
+
+    The index would then answer questions about a campaign nobody can reach, re-import or
+    check -- confidently, and with nothing left to compare against. Both lanes go through
+    one helper for exactly this reason: the cluster deletes more places than the local
+    transport, but it is the same index.
+    """
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    forgotten = []
+    monkeypatch.setattr(
+        "robovast.results_processing.index_schema.forget_campaign",
+        lambda conn, cid: forgotten.append(cid) or {"poses": 3})
+    monkeypatch.setattr("robovast.common.index_db.connect",
+                        lambda *a, **k: _NullIndexConn())
+
+    results = tmp_path / "results"
+    cid = "gone-2026-09-01-101500"
+    (results / cid / "_execution").mkdir(parents=True)
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results        # noqa: SLF001
+
+    result = transport.delete_campaign(cid)
+
+    assert result.ok
+    assert forgotten == [cid], "deleting the files must also drop the rows"
+    assert not (results / cid).exists()
+
+
+def test_an_unreachable_index_does_not_fail_a_delete(tmp_path, monkeypatch):
+    """The files are already gone by then.
+
+    Reporting failure would invite a retry against a campaign that no longer exists, and
+    the orphaned rows are re-cleared by the next ingest of that id anyway.
+    """
+    from robovast.common.errors import IndexUnreachableError
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    def _down(*_a, **_k):
+        raise IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")
+
+    monkeypatch.setattr("robovast.common.index_db.connect", _down)
+    results = tmp_path / "results"
+    cid = "gone-2026-09-01-101501"
+    (results / cid / "_execution").mkdir(parents=True)
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results        # noqa: SLF001
+
+    assert transport.delete_campaign(cid).ok
+    assert not (results / cid).exists()
+
+
+class _NullIndexConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monkeypatch):
+    """The predicate used to ask for a file that no longer exists anywhere.
+
+    It tested `_execution/data.db`, postprocessing's old output. Rows go to the central
+    index now, so that test was permanently false and EVERY import re-postprocessed --
+    including archives that arrived complete, whose rows the import had just ingested. On a
+    cluster it also dispatched the rosbag steps into the service pod, which has no Docker.
+    """
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    results = tmp_path / "results"
+    cid = "arrived-2026-09-01-101500"
+    target = results / cid
+    (target / "_execution").mkdir(parents=True)
+    record = target / "_transient" / "postprocessing.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_text(yaml.safe_dump({"entries": [{"plugin": "p", "output": "poses.csv"}]}),
+                      encoding="utf-8")
+
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results             # noqa: SLF001
+    ran = []
+    monkeypatch.setattr(transport, "_postprocess_campaign",
+                        lambda *a, **k: ran.append(a) or (True, ""))
+    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
+
+    transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
+
+    assert not ran, "a campaign that arrived with derived data must not be recomputed"
+
+
+def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
+    """The other half: without the record there is nothing derived, so compute it."""
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+
+    results = tmp_path / "results"
+    cid = "raw-2026-09-01-101501"
+    target = results / cid
+    (target / "_execution").mkdir(parents=True)
+
+    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
+    transport = LocalTransport(store=store)
+    transport._campaigns_root = lambda: results             # noqa: SLF001
+    ran = []
+    monkeypatch.setattr(transport, "_postprocess_campaign",
+                        lambda *a, **k: ran.append(a) or (True, ""))
+    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
+
+    transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
+
+    assert ran, "a raw archive carries no derived data and must be postprocessed"
+
+
+class _State:
+    """The minimum of the live-entry state the import chain writes through."""
+
+    def set_phase(self, *_a, **_k):
+        pass
+
+    def update(self, *_a, **_k):
+        pass

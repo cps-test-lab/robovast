@@ -49,19 +49,34 @@ ERROR_AT = 10
 #: in a packed job, another run's lines entirely -- and ``sim_time`` being non-NULL means the
 #: clock was up, so the stack was actually running against a simulated world. The same two
 #: columns ``resource_usage`` and ``system_usage`` slice on, rather than a rule invented here.
+#:
+#: ``campaign_id`` is the third and least negotiable of them. ``run_log`` in the central index
+#: holds every campaign ever ingested, so without it this counts another campaign's misses and
+#: files them under this one's runs.
 _COUNT_SQL = f"""
     SELECT config_name, run_id, COUNT(*) AS misses
     FROM run_log
-    WHERE in_window = 1
+    WHERE campaign_id = %s
+      AND in_window = 1
       AND sim_time IS NOT NULL
-      AND message LIKE '%{CONTROL_LOOP_MISS}%'
+      AND message LIKE '%%{CONTROL_LOOP_MISS}%%'
     GROUP BY config_name, run_id
 """
 
 #: Every run the campaign has, so a clean run gets a row saying so. Rule 2: ``ok`` is a row
 #: and absence is "not checked" -- a run that never missed and a run whose log was never
 #: converted must not look alike, and only the first is evidence.
-_RUNS_SQL = "SELECT config_name, run_id FROM runs"
+#:
+#: ``run_id IS NOT NULL`` drops the composition-failed rows ``runs`` also carries: those are
+#: draws that never became a run, so there is nothing to grade and a NULL-keyed health row
+#: would join to nothing.
+_RUNS_SQL = ("SELECT config_name, run_id FROM runs "
+             "WHERE campaign_id = %s AND run_id IS NOT NULL")
+
+#: Neither table exists until something produced it. Asked with ``to_regclass`` rather than by
+#: letting the query fail, because on a non-autocommit connection a failed statement aborts
+#: the surrounding transaction and would take the rest of the ingest with it.
+_TABLES_SQL = "SELECT to_regclass('run_log'), to_regclass('runs')"
 
 
 def _level(misses: int) -> str:
@@ -86,18 +101,25 @@ def _detail(misses: int) -> str:
 
 
 class ControlLoopRate:
-    """Counts nav2's control-loop-rate misses per run.
+    """Counts nav2's control-loop-rate misses per run, for one campaign.
 
-    Returns ``[]`` -- not an error -- when the campaign has no ``run_log``. That is a
-    campaign whose logs were never converted, or one that is not a nav2 stack at all, and
-    both mean *not checked*: writing ``ok`` rows for them would be the exact confusion rule 2
-    forbids, a clean bill produced from an absent measurement.
+    Returns ``[]`` -- not an error -- when the index has no ``run_log``. That is a campaign
+    whose logs were never converted, or one that is not a nav2 stack at all, and both mean
+    *not checked*: writing ``ok`` rows for them would be the exact confusion rule 2 forbids,
+    a clean bill produced from an absent measurement.
+
+    **Every statement is scoped to *campaign_id*.** One index holds the whole corpus, so an
+    unscoped query here would grade other campaigns' runs and record them as this one's.
     """
 
-    def __call__(self, conn):
+    def __call__(self, conn, campaign_id):
         try:
-            counts = {(c, r): m for c, r, m in conn.execute(_COUNT_SQL).fetchall()}
-            runs = conn.execute(_RUNS_SQL).fetchall()
+            run_log, runs = conn.execute(_TABLES_SQL).fetchone()
+            if not run_log or not runs:
+                return []
+            counts = {(c, r): m
+                      for c, r, m in conn.execute(_COUNT_SQL, (campaign_id,)).fetchall()}
+            rows = conn.execute(_RUNS_SQL, (campaign_id,)).fetchall()
         except Exception:  # noqa: BLE001 - no run_log/runs table: not checked, not clean
             return []
         return [
@@ -110,5 +132,5 @@ class ControlLoopRate:
                 unit="misses",
                 detail=_detail(counts.get((config_name, run_id), 0)),
             )
-            for config_name, run_id in runs
+            for config_name, run_id in rows
         ]

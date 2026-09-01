@@ -114,6 +114,25 @@ elif [ -e "$LAST_ARG" ]; then
     exit 1
 fi
 
+# Is there a Docker to ask at all? Checked BEFORE anything reads a label, because every
+# question below returns an empty string when the daemon is missing and then blames the
+# IMAGE for it.
+#
+# That misdirection cost two investigations. Run in a cluster pod, which has no Docker, this
+# reported "cannot determine the container protocol version of
+# 'ghcr.io/cps-test-lab/robovast:latest'" -- naming an upstream default nobody had chosen,
+# on a deployment whose images live in a private registry. Both times the registry looked
+# like the fault; both times the real one was that this script cannot run where it ran.
+if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: this script needs a Docker daemon and cannot reach one."
+    echo "  It runs a container directly, so it belongs on a machine with Docker -- not in"
+    echo "  a cluster pod, where rosbag conversion runs as a Job instead."
+    echo "  Reaching this from a campaign means the step was dispatched to the wrong lane:"
+    echo "  the in-pod pass must skip what the Job already does"
+    echo "  (results_processing.postprocessing.ROSBAG_JOB_NAMES)."
+    exit 1
+fi
+
 # Container protocol check, off the image's label -- one `docker inspect`, nothing started.
 if [ -n "$COMPAT_VERSION" ]; then
     MIN_COMPAT_VERSION="${MIN_COMPAT_VERSION:-$COMPAT_VERSION}"

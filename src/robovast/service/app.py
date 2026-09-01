@@ -50,7 +50,9 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
-                                        ListWorkspacesResponse, LogChunk, PanelsSource,
+                                        ListWorkspacesResponse, LogChunk,
+                                        McpCall, McpCalls, McpToolStat, McpToolStats,
+                                        PanelsSource,
                                         UpgradeInfo, UsageHistory, UsageSample,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
@@ -248,6 +250,40 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     _usage_max_points = 360
 
     @asynccontextmanager
+    def _secure_index() -> None:
+        """Bring the index's row-level security up to date, once, at startup.
+
+        Campaigns ingested before the scoping existed carry no policy, and a scoped
+        query refuses to run against an unsecured relation rather than answering with
+        every campaign's rows. Without this, upgrading a deployment that already holds
+        campaigns leaves ALL of them unqueryable until somebody happens to re-run
+        postprocessing -- which is a repair nobody would think to look for, since the
+        campaigns are intact and only the reading of them fails.
+
+        The ingest repairs the index too, so this is the same operation arriving by the
+        other route: whichever happens first, the index ends up secured.
+
+        A failure here is logged and not raised. The service must still start when the
+        index is unreachable -- campaign control, logs and file access do not touch it,
+        and refusing to boot would turn "results are unreadable" into "nothing works".
+        The scoped query path fails loudly on its own, naming this repair, so nothing
+        becomes silently unscoped by skipping it.
+        """
+        from robovast.common import index_db
+        from robovast.common.errors import IndexUnreachableError
+        from robovast.results_processing import index_scope
+        try:
+            with index_db.connect() as conn:
+                secured = index_scope.apply_to_index(conn)
+        except IndexUnreachableError as exc:
+            logger.warning("index not reachable at startup, scoping not applied: %s", exc)
+        except Exception:  # noqa: BLE001 - a repair must not stop the service booting
+            logger.exception("could not apply campaign scoping to the index")
+        else:
+            if secured:
+                logger.info("index: campaign scoping applied to %d relation(s)",
+                            len(secured))
+
     async def _lifespan(_app):
         """Run ``impl.shutdown()`` on service teardown (Ctrl+C on ``vast serve``).
 
@@ -264,6 +300,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         async with AsyncExitStack() as stack:
             if mcp_app is not None:
                 await stack.enter_async_context(mcp_app.lifespan(_app))
+            await anyio.to_thread.run_sync(_secure_index)
             # The usage recorder runs for as long as the app serves. The cancel is
             # registered as a stack callback rather than called after the yield: the
             # ``impl.shutdown()`` below sits lexically inside the task group's cancel
@@ -753,6 +790,92 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return StreamingResponse(
             _sse_log_stream(request, service_log.read, _last_event_offset(request)),
             media_type="text/event-stream", headers=_sse_headers)
+
+    @app.get(Routes.ADMIN_MCP_TOOLS, response_model=McpToolStats, tags=["admin"])
+    def get_mcp_tool_stats() -> McpToolStats:
+        """Which MCP tools get called, how often, and how many of those calls failed.
+
+        The ranking is an aggregate over the call log rather than a counter kept beside it,
+        so it can never disagree with the rows the log below it shows.
+
+        Every registered tool appears, including the ones with no calls at all: a tool
+        nobody chooses costs an agent's context in every session, and an aggregate computed
+        only over calls that happened is exactly the view that cannot show it.
+        """
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import registry, tool_stats  # pylint: disable=import-outside-toplevel
+
+        registered = sorted({name for names in registry.get_plugin_tools().values()
+                             for name in names})
+        window = {"max_age_s": float(tool_stats.MAX_AGE_S), "max_rows": tool_stats.MAX_ROWS}
+        try:
+            stats = tool_stats.LOG.read_stats()
+        except IndexUnreachableError as exc:
+            return McpToolStats(status="index-unreachable", detail=str(exc), **window)
+        seen = {s.tool for s in stats}
+        rows = [McpToolStat(tool=s.tool, calls=s.calls, errors=s.errors, mean_ms=s.mean_ms,
+                            max_ms=s.max_ms, last_at=s.last_at) for s in stats]
+        rows += [McpToolStat(tool=name) for name in registered if name not in seen]
+        return McpToolStats(tools=rows, **window)
+
+    @app.get(Routes.ADMIN_MCP_CALLS, response_model=McpCalls, tags=["admin"])
+    def get_mcp_calls(limit: int = 200, tool: str = "",
+                      failed_only: bool = False) -> McpCalls:
+        """The MCP call log, newest first -- what each call was given and what it answered.
+
+        Arguments and answers are truncated where they are recorded, not here; the cap is
+        ``robovast.mcp_server.tool_stats``.
+        """
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
+
+        try:
+            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+        except IndexUnreachableError as exc:
+            return McpCalls(status="index-unreachable", detail=str(exc))
+        return McpCalls(calls=[McpCall(at=c.at, tool=c.tool, duration_ms=c.duration_ms,
+                                       ok=c.ok, args=c.args, answer=c.answer, actor=c.actor)
+                               for c in calls])
+
+    @app.get(Routes.ADMIN_MCP_CALLS_CSV, tags=["admin"])
+    def export_mcp_calls(limit: int = 2000, tool: str = "", failed_only: bool = False):
+        """The same log as a CSV download -- the repo's one export format.
+
+        It carries what the panel carries, truncation included, and only the retained
+        window: this is an export of the record, not of all history.
+        """
+        import csv  # pylint: disable=import-outside-toplevel
+        import io  # pylint: disable=import-outside-toplevel
+
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+
+        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
+
+        try:
+            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+        except IndexUnreachableError as exc:
+            # A download cannot carry a status field the way the JSON routes do, so the
+            # unreachable index has to be the response rather than an empty file that
+            # reads as "no calls".
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def rows():
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(["at", "tool", "duration_ms", "ok", "args", "answer", "actor"])
+            for call in calls:
+                writer.writerow([call.at, call.tool, round(call.duration_ms, 3), call.ok,
+                                 call.args, call.answer, call.actor])
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+            yield buffer.getvalue()
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return StreamingResponse(
+            rows(), media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="mcp-calls-{stamp}.csv"'})
 
     # -- authoring help (static; config editor) -----------------------------
 
@@ -1367,21 +1490,25 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def query_campaign_data_sql(
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
-        extra_campaign_ids: list[str] = Body(default_factory=list, embed=True),
         max_bytes: int | None = Body(None, embed=True),
+        campaigns: list[str] | None = Body(None, embed=True),
     ) -> DataQueryResult:
-        """Run a read-only ``SELECT``.
+        """Run a read-only ``SELECT``, scoped to ``campaign_id``.
 
         ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
         rather than reading them; omitted, it stays at the context-sized default, so an
         agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+
+        ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
+        whole search arm. It is a parameter rather than the default because the index
+        holds every campaign: a query that spans them by *omission* returns rows of the
+        right shape from the wrong experiment, and nothing about the reply says so.
         """
         return _guard(lambda: impl.query_campaign_data_sql(
-            campaign_id, sql, max_rows, extra_campaign_ids, max_bytes))
+            campaign_id, sql, max_rows, max_bytes, campaigns))
 
     @app.get(Routes.campaign_query_csv("{campaign_id}"), tags=["results"])
-    def query_campaign_data_csv(campaign_id: str, sql: str,
-                                extra_campaign_ids: str = ""):
+    def query_campaign_data_csv(campaign_id: str, sql: str):
         """Stream the same read-only ``SELECT`` as CSV, with no row cap.
 
         The JSON query clamps at 5000 rows and says ``truncated``; this is where the rest
@@ -1389,10 +1516,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         ends, and an MCP tool can hand over this URL instead of spending context on rows.
         """
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
-        extras = [c for c in extra_campaign_ids.split(",") if c]
         # Called inside _guard so a rejected (non-read) query is a 400 with the same
         # message the JSON path gives, rather than a 500 mid-stream.
-        rows = _guard(lambda: impl.stream_campaign_query_csv(campaign_id, sql, extras))
+        rows = _guard(lambda: impl.stream_campaign_query_csv(campaign_id, sql))
         return StreamingResponse(
             rows, media_type="text/csv",
             headers={"Content-Disposition":

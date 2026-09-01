@@ -14,14 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Column typing for the CSV -> SQLite ingest (``data.db``): infer, declare, convert.
+"""Column typing for the CSV -> results-index ingest: infer, declare, convert.
 
 Every value a CSV yields is a string, so a column ingested verbatim lands in a
 ``TEXT`` column and every comparison over it becomes lexicographic. That failure
 is silent and plausible: ``ORDER BY timestamp`` puts ``"10.022"`` before
 ``"9.5"``, so a trajectory comes out shuffled and its path length is wrong by a
 factor, not by an error. This module decides, per column, whether the CSV's own
-values say the column is numeric, and converts them so ``data.db`` stores real
+values say the column is numeric, and converts them so the index stores real
 ``INTEGER``/``REAL`` values and plain SQL means what it says.
 
 The rule is deliberately strict — a column is numeric only if *every* non-empty
@@ -137,6 +137,16 @@ def coerce(value, col_type: str):
     """
     if value is None or value == "":
         return None
+    # A genuine JSON boolean, which only a .jsonl source produces -- `behaviors.jsonl`
+    # carries `is_active`. Stored as 1/0, which is what sqlite3 did with a Python bool
+    # whatever the column's declared type, so the values match what data.db held.
+    #
+    # Not cosmetic: psycopg adapts a bool to Postgres' own `t`/`f` literal, and COPY into
+    # the bigint that `infer_column_types` declares for it (bool IS an int in Python, so
+    # it is judged INTEGER) fails with `invalid input syntax for type bigint: "f"`. That
+    # took down a whole campaign's postprocessing after the runs had already been paid for.
+    if isinstance(value, bool):
+        return int(value)
     if col_type not in (INTEGER, REAL) or not isinstance(value, str):
         return value
     try:
@@ -160,8 +170,7 @@ def column_def(name: str, col_type: str) -> str:
 def cast_expr(name: str, col_type: str) -> str:
     """A SELECT expression re-typing an already-stored column to *col_type*.
 
-    Used when a table is rebuilt because later runs widened a column
-    (see ``postprocessing_plugins._retype_table``): the values already in the table
+    Used when a table is rebuilt because later runs widened a column: the values in it
     were converted under the old, narrower verdict and have to be brought over as the
     new type so storage matches the declaration. ``CAST`` reformats a number on its
     way to ``TEXT`` (``1e-3`` was already stored as ``0.001``), which is the price of

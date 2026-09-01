@@ -26,8 +26,8 @@ class ClusterServeBackend:
         ``results_dir`` is honoured here, not ignored. A cluster campaign's *durable* home is
         the object store, but the one being driven has a local working root all the same: each
         batch downloads its own results into it, per-run extraction reads it through a path
-        (``search.extractor.Extractor.extract``), and postprocessing derives ``data.db`` from
-        it. Leaving that on the container's writable layer meant every restart discarded it --
+        (``search.extractor.Extractor.extract``), and postprocessing reads it to derive the
+        campaign's results. Leaving that on the container's writable layer meant every restart discarded it --
         and, because resume rebuilds it before the port is bound, a restart could never finish.
         The deployment names the directory it mounts (``service_deploy.RESULTS_DATA_DIR``).
         """

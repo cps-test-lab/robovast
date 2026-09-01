@@ -4,7 +4,7 @@ The implementations deliberately stay where their schema lives -- ``store.py``'s
 ``_MIGRATIONS`` must sit beside ``_SCHEMA`` because a new column has to be mirrored into
 both in the same order, and separating them would break the coupling
 ``test_fresh_and_migrated_schemas_match`` exists to protect. This module *imports* them so
-there is one place that lists all four, and one place to assert their shared invariants.
+there is one place that lists them all, and one place to assert their shared invariants.
 """
 
 
@@ -15,7 +15,6 @@ def surfaces() -> list:
     into every process that wants to read it.
     """
     from robovast.common import store  # pylint: disable=import-outside-toplevel
-    from robovast.common.analysis import db  # pylint: disable=import-outside-toplevel
 
     from . import config as config_ladder  # pylint: disable=import-outside-toplevel
 
@@ -33,12 +32,5 @@ def surfaces() -> list:
             "baseline": 0,
             "steps": len(store._MIGRATIONS),  # pylint: disable=protected-access
             "where": "robovast/common/store.py (beside _SCHEMA)",
-        },
-        {
-            "name": "analysis_db",
-            "current": db.DATA_DB_SCHEMA_VERSION,
-            "baseline": 0,
-            "steps": None,
-            "where": "robovast/common/analysis/db.py",
         },
     ]

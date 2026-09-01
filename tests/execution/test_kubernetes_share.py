@@ -62,15 +62,19 @@ def test_share_campaign_streams_to_provider_naming_the_variant(monkeypatch, tmp_
 
 
 def test_share_campaign_names_a_postprocessed_campaign_as_such(monkeypatch, tmp_path):
-    # A later `vast share export` of the same campaign finds data.db and says so. Nobody
-    # passes the variant in -- both callers read it off the tree, so they cannot disagree.
+    # A later `vast share export` of the same campaign finds postprocessing's provenance
+    # record and says so. Nobody passes the variant in -- both callers read it off the
+    # tree, so they cannot disagree.
     provider = _FakeProvider()
     monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: provider)
     monkeypatch.setattr(in_pod_upload, "verify_share_access", lambda p: None)
     _patch_stream(monkeypatch, b"tar-bytes")
     campaign = tmp_path / "camp-2026-01-01-000000"
-    (campaign / "_execution").mkdir(parents=True)
-    (campaign / "_execution" / "data.db").write_bytes(b"")
+    (campaign / "_transient").mkdir(parents=True)
+    (campaign / "_transient" / "postprocessing.yaml").write_text(
+        "generated_by: robovast\nentries:\n  - output: run-0/nav.csv\n"
+        "    sources: [run-0/rosbag2]\n    plugin: rosbags_to_csv\n    params: {}\n",
+        encoding="utf-8")
 
     _backend().share_campaign(str(campaign), RunOptions())
 

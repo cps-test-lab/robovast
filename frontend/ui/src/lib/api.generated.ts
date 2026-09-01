@@ -107,6 +107,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/mcp-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Calls
+         * @description The MCP call log, newest first -- what each call was given and what it answered.
+         *
+         *     Arguments and answers are truncated where they are recorded, not here; the cap is
+         *     ``robovast.mcp_server.tool_stats``.
+         */
+        get: operations["get_mcp_calls_admin_mcp_calls_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/mcp-calls.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Mcp Calls
+         * @description The same log as a CSV download -- the repo's one export format.
+         *
+         *     It carries what the panel carries, truncation included, and only the retained
+         *     window: this is an export of the record, not of all history.
+         */
+        get: operations["export_mcp_calls_admin_mcp_calls_csv_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/mcp-tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Tool Stats
+         * @description Which MCP tools get called, how often, and how many of those calls failed.
+         *
+         *     The ranking is an aggregate over the call log rather than a counter kept beside it,
+         *     so it can never disagree with the rows the log below it shows.
+         *
+         *     Every registered tool appears, including the ones with no calls at all: a tool
+         *     nobody chooses costs an agent's context in every session, and an aggregate computed
+         *     only over calls that happened is exactly the view that cannot show it.
+         */
+        get: operations["get_mcp_tool_stats_admin_mcp_tools_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/upgrade": {
         parameters: {
             query?: never;
@@ -681,11 +754,16 @@ export interface paths {
         put?: never;
         /**
          * Query Campaign Data Sql
-         * @description Run a read-only ``SELECT``.
+         * @description Run a read-only ``SELECT``, scoped to ``campaign_id``.
          *
          *     ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
          *     rather than reading them; omitted, it stays at the context-sized default, so an
          *     agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+         *
+         *     ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
+         *     whole search arm. It is a parameter rather than the default because the index
+         *     holds every campaign: a query that spans them by *omission* returns rows of the
+         *     right shape from the wrong experiment, and nothing about the reply says so.
          */
         post: operations["query_campaign_data_sql_campaigns__campaign_id__query_post"];
         delete?: never;
@@ -1637,8 +1715,8 @@ export interface components {
         };
         /** Body_query_campaign_data_sql_campaigns__campaign_id__query_post */
         Body_query_campaign_data_sql_campaigns__campaign_id__query_post: {
-            /** Extra Campaign Ids */
-            extra_campaign_ids: string[];
+            /** Campaigns */
+            campaigns: string[] | null;
             /** Max Bytes */
             max_bytes: number | null;
             /**
@@ -1816,7 +1894,7 @@ export interface components {
          *     contributed ones no ``.vast`` has to write (the ``playback`` transport
          *     always, a ``scene3d`` for a simulator that records a capture). Each entry
          *     is the flattened panel dict (``type`` + ``position`` + panel-specific data
-         *     bindings), rendered by the web run-view against the campaign's ``data.db``.
+         *     bindings), rendered by the web run-view against the campaign's results tables.
          *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
          *     the table + column that defines the playback range for non-ROS runs.
          *     ``transport_only`` answers, for the run view, whether any of it is content.
@@ -2089,7 +2167,7 @@ export interface components {
         };
         /**
          * DataDescribe
-         * @description Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).
+         * @description Schema of a campaign's tables in the index (+ the ``campaign`` schema).
          *
          *     Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
          *     the query helper verbatim — kept as a dict so ``schema`` stays that key across
@@ -2737,6 +2815,123 @@ export interface components {
              * @default
              */
             text: string;
+        };
+        /**
+         * McpCall
+         * @description One recorded MCP tool call.
+         *
+         *     :attr:`args` and :attr:`answer` are truncated where they are recorded, not here -- see
+         *     ``robovast.mcp_server.tool_stats``. What survives is a few lines, marked when cut, which
+         *     is enough to see what a call was given and what it said and never a whole file body.
+         */
+        McpCall: {
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /**
+             * Answer
+             * @default
+             */
+            answer: string;
+            /**
+             * Args
+             * @default
+             */
+            args: string;
+            /** At */
+            at: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Ok */
+            ok: boolean;
+            /** Tool */
+            tool: string;
+        };
+        /**
+         * McpCalls
+         * @description A page of the call log, newest first.
+         */
+        McpCalls: {
+            /** Calls */
+            calls: components["schemas"]["McpCall"][];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Status
+             * @default ok
+             */
+            status: string;
+        };
+        /**
+         * McpToolStat
+         * @description One MCP tool's calls, aggregated over the log.
+         *
+         *     A tool that has never been called still gets a row, with :attr:`calls` at zero. That is
+         *     the row worth reading: a tool nobody chooses costs an agent's context on every session
+         *     and is invisible to any aggregate computed only over calls that happened.
+         */
+        McpToolStat: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /**
+             * Errors
+             * @default 0
+             */
+            errors: number;
+            /** Last At */
+            last_at: number | null;
+            /**
+             * Max Ms
+             * @default 0
+             */
+            max_ms: number;
+            /**
+             * Mean Ms
+             * @default 0
+             */
+            mean_ms: number;
+            /** Tool */
+            tool: string;
+        };
+        /**
+         * McpToolStats
+         * @description The ranking, plus what the record covers.
+         *
+         *     :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
+         *     no tool has been called yet, or the index that holds the log is unreachable and the
+         *     answer is unknown. A reader that drew the second as the first would be inventing a fact.
+         */
+        McpToolStats: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Max Age S
+             * @default 0
+             */
+            max_age_s: number;
+            /**
+             * Max Rows
+             * @default 0
+             */
+            max_rows: number;
+            /**
+             * Status
+             * @default ok
+             */
+            status: string;
+            /** Tools */
+            tools: components["schemas"]["McpToolStat"][];
         };
         /**
          * MigrationMarker
@@ -4218,6 +4413,92 @@ export interface operations {
             };
         };
     };
+    get_mcp_calls_admin_mcp_calls_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                tool?: string;
+                failed_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCalls"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_mcp_calls_admin_mcp_calls_csv_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                tool?: string;
+                failed_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_mcp_tool_stats_admin_mcp_tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolStats"];
+                };
+            };
+        };
+    };
     upgrade_info_admin_upgrade_get: {
         parameters: {
             query?: never;
@@ -5296,7 +5577,6 @@ export interface operations {
         parameters: {
             query: {
                 sql: string;
-                extra_campaign_ids?: string;
             };
             header?: never;
             path: {

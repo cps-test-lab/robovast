@@ -24,6 +24,19 @@ which lands here. Panel + endpoint both now live in this package.
 """
 
 
+#: Why a campaign has no costmap to show, and what to do about it. One message for both
+#: ways it happens, because the remedy is the same and the endpoint cannot tell them apart:
+#: the stack may be nav2-on-ROS 2 with the postprocessing step simply not declared, or it may
+#: not be nav2 at all -- a differently-navigated robot, or one on another middleware, has no
+#: costmap topic to record and never will. Naming both is what stops the second case reading
+#: as a misconfiguration of the first.
+_ABSENT = (
+    "This campaign recorded no nav2 costmaps. If the stack is nav2 on ROS 2, add the "
+    "rosbags_costmap_to_csv postprocessing step and record the costmap topics in the "
+    "scenario's bag_record. If it is not -- another planner, another middleware, or a robot "
+    "that does not navigate -- this panel has nothing to show for it.")
+
+
 class CostmapEndpoint:
     """Serve the nav2 costmap frame nearest a time, for the run-view costmap panel.
 
@@ -66,34 +79,48 @@ class CostmapEndpoint:
 
         with ctx.open_db() as conn:
             has = conn.execute(
-                "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='costmaps'"
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_name = 'costmaps'"
             ).fetchone()
             if not has:
-                raise DataQueryError(
-                    "No 'costmaps' table — add the rosbags_costmap_to_csv postprocessing "
-                    "step (and record the costmap topics in the scenario's bag_record).")
+                raise DataQueryError(_ABSENT)
             row = conn.execute(
                 'SELECT timestamp, frame_id, resolution, width, height, '
                 'origin_x, origin_y, origin_yaw, data FROM costmaps '
-                'WHERE config_name = ? AND run_id = ? AND topic = ? '
-                'ORDER BY ABS(CAST(timestamp AS REAL) - ?) LIMIT 1',
-                (ctx.config_name, ctx.run_id, topic, t)).fetchone()
+                'WHERE campaign_id = %s AND config_name = %s AND run_id = %s AND topic = %s '
+                'ORDER BY ABS(CAST(timestamp AS double precision) - %s) LIMIT 1',
+                (ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t)).fetchone()
             if row is None:
+                # Absent and empty are different answers, and the central index makes the
+                # difference matter. The table existing says only that *some* campaign in the
+                # index is a nav2/ROS 2 stack that recorded costmaps -- so a campaign whose
+                # robot has no nav2, or runs on another middleware entirely, would fall
+                # through to a bare `None` that the panel draws as "no frame here", implying
+                # a costmap exists elsewhere in the run. This query has no time bound, so no
+                # row means this run recorded no costmaps at all: say so, and name the fix.
+                scoped = conn.execute(
+                    'SELECT 1 FROM costmaps WHERE campaign_id = %s LIMIT 1',
+                    (ctx.campaign_id,)).fetchone()
+                if not scoped:
+                    raise DataQueryError(_ABSENT)
                 return None
-            # The frame's recorded neighbours (see the class docstring). CAST is load-bearing, not
-            # cosmetic: `timestamp` is REAL in a typed-ingest data.db but TEXT in an older one, and
-            # MIN/MAX/</> over TEXT compare lexicographically ('10.022' < '9.5'), so an uncast query
-            # would return a plausible wrong neighbour on exactly the databases still supported.
+            # The frame's recorded neighbours (see the class docstring). Two things are
+            # load-bearing here, not cosmetic. `campaign_id` scopes the query: one index holds
+            # every campaign, so without it this matches run 3 of config 'nominal' in every
+            # campaign that has one. And the CAST is `double precision`, not `REAL`: `timestamp`
+            # may be text, and MIN/MAX/</> over text compare lexicographically ('10.022' <
+            # '9.5'); but Postgres' REAL is 4 bytes, which rounds an epoch stamp to the nearest
+            # ~30 s and would pick a neighbour tens of seconds away while still looking sane.
             t_frame = float(row["timestamp"])
             neighbours = conn.execute(
-                'SELECT MAX(CAST(timestamp AS REAL)) AS t_prev, '
-                '(SELECT MIN(CAST(timestamp AS REAL)) FROM costmaps '
-                ' WHERE config_name = ? AND run_id = ? AND topic = ? '
-                ' AND CAST(timestamp AS REAL) > ?) AS t_next '
-                'FROM costmaps WHERE config_name = ? AND run_id = ? AND topic = ? '
-                'AND CAST(timestamp AS REAL) < ?',
-                (ctx.config_name, ctx.run_id, topic, t_frame,
-                 ctx.config_name, ctx.run_id, topic, t_frame)).fetchone()
+                'SELECT MAX(CAST(timestamp AS double precision)) AS t_prev, '
+                '(SELECT MIN(CAST(timestamp AS double precision)) FROM costmaps '
+                ' WHERE campaign_id = %s AND config_name = %s AND run_id = %s AND topic = %s '
+                ' AND CAST(timestamp AS double precision) > %s) AS t_next '
+                'FROM costmaps WHERE campaign_id = %s AND config_name = %s AND run_id = %s '
+                'AND topic = %s AND CAST(timestamp AS double precision) < %s',
+                (ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t_frame,
+                 ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t_frame)).fetchone()
 
         t_prev = neighbours["t_prev"]
         t_next = neighbours["t_next"]

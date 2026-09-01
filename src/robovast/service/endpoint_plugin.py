@@ -22,7 +22,7 @@ A package installs a run-scoped JSON data endpoint served at
 (the run-view already reaches any such endpoint through ``data.fetchRun(name, params)``).
 
 This closes the last core-coupling for a self-contained analysis package: it can ship a
-**postprocessing** plugin (writes a table into ``data.db``), a **service endpoint** (this
+**postprocessing** plugin (writes a table into the results index), a **service endpoint** (this
 module — serves that table as JSON), and a **panel** (renders it) entirely via entry points.
 ``robovast_nav``'s ``costmap`` is the reference across all three.
 
@@ -96,17 +96,29 @@ class RunDataContext:
 
     @contextmanager
     def open_db(self):
-        """A **read-only** sqlite connection over the campaign's ``data.db`` (with
-        ``campaign.db`` attached as schema ``campaign``), auto-closed on exit. Raises
+        """A **read-only** connection to the central index (campaign dimensions live in
+        schema ``campaign``), auto-closed on exit. Rows are dicts, keyed by column name.
+
+        **This is Postgres, not sqlite, and a handler must be written for it.** Parameters
+        are ``%s``; there is no ``sqlite_master`` to probe for a table; and ``CAST(x AS
+        REAL)`` is a *4-byte* float here, which silently mangles an epoch timestamp -- use
+        ``double precision``. A shim pretending otherwise would only move the surprise.
+
+        **The connection is confined to this handler's campaign**, so a query scoped to
+        ``config_name``/``run_id`` alone answers about *this* run rather than matching the
+        same run in every other campaign and returning one of them, plausibly. The
+        ``campaign_id`` predicate is no longer the handler's to remember -- it is enforced
+        by the index (:mod:`robovast.results_processing.index_scope`); a handler that
+        writes it anyway is simply redundant. Raises
         :class:`~robovast.results_processing.data_query.DataQueryError` (→ 400) when the
         campaign has no database yet (postprocessing hasn't run)."""
         from robovast.results_processing.data_query import \
             open_data_db  # pylint: disable=import-outside-toplevel
-        conn = open_data_db(self.data_dir)
+        conn = open_data_db(self.data_dir, campaign_id=self.campaign_id)
         try:
             yield conn
         finally:
-            conn.close()
+            conn.close()  # pylint: disable=no-member
 
     def run_dir(self, config_name: str, run_id) -> Path:
         """Absolute path to one run's artifact directory

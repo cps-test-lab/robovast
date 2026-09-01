@@ -3,16 +3,24 @@
 Everything about versioning and migration in robovast starts here. If you were asked to
 "add a migration step", this file tells you which surface you mean and exactly what to do.
 
-## The four version surfaces
+## The three version surfaces
 
 | surface | constant | where the steps live | migrates |
 |---|---|---|---|
 | `.vast` config | `SUPPORTED_CONFIG_VERSION` (`config/__init__.py`) | `config/vN_to_vM.py` | forward, on read |
 | campaign store (`campaign.db`) | `SCHEMA_VERSION` (`../store.py`) | `../store.py`, beside `_SCHEMA` | forward, on open |
-| analysis DB | `DATA_DB_SCHEMA_VERSION` (`../analysis/db.py`) | `../analysis/db.py` | forward, on open |
 | host ↔ container protocol | `COMPAT_VERSION` (`../execution.py`) | not a ladder — a supported window | n/a |
 
 `registry.py` enumerates them programmatically, so nothing has to be kept in sync by hand.
+
+**The central index has no ladder, on purpose.** It is *derived* from the campaign
+directories: re-ingesting a campaign is the definition of correct, so a version that says
+"this copy predates the column you asked for" would only ever describe a copy that should
+be rebuilt. The tables are created and widened as rows arrive
+(`results_processing/index_schema.py`), and the recovery for any shape question is to run
+postprocessing again -- which re-executes no trial. `campaign.db` is the opposite case and
+keeps its ladder: it is authored as the campaign runs and cannot be regenerated from
+anything.
 
 **Why the sqlite ladders are not in this package.** `store.py`'s `_MIGRATIONS` has to sit
 beside `_SCHEMA`: a new column must be mirrored into both *in the same order*, and

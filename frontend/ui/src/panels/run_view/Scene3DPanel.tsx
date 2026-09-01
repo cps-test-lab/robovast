@@ -12,7 +12,7 @@
 //
 // Both formats are specified in robovast/docs/run_capture.rst; roqsim is the first producer of each.
 //
-// This replaces reading a `poses` table out of the postprocessed `data.db`. That path needed a rosbag,
+// This replaces reading a `poses` table out of the postprocessed results. That path needed a rosbag,
 // a `rosbags_tf_to_csv` step and a postprocessing run before anything moved, imposed a naming contract
 // on the simulator ("emit a TF frame per moving body, named after the body") plus a `bind` list for its
 // exceptions, and could only ever animate world-parented bodies -- so an articulated robot replayed

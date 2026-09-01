@@ -27,11 +27,13 @@ the *reading* vocabulary identical to the other log tools — ``grep`` / ``min_s
 ``summarize`` / ``tail`` mean exactly what they mean there, because they are the same
 :func:`~robovast.mcp_server.log_view.view_log`.
 
-Cost, on the cluster lane: the first query of a campaign materializes its ``data.db`` from the
-object store; every later one is local. So a search that spans campaigns pays one transfer per
-*cold* campaign, sequentially, over the shared port-forward. Hence ``max_campaigns`` defaults
-low, campaigns are searched newest-first, and every response says which campaigns it searched
-and which it skipped — a partial answer that looked complete would be the worst outcome here.
+Cost: the rows live in the central index, so nothing is fetched per campaign any more — a
+campaign is a ``WHERE campaign_id = …`` predicate. What a wide search still costs is the scan:
+``grep`` is a regular expression evaluated over *every* log line of *every* campaign it spans,
+and a campaign's merged log runs to millions of rows. That is what ``max_campaigns`` bounds, and
+why it still defaults low; campaigns are searched newest-first, and every response says which
+campaigns it searched and which it skipped — a partial answer that looked complete would be the
+worst outcome here.
 """
 
 import logging
@@ -42,16 +44,13 @@ from robovast.mcp_server import data_access, log_view, service_access
 
 logger = logging.getLogger(__name__)
 
-#: SQLite attaches at most 10 extra databases (``SQLITE_LIMIT_ATTACHED``), so one query spans
-#: 11 campaigns at most. Beyond that the tool batches; it never silently drops the remainder.
-_MAX_ATTACHED = 10
-
-#: Default number of campaigns a regex may fan out to. Low on purpose: on the cluster each cold
-#: campaign costs a ``data.db`` transfer, and a caller who wants forty of them should say so.
+#: Default number of campaigns a regex may fan out to. Low on purpose: each campaign added to a
+#: search is a full regex scan of its merged log, and a caller who wants forty of them should
+#: say so.
 _DEFAULT_MAX_CAMPAIGNS = 5
 
 #: How many campaigns to look at when resolving a regex. The list is cheap (it is served from
-#: the service's cached index); the *databases* are not, which is what ``max_campaigns`` bounds.
+#: the service's cached index); the *scans* are not, which is what ``max_campaigns`` bounds.
 _CAMPAIGN_SCAN = 200
 
 #: Rows a summary reads per campaign, regardless of ``limit``. A summary's whole value is the
@@ -66,11 +65,11 @@ def _quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | None,
+def _resolve_campaigns(campaign_id: str, campaign_regex: bool,
                        max_campaigns: int) -> tuple[list, str]:
     """The campaigns to search, in the service's order (live first, then newest first),
     and a note about what was left out."""
-    explicit = [campaign_id] + list(extra or [])
+    explicit = [campaign_id]
     if not campaign_regex:
         return explicit[:max_campaigns], (
             f"; {len(explicit) - max_campaigns} campaign(s) beyond max_campaigns not searched"
@@ -89,7 +88,6 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | Non
         client = LocalTransport()
     page = client.list_campaigns(ListCampaignsRequest(limit=_CAMPAIGN_SCAN, offset=0))
     matched = [c.campaign_id for c in page.campaigns if pattern.search(c.campaign_id)]
-    matched += [c for c in (extra or []) if c not in matched]
     note = ""
     if len(matched) > max_campaigns:
         note = (f"; {len(matched) - max_campaigns} of {len(matched)} matching campaign(s) not "
@@ -97,12 +95,8 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | Non
     return matched[:max_campaigns], note
 
 
-def _shutdown_term(index: int) -> str:
+def _shutdown_term() -> str:
     """"This line came before its run's scenario reached a verdict", as SQL.
-
-    Its own term rather than one of :func:`_predicates`' because it names a *table* and
-    so has to carry the attached schema's prefix, while every other predicate needs only
-    the ``l`` alias and is therefore the same string for every campaign in a batch.
 
     The verdict is read from where postprocessing recorded it rather than matched again
     here: ``scenario_timestamps`` is keyed on ``(config_name, run_id)``, so this is a
@@ -114,11 +108,19 @@ def _shutdown_term(index: int) -> str:
     the verdict, so a sim-time comparison would keep exactly the lines this drops. A run
     with no recorded verdict trims nothing — trimming to an invented moment is worse.
     """
-    prefix = _schema_prefix(index)
-    return (f"NOT EXISTS (SELECT 1 FROM {prefix}scenario_timestamps s "
-            f"WHERE s.config_name = l.config_name AND s.run_id = l.run_id "
-            f"AND s.wall_ts IS NOT NULL AND l.wall_ts IS NOT NULL "
-            f"AND l.wall_ts > s.wall_ts)")
+    # Correlated on campaign_id as well as the run: one index holds every campaign, so
+    # without it another campaign's verdict would trim this campaign's lines.
+    return ("NOT EXISTS (SELECT 1 FROM scenario_timestamps s "
+            "WHERE s.campaign_id = l.campaign_id "
+            "AND s.config_name = l.config_name AND s.run_id = l.run_id "
+            "AND s.wall_ts IS NOT NULL AND l.wall_ts IS NOT NULL "
+            "AND l.wall_ts > s.wall_ts)")
+
+
+def _campaign_term(campaign_id: str) -> str:
+    """Scope to one campaign. The index holds every campaign's rows in one table, so an
+    unscoped query does not read one campaign's log -- it reads the corpus."""
+    return f"l.campaign_id = {_quote(campaign_id)}"
 
 
 def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, container: str,
@@ -158,19 +160,13 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
     return terms
 
 
-def _schema_prefix(index: int) -> str:
-    """``""`` for the primary campaign, ``c1.``/``c2.``… for the attached ones."""
-    return "" if index == 0 else f"c{index}."
-
-
-def _rollup_sql(index: int, terms: list, limit: int) -> str:
+def _rollup_sql(terms: list, limit: int) -> str:
     """Hits per run for one campaign, joined to the run's verdict.
 
     The join is the whole point: it turns "this warning appears" into "this warning appears in
     the four runs that failed and none that passed". ``LEFT JOIN`` so a run missing from
     ``runs`` still reports its hits rather than disappearing.
     """
-    p = _schema_prefix(index)
     where = f" WHERE {' AND '.join(terms)}" if terms else ""
     # Ranked, not `max(severity)`: severity is text, and alphabetically 'error' < 'other' <
     # 'warn', so a plain max over a run holding both an error and an info line reports "warn".
@@ -180,14 +176,15 @@ def _rollup_sql(index: int, terms: list, limit: int) -> str:
         f"count(*) AS hits, min(l.sim_time) AS first_sim_time, min(l.wall_ts) AS first_wall_ts, "
         f"max(CASE l.severity WHEN 'error' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END) "
         f"AS worst_severity_rank, min(l.message) AS example "
-        f"FROM {p}run_log l LEFT JOIN {p}runs r "
-        f"ON r.config_name = l.config_name AND r.run_id = l.run_id"
+        f"FROM run_log l LEFT JOIN runs r "
+        f"ON r.campaign_id = l.campaign_id "
+        f"AND r.config_name = l.config_name AND r.run_id = l.run_id"
         f"{where} GROUP BY l.config_name, l.run_id "
         f"ORDER BY hits DESC, l.config_name, l.run_id LIMIT {int(limit)}"
     )
 
 
-def _count_sql(index: int, terms: list) -> str:
+def _count_sql(terms: list) -> str:
     """How many rows match, independent of how many are returned.
 
     Its own query because the row cap applies to the *result*: deriving the total from a capped
@@ -195,16 +192,15 @@ def _count_sql(index: int, terms: list) -> str:
     exactly what a caller uses to decide whether to page.
     """
     where = f" WHERE {' AND '.join(terms)}" if terms else ""
-    return f"SELECT count(*) AS n FROM {_schema_prefix(index)}run_log l{where}"
+    return f"SELECT count(*) AS n FROM run_log l{where}"
 
 
-def _lines_sql(index: int, terms: list, limit: int, offset: int) -> str:
-    p = _schema_prefix(index)
+def _lines_sql(terms: list, limit: int, offset: int) -> str:
     where = f" WHERE {' AND '.join(terms)}" if terms else ""
     return (
         f"SELECT l.config_name, l.run_id, l.sim_time, l.wall_ts, l.time_source, l.in_window, "
         f"l.container, l.node, l.source, l.level, l.severity, l.message "
-        f"FROM {p}run_log l{where} "
+        f"FROM run_log l{where} "
         f"ORDER BY l.config_name, l.run_id, l.sim_time IS NOT NULL, l.sim_time, l.wall_ts "
         f"LIMIT {int(limit)} OFFSET {int(offset)}"
     )
@@ -275,8 +271,8 @@ async def search_run_logs(
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.
-        max_campaigns: Cap — each cold campaign costs a ``data.db`` transfer on the cluster;
-            what was left out comes back in ``campaigns_skipped``.
+        max_campaigns: Cap — every campaign added to the search is a full regex scan of its
+            merged log; what was left out is named in ``note``.
         config_filter: Glob over configuration names, e.g. ``goal-*``.
         run_id: Restarts at 0 per configuration, so pair it with *config_filter*.
         container: ``main``, ``simulation``, ``sut``, …
@@ -304,7 +300,7 @@ async def search_run_logs(
     offset, top = 0, log_summary.DEFAULT_TOP
     try:
         campaigns, skip_note = _resolve_campaigns(
-            campaign_id, campaign_regex, None, max(1, int(max_campaigns)))
+            campaign_id, campaign_regex, max(1, int(max_campaigns)))
         terms = _predicates(grep=grep, min_severity=min_severity, config_filter=config_filter,
                             run_id=run_id, container=container, node=node, source="",
                             t0=t0, t1=t1, in_window=None)
@@ -323,40 +319,36 @@ async def search_run_logs(
     #: a sum over campaigns crosses it while every one of them was read whole.
     scan_capped: list = []
 
-    # Batched to the ATTACH limit rather than one query per campaign: within a batch SQLite
-    # does the union itself, and the whole batch pays one materialization pass.
-    for start in range(0, len(campaigns), _MAX_ATTACHED + 1):
-        batch = campaigns[start:start + _MAX_ATTACHED + 1]
-        primary, attached = batch[0], batch[1:]
-        for index, cid in enumerate(batch):
-            # A summary reads far more rows than it returns, because it returns counts.
-            scan = _SUMMARY_SCAN if summarize else limit + offset
-            # Per campaign, because this term names a table and so carries the attached
-            # schema's prefix; every other predicate is the same string for the batch.
-            scoped = terms + ([_shutdown_term(index)] if hide_shutdown else [])
-            sql = (_rollup_sql(index, scoped, limit) if group_by_run and not summarize
-                   else _lines_sql(index, scoped, scan, 0))
-            result = data_access.query(primary, sql, max(1, scan), attached or None)
-            if "error" in result:
-                # A campaign with no run_log (postprocessed before the merge existed, or still
-                # running) is skipped by name, never counted as "nothing matched".
-                skipped.append({"campaign_id": cid, "reason": result["error"][:200]})
-                continue
-            rows = result.get("rows") or []
-            searched.append({"campaign_id": cid, "fetch": result.get("fetch"),
-                             "rows": len(rows)})
-            for row in rows:
-                row["campaign_id"] = cid
-            if group_by_run and not summarize:
-                rollup.extend(rows)
-            else:
-                lines.extend(rows)
-                if summarize and len(rows) >= scan:
-                    scan_capped.append(cid)
-                counted = data_access.query(primary, _count_sql(index, scoped), 1,
-                                            attached or None)
-                total_rows = (counted.get("rows") or [{}])[0].get("n")
-                lines_total += int(total_rows) if total_rows is not None else len(rows)
+    # One query per campaign, not one spanning all of them: the caps below (the summary scan,
+    # the returned-row limit) are per campaign, and a single UNION would spend one campaign's
+    # budget on another's rows.
+    for cid in campaigns:
+        # A summary reads far more rows than it returns, because it returns counts.
+        scan = _SUMMARY_SCAN if summarize else limit + offset
+        scoped = [_campaign_term(cid)] + terms + (
+            [_shutdown_term()] if hide_shutdown else [])
+        sql = (_rollup_sql(scoped, limit) if group_by_run and not summarize
+               else _lines_sql(scoped, scan, 0))
+        result = data_access.query(cid, sql, max(1, scan))
+        if "error" in result:
+            # A campaign with no run_log (postprocessed before the merge existed, or still
+            # running) is skipped by name, never counted as "nothing matched".
+            skipped.append({"campaign_id": cid, "reason": result["error"][:200]})
+            continue
+        rows = result.get("rows") or []
+        searched.append({"campaign_id": cid, "fetch": result.get("fetch"),
+                         "rows": len(rows)})
+        for row in rows:
+            row["campaign_id"] = cid
+        if group_by_run and not summarize:
+            rollup.extend(rows)
+        else:
+            lines.extend(rows)
+            if summarize and len(rows) >= scan:
+                scan_capped.append(cid)
+            counted = data_access.query(cid, _count_sql(scoped), 1)
+            total_rows = (counted.get("rows") or [{}])[0].get("n")
+            lines_total += int(total_rows) if total_rows is not None else len(rows)
 
     out: dict = {"campaigns": searched, "campaigns_skipped": skipped}
     notes = [skip_note.lstrip("; ")] if skip_note else []

@@ -20,11 +20,9 @@
 import os
 import urllib.parse
 
-import click
-
 from .naming import parse_archive_name
 
-from .base import BaseShareProvider
+from .base import BaseShareProvider, ShareError
 
 __all__ = ["SftpShareProvider"]
 
@@ -34,7 +32,7 @@ DEFAULT_SFTP_PORT = 22
 
 
 def _paramiko():
-    """The ``paramiko`` module, or a ``UsageError`` naming what to install.
+    """The ``paramiko`` module, or a ``ShareError`` naming what to install.
 
     Deferred rather than imported at module scope, like the GCS provider's
     ``google-auth``: this module *is* the ``sftp`` entry point, so a top-level import
@@ -47,7 +45,7 @@ def _paramiko():
     try:
         import paramiko  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
-        raise click.UsageError(
+        raise ShareError(
             f"Share type 'sftp' needs paramiko, which is not installed: {exc}\n"
             "Install it with: pip install 'robovast[sftp]'"
         ) from exc
@@ -125,19 +123,19 @@ class SftpShareProvider(BaseShareProvider):
         key_file = os.environ.get("ROBOVAST_SFTP_KEY_FILE", "")
         if key_file:
             if not os.path.isfile(key_file):
-                raise click.UsageError(
+                raise ShareError(
                     f"ROBOVAST_SFTP_KEY_FILE: file not found: {key_file}"
                 )
             try:
                 with open(key_file) as fh:
                     env["ROBOVAST_SFTP_KEY_PEM"] = fh.read()
             except OSError as exc:
-                raise click.UsageError(
+                raise ShareError(
                     f"ROBOVAST_SFTP_KEY_FILE: could not read {key_file!r}: {exc}"
                 ) from exc
 
         if not password and not key_file:
-            raise click.UsageError(
+            raise ShareError(
                 "Either ROBOVAST_SFTP_PASSWORD or ROBOVAST_SFTP_KEY_FILE must be set "
                 "for share type 'sftp'."
             )
@@ -192,7 +190,7 @@ class SftpShareProvider(BaseShareProvider):
                 return cls.from_private_key(io.StringIO(pem))
             except paramiko.SSHException:
                 continue
-        raise click.UsageError(
+        raise ShareError(
             "Could not parse ROBOVAST_SFTP_KEY_PEM as a known key type.")
 
     def upload_archive(
@@ -203,7 +201,7 @@ class SftpShareProvider(BaseShareProvider):
     ) -> None:
         """Upload *archive_path* to the remote directory via SFTP ``put``."""
         if not os.path.isfile(archive_path):
-            raise click.UsageError(f"archive not found: {archive_path}")
+            raise ShareError(f"archive not found: {archive_path}")
 
         remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"].rstrip("/")
         remote_path = f"{remote_dir}/{object_name}"
@@ -252,7 +250,7 @@ class SftpShareProvider(BaseShareProvider):
         try:
             ssh, sftp = self._connect()
         except Exception as exc:  # paramiko raises a variety of types
-            raise click.UsageError(
+            raise ShareError(
                 f"Cannot connect to SFTP server "
                 f"{os.environ.get('ROBOVAST_SFTP_HOST')!r}: {exc}\n"
                 "Check ROBOVAST_SFTP_HOST / _USER / _PASSWORD / _KEY_FILE."
@@ -260,7 +258,7 @@ class SftpShareProvider(BaseShareProvider):
         try:
             sftp.stat(remote_dir)
         except IOError as exc:
-            raise click.UsageError(
+            raise ShareError(
                 f"SFTP remote directory {remote_dir!r} is not accessible: {exc}\n"
                 "Check ROBOVAST_SFTP_REMOTE_DIR exists and is writable."
             ) from exc

@@ -93,7 +93,7 @@ function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean
         DETAILS_RUNS_SQL,
         DETAILS_MAX_ROWS,
       )
-      // The CPU pair is allowed to fail: `resource_usage` lives in data.db, which a campaign
+      // The CPU pair is allowed to fail: `resource_usage` lives in the results index, which a campaign
       // that was never postprocessed does not have. That is a missing column, not a broken
       // panel, so it resolves to [] and `summariseCpu` returns null from there.
       //

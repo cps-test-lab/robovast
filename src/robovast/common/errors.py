@@ -77,6 +77,30 @@ class ObjectStoreUnreachableError(RuntimeError):
     include_traceback = False
 
 
+class IndexUnreachableError(RuntimeError):
+    """Raised when the central index did not answer at all.
+
+    The sibling of :class:`ObjectStoreUnreachableError`, and for the same reason: a
+    Postgres that is starting, a sidecar that went away, a volume that failed to
+    mount, and a wrong port all reach the caller as different psycopg exceptions
+    that mean one thing -- no answer -- wrapped in a traceback through the driver and
+    the ASGI stack that names no cause the one sentence here does not.
+
+    Distinct from a query error: the index *answered*, and what it answered (an
+    undefined column, a syntax error in caller SQL) is the caller's to interpret.
+
+    **This must never degrade into a fallback.** Postgres is a hard dependency of
+    both lanes now, so a reader that quietly returned "no data" when the index is
+    down would present an empty campaign as a finished one -- the failure mode the
+    whole design exists to avoid. Say the index is unreachable and let the caller
+    decide.
+
+    A ``RuntimeError`` so the service's ``_guard`` maps it to 503 like its sibling.
+    """
+
+    include_traceback = False
+
+
 class ImageBuildFailed(RuntimeError):
     """Raised when a campaign's experiment image did not build.
 

@@ -75,6 +75,12 @@ def _deploy_stubs(monkeypatch):
     # --ingress-host was given, so it reaches the API server where it did not before.
     # Unstubbed, these tests wait out a connection timeout apiece.
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    # Setup creates the index password Secret before the store pod (whose Postgres reads
+    # it), then refuses a store pod that predates the registry/index move. Both talk to the
+    # API server; unstubbed, these tests wait out a connection timeout apiece.
+    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
+    monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
+                        lambda *a, **k: None)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
@@ -91,6 +97,11 @@ def _deploy_stubs(monkeypatch):
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
     config = mock.Mock()
+    # Setup reports which image and digest the pod came up on, once it is serving. Two
+    # more reads against the API server, and reporting-only -- they swallow their own
+    # errors, so unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: config)
     return config
 
@@ -179,6 +190,12 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    # Setup creates the index password Secret before the store pod (whose Postgres reads
+    # it), then refuses a store pod that predates the registry/index move. Both talk to the
+    # API server; unstubbed, these tests wait out a connection timeout apiece.
+    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
+    monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
+                        lambda *a, **k: None)
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda **k: order.append("gpu-plugin"))
@@ -195,6 +212,11 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    # Setup reports which image and digest the pod came up on, once it is serving. Two
+    # more reads against the API server, and reporting-only -- they swallow their own
+    # errors, so unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     cluster_setup.setup_server(config_name="rke2", namespace="default")

@@ -204,12 +204,19 @@
       },
       "Body_query_campaign_data_sql_campaigns__campaign_id__query_post": {
         "properties": {
-          "extra_campaign_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Extra Campaign Ids",
-            "type": "array"
+          "campaigns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaigns"
           },
           "max_bytes": {
             "anyOf": [
@@ -233,7 +240,7 @@
           }
         },
         "required": [
-          "extra_campaign_ids",
+          "campaigns",
           "max_bytes",
           "max_rows",
           "sql"
@@ -488,7 +495,7 @@
         "type": "object"
       },
       "CampaignPanelsResponse": {
-        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's ``data.db``.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
+        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's results tables.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -875,7 +882,7 @@
         "type": "object"
       },
       "DataDescribe": {
-        "description": "Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).\n\nEach ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from\nthe query helper verbatim \u2014 kept as a dict so ``schema`` stays that key across\nevery client path).",
+        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from\nthe query helper verbatim \u2014 kept as a dict so ``schema`` stays that key across\nevery client path).",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -1795,6 +1802,173 @@
           "text"
         ],
         "title": "LogChunk",
+        "type": "object"
+      },
+      "McpCall": {
+        "description": "One recorded MCP tool call.\n\n:attr:`args` and :attr:`answer` are truncated where they are recorded, not here -- see\n``robovast.mcp_server.tool_stats``. What survives is a few lines, marked when cut, which\nis enough to see what a call was given and what it said and never a whole file body.",
+        "properties": {
+          "actor": {
+            "default": "",
+            "title": "Actor",
+            "type": "string"
+          },
+          "answer": {
+            "default": "",
+            "title": "Answer",
+            "type": "string"
+          },
+          "args": {
+            "default": "",
+            "title": "Args",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "number"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor",
+          "answer",
+          "args",
+          "at",
+          "duration_ms",
+          "ok",
+          "tool"
+        ],
+        "title": "McpCall",
+        "type": "object"
+      },
+      "McpCalls": {
+        "description": "A page of the call log, newest first.",
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/McpCall"
+            },
+            "title": "Calls",
+            "type": "array"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "status": {
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "calls",
+          "detail",
+          "status"
+        ],
+        "title": "McpCalls",
+        "type": "object"
+      },
+      "McpToolStat": {
+        "description": "One MCP tool's calls, aggregated over the log.\n\nA tool that has never been called still gets a row, with :attr:`calls` at zero. That is\nthe row worth reading: a tool nobody chooses costs an agent's context on every session\nand is invisible to any aggregate computed only over calls that happened.",
+        "properties": {
+          "calls": {
+            "default": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "errors": {
+            "default": 0,
+            "title": "Errors",
+            "type": "integer"
+          },
+          "last_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last At"
+          },
+          "max_ms": {
+            "default": 0.0,
+            "title": "Max Ms",
+            "type": "number"
+          },
+          "mean_ms": {
+            "default": 0.0,
+            "title": "Mean Ms",
+            "type": "number"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "calls",
+          "errors",
+          "last_at",
+          "max_ms",
+          "mean_ms",
+          "tool"
+        ],
+        "title": "McpToolStat",
+        "type": "object"
+      },
+      "McpToolStats": {
+        "description": "The ranking, plus what the record covers.\n\n:attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:\nno tool has been called yet, or the index that holds the log is unreachable and the\nanswer is unknown. A reader that drew the second as the first would be inventing a fact.",
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "max_age_s": {
+            "default": 0.0,
+            "title": "Max Age S",
+            "type": "number"
+          },
+          "max_rows": {
+            "default": 0,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "status": {
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/McpToolStat"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail",
+          "max_age_s",
+          "max_rows",
+          "status",
+          "tools"
+        ],
+        "title": "McpToolStats",
         "type": "object"
       },
       "MigrationMarker": {
@@ -4349,6 +4523,154 @@
         ]
       }
     },
+    "/admin/mcp-calls": {
+      "get": {
+        "description": "The MCP call log, newest first -- what each call was given and what it answered.\n\nArguments and answers are truncated where they are recorded, not here; the cap is\n``robovast.mcp_server.tool_stats``.",
+        "operationId": "get_mcp_calls_admin_mcp_calls_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tool",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "failed_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Failed Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCalls"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Mcp Calls",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/mcp-calls.csv": {
+      "get": {
+        "description": "The same log as a CSV download -- the repo's one export format.\n\nIt carries what the panel carries, truncation included, and only the retained\nwindow: this is an export of the record, not of all history.",
+        "operationId": "export_mcp_calls_admin_mcp_calls_csv_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 2000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tool",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "failed_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Failed Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Mcp Calls",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/mcp-tools": {
+      "get": {
+        "description": "Which MCP tools get called, how often, and how many of those calls failed.\n\nThe ranking is an aggregate over the call log rather than a counter kept beside it,\nso it can never disagree with the rows the log below it shows.\n\nEvery registered tool appears, including the ones with no calls at all: a tool\nnobody chooses costs an agent's context in every session, and an aggregate computed\nonly over calls that happened is exactly the view that cannot show it.",
+        "operationId": "get_mcp_tool_stats_admin_mcp_tools_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolStats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Mcp Tool Stats",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/upgrade": {
       "get": {
         "description": "What version is running, whether something newer is published, and may we roll.",
@@ -5912,7 +6234,7 @@
     },
     "/campaigns/{campaign_id}/query": {
       "post": {
-        "description": "Run a read-only ``SELECT``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.",
+        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because the index\nholds every campaign: a query that spans them by *omission* returns rows of the\nright shape from the wrong experiment, and nothing about the reply says so.",
         "operationId": "query_campaign_data_sql_campaigns__campaign_id__query_post",
         "parameters": [
           {
@@ -5983,16 +6305,6 @@
             "required": true,
             "schema": {
               "title": "Sql",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "extra_campaign_ids",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Extra Campaign Ids",
               "type": "string"
             }
           }

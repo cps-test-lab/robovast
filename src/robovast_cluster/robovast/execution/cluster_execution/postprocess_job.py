@@ -17,7 +17,7 @@
 """In-cluster rosbag→CSV conversion Job — the ROS2 half of analysis postprocessing.
 
 Analysis postprocessing splits along a natural seam: only the ``rosbags_*`` → CSV
-step needs ROS2; everything after it (``generate_data_db``, metadata) is plain
+step needs ROS2; everything after it (the index ingest, metadata) is plain
 Python that runs wherever robovast is installed. Locally ``docker_exec.sh`` runs the
 conversion in a container and *bind-mounts* the campaign dir, so outputs appear in
 place. A pod cannot bind-mount the caller's filesystem, so in-cluster the conversion
@@ -200,7 +200,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     2. **sync** its outputs (`_postproc/`) into *campaign_root* — done **regardless
        of the Job's outcome**, so a failed conversion's ``postprocessing.log`` (teed
        and mirrored even on failure) lands in the campaign log the web UI shows;
-    3. **stage 2** — ``data.db`` + metadata, pure Python, right here (success only).
+    3. **stage 2** — index ingest + metadata, pure Python, right here (success only).
 
     *campaign_root* must already hold the campaign (`_config/`, `campaign.db`,
     `test.xml`s) — true for the controller (it built it) and for the service after
@@ -281,7 +281,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
 
 def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = False,
                             skip=None, state=None) -> tuple:
-    """Stage 2 — everything after the ROS conversion (``data.db``, metadata).
+    """Stage 2 — everything after the ROS conversion (index ingest, metadata).
 
     Pure Python, so it runs wherever robovast is installed (the controller pod, the
     service pod). Reuses the *normal* pipeline with the rosbag steps skipped — the
