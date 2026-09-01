@@ -638,13 +638,13 @@ function CampaignCard({ summary, newest, openedByLink }: {
     canExplore ? (
       <MenuItem key="explorer" onClick={() => { closeMenu(); openResultsView('explorer', id) }}>
         <ListItemIcon><ExplorerIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>Open in results Explorer</ListItemText>
+        <ListItemText>Open in Results Explorer</ListItemText>
       </MenuItem>
     ) : null,
     canReplay ? (
       <MenuItem key="runview" onClick={() => { closeMenu(); openResultsView('run', id) }}>
         <ListItemIcon><RunViewIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>Replay runs in the Run view</ListItemText>
+        <ListItemText>Open in Run View</ListItemText>
       </MenuItem>
     ) : null,
   ].filter(Boolean)
