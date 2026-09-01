@@ -107,6 +107,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/mcp-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Calls
+         * @description The MCP call log, newest first -- what each call was given and what it answered.
+         *
+         *     Arguments and answers are truncated where they are recorded, not here; the cap is
+         *     ``robovast.mcp_server.tool_stats``.
+         */
+        get: operations["get_mcp_calls_admin_mcp_calls_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/mcp-calls.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Mcp Calls
+         * @description The same log as a CSV download -- the repo's one export format.
+         *
+         *     It carries what the panel carries, truncation included, and only the retained
+         *     window: this is an export of the record, not of all history.
+         */
+        get: operations["export_mcp_calls_admin_mcp_calls_csv_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/mcp-tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Tool Stats
+         * @description Which MCP tools get called, how often, and how many of those calls failed.
+         *
+         *     The ranking is an aggregate over the call log rather than a counter kept beside it,
+         *     so it can never disagree with the rows the log below it shows.
+         *
+         *     Every registered tool appears, including the ones with no calls at all: a tool
+         *     nobody chooses costs an agent's context in every session, and an aggregate computed
+         *     only over calls that happened is exactly the view that cannot show it.
+         */
+        get: operations["get_mcp_tool_stats_admin_mcp_tools_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/upgrade": {
         parameters: {
             query?: never;
@@ -2744,6 +2817,123 @@ export interface components {
             text: string;
         };
         /**
+         * McpCall
+         * @description One recorded MCP tool call.
+         *
+         *     :attr:`args` and :attr:`answer` are truncated where they are recorded, not here -- see
+         *     ``robovast.mcp_server.tool_stats``. What survives is a few lines, marked when cut, which
+         *     is enough to see what a call was given and what it said and never a whole file body.
+         */
+        McpCall: {
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /**
+             * Answer
+             * @default
+             */
+            answer: string;
+            /**
+             * Args
+             * @default
+             */
+            args: string;
+            /** At */
+            at: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Ok */
+            ok: boolean;
+            /** Tool */
+            tool: string;
+        };
+        /**
+         * McpCalls
+         * @description A page of the call log, newest first.
+         */
+        McpCalls: {
+            /** Calls */
+            calls: components["schemas"]["McpCall"][];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Status
+             * @default ok
+             */
+            status: string;
+        };
+        /**
+         * McpToolStat
+         * @description One MCP tool's calls, aggregated over the log.
+         *
+         *     A tool that has never been called still gets a row, with :attr:`calls` at zero. That is
+         *     the row worth reading: a tool nobody chooses costs an agent's context on every session
+         *     and is invisible to any aggregate computed only over calls that happened.
+         */
+        McpToolStat: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /**
+             * Errors
+             * @default 0
+             */
+            errors: number;
+            /** Last At */
+            last_at: number | null;
+            /**
+             * Max Ms
+             * @default 0
+             */
+            max_ms: number;
+            /**
+             * Mean Ms
+             * @default 0
+             */
+            mean_ms: number;
+            /** Tool */
+            tool: string;
+        };
+        /**
+         * McpToolStats
+         * @description The ranking, plus what the record covers.
+         *
+         *     :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
+         *     no tool has been called yet, or the index that holds the log is unreachable and the
+         *     answer is unknown. A reader that drew the second as the first would be inventing a fact.
+         */
+        McpToolStats: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Max Age S
+             * @default 0
+             */
+            max_age_s: number;
+            /**
+             * Max Rows
+             * @default 0
+             */
+            max_rows: number;
+            /**
+             * Status
+             * @default ok
+             */
+            status: string;
+            /** Tools */
+            tools: components["schemas"]["McpToolStat"][];
+        };
+        /**
          * MigrationMarker
          * @description One decision a migration could not make, and where it is.
          */
@@ -4219,6 +4409,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_mcp_calls_admin_mcp_calls_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                tool?: string;
+                failed_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCalls"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_mcp_calls_admin_mcp_calls_csv_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                tool?: string;
+                failed_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_mcp_tool_stats_admin_mcp_tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolStats"];
                 };
             };
         };

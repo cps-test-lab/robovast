@@ -162,6 +162,20 @@ which is why they are in SQLite on a mounted volume rather than a third ring. Wh
 today is **refusals**: a campaign's failure is on its card and in its ``outcome.json``, but a
 refused *action* was composed in the request that refused it, rendered once, and then gone.
 
+``GET /admin/mcp-tools``, ``GET /admin/mcp-calls`` and ``GET /admin/mcp-calls.csv`` follow the
+same row for the MCP surface: what the tools were asked and what they answered, its own routes,
+requested by the panel displaying them and never carried on a polled payload. The ranking is an
+aggregate **over** the call log rather than a counter maintained beside it, so the two cannot
+drift; the CSV is the same rows as a download.
+
+Their record lives in the central index rather than in ``events.db``, which is the one place these
+depart from the events above: the rows carry a truncated copy of each call's arguments and answer,
+so they are bulky and they age out (30 days, or 200 000 calls, whichever bites first), where the
+event log's whole point is that it is small and durable. Both bounds are reported on the response,
+because a reader told "a month" during a burst that emptied it in a day would be told a wrong
+thing. An unreachable index is reported as ``status`` rather than as an empty list, for the same
+reason: "nothing was called" and "the record cannot be read" are different answers.
+
 The **origin** row is the cheapest tier and the one most often missed. A value that is a pure
 function of wall-clock plus one stored origin is transported as the *origin*, never as the value:
 the reader already has a clock. A ``time`` budget's elapsed seconds is the case that established

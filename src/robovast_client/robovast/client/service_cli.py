@@ -18,6 +18,10 @@ started in a venv is "however it was installed and started", so it has no image 
 """
 
 
+import csv
+import sys
+from datetime import datetime
+
 import click
 
 from robovast.client.errors import handle_cli_exception
@@ -237,3 +241,109 @@ def resources(namespace, context):
     click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"
                f" {_gib(usage.memory_capacity_bytes)}")
     click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
+
+
+@service.command('mcp-stats')
+@click.option('--calls', 'show_calls', is_flag=True,
+              help='Print the call log instead of the per-tool ranking.')
+@click.option('--tool', default='', help='Only this tool.')
+@click.option('--failed', is_flag=True, help='Only calls that failed.')
+@click.option('--limit', default=50, show_default=True,
+              help='How many calls to print with --calls.')
+@click.option('--csv', 'as_csv', is_flag=True,
+              help='Write the call log as CSV to stdout, for a spreadsheet or a script.')
+@target_options
+def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
+    """Which MCP tools agents actually call, and what happened when they did.
+
+    The same record the web UI's Admin page shows, on a terminal: a ranking of tools by
+    call count with their failure share and durations, or the calls themselves with what
+    each was given and what it answered (``--calls``).
+
+    Deliberately a command and not an MCP tool. An agent asking this question would pay for
+    the whole answer in context, and the question -- "is this tool surface worth what it
+    costs?" -- is one asked *about* agents rather than by one.
+
+    The record lives in the central index, so it outlives a service restart but not the
+    results store, and it covers a bounded window that the ranking prints.
+    """
+    try:
+        with service_client(namespace, context) as (client, label):
+            if not as_csv:
+                _echo_target(label)
+            if show_calls or as_csv:
+                answer = client.mcp_calls(limit=limit, tool=tool, failed_only=failed)
+            else:
+                answer = client.mcp_tool_stats()
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    # "The record cannot be read" and "nothing has been called" are different answers, and a
+    # reader who is shown an empty table for the first has been told something false.
+    if answer.status != 'ok':
+        raise click.ClickException(
+            f"the MCP call record is unavailable: {answer.detail or answer.status}")
+
+    if as_csv:
+        writer = csv.writer(sys.stdout)
+        writer.writerow(['at', 'tool', 'duration_ms', 'ok', 'args', 'answer', 'actor'])
+        for call in answer.calls:
+            writer.writerow([call.at, call.tool, round(call.duration_ms, 3), call.ok,
+                             call.args, call.answer, call.actor])
+        return
+
+    if show_calls:
+        if not answer.calls:
+            click.echo('  no calls recorded')
+            return
+        for call in answer.calls:
+            when = datetime.fromtimestamp(call.at).strftime('%Y-%m-%d %H:%M:%S')
+            mark = 'ok  ' if call.ok else 'FAIL'
+            click.echo(f"  {when}  {mark}  {call.duration_ms:8.1f} ms  {call.tool}")
+            if call.args:
+                click.echo(f"      args:   {_indented(call.args)}")
+            if call.answer:
+                click.echo(f"      answer: {_indented(call.answer)}")
+        return
+
+    ranked = sorted(answer.tools, key=lambda t: (-t.calls, t.tool))
+    most = max((t.calls for t in ranked), default=0)
+    if most == 0:
+        click.echo('  no MCP tool has been called yet')
+        return
+    width = max(len(t.tool) for t in ranked)
+    for stat in ranked:
+        click.echo(f"  {stat.tool:<{width}}  {_bar(stat, most)}  {stat.calls:>6}"
+                   f"{_failed_note(stat)}{_timing(stat)}")
+    click.echo(f"\n  {len(ranked)} tools; the record covers the last "
+               f"{int(answer.max_age_s // 86400)} days or {answer.max_rows} calls, "
+               f"whichever is shorter.")
+
+
+#: Width of the terminal ranking bar. Blocks rather than a percentage: the question it
+#: answers is "which of these is used more", which a shape answers at a glance and a column
+#: of numbers does not.
+_BAR_WIDTH = 24
+
+
+def _bar(stat, most: int) -> str:
+    """A proportional bar, with the failed share as its tail -- the panel's green/red in text."""
+    filled = round(_BAR_WIDTH * stat.calls / most) if most else 0
+    failed = round(_BAR_WIDTH * min(stat.errors, stat.calls) / most) if most else 0
+    return ('█' * (filled - failed)) + ('▓' * failed) + ('·' * (_BAR_WIDTH - filled))
+
+
+def _failed_note(stat) -> str:
+    return f"  {stat.errors} failed" if stat.errors else ""
+
+
+def _timing(stat) -> str:
+    if not stat.calls:
+        return ""
+    return f"  {stat.mean_ms:.0f} ms avg, {stat.max_ms:.0f} ms max"
+
+
+def _indented(text: str) -> str:
+    """Keep a multi-line payload under its own row rather than breaking the column."""
+    return text.replace('\n', '\n              ')

@@ -31,6 +31,10 @@ export type UsageHistory = Schemas['UsageHistory']
 export type UsageSample = Schemas['UsageSample']
 export type ServiceEvents = Schemas['ServiceEvents']
 export type ServiceEvent = Schemas['ServiceEvent']
+export type McpToolStats = Schemas['McpToolStats']
+export type McpToolStat = Schemas['McpToolStat']
+export type McpCalls = Schemas['McpCalls']
+export type McpCall = Schemas['McpCall']
 export type UpgradeInfo = Schemas['UpgradeInfo']
 export type ServiceConfig = Schemas['ServiceConfig']
 export type ServiceSetting = Schemas['ServiceSetting']
@@ -396,6 +400,29 @@ export const robovast = {
   // section of either. Oldest-first from `since`, so a caller resumes rather than re-reads.
   serviceEvents: (since = 0, limit = 200) =>
     request<ServiceEvents>('GET', `/admin/events?since=${since}&limit=${limit}`),
+
+  // Which MCP tools agents actually reach for, aggregated over the call log below --
+  // never a counter kept beside it, so the two can never disagree. Tools with no calls
+  // are in the answer too: that is the row worth reading.
+  mcpToolStats: () => request<McpToolStats>('GET', '/admin/mcp-tools'),
+
+  // The calls themselves, newest first. Arguments and answers arrive already truncated
+  // (see mcp_server/tool_stats.py) -- the client never receives a whole file body.
+  mcpCalls: (limit = 200, tool = '', failedOnly = false) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (tool) params.set('tool', tool)
+    if (failedOnly) params.set('failed_only', 'true')
+    return request<McpCalls>('GET', `/admin/mcp-calls?${params.toString()}`)
+  },
+
+  // Direct URL of the log as CSV (a GET the browser downloads), same shape as
+  // archiveUrl above. It carries the retained window only, not all history.
+  mcpCallsCsvUrl: (tool = '', failedOnly = false) => {
+    const params = new URLSearchParams({ limit: '2000' })
+    if (tool) params.set('tool', tool)
+    if (failedOnly) params.set('failed_only', 'true')
+    return `${BASE}/admin/mcp-calls.csv?${params.toString()}`
+  },
 
   upgradeInfo: () => request<UpgradeInfo>('GET', '/admin/upgrade'),
 
