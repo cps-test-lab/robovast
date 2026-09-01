@@ -668,7 +668,7 @@ _DESCRIBE_NOTE = (
 _INTERNAL_TABLES = ("_table_name_map", "_column_notes")
 
 
-def describe_data_db(campaign_dir) -> dict:
+def describe_data_db(campaign_dir, campaign_id: str | None = None) -> dict:
     """Return ``{tables: [{schema, table, columns, rows, description}], note}``.
 
     Works before postprocessing: when ``data.db`` is absent, the attached
@@ -678,7 +678,8 @@ def describe_data_db(campaign_dir) -> dict:
         index_query  # pylint: disable=import-outside-toplevel
 
     try:
-        return index_query.describe_index(campaign_id_of(campaign_dir))
+        return index_query.describe_index(
+            campaign_id or campaign_id_of(campaign_dir))
     except index_query.IndexQueryError as exc:
         raise DataQueryError(str(exc)) from exc
 
@@ -715,10 +716,16 @@ def campaign_id_of(campaign_dir) -> str:
     """The campaign a path belongs to, from anywhere inside it.
 
     The directory name *is* the campaign id, and a caller may hand in the campaign root,
-    one configuration, or one run -- the notebook surface routinely does. Resolving it here
-    rather than making every caller pass an id is what keeps this flip to one file: the
-    scoping a path carried is still derived from the path, by the code that already knew how
-    (:func:`robovast.common.analysis.db.run_scope`), and only the *storage* moved.
+    one configuration, or one run -- the notebook surface routinely does, and has nothing
+    else to go on.
+
+    **A caller that already knows the id should pass it instead**, and the service does.
+    Deriving it from a path asks the filesystem a question that ingestion has already
+    answered: the rows are in the index, so the campaign needs no directory here at all,
+    and on the cluster lane the "directory" is a cache the service deliberately never
+    fills. Measured: an imported campaign left an EMPTY cache dir, which exists -- so the
+    guard below does not fire -- and carries no ``campaign.db`` to walk up to, so every
+    query against it was refused while its 38838 rows sat in the index.
     """
     from robovast.common.analysis.db import (  # pylint: disable=import-outside-toplevel
         campaign_root)
@@ -737,7 +744,8 @@ def campaign_id_of(campaign_dir) -> str:
 
 
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
-                  max_bytes: int | None = None, campaigns=None) -> dict:
+                  max_bytes: int | None = None, campaigns=None,
+                  campaign_id: str | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
     A query spanning campaigns (an A/B comparison, a whole search arm) needs no second
@@ -763,12 +771,13 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
     try:
         return index_query.query_index(
             sql, max_rows=max_rows, max_bytes=max_bytes,
-            campaign_id=campaign_id_of(campaign_dir), campaigns=campaigns)
+            campaign_id=campaign_id or campaign_id_of(campaign_dir),
+            campaigns=campaigns)
     except index_query.IndexQueryError as exc:
         raise DataQueryError(str(exc)) from exc
 
 
-def stream_query_csv(campaign_dir, sql: str):
+def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
     """Yield the same ``SELECT`` as CSV text, row by row and with **no row cap**.
 
     :func:`query_data_db` clamps to 5000 rows because its result is a JSON payload someone
@@ -793,7 +802,8 @@ def stream_query_csv(campaign_dir, sql: str):
     # Scoped exactly like the JSON path -- a second query entry point must not be a second
     # scoping decision any more than it is a second read-only decision.
     conn = index_query.open_index(readonly=True,
-                                  campaigns=[campaign_id_of(campaign_dir)])
+                                  campaigns=[campaign_id
+                                             or campaign_id_of(campaign_dir)])
     try:
         try:
             cursor = conn.execute(index_dialect.translate(sql))

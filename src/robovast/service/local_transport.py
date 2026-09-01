@@ -4410,7 +4410,8 @@ class LocalTransport(RobovastInterface):
     def describe_campaign_data(self, campaign_id: str) -> "DataDescribe":
         from robovast.results_processing.data_query import describe_data_db
         from robovast.service.interface import DataDescribe
-        result = describe_data_db(self._query_dir(campaign_id))
+        result = describe_data_db(self._query_dir(campaign_id),
+                                  campaign_id=campaign_id)
         return DataDescribe(campaign_id=campaign_id, **result)
 
     def query_campaign_data_sql(
@@ -4437,7 +4438,8 @@ class LocalTransport(RobovastInterface):
         # Resolved through _query_dir like the JSON path, so both lanes name the campaign
         # the same way rather than this one needing its own override.
         from robovast.results_processing.data_query import stream_query_csv
-        return stream_query_csv(self._query_dir(campaign_id), sql)
+        return stream_query_csv(self._query_dir(campaign_id), sql,
+                                campaign_id=campaign_id)
 
     def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
         """Local: a query never transfers anything, so there is nothing to warn about.
