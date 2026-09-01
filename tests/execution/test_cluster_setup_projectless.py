@@ -91,6 +91,11 @@ def _deploy_stubs(monkeypatch):
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
     config = mock.Mock()
+    # Setup reports which image and digest the pod came up on, once it is serving. Two
+    # more reads against the API server, and reporting-only -- they swallow their own
+    # errors, so unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: config)
     return config
 
@@ -195,6 +200,11 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    # Setup reports which image and digest the pod came up on, once it is serving. Two
+    # more reads against the API server, and reporting-only -- they swallow their own
+    # errors, so unstubbed they cost a connect timeout apiece and say nothing.
+    monkeypatch.setattr(service_deploy, "deployment_image_ref", lambda *a, **k: ("", False))
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "")
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     cluster_setup.setup_server(config_name="rke2", namespace="default")
