@@ -186,8 +186,6 @@ def test_a_snapshot_says_so_inside_the_archive(tmp_path):
     """
     import json
 
-    from robovast.execution import campaign_archive
-
     campaign = tmp_path / "camp-2026-01-01-000000"
     (campaign / "_config").mkdir(parents=True)
     payload = b"".join(campaign_archive.iter_campaign_tar(
