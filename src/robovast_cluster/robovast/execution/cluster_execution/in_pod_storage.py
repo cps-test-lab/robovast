@@ -882,6 +882,32 @@ def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, st
     return campaign_bucket, ""
 
 
+def publish_execution_file(storage, bucket: str, prefix: str, campaign_root,
+                           filename: str) -> bool:
+    """Mirror one file of a campaign's ``_execution/`` to the store; ``True`` if it went.
+
+    Best-effort by contract, and the reason is the same wherever it is called from: the
+    local file is the record and the object is its mirror, so a transfer that fails must
+    not cost the record it was copying, nor the operation that produced it. A caller for
+    which the upload is a duty rather than an improvement -- the one publish that has to
+    land before the campaign root goes away -- uses ``upload_dir`` and handles its error.
+
+    One definition of where an ``_execution/`` file lands, because a file two callers
+    upload is a file two callers can disagree about where. A caller with a resolved
+    client passes it; resolving one is the caller's, since a client is worth reusing
+    across a run of these.
+    """
+    path = os.path.join(str(campaign_root), "_execution", filename)
+    if not os.path.isfile(path):
+        return False
+    try:
+        storage.upload_file(path, bucket, f"{prefix}_execution/{filename}")
+    except Exception as e:  # noqa: BLE001 - a mirror, not the record
+        logger.debug("Could not publish _execution/%s: %s", filename, e)
+        return False
+    return True
+
+
 # -- the campaign index -----------------------------------------------------
 #
 # A campaign's durable home is the object store, but nothing there could *list* the

@@ -3529,13 +3529,13 @@ class ClusterService(LocalTransport):
                            campaign_id, e)
 
     def _publish_execution(self, campaign_id: str, campaign_root) -> None:
-        """Upload a campaign's ``_execution/`` (outcome + logs) to the store."""
-        from robovast.execution.cluster_execution import in_pod_storage
-        cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        storage = in_pod_storage.storage_client_for(cfg)
-        storage.upload_dir(str(Path(campaign_root) / "_execution"),
-                           bucket, f"{prefix}_execution")
+        """Upload a campaign's ``_execution/`` (outcome + logs) to the store.
+
+        One definition, shared with the postprocess's own mid-run publishes: an account
+        that two functions upload is an account two functions can disagree about where.
+        """
+        from .postprocess_job import publish_execution_dir
+        publish_execution_dir(self._cluster_config(), campaign_id, campaign_root)
 
     def _postprocess_campaign(self, campaign_id: str, campaign_dir, *,
                               force: bool = False, skip=(), state=None) -> tuple:
@@ -3596,7 +3596,20 @@ class ClusterService(LocalTransport):
             status = record_step_outcome(campaign_root, postprocessing=(ok, message))
             # Publish _execution (outcome + the conversion's postprocessing.log, even on
             # failure) so the result survives a restart and the Monitor can read it.
-            self._publish_execution(request.campaign_id, campaign_root)
+            #
+            # Reported as its own failure rather than raised, because the two are different
+            # findings that a shared handler renders identical: the postprocess may have
+            # succeeded and only the account of it be missing. A reader told "postprocessing
+            # failed" would go looking for a fault in the campaign instead of at the store.
+            try:
+                self._publish_execution(request.campaign_id, campaign_root)
+            except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
+                logger.exception("Could not publish the postprocessing account for %s",
+                                 request.campaign_id)
+                detail = (f"the account of this postprocess was written but could not be "
+                          f"published, so the campaign log may not show it: {e}")
+                message = f"{message} ({detail})" if not ok else detail
+                state.update(error=detail)
             state.update(postprocessed=status.postprocessed,
                          postprocessing_error=status.postprocessing_error)
             state.set_phase(Phase.FINISHED)
