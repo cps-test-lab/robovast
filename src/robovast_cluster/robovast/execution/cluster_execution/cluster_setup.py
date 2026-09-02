@@ -299,6 +299,17 @@ def setup_server(config_name=None, list_configs=False, force=False,
             "or --list to see available configs."
         )
 
+    # Argument errors first, before anything dials the cluster: a placement this provider
+    # cannot apply is one, and being told so should not cost a connection timeout -- nor
+    # leave a half-set-up cluster behind it. The lookup is offline.
+    if not getattr(get_cluster_config(config_name), "store_is_placeable", False):
+        from ..cluster_config.minio_store import \
+            refuse_a_store_placement  # pylint: disable=import-outside-toplevel
+        refuse_a_store_placement(
+            config_name, (service_kwargs or {}).get("store_storage_path", ""),
+            (service_kwargs or {}).get("store_storage_class", ""),
+            get_cluster_config(config_name).get_storage_backend())
+
     # Check if cluster is already set up — the deployed service's env is the
     # record (no local flag file), so this is correct even from another host.
     kube_context = cluster_kwargs.pop('kube_context', None)
@@ -458,11 +469,21 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
     # persisted as this cluster's recorded provider config.
     from .index_deploy import index_host_path  # pylint: disable=import-outside-toplevel
+    store_storage_path = service_kwargs.pop("store_storage_path", "")
+    store_storage_class = service_kwargs.pop("store_storage_class", "")
+    store_storage_size = service_kwargs.pop("store_storage_size", "")
+    # A bucket has no directory to place and no class to provision, so a store placement
+    # there would be recorded and read later as though it had applied. Refused before
+    # anything is created, like the other argument errors above.
     cluster_config.setup_cluster(
         kube_context=kube_context,
         control_node_labels=store_selector or None,
-        index_storage_path=index_host_path(
-            service_kwargs.get("workspaces_storage_path", "")),
+        store_storage_path=store_storage_path,
+        store_storage_class=store_storage_class,
+        store_storage_size=store_storage_size,
+        # Beside the store, never beside the workspaces: every row in the index was ingested
+        # from a campaign in the store, so the two belong on one disk and move together.
+        index_storage_path=index_host_path(store_storage_path),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
         **cluster_kwargs,
@@ -556,7 +577,59 @@ def setup_server(config_name=None, list_configs=False, force=False,
     }
 
 
-def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_override):
+
+def _data_node_selector(core):
+    """The selector pinning a purge to the node holding this deployment's data, or ``None``.
+
+    ``None`` means no node carries the label, and the caller must not fall back to "anywhere":
+    an unpinned purge lands on whichever node the scheduler likes and empties a directory
+    there -- the wrong node's, or nothing at all, both silently.
+    """
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        DATA_NODE_LABEL, LABEL_VALUE, labeled_nodes)
+
+    try:
+        if labeled_nodes(core, DATA_NODE_LABEL):
+            return {DATA_NODE_LABEL: LABEL_VALUE}
+    except Exception as e:  # noqa: BLE001 - an unpinned purge is refused, not guessed
+        logger.debug("could not read the data-node label: %s", e)
+    return None
+
+
+def _node_data_locations(namespace, kube_context):
+    """Every node directory this deployment writes to, read from the live objects.
+
+    Only hostPaths: a claim is deleted through the API by the cleanup that owns it, while a
+    directory on a node can be reached from nothing but that node. Read here, before the
+    teardown removes the objects that name them -- afterwards nothing does.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    from ..cluster_config.minio_store import live_store_backing  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+    from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
+
+    paths = []
+    try:
+        load_kube_config(context=kube_context)
+        kind, detail = live_store_backing(namespace)
+        if kind == "hostPath":
+            paths.append(detail)
+        pod = client.CoreV1Api().read_namespaced_pod("robovast", namespace)
+        for volume in (pod.spec.volumes or []):
+            if volume.host_path is not None and volume.host_path.path not in paths:
+                paths.append(volume.host_path.path)
+        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
+        for volume in (dep.spec.template.spec.volumes or []):
+            if volume.host_path is not None and volume.host_path.path not in paths:
+                paths.append(volume.host_path.path)
+    except Exception as e:  # noqa: BLE001 - a teardown must finish; it reports what it saw
+        logger.debug("could not read this deployment's node directories: %s", e)
+    return [p for p in paths if p]
+
+
+def delete_server(config_name=None, forget_placement=False, delete_data=False,
+                  **cluster_kwargs_override):
     """Clean up transfer mechanism for cluster execution.
 
     Args:
@@ -603,6 +676,11 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
     # Clean up scenario run jobs and pods first.
     namespace = cluster_kwargs.get("namespace", "default")
     kube_context = cluster_kwargs.pop("kube_context", None)
+
+    # Read where this deployment's data is BEFORE deleting the objects that record it: the
+    # store pod's volume and the service Deployment's are the only statement of it, and once
+    # they are gone the directories on the node are unreachable and unnamed.
+    kept = _node_data_locations(namespace, kube_context)
     try:
         from .cluster_execution import \
             cleanup_cluster_campaign  # pylint: disable=import-outside-toplevel,cyclic-import
@@ -659,7 +737,25 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
         logger.info("placement labels cleared from %s; the data under the hostPaths is "
                     "untouched", ", ".join(cleared) if cleared else "no node")
 
-    # What the caller reports. Only the governor is here so far, because it is the only
-    # teardown step whose outcome the operator has to act on: a node left pinned is a
-    # lasting change to a shared machine.
-    return {"cpu_governor": governor_removal}
+    # The data, last: everything that could still be writing to it is gone by now. Kept
+    # unless asked for, because the store holds finished campaigns and a teardown that
+    # silently deleted them would be a very expensive way to free a node.
+    purged = []
+    if delete_data and kept:
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from .data_purge import purge_node_paths  # pylint: disable=import-outside-toplevel
+
+        selector = _data_node_selector(client.CoreV1Api())
+        if selector is None:
+            raise RuntimeError(
+                "--delete-data cannot run: no node carries this deployment's data label, so "
+                "there is nothing to say which machine holds the directories. They are "
+                f"{', '.join(kept)}; remove them on that node, or re-label it first.")
+        purged = purge_node_paths(namespace, kept, selector, kube_context)
+
+    # What the caller reports. The governor because a node left pinned is a lasting change
+    # to a shared machine; the data because bytes nothing names any more are bytes nobody
+    # will find, and the operator is the only one who can decide they are wanted.
+    return {"cpu_governor": governor_removal, "data_kept": [] if delete_data else kept,
+            "data_removed": purged}
