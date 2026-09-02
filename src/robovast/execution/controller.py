@@ -1182,7 +1182,8 @@ class CampaignController:
                 # one place a campaign's declared figure did not apply -- and it is the
                 # path that runs it most often.
                 convert_resources=postprocess_convert_resources(
-                    str(campaign_vast(self.campaign_root))))
+                    str(campaign_vast(self.campaign_root))),
+                admission=getattr(self.backend, "admission", None))
             sync(cluster_config, self.campaign_id, self.campaign_root)
             # Only now can the message say where the conversion error is: the sync is what
             # decides whether a POSTPROCESSING section exists to point at.
@@ -1367,6 +1368,10 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             # run counter, so its narration is all a reader has to tell a long step from a
             # stuck one.
             state=state,
+            # The queue this backend's own jobs went through. Without it the pod is created
+            # against whatever the cluster has at that instant -- and this runs at the END
+            # of a campaign, when other campaigns have had the whole run to fill it.
+            admission=getattr(backend, "admission", None),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
