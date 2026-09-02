@@ -2777,6 +2777,21 @@ class RobovastInterface(ABC):
         runs is not what decides whether a caller can be handed a file.
         """
 
+    def campaign_archive_name(self, campaign_id: str) -> str:
+        """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.
+
+        ``<campaign-id>.tar.gz`` for a campaign that is over, and that is what this default
+        answers. An implementation that can tell a **running** campaign apart overrides it
+        to say so in the name (``<campaign-id>.incomplete.tar.gz``): a mid-run snapshot has
+        the shape of a finished campaign, so once the file is sitting in a downloads
+        directory its name is the only thing that still distinguishes it.
+
+        Concrete rather than abstract because an implementation with no notion of liveness
+        -- a client transport, a fake -- has a correct answer available, and forcing it to
+        write one out would be inviting a wrong one.
+        """
+        return f"{campaign_id}.tar.gz"
+
     @abstractmethod
     def list_share_archives(self) -> ShareListing:
         """What the configured share holds, read with **this service's** credentials.

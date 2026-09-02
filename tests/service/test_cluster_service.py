@@ -213,7 +213,10 @@ def test_campaign_tar_stream_serves_a_campaign_the_index_has_not_caught_up_with(
     monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: set())
     if live_by == "driven_here":
         monkeypatch.setattr(cs, "_extra_live_ids", lambda: set())
-        cs._campaigns[campaign_id] = types.SimpleNamespace(campaign_id=campaign_id)
+        cs._campaigns[campaign_id] = types.SimpleNamespace(
+            campaign_id=campaign_id, thread=None,
+            state=types.SimpleNamespace(
+                snapshot=lambda: types.SimpleNamespace(phase="running")))
     else:
         monkeypatch.setattr(cs, "_extra_live_ids", lambda: {campaign_id})
 

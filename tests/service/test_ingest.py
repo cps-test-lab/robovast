@@ -196,8 +196,8 @@ def test_a_raw_archive_reports_the_analysis_db_as_recoverable(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "campaign_store", "index",
-                                     "analysis_db"}
+    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
+                                     "index", "analysis_db"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -450,3 +450,29 @@ class _State:
 
     def update(self, *_a, **_k):
         pass
+
+
+def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
+    """A campaign archived mid-run imports, and cannot import quietly.
+
+    Degraded rather than refused: a snapshot is a real campaign with runs missing, and the
+    person importing it may hold the only copy. But nothing else in the report can notice —
+    every other stage inspects what is *present*, and a snapshot differs from a finished
+    campaign only in what is absent — so the marker the archiver wrote is the campaign
+    saying so itself.
+    """
+    import json
+
+    from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
+
+    marker = campaign / SNAPSHOT_MEMBER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"complete": False, "runs_completed": 3, "runs_total": 20}),
+                      encoding="utf-8")
+
+    report = ingest_campaign(campaign)
+
+    assert report["ok"] is True, "a snapshot must not be refused"
+    stage = report["stages"]["completeness"]
+    assert stage["verdict"] == "degraded"
+    assert "3/20 runs" in stage["detail"]
