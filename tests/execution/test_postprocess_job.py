@@ -399,8 +399,10 @@ def test_the_staging_container_files_its_own_failure():
     stage = m["spec"]["template"]["spec"]["initContainers"][0]
 
     assert stage["name"] == pj.STAGE_CONTAINER
-    assert stage["command"] == ["python3", "-m",
-                                "robovast.execution.cluster_execution.postprocess_stage"]
+    # Wrapped in a shell for the umask the shared tree needs (see the scheduling tests),
+    # so what is pinned here is that this container is the entry point, not the wrapper.
+    assert "robovast.execution.cluster_execution.postprocess_stage" in " ".join(
+        stage["command"])
     # Every code the entry point can return is one the reader gets in words.
     assert set(postprocess_stage.STAGE_EXIT_REASONS)
 

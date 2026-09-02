@@ -14,6 +14,8 @@ lists in this manifest* is the schedule.
 
 import pytest
 
+from robovast.execution.cluster_execution import postprocess_job as pj
+
 from robovast.common.index_db import DSN_ENV
 from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
 from robovast.execution.cluster_execution.postprocess_host import ENV_FORCE
@@ -212,3 +214,24 @@ def test_a_volume_is_declared_only_where_a_container_mounts_it(rosbag_cmds):
                for m in c.get("volumeMounts", [])}
 
     assert declared == mounted
+
+
+def test_one_tree_is_writable_by_containers_that_run_as_different_users():
+    """The stage container creates the campaign tree and the conversion writes its outputs
+    INTO it, as a different user: the controller image runs as root, an execution image as
+    its own unprivileged user. Without a shared group AND a group-writable umask, the
+    conversion fails on its first output file with EACCES -- after staging the whole
+    campaign, so the cost is paid before the failure.
+
+    Both halves are asserted because either alone is useless: a group that cannot write is
+    not access, and a permissive umask on a tree the other user is not in the group of is
+    not either.
+    """
+    spec = _pod_spec()
+
+    assert spec["securityContext"]["fsGroup"] == pj.CAMPAIGN_TREE_GID
+    assert pj.CAMPAIGN_TREE_GID in spec["securityContext"]["supplementalGroups"]
+    for container in spec["initContainers"] + spec["containers"]:
+        if container["name"] == pj.CONVERT_CONTAINER:
+            continue  # it writes as itself; it is the reader of this arrangement
+        assert "umask 0002" in " ".join(container["command"]), container["name"]
