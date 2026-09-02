@@ -60,6 +60,7 @@ import re
 import shlex
 import tempfile
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1728,17 +1729,30 @@ class BatchJobRunner:
         declared = getattr(container, "calibration", None)
         if declared is None:
             return out
+
+        def _field(obj, name):
+            """One field of a calibration block, whether it arrived as a model or a mapping.
+
+            The plan carries what the `.vast` stated, and that is a plain mapping on the path
+            through a container block. Reading it with ``getattr`` alone returned ``None`` for
+            every field, so a stated block resolved to the role defaults -- configured in the
+            file, inert in the allocation, and silent about it.
+            """
+            if isinstance(obj, Mapping):
+                return obj.get(name)
+            return getattr(obj, name, None)
+
         for field in ("size_on", "limit"):
-            value = getattr(declared, field, None)
+            value = _field(declared, field)
             if value is not None:
                 out[field] = value
-        headroom = getattr(declared, "headroom", None)
+        headroom = _field(declared, "headroom")
         if headroom is not None:
             # Per field, so stating only `cpu` keeps the memory default rather than losing it.
             out["headroom"] = {
                 **out["headroom"],
-                **{f: getattr(headroom, f) for f in ("cpu", "memory")
-                   if getattr(headroom, f, None) is not None}}
+                **{f: _field(headroom, f) for f in ("cpu", "memory")
+                   if _field(headroom, f) is not None}}
         return out
 
     def _calibration_by_container(self) -> dict:
