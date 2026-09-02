@@ -94,6 +94,12 @@ class MetadataGenerator:
 
     def __init__(self, campaign_dir: str | Path):
         self.campaign_dir = Path(campaign_dir)
+        #: Runs whose verdict could not be read, as ``config/run``. Collected while the
+        #: record is built so the caller can report how much of the campaign is described
+        #: without opening the record, and so that a campaign where NOTHING could be
+        #: described still fails -- that is a broken input rather than a campaign with
+        #: some failed runs in it.
+        self._runs_without_verdict: list = []
 
     def generate_metadata(self) -> Dict[str, Any]:
         """Generate structural metadata for the campaign.
@@ -237,7 +243,14 @@ class MetadataGenerator:
                 run_dir = self.campaign_dir / config_name / str(test_num)
                 entry = {"dir": f"{config_name}/{test_num}"}
 
-                # test.xml
+                # test.xml. A run that produced no verdict has none, and that is a fact
+                # about the campaign rather than a broken input: a container can start,
+                # burn CPU and be recorded in resource_usage.csv without the scenario ever
+                # reaching a result. Campaigns routinely carry some -- the store counts
+                # them as no-result runs -- so refusing to describe the campaign because
+                # one of them cannot be described leaves a campaign whose derived data is
+                # complete permanently unable to record that it is. The run is described
+                # as having no verdict instead, which is what a reader has to know.
                 try:
                     result = read_test_result(run_dir)
                     entry["success"] = "true" if result["success"] else "false"
@@ -247,9 +260,11 @@ class MetadataGenerator:
                         end_dt = start_dt + timedelta(seconds=result["duration_sec"])
                         entry["end_time"] = end_dt.isoformat()
                 except Exception as e:
-                    raise ValueError(
-                        f"Failed to parse test.xml in {run_dir}: {e}"
-                    ) from e
+                    # Named, not silent: "no verdict" is not the same as "failed", and a
+                    # reader counting failures must not read one as the other.
+                    entry["success"] = "unknown"
+                    entry["no_verdict_reason"] = str(e)
+                    self._runs_without_verdict.append(entry["dir"])
 
                 # Output files
                 output_files = []
@@ -265,13 +280,18 @@ class MetadataGenerator:
                 output_files.sort()
                 entry["output_files"] = output_files
 
-                # sysinfo
+                # sysinfo. Absent for the same reason a verdict is: a run that never
+                # reached a result never recorded the machine it ran on either. Tolerated
+                # only for such a run -- a run that DID produce a verdict and has no
+                # sysinfo is a real gap in what the campaign recorded, and saying so is
+                # the only way anyone finds out.
                 try:
                     entry["sysinfo"] = read_sysinfo(run_dir)
                 except FileNotFoundError as exc:
-                    raise FileNotFoundError(
-                        f"sysinfo.yaml not found in {run_dir}"
-                    ) from exc
+                    if entry.get("success") != "unknown":
+                        raise FileNotFoundError(
+                            f"sysinfo.yaml not found in {run_dir}"
+                        ) from exc
 
                 # rosbag2 metadata
                 rosbag2_meta_path = run_dir / "rosbag2" / "metadata.yaml"
@@ -299,6 +319,21 @@ class MetadataGenerator:
                         )
 
                 config_entry["test_results"].append(entry)
+
+        # A campaign where not one run can be described is a broken input, not a campaign
+        # with some failed runs in it, and a record listing nothing describes nothing. The
+        # count is recorded either way, so a reader can tell a campaign carrying a few
+        # verdict-less runs from one that is mostly holes without reading every entry.
+        described = sum(len(c.get("test_results") or [])
+                        for c in metadata["configurations"])
+        if described and len(self._runs_without_verdict) == described:
+            raise ValueError(
+                f"no run of this campaign recorded a verdict ({described} run(s) "
+                f"checked), so there is nothing to describe: "
+                f"{', '.join(self._runs_without_verdict[:5])}"
+                f"{' …' if described > 5 else ''}")
+        if self._runs_without_verdict:
+            metadata["runs_without_verdict"] = sorted(self._runs_without_verdict)
 
         return metadata
 
