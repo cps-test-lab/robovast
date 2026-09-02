@@ -3231,14 +3231,16 @@ class KubernetesBackend(ExecutionBackend):
         Never fatal. This improves a record; the campaign it describes is already running.
         """
         from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
+        plan = getattr(runner, "plan", None)
+        containers = tuple(getattr(plan, "containers", ()) or ())
         images = {}
-        for container in getattr(runner.plan, "containers", ()) or ():
-            if not container.image:
+        for container in containers:
+            if not getattr(container, "image", None):
                 continue
             for role in getattr(container, "roles", ()) or ():
                 images[role] = container.image
-        for container in getattr(runner.plan, "containers", ()) or ():
-            if container.image:
+        for container in containers:
+            if getattr(container, "image", None):
                 images[container.name] = container.image
         try:
             update_launch_images(Path(campaign_root), images)
