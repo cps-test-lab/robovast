@@ -581,7 +581,7 @@ def _staging_script() -> str:
     Plain ``sh``: no ``pipefail`` and no ``PIPESTATUS`` here, so each stage's status is
     taken directly rather than through a pipe.
     """
-    alias = ('mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"')
+    alias = 'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"'
     return "\n".join([
         "log=/tools/staging.log",
         "rc=0",
