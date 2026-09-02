@@ -3828,8 +3828,20 @@ class ClusterService(LocalTransport):
         Asking the filesystem would report "no" for every campaign this pod has not
         happened to fetch, so an import would sail past the collision check and then
         overwrite a campaign in the durable home that nobody was warned about.
+
+        The live registry counts too, and must: the index marker is written best-effort at
+        the head of the driver, so a campaign this service is driving right now can be
+        listed (``list_campaigns`` unions the registry in) while its marker is missing. A
+        predicate narrower than the listing makes such a campaign refuse the very download
+        its card offers — and a download is the one operation that has to be available for
+        every campaign that exists here, postprocessed or raw, finished or still running.
         """
-        return campaign_id in self._durable_campaign_ids()
+        if campaign_id in self._durable_campaign_ids():
+            return True
+        with self._lock:
+            if campaign_id in self._campaigns:
+                return True
+        return campaign_id in self._extra_live_ids()
 
     def _release_durable_campaign(self, campaign_id: str) -> None:
         """Under ``force``: delete the object-store copy being replaced, and its marker.
@@ -3944,7 +3956,11 @@ class ClusterService(LocalTransport):
         shutil.rmtree(target, ignore_errors=True)
 
     def campaign_tar_stream(self, campaign_id: str):
-        """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.
+        """Yield a ``tar.gz`` of the campaign as the store holds it, streamed from it.
+
+        Postprocessed or raw, finished or still running: what is in the store is what
+        comes out. Nothing here waits on postprocessing, and nothing may — derived data is
+        an addition to a campaign, never the condition for reading one.
 
         Backs ``GET /campaigns/{id}/archive``. Objects are fetched and tarred on the
         fly (:func:`campaign_archive.iter_tar`), so **no scratch is used on the service
@@ -3956,8 +3972,8 @@ class ClusterService(LocalTransport):
         # Eagerly, before a generator is handed to the response: once streaming has begun
         # the status line is already 200, so a campaign that does not exist arrives as a
         # truncated body -- "Response ended prematurely" on the client, which names neither
-        # the campaign nor the problem. The predicate is the one `list_campaigns` answers
-        # with, so the archive route and the listing cannot disagree about what is here.
+        # the campaign nor the problem. The predicate covers everything the listing shows,
+        # so a campaign with a card can never be refused the download that card offers.
         if not self._campaign_is_here(campaign_id):
             raise KeyError(f"no campaign {campaign_id!r} on this service")
 
