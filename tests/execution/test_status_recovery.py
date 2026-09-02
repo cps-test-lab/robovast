@@ -156,3 +156,74 @@ def test_empty_run_table_leaves_the_journal_alone(tmp_path):
 def test_stopped_is_terminal():
     assert "stopped" in {str(p) for p in TERMINAL_PHASES}
     assert is_terminal("stopped")
+
+
+def _marker(campaign: Path) -> None:
+    """Write the provenance record postprocessing leaves behind, with real entries."""
+    from robovast.common.campaign_data import POSTPROCESSING_RECORD
+
+    path = campaign / POSTPROCESSING_RECORD
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("generated_by: robovast\nentries:\n- output: cfg/0/out.csv\n"
+                    "  sources: [cfg/0/rosbag2]\n  plugin: p\n")
+
+
+def test_a_successful_rerun_clears_the_error_that_was_suppressing_the_flag(tmp_path):
+    """A campaign whose postprocessing failed once and then succeeded must report its
+    derived data.
+
+    The reconstruction refuses to promote ``postprocessed`` over a recorded
+    ``postprocessing_error`` -- deliberately, so a half-built database cannot hide a
+    failure behind "results are ready". But the error it reads is the one this very call
+    clears, so the promotion was decided on a fact that no longer held: the campaign
+    reported `postprocessed: False` with no error to explain it, while its rows sat in the
+    index.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1",
+                                             postprocessing_error="an earlier attempt died"))
+    _marker(campaign)
+
+    status = record_step_outcome(campaign, postprocessing=(True, "done"))
+
+    assert status.postprocessing_error is None
+    assert status.postprocessed is True, "the derived data is there and the error is gone"
+    # And durably, because that file is what every later reader reconstructs from.
+    assert reconstruct_status_from_disk(campaign).postprocessed is True
+
+
+def test_a_failure_with_nothing_derived_stays_unpostprocessed(tmp_path):
+    """The other direction, which the re-ask must not weaken: a run that failed having
+    derived nothing has no provenance record, so the flag stays False and the error says
+    why. Only the record promotes it."""
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1"))
+
+    status = record_step_outcome(campaign, postprocessing=(False, "it died again"))
+
+    assert status.postprocessing_error == "it died again"
+    assert status.postprocessed is False
+
+
+def test_a_failure_after_an_earlier_success_keeps_the_data_it_has(tmp_path):
+    """Derived data that exists is reported as existing, even when the latest attempt
+    failed: the two facts are separate and a reader needs both. Saying "no results" over a
+    campaign whose rows are in the index would send them to re-derive what is there.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1"))
+    _marker(campaign)          # an earlier postprocess got this far
+
+    status = record_step_outcome(campaign, postprocessing=(False, "the latest one died"))
+
+    assert status.postprocessing_error == "the latest one died"
+    assert status.postprocessed is True
