@@ -622,6 +622,11 @@ def main():
             while not _shutdown and time.time() < deadline:
                 time.sleep(0.1)
 
+    # The daemon ends when a signal sets `_shutdown`, which is an orderly stop and not a
+    # failure. Stated rather than fallen off the end so that both of this function's paths
+    # return a status: the caller exits on whatever it returns.
+    return 0
+
 
 if __name__ == "__main__":
     # The daemon path returns None and is ended by a signal; `--once` returns a status.
