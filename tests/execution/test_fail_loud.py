@@ -122,6 +122,12 @@ def test_unreachable_cluster_only_ends_postprocessing():
         reason=urllib3.exceptions.ConnectTimeoutError("connect timed out"))
     core = mock.Mock()
     core.create_namespaced_config_map.side_effect = boom
+    # The submit reads whether a Job of this name is already running BEFORE it writes the
+    # scripts ConfigMap -- adopting a live Job must not rewrite what that Job mounts -- so
+    # that read is the first call to touch the API server and the one that has to translate
+    # the transport error.
+    batch = mock.Mock()
+    batch.read_namespaced_job.side_effect = boom
 
     # The Job's host container is the index ingest, so the manifest is not built at all
     # without a DSN in the submitting process -- and this test is about the transport to
@@ -132,7 +138,7 @@ def test_unreachable_cluster_only_ends_postprocessing():
                     "campaign_storage_location", return_value=("bucket", "prefix/")), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch("kubernetes.client.CoreV1Api", return_value=core), \
-         mock.patch("kubernetes.client.BatchV1Api"), \
+         mock.patch("kubernetes.client.BatchV1Api", return_value=batch), \
          mock.patch("robovast.execution.cluster_execution.cluster_execution."
                     "resolve_pull_secret", return_value=""):
         ok, message = postprocess_job.run_conversion_job(
