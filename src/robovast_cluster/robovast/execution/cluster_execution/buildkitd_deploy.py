@@ -31,6 +31,8 @@ session, so the staged context in the Job's own emptyDir still works untouched.
 
 import logging
 
+from . import data_paths
+
 logger = logging.getLogger(__name__)
 
 #: One object per deployment, so the name is fixed rather than derived -- that is what makes an
@@ -56,7 +58,7 @@ BUILDKITD_STORE_DIR = "/home/user/.local/share/buildkit"
 #: ships no StorageClass at all, so a PVC there stays ``Pending`` forever -- the same reason the
 #: in-cluster registry defaults to a hostPath. It ties the cache to one node, which is why the
 #: daemon carries the ``robovast.io/build-node`` selector (:mod:`.node_placement`).
-DEFAULT_BUILDKITD_HOST_PATH = "/data/robovast-buildkit"
+DEFAULT_BUILDKITD_HOST_PATH = data_paths.DEFAULT_BUILDKITD_HOST_PATH
 
 #: Size of the PVC when one is used. Only meaningful on a cluster that has a StorageClass; the
 #: hostPath default is bounded by the node's disk and by the GC ceiling below.

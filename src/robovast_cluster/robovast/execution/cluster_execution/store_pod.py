@@ -88,11 +88,12 @@ def _add_port(service, name, port):
 
 
 def attach_infrastructure(docs, namespace="default", index_storage_path="",
-                          registry_storage_path="", registry_storage_class=""):
+                          index_storage_class="", registry_storage_path="",
+                          registry_storage_class=""):
     """Add the registry and the index to a provider's parsed store manifest.
 
-    *docs* is the provider's ``robovast`` manifest (e.g.
-    ``cluster_config.rke2.MINIO_MANIFEST_RKE2`` parsed). The containers are appended to
+    *docs* is the provider's ``robovast`` manifest, parsed, with its store volume already
+    placed by :func:`cluster_config.minio_store.apply_store_volume`. The containers are appended to
     the Pod named :data:`STORE_POD_NAME` and their ports to the Service of the same name.
 
     A provider whose object storage is external deploys no store pod of its own and passes
@@ -122,7 +123,7 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
              registry_deploy.registry_volume(registry_storage_path,
                                              registry_storage_class)),
             (index_deploy.index_container(),
-             index_deploy.index_volume(index_storage_path))):
+             index_deploy.index_volume(index_storage_path, index_storage_class))):
         if not any(c.get("name") == container["name"] for c in containers):
             containers.append(container)
         if not any(v.get("name") == volume["name"] for v in volumes):
@@ -138,21 +139,31 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     _add_port(service, "registry", registry_deploy.REGISTRY_PORT)
     _add_port(service, "index", index_deploy.INDEX_PORT)
 
-    claims = [c for c in (registry_deploy.registry_pvc_manifest(
-        namespace, registry_storage_class),) if c]
+    claims = [c for c in (registry_deploy.registry_pvc_manifest(namespace,
+                                                                registry_storage_class),
+                          index_deploy.index_pvc_manifest(namespace, index_storage_class))
+              if c]
     return claims + docs
 
 
 def infrastructure_claims(namespace="default"):
-    """Every claim :func:`attach_infrastructure` can create, for a deletion pass.
+    """Every claim :func:`attach_infrastructure` can create **and cleanup may remove**.
 
-    Cleanup does not know which storage flags the setup that created this cluster was
-    given, and a claim left behind is a volume nobody will ever look for again. Deletion
-    tolerates a 404, so enumerating what *could* exist is both correct and cheap.
+    Cleanup does not know which storage flags the setup that created this cluster was given,
+    so this enumerates what *could* exist; deletion tolerates a 404, which makes that both
+    correct and cheap.
+
+    **Only the re-derivable ones are here.** Built images are rebuilt on demand and the index
+    is re-ingested from the campaigns beside it, so removing either costs time and nothing
+    else. The object store's own claim is deliberately absent: it holds the campaigns, and a
+    cleanup that deleted them would mean something different on a provisioned cluster than on
+    one whose store is a directory cleanup leaves alone. ``vast cluster cleanup --delete-data``
+    is how that is asked for.
     """
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import index_deploy, registry_deploy  # pylint: disable=import-outside-toplevel
 
-    return [registry_deploy.registry_pvc_manifest(namespace, "local-path")]
+    return [registry_deploy.registry_pvc_manifest(namespace, "local-path"),
+            index_deploy.index_pvc_manifest(namespace, "local-path")]
 
 
 def infrastructure_container_names():

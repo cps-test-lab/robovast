@@ -1271,6 +1271,30 @@ def test_the_node_walk_stops_once_the_store_answers(cs, monkeypatch):
         "the walk must stop as soon as the provider recognises its store"
 
 
+def test_the_walk_stops_when_the_store_is_here_and_cannot_be_measured(cs, monkeypatch):
+    """A hostPath store is in the stats as a pod with no volume entry.
+
+    No further node will change that, so the walk must end there. Walking on would spend the
+    disk budget re-learning it on every node, on the one lane where the store is a directory
+    -- which is the default.
+    """
+    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
+    from robovast.execution.cluster_config.minio_store import MINIO_POD_NAME
+
+    unmeasurable = {"podRef": {"name": MINIO_POD_NAME, "namespace": "default"}, "volume": []}
+    core = _disk_env(cs, monkeypatch, ["n1", "n2", "n3"],
+                     {"n1": _summary(400, 600, pods=[unmeasurable]),
+                      "n2": _summary(1, 1), "n3": _summary(1, 1)},
+                     service_node="n1")
+    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
+
+    usage = cs.resource_usage()
+    assert usage.store is None, "no figure is honest; a wrong one is not"
+    assert usage.disk is not None, "the disk meter must survive a store that cannot answer"
+    assert core.proxy_calls == [("n1", "stats/summary")], \
+        "an unmeasurable store must end the walk, not restart it on every node"
+
+
 def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatch):
     """A provider that cannot measure its store reports none — not a store of size zero.
 
@@ -1287,10 +1311,14 @@ def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatc
 
 
 def test_base_config_reports_no_store_usage_by_default():
-    """The hook defaults to "cannot say", so a provider opts in rather than out."""
+    """The hook defaults to "cannot say", so a provider opts in rather than out.
+
+    The empty reason is the load-bearing half: it means *keep looking*, so a caller walking
+    nodes does not stop at a provider that simply has not been asked yet.
+    """
     from robovast.execution.cluster_config.base_config import BaseConfig
 
-    assert BaseConfig.get_store_usage(object(), {"n1": {}}) == (None, None)
+    assert BaseConfig.get_store_usage(object(), {"n1": {}}) == (None, None, "")
 
 
 def _usage_node(name, cpu, mem):

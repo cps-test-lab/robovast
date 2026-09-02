@@ -41,6 +41,8 @@ different pod, so the connection goes over the pod network to
 :func:`index_host`. Nothing else changes -- one namespace, one Secret, one client.
 """
 
+from . import data_paths
+
 #: Postgres' own port. Published on the store pod's ClusterIP Service and nowhere else:
 #: no Ingress rule routes to it, so it is reachable from inside the cluster network and not
 #: from outside it. Exposing it further would be a database on the internet with one shared
@@ -74,9 +76,9 @@ INDEX_DATA_DIR = f"{INDEX_MOUNT_DIR}/pgdata"
 #: Name of the volume carrying :data:`INDEX_MOUNT_DIR`.
 INDEX_VOLUME_NAME = "index-data"
 
-#: Default host path backing the index. See :func:`index_volume` for why it is a hostPath
-#: and not a claim.
-DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
+#: Default host path backing the index. Declared in :mod:`.data_paths` with every other
+#: tenant's, so the resolver that places them and the volume that reads one cannot disagree.
+DEFAULT_INDEX_HOST_PATH = data_paths.DEFAULT_INDEX_HOST_PATH
 
 #: What the scheduler reserves for Postgres, and what it may grow to.
 #:
@@ -186,46 +188,55 @@ def index_container() -> dict:
     }
 
 
-def index_volume(storage_path: str = "") -> dict:
-    """The volume backing the index: an ``emptyDir``, living exactly as long as the pod.
+def index_volume(storage_path: str = "", storage_class: str = "") -> dict:
+    """The volume backing the index, backed exactly like the object store beside it.
 
-    **The index must not outlive the campaign results it is derived from.** That is the
-    whole reason for this choice, and it is structural rather than enforced by cleanup
-    code: the index sits in the same pod as the object store, on a volume of the same
-    kind, so the two are created and destroyed together and no sequence of restarts,
-    evictions or operator mistakes can separate them.
+    **The index is derived data and must not outlive its sources.** Every row in it was
+    ingested from a campaign in the object store, so an index that survived a store which did
+    not would answer questions about campaigns nobody can reproduce, re-ingest or check --
+    confidently, and with nothing to compare against. It shares the store's pod, takes the
+    store's backing, and sits at a path derived from the store's, so the two are created,
+    moved and destroyed as one thing rather than by a rule someone has to remember.
 
-    This deliberately reverses an earlier decision, and the reasoning that overturned it
-    is worth keeping. A hostPath was chosen so a pod restart would not "drop the index,
-    and re-ingesting the corpus from the object store is hours". That premise was wrong:
-    ``minio-storage`` is itself an ``emptyDir``, so the results are destroyed by the very
-    same restart. Re-ingest was never slow -- it was impossible, because the source had
-    gone at the same instant.
+    What losing it costs is a re-ingest from the campaigns beside it: hours for a large
+    corpus, and nothing that cannot be rebuilt. That is why it is one replica, with no
+    standby and no backup.
 
-    Observed on a live cluster before this was fixed: 66 campaigns' directories vanished
-    while the index still served one campaign's 10448 pose rows. A derived index outliving
-    its sources is worse than no index, because it answers questions about campaigns that
-    can no longer be reproduced, re-ingested or checked -- confidently, and with nothing to
-    compare against.
-
-    *storage_path* is accepted and ignored, so the callers that thread a node path through
-    do not have to change if this reverts. It is not a lie about behaviour: an emptyDir is
-    on the node's own filesystem either way, which is what that path was steering.
+    The container runs as root, so Postgres' entrypoint takes ownership of ``PGDATA`` itself;
+    a ``DirectoryOrCreate`` hostPath arriving as ``root:root`` needs nothing prepared on the
+    node.
     """
-    del storage_path  # see above: an emptyDir has no path to place
-    return {"name": INDEX_VOLUME_NAME, "emptyDir": {}}
+    if storage_class:
+        return {"name": INDEX_VOLUME_NAME,
+                "persistentVolumeClaim": {"claimName": INDEX_VOLUME_NAME}}
+    return {"name": INDEX_VOLUME_NAME,
+            "hostPath": {"path": storage_path or DEFAULT_INDEX_HOST_PATH,
+                         "type": "DirectoryOrCreate"}}
 
 
-def index_host_path(workspaces_storage_path: str = "") -> str:
-    """Where the index hostPath goes: beside the deployment's other node-local data.
+def index_pvc_manifest(namespace: str, storage_class: str, size: str = "20Gi"):
+    """The claim :func:`index_volume` names, or ``None`` where a hostPath backs it."""
+    if not storage_class:
+        return None
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": INDEX_VOLUME_NAME, "namespace": namespace,
+                     "labels": {"app": "robovast-service"}},
+        "spec": {"accessModes": ["ReadWriteOnce"],
+                 "storageClassName": storage_class,
+                 "resources": {"requests": {"storage": size}}},
+    }
 
-    A deployer who moved the workspaces store to another disk moved this deployment's
-    node-local state, and the index is part of it. Pinning it to
-    :data:`DEFAULT_INDEX_HOST_PATH` regardless would quietly leave it on the node's root
-    filesystem -- the disk they were moving off.
+
+def index_host_path(store_storage_path: str = "") -> str:
+    """Where the index goes: beside the object store it is derived from.
+
+    One directory holds both, so they are one thing to place, one disk to size and one thing
+    to delete -- which is what keeps a derived index from outliving its sources. Falls back to
+    the default only when the store itself is unplaced, where both take their defaults and are
+    siblings there too.
     """
-    import pathlib  # pylint: disable=import-outside-toplevel
-
-    if not workspaces_storage_path:
+    if not store_storage_path:
         return DEFAULT_INDEX_HOST_PATH
-    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-index")
+    return data_paths.derive_sibling(store_storage_path, "store", "index")
