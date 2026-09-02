@@ -623,3 +623,44 @@ def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
     # The disk request, by contrast, is the campaign's and stays: it is what reserves the
     # shared emptyDir the campaign lands in.
     assert pj.POSTPROCESS_INIT_RESOURCES["requests"]["ephemeral-storage"]
+
+
+def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, monkeypatch):
+    """The submitter's inputs are assembled per file, never chosen wholesale.
+
+    "Is this root local?" has no single answer: the service's cache directory holds
+    whatever earlier calls left there, so it can carry the `.vast` and not
+    `execution.yaml`. Deciding from one file that the rest are present turns that partial
+    state into "no such file" at submit time, on a campaign whose results are fine -- which
+    is what a real retrigger did.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    (tmp_path / "_config").mkdir()
+    (tmp_path / "_config" / "x.vast").write_text(
+        "version: 3\nmetadata: {name: x}\nresults_processing:\n"
+        "  postprocessing:\n  - rosbags_tf_to_csv\n")
+    fetched = []
+
+    class _Store:
+        def list_keys(self, bucket, prefix):
+            return [f"{prefix}x.vast"]
+
+        def download_object(self, bucket, key, dst):
+            fetched.append(key)
+            if key.endswith("execution.yaml"):
+                with open(dst, "w", encoding="utf-8") as f:
+                    f.write("image: img:1\n")
+                return True
+            return False
+
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+
+    rosbag_cmds, image, _tolerate = pj._submit_inputs(object(), "camp", str(tmp_path))
+
+    # The local .vast was used, and only what was actually missing came from the store.
+    assert rosbag_cmds and image == "img:1"
+    assert "p/_execution/execution.yaml" in fetched
+    assert not any(k.endswith(".vast") for k in fetched)
