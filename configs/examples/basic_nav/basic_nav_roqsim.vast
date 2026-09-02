@@ -1,7 +1,7 @@
 version: 3
 metadata:
-  name: basic_nav_rst
-  title: Basic nav2 navigation on the roqsim/roqsim (MuJoCo) TurtleBot 4 (Depot)
+  name: basic_nav_roqsim
+  title: Basic nav2 navigation on the roqsim (MuJoCo) TurtleBot 4 (Depot)
   description: |
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
     roqsim (MuJoCo). The roqsim half of the basic_nav pair: same nav2 params, same map and the same
