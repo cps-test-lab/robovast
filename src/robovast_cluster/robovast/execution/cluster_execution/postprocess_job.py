@@ -42,6 +42,7 @@ the scripts always match the driver that generated the command.
 """
 
 import datetime
+import copy
 import hashlib
 import json
 import logging
@@ -49,6 +50,7 @@ import re
 import time
 
 from robovast.common.execution import resolve_controller_image
+from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
 from .node_placement import CAMPAIGN_NODE_TOLERATIONS
@@ -116,53 +118,83 @@ HOST_CONTAINER = "host"
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
 
-#: What the conversion container reserves.
+#: Disk the pod reserves and may use, for every step. Not settable by a campaign.
 #:
-#: **A request, not a tuning knob: without one this pod was invisible to admission.** The
-#: budget provider counts the *requests* of every bound pod, so a container that declares none
-#: contributes zero -- and this one runs on the same nodes as the trials, deserializing every
-#: rosbag of a campaign, while admission believed those cores were free. That is the same
-#: class of error the CPU governor work exists to remove: a run's figures becoming a function
-#: of what else happened to be on the machine, with nothing downstream able to detect it.
-#:
-#: The limit is well above the request because the work is bursty and nothing is under test
-#: here -- the split is what buys the density, exactly as it does for the simulator.
-POSTPROCESS_RESOURCES = {
-    "requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
-}
+#: The request is what keeps a campaign's worth of staged data from landing on a node that
+#: reserved no disk for it -- without it the node hits disk pressure and evicts the campaign
+#: pods running beside it. It stays split from the limit, unlike cpu and memory: disk is
+#: reclaimed as the conversion writes its outputs and the staged bags are dropped, so a
+#: ceiling near the reservation would fail a large campaign that never held that much at once,
+#: while a reservation near the ceiling would price every postprocessing pod at a disk figure
+#: almost none of them reach.
+POSTPROCESS_EPHEMERAL_REQUEST = "20Gi"
+POSTPROCESS_EPHEMERAL_LIMIT = "200Gi"
 
-#: What the stage step reserves. It is I/O rather than CPU, and it is what writes the
-#: campaign's run data into the pod's ``emptyDir`` -- so the ephemeral-storage request
-#: matters as much as the CPU one. Without it, a campaign's worth of data lands on whichever
-#: node the scheduler picked with nothing having reserved the disk for it, and the node hits
-#: disk pressure and evicts the campaign pods running beside it.
-#:
-#: **Memory is a bound here, and a small one is correct.** Staging lists the campaign's
-#: objects a page at a time and streams one object at a time to disk, so its footprint is
-#: set by that construction and not by the size of the campaign: a limit sized for the
-#: largest campaign anyone might postprocess would only hide a regression in that
-#: streaming.
-#:
-#: The request stays small against the limit for the reason the conversion's does: the work
-#: is bursty, nothing is under test in this pod, and the split is what buys the density.
-POSTPROCESS_INIT_RESOURCES = {
-    "requests": {"cpu": "250m", "memory": "256Mi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "2", "memory": "1Gi", "ephemeral-storage": "200Gi"},
-}
 
-#: What the host step reserves. It reads the staged campaign and drives the index ingest,
-#: which is real work against a database rather than a copy, so it declares a real request:
-#: the budget provider counts only requests, and a container that declares none is invisible
-#: to admission while competing with the trials on the same nodes.
+def step_resources(cpu, memory) -> dict:
+    """One step's ``resources``, with cpu and memory as reservation *and* ceiling.
+
+    **The equality is the point, and it is about comparability rather than thrift.** This pod
+    runs on the nodes that run trials, so a step allowed past its reservation takes cores from
+    a run whose own request was honest -- and that run's timing becomes a function of which
+    campaign happened to be postprocessing beside it. That is precisely the hidden variable
+    the CPU governor work exists to remove, reintroduced from a direction nothing downstream
+    looks at: no artifact of the affected run records that a conversion was running.
+
+    Nothing here is under test, so the throughput given up is real and the measurement it
+    protects is worth more.
+    """
+    quantities = {"cpu": str(cpu), "memory": str(memory)}
+    return {
+        "requests": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_REQUEST}),
+        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_LIMIT}),
+    }
+
+
+#: What the stage step gets. **Fixed, and a campaign's figure does not raise it** -- unlike
+#: the host step below.
 #:
-#: The ephemeral-storage request covers the same shared ``emptyDir`` the stage step filled --
-#: the pod is charged for it whichever container is running -- and the memory limit bounds an
-#: ingest that batches its rows rather than holding a campaign in memory.
-POSTPROCESS_HOST_RESOURCES = {
-    "requests": {"cpu": "500m", "memory": "1Gi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "200Gi"},
-}
+#: Staging lists the campaign's objects a page at a time and streams one object at a time to
+#: disk, so its footprint is set by that construction and not by the size of the campaign. The
+#: small memory bound is therefore a GUARD rather than a reservation: a regression in that
+#: streaming shows up as this step failing, and a limit that grew with whatever the campaign
+#: asked for is exactly the limit that would absorb it silently. This step also runs only our
+#: own code, so there is nothing here whose appetite a ``.vast`` would know better than we do.
+POSTPROCESS_STAGE_RESOURCES = step_resources(2, "1Gi")
+
+#: The floor under the host step, which is where **everything the campaign declared that is
+#: not a rosbag conversion runs** -- its own metric plugins, metadata, publication, the health
+#: checks and the index ingest (see :func:`run_host_postprocessing`, which runs the ordinary
+#: pipeline with only the rosbag steps skipped).
+#:
+#: That is why a campaign's figure raises this step too. A knob that sized only the conversion
+#: would leave the steps most likely to need memory -- a campaign's own analysis code, whose
+#: appetite RoboVAST cannot know -- pinned at a figure they could not change, and the symptom
+#: would be an OOM kill of a step whose declared allocation said it had room.
+POSTPROCESS_HOST_FLOOR = {"cpu": 2, "memory": "4Gi"}
+
+
+def raised_to(floor: dict, declared: dict) -> dict:
+    """*floor*, or *declared* where that asks for more. Never less than *floor*.
+
+    **Raise-only, and the asymmetry is the point.** A campaign knows when its own analysis
+    needs more than the default and should get it. It cannot know that the index ingest still
+    fits in less -- and being wrong in that direction is not a slow step but an OOM kill of
+    the step that publishes the results, so the floor holds whatever the ``.vast`` says.
+    """
+    out = dict(floor)
+    for key, convert in (("cpu", to_cores), ("memory", to_bytes)):
+        want = (declared or {}).get(key)
+        if want is None:
+            continue
+        try:
+            if convert(want) > convert(floor[key]):
+                out[key] = want
+        except (TypeError, ValueError):
+            # An unparseable quantity keeps the floor. The config layer refuses these, so
+            # reaching here means a caller bypassed it; the floor is the safe answer.
+            continue
+    return out
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -441,28 +473,32 @@ def campaign_vast(campaign_root) -> str:
 
 
 def _read_submit_inputs(read_root: str, skip=None, skip_rosout: bool = False) -> tuple:
-    """``(rosbag_cmds, image, tolerate_under)`` read from a campaign tree at *read_root*.
+    """``(rosbag_cmds, image, tolerate_under, convert_resources)`` from a campaign tree.
 
-    The three facts the manifest needs about a campaign, and all three come from files:
-    the ``.vast`` says whether a conversion is configured at all, ``execution.yaml`` names
-    the image its rosbags deserialize in, and the intervention ledger names the runs whose
-    bags were cut short mid-write.
+    The four facts the manifest needs about a campaign, and all four come from files: the
+    ``.vast`` says whether a conversion is configured at all and how much it may use,
+    ``execution.yaml`` names the image its rosbags deserialize in, and the intervention
+    ledger names the runs whose bags were cut short mid-write.
     """
+    from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+        postprocess_convert_resources)
     from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
         _interrupted_job_dirs)
 
-    rosbag_cmds = rosbag_commands_for(campaign_vast(read_root), skip=skip,
-                                      skip_rosout=skip_rosout)
+    vast_path = campaign_vast(read_root)
+    rosbag_cmds = rosbag_commands_for(vast_path, skip=skip, skip_rosout=skip_rosout)
     if not rosbag_cmds:
         # No image is resolved at all for a host-only campaign: nothing in the pod pulls
         # one, so a campaign whose execution image has since gone from the registry still
-        # postprocesses.
-        return [], None, ()
+        # postprocesses. The sizing goes the same way: with no conversion container there is
+        # nothing for it to size.
+        return [], None, (), None
     # The same seam the local lane reads, for the same reason: a bag belonging to a job
     # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
     # must not fail the conversion for every job that finished.
     return (rosbag_cmds, campaign_execution_image(read_root),
-            tuple(_interrupted_job_dirs(read_root)))
+            tuple(_interrupted_job_dirs(read_root)),
+            postprocess_convert_resources(vast_path))
 
 
 def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
@@ -568,14 +604,15 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     """
     import os  # noqa: PLC0415
 
-    rosbag_cmds, image, tolerate_under = _submit_inputs(
+    rosbag_cmds, image, tolerate_under, convert_resources = _submit_inputs(
         cluster_config, campaign_id, campaign_root, skip=skip, skip_rosout=skip_rosout)
     if not rosbag_cmds:
         logger.info("Campaign %s configures no rosbag conversion; the Job runs its host "
                     "steps only, and stages the campaign without its rosbags", campaign_id)
     ok, message = run_conversion_job(
         cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
-        kube_context=kube_context, tolerate_under=tolerate_under, skip=skip)
+        kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
+        convert_resources=convert_resources)
     # Sync the Job's outputs regardless of outcome. The pod tees its stdout/stderr to
     # postprocessing.log and uploads what it produced even on failure, so this lands the
     # POSTPROCESSING section (with the error) in the campaign log the web UI shows and
@@ -1166,7 +1203,8 @@ def _index_env(namespace: str) -> list:
 def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
-                   tolerate_under=(), skip=None, host_stage: bool = True) -> dict:
+                   tolerate_under=(), skip=None, host_stage: bool = True,
+                   convert_resources=None) -> dict:
     """Build the postprocessing Job manifest.
 
     Args:
@@ -1187,6 +1225,11 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             Their bags are unreadable by construction, so the conversion reports them and
             succeeds instead of failing the campaign.
         skip: Postprocessing steps the host step must not run.
+        convert_resources: ``{"cpu": …, "memory": …}`` the conversion step runs at, from
+            :func:`~robovast.results_processing.postprocessing.postprocess_convert_resources`
+            -- the campaign's ``results_processing.resources`` over that function's defaults.
+            ``None`` takes those defaults, which is what a caller with no ``.vast`` in reach
+            must do.
         host_stage: Whether this Job runs the host step. ``False`` builds a
             conversion-only Job, for a caller converting the batches of a campaign that is
             still growing: the host step writes the campaign's provenance marker and drives
@@ -1210,6 +1253,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     from .postprocess_host import ENV_FORCE, ENV_SKIP  # noqa: PLC0415
     from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
                                     ENV_STAGE_DEST)
+
+    from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+        POSTPROCESS_CONVERT_DEFAULTS)
+
+    sized = convert_resources or POSTPROCESS_CONVERT_DEFAULTS
+    convert_resources_block = step_resources(sized["cpu"], sized["memory"])
+    host_block = step_resources(**raised_to(POSTPROCESS_HOST_FLOOR, sized))
 
     endpoint, access_key, secret_key, bucket, campaign_prefix = s3
     safe = _label_safe_campaign(campaign_id)
@@ -1247,7 +1297,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         "env": robovast_env + ([] if rosbag_cmds
                                else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
         "volumeMounts": [campaign_mount],
-        "resources": POSTPROCESS_INIT_RESOURCES,
+        "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
     }
     convert = {
         "name": CONVERT_CONTAINER,
@@ -1266,7 +1316,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             campaign_mount,
             {"name": "tmp", "mountPath": "/tmp"},
         ],
-        "resources": POSTPROCESS_RESOURCES,
+        "resources": convert_resources_block,
     }
     host = {
         "name": HOST_CONTAINER,
@@ -1284,7 +1334,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             {"name": ENV_SKIP, "value": ",".join(sorted(set(skip or ())))},
         ],
         "volumeMounts": [campaign_mount],
-        "resources": POSTPROCESS_HOST_RESOURCES,
+        "resources": host_block,
     }
 
     init_containers = [stage]
@@ -1357,7 +1407,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
-                       host_stage: bool = True) -> tuple:
+                       host_stage: bool = True, convert_resources=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
     *image* is the campaign's execution image, and is needed only for the conversion: an
@@ -1412,7 +1462,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
-        host_stage=host_stage)
+        host_stage=host_stage, convert_resources=convert_resources)
     name = manifest["metadata"]["name"]
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —

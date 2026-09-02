@@ -458,6 +458,62 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
+#: What the conversion step reserves when a ``.vast`` says nothing.
+#:
+#: **It is a reservation AND a ceiling, and it is also the worker count** -- see
+#: :class:`~robovast.common.config.PostprocessResourcesConfig` for why the two are equal here.
+#: One figure serves both because the step converts one bag per process: sizing the pod without
+#: sizing the fan-out is what let a conversion open a worker per core of the *machine* inside a
+#: four-core allocation, where the workers then spend the conversion competing for the quota
+#: they collectively already exceeded.
+#:
+#: Four cores rather than a figure derived from the cluster. A derived default would be a third
+#: sizing policy beside ``sizing: calibrated``, and its inputs are not knowable where this is
+#: read: capacity measured here is spent by whatever else is admitted between the reading and
+#: the pod, so the number would carry an authority it does not have. Four is what one node can
+#: give up without the trials beside it noticing, and a campaign that has measured its own
+#: conversion raises it in its ``.vast``.
+POSTPROCESS_CONVERT_DEFAULTS = {"cpu": 4, "memory": "4Gi"}
+
+
+def postprocess_convert_resources(config_path, resolver=None) -> dict:
+    """``{"cpu": …, "memory": …}`` the conversion step runs at.
+
+    The single place the figure is decided, for both lanes: the Kubernetes lane renders it as
+    a container's requests and limits, the local lane as ``docker run --cpus/--memory``, and
+    both derive the worker count from the same ``cpu``. Keeping the decision here is what
+    stops the two lanes from meaning different things by one ``.vast`` block.
+
+    *config_path* may be ``None``, for a caller that has no ``.vast`` to read -- a campaign
+    tree whose config was never projected into it. The block is optional, so its absence and
+    an unreadable file mean the same thing as declaring nothing: the shared defaults. What
+    would be wrong is refusing to convert over an optional block nobody wrote.
+
+    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a lane that
+    has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
+    A lane without one -- the local lane, where there is no context and so no entry to choose
+    -- passes ``None``, and a list then raises rather than being guessed at.
+    """
+    if not config_path:
+        return dict(POSTPROCESS_CONVERT_DEFAULTS)
+    data_config = load_config(config_path, subsection="results_processing", allow_missing=True)
+    declared = ((data_config or {}).get("resources") or {}) if data_config else {}
+    if resolver is not None:
+        declared = resolver(declared) or {}
+    resolved = dict(POSTPROCESS_CONVERT_DEFAULTS)
+    for key in ("cpu", "memory"):
+        value = declared.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            raise ValueError(
+                f"results_processing.resources.{key} is declared per cluster, but this "
+                f"lane has no cluster context to choose an entry with. Give it a plain "
+                f"value, or run the postprocessing on a cluster.")
+        resolved[key] = value
+    return resolved
+
+
 #: Written by a conversion that ran elsewhere -- the cluster lane's postprocessing Job --
 #: and carried back with its outputs. Named here and in
 #: ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
