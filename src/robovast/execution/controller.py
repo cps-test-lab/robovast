@@ -1087,6 +1087,11 @@ class CampaignController:
         path gives: the conversion tees its own error into ``postprocessing.log`` and mirrors
         it out, so skipping the sync on failure discards the only account of what went wrong.
 
+        **Conversion only.** The postprocessing pod also carries the host stage; a search
+        must not run it, because that stage is the campaign-level account of a *finished*
+        campaign and this runs per batch on one that is still growing. ``host_stage=False``
+        is what keeps this pod to the bags.
+
         On a local backend there is no Job to submit and the in-process path is already
         correct, so the commands fall through to it. A failure is reported and does not
         raise: the extractor decides whether a batch is scorable and refuses loudly when its
@@ -1099,6 +1104,12 @@ class CampaignController:
                 rosbag_cmds, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
             return
+        # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
+        # opened, ever, and must not fail the conversion for every job that finished. A
+        # search feels that harder than the campaign-level path it is copied from: one
+        # stopped job stays in the campaign root for the rest of the search, so without
+        # this every *later* batch's conversion fails on it too and nothing scores again.
+        from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
         try:
             run_job, sync, image_for, complete_message = _conversion_job_runner()
             ok, message = run_job(
@@ -1107,7 +1118,15 @@ class CampaignController:
                 image_for(self.campaign_root),
                 unwrap_conversion_commands(rosbag_cmds),
                 kube_context=getattr(self.backend, "kube_context", None),
-                discriminator=tag)
+                discriminator=tag,
+                tolerate_under=_interrupted_job_dirs(self.campaign_root),
+                # Conversion only: the pod's host stage is the campaign-level postprocess
+                # -- index ingest, metadata, the provenance marker -- and a search reaches
+                # this once per batch, on a campaign that is still growing. Running it here
+                # would ingest a partial campaign as if it were finished (and mark it
+                # postprocessed) once per batch, and the batch needs nothing from it but
+                # the CSVs. The campaign-level chain runs the host stage after the search.
+                host_stage=False)
             sync(cluster_config, self.campaign_id, self.campaign_root)
             # Only now can the message say where the conversion error is: the sync is what
             # decides whether a POSTPROCESSING section exists to point at.
