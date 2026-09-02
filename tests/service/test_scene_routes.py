@@ -37,8 +37,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOVAST_SCENE_CACHE", str(tmp_path / "cache"))
     scene_cache._locks.clear()
     # Every test here resolves to the *same* cache key (one fixture world, one image digest), so a
-    # recorded failure would otherwise leak into the next test's status.
+    # recorded failure -- or a stage left by a build that was still running when its test ended --
+    # would otherwise leak into the next test's status.
     scene_cache._failures.clear()
+    scene_cache._stages.clear()
 
     results = tmp_path / "results"
     run_dir = results / CAMPAIGN / "goal-1" / "0" / "capture"

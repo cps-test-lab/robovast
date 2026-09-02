@@ -68,9 +68,29 @@ def test_the_dsn_and_the_ingress_backend_name_the_same_service():
 
 
 class _Pod:
-    def __init__(self, *names):
-        self.spec = type("S", (), {"containers": [type("C", (), {"name": n})()
-                                                  for n in names]})()
+    """A store pod as the API returns one: named containers, and the store's volume.
+
+    The backing is part of the fixture because the refusal reports a different cost per
+    kind -- a pod without one would only ever exercise the branch that says nothing is
+    lost, which is the reassurance that must not be given by default.
+    """
+
+    def __init__(self, *names, store="emptyDir", detail=None):
+        mounts = {service_deploy.STORE_CONTAINER_NAME:
+                  [type("M", (), {"name": "minio-storage",
+                                  "mount_path": service_deploy.STORE_DATA_MOUNT})()]}
+        containers = [type("C", (), {"name": n, "volume_mounts": mounts.get(n, [])})()
+                      for n in names]
+        volume = type("V", (), {"name": "minio-storage", "host_path": None,
+                                "persistent_volume_claim": None, "empty_dir": None})()
+        if store == "emptyDir":
+            volume.empty_dir = object()
+        elif store == "hostPath":
+            volume.host_path = type("H", (), {"path": detail})()
+        elif store == "claim":
+            volume.persistent_volume_claim = type("P", (), {"claim_name": detail})()
+        self.spec = type("S", (), {"containers": containers,
+                                   "volumes": [volume] if store else []})()
 
 
 def test_a_store_pod_that_predates_the_move_is_named_not_guessed():
@@ -96,6 +116,42 @@ def test_an_existing_cluster_is_refused_rather_than_half_migrated(monkeypatch):
 
     with pytest.raises(RuntimeError, match="cluster cleanup"):
         service_deploy.verify_store_pod_infrastructure("default")
+
+
+def test_the_refusal_names_what_recreating_the_pod_costs(monkeypatch):
+    """The remedy recreates the store pod, and what that costs depends on the backing.
+
+    An ``emptyDir`` store goes with the pod, so the campaigns must be archived first and
+    the index cannot be re-ingested afterwards; a durable one survives, and saying
+    otherwise would train an operator to ignore the warning that matters.
+    """
+    from kubernetes import client as kclient
+
+    monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
+
+    def _refusal(pod):
+        monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: type(
+            "C", (), {"read_namespaced_pod": lambda self, n, ns: pod})())
+        with pytest.raises(RuntimeError) as excinfo:
+            service_deploy.verify_store_pod_infrastructure("default")
+        return str(excinfo.value)
+
+    ephemeral = _refusal(_Pod("minio"))
+    assert "DISCARDS" in ephemeral
+    assert "vast share" in ephemeral
+
+    durable = _refusal(_Pod("minio", store="hostPath", detail="/var/lib/robovast-store"))
+    assert "DISCARDS" not in durable
+    assert "/var/lib/robovast-store" in durable
+
+    claimed = _refusal(_Pod("minio", store="claim", detail="robovast-pvc"))
+    assert "DISCARDS" not in claimed
+    assert "robovast-pvc" in claimed
+
+
+def test_a_store_backed_by_a_bucket_loses_nothing_with_the_pod():
+    """No embedded store means the campaigns are in a bucket, which no pod holds."""
+    assert service_deploy.store_backing(_Pod("registry", "index", store=None)) == (None, None)
 
 
 def test_a_migrated_cluster_passes(monkeypatch):

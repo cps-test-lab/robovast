@@ -777,6 +777,9 @@ def draw_map(
     All coordinates are world meters. Feed it points from ``nav_get_trajectory`` or
     ``nav_get_obstacles``.
 
+    Returns a PNG, so a configuration with no map **raises** rather than coming back as
+    ``{error}``.
+
     Args:
         campaign_id: Campaign identifier.
         config_name: Configuration directory name.

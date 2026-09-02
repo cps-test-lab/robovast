@@ -628,7 +628,41 @@ class LocalTransport(RobovastInterface):
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore(workspace_dir=workspace_dir)
         self.store = store
+        #: This service's durable event log, opened lazily. See :meth:`_event_log`.
+        self._events = None
+        self._events_guard = threading.Lock()
         self._sweep_staged_projects()
+
+    # -- the durable record -------------------------------------------------
+
+    def _event_log(self):
+        """Where a campaign driven from here says what it did, kept across restarts.
+
+        Addressed by **path**, beside the workspace registry, which is the same place and
+        the same fallback the app serving ``/admin/events`` resolves — so the two agree on
+        which file the log is without either having to hold the other's handle. A second
+        SQLite handle on one file is what that costs, and it costs nothing: every append is
+        one small INSERT under a busy timeout.
+        """
+        with self._events_guard:
+            if self._events is None:
+                from robovast.service import event_log
+                from robovast.service.workspaces import default_workspaces_root
+                try:
+                    root = Path(self.store.registry.root)
+                except Exception:  # noqa: BLE001 - a transport need not have a store
+                    root = Path(default_workspaces_root())
+                self._events = event_log.EventLog(root / event_log.EVENTS_FILENAME)
+            return self._events
+
+    def _notifier(self, campaign_id: str):
+        """A campaign's notifier, wired to both sinks.
+
+        The one place the service builds one, so no lane can announce a campaign's life to
+        a phone and leave nothing behind on the machine that ran it.
+        """
+        from robovast.execution.notify import Notifier
+        return Notifier.from_env(campaign_id, events=self._event_log())
 
     def _sweep_staged_projects(self) -> None:
         """Collect staged retrigger trees a killed service left behind.
@@ -1890,7 +1924,6 @@ class LocalTransport(RobovastInterface):
         that needs the transport — which directory this lane reads the source from, the
         single-flight guard, and making sure a refusal leaves nothing staged behind.
         """
-        from robovast.execution.notify import Notifier
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
@@ -1918,7 +1951,7 @@ class LocalTransport(RobovastInterface):
         # re-run is the one who cannot otherwise learn which id the re-run got. The new
         # campaign announces its own start; this is not that message, and not a terminal
         # one -- the source is unmodified. Best-effort like every other send.
-        Notifier.from_env(campaign_id).retriggered(ref.campaign_id)
+        self._notifier(campaign_id).retriggered(ref.campaign_id)
         return ref
 
     def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
@@ -2105,13 +2138,12 @@ class LocalTransport(RobovastInterface):
         def _drive_campaign():
             from robovast.execution.backends import CampaignStopped
             from robovast.execution.controller import end_campaign
-            from robovast.execution.notify import Notifier
             backend = None
             # Built here, not left to the builder, because on this lane the worker is
             # the campaign's outermost scope (see options.finalize_phase): the builder
             # returns while postprocessing is still to come, so the one notification
             # that says "this campaign is over" has to be sent from out here.
-            notifier = Notifier.from_env(campaign_id)
+            notifier = self._notifier(campaign_id)
             try:
                 # Before anything that can fail, so every later outcome — a doomed build
                 # included — belongs to a campaign that can be found again.
@@ -4177,7 +4209,6 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
-            from robovast.execution.notify import Notifier
             from robovast.execution.status_recovery import record_step_outcome
             handler = None
             try:
@@ -4199,7 +4230,7 @@ class LocalTransport(RobovastInterface):
             # Same one-shot notifier as a re-triggered share: this op runs from disk with
             # no live entry to inherit one from, and it reports on a campaign that ended
             # long ago -- so neither branch is the campaign's terminal message.
-            notifier = Notifier.from_env(request.campaign_id)
+            notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
             else:
@@ -4696,14 +4727,19 @@ class LocalTransport(RobovastInterface):
         return str(self._campaign_dir(campaign_id))
 
     # None means 'nothing to arrange', per the docstring
-    def _scene_runner_context(self, campaign_id: str, identity: dict):  # pylint: disable=useless-return
+    def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):  # pylint: disable=useless-return
         """Context manager yielding the generator's container-runner factory, or None.
 
         Locally there is nothing to arrange: an absent factory makes the generator fall back to an
         ephemeral ``docker run`` on the campaign's image, which is exactly right. The cluster lane
         overrides this with an aux pod whose lifetime is the build's.
+
+        *on_wait* is ``(stage, detail) -> None``, called by a lane while it waits for something
+        before the build can begin, so that wait can be named to whoever is polling for the
+        geometry. Only the lane can see those states, and only the caller knows whether anyone is
+        listening — a screenshot render is synchronous and passes nothing.
         """
-        del campaign_id, identity
+        del campaign_id, identity, on_wait
         return None
 
     def _resolve_image_digest(self, ref: str):
@@ -4745,11 +4781,16 @@ class LocalTransport(RobovastInterface):
         # A failed attempt is reported, not forgotten: "has not been built yet" is indistinguishable from
         # never having asked, so a viewer would offer Retry forever while the reason sat in the log.
         failure = "" if (cached or running) else scene_cache.last_failure(key)
+        stage, stage_detail = self._scene_stage(key) if running else ("", "")
         note = ""
         if cached:
             note = "geometry is cached; nothing will be built"
         elif running:
             note = "building this world's geometry (it is shared by every run that used it)"
+            # The reason a wait is not ending belongs in the sentence a client repeats, not only in
+            # the field a panel renders: a CLI or an agent reading this status has the note and
+            # nothing else.
+            note += f"; {stage}" + (f" ({stage_detail})" if stage_detail else "")
         elif failure:
             note = failure
         else:
@@ -4761,7 +4802,8 @@ class LocalTransport(RobovastInterface):
             "cached": cached,
             "generation_required": not cached,
             "in_progress": running,
-            "stage": self._scene_stage(campaign_id, key) if running else "",
+            "stage": stage,
+            "stage_detail": stage_detail,
             "bytes": scene_cache.entry_bytes(key) if cached else 0,
             "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/scene.json")
                     if cached else ""),
@@ -4771,11 +4813,18 @@ class LocalTransport(RobovastInterface):
             "note": note,
         })
 
-    def _scene_stage(self, campaign_id: str, key: str) -> str:
-        """Which step an in-flight build is on. Locally there is no queue and no image pull to watch,
-        so the honest answer is the only one it can be."""
-        del campaign_id, key
-        return "compiling"
+    @staticmethod
+    def _scene_stage(key: str) -> "tuple[str, str]":
+        """``(stage, detail)`` for a build in flight, as the build itself reported it.
+
+        A read rather than a lane-specific guess: whoever performs a step names it (see
+        ``scene_cache.set_stage``), which is the only place that can tell a pull from a compile.
+        The default covers the moment between a build taking the key's lock and naming its first
+        step, where compiling is what is about to happen anyway.
+        """
+        from robovast.service import scene_cache
+        stage, detail = scene_cache.current_stage(key)
+        return stage or scene_cache.STAGE_COMPILING, detail
 
     def run_campaign_scene(self, campaign_id, config_name, run_id) -> ActionResult:
         from robovast.service import scene_cache
@@ -4792,7 +4841,8 @@ class LocalTransport(RobovastInterface):
         # None on this lane by design -- an absent factory makes the generator fall back
         # to an ephemeral `docker run`. The cluster lane overrides it with an aux pod.
         runner_context = self._scene_runner_context(  # pylint: disable=assignment-from-none
-            campaign_id, identity)
+            campaign_id, identity,
+            on_wait=lambda stage, detail: scene_cache.set_stage(key, stage, detail))
 
         # A retry starts clean, so a stale reason cannot outlive the attempt that is about to replace it.
         scene_cache.clear_failure(key)
@@ -4865,11 +4915,13 @@ class LocalTransport(RobovastInterface):
             scene_cache.touch(key)
         running = scene_cache.is_generating(key)
         failure = "" if (cached or running) else scene_cache.last_failure(key)
+        stage, stage_detail = self._scene_stage(key) if running else ("", "")
         return base.model_copy(update={
             "cached": cached,
             "generation_required": not cached,
             "in_progress": running,
-            "stage": "compiling" if running else "",
+            "stage": stage,
+            "stage_detail": stage_detail,
             "bytes": scene_cache.entry_bytes(key) if cached else 0,
             "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/scene.json")
                     if cached else ""),

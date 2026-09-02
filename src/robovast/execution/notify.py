@@ -33,6 +33,13 @@ Each campaign builds its own :class:`Notifier` bound to its ``campaign_id`` —
 concurrent campaigns report independently (no shared state), and every message
 carries the ``campaign_id`` in its title so campaigns sharing one topic stay
 distinguishable.
+
+**Two sinks, one place.** ntfy leaves the machine and is gone once read; a campaign that
+started, failed or was stopped last week is then a fact nobody holds. So every lifecycle
+announcement also goes to the service's durable event log, passed in as ``events`` by
+whoever builds the notifier and ``None`` where there is no service (a CLI run has nowhere
+durable to write, and must not need one to exist). Driving both from
+:meth:`Notifier._announce` is what stops an event reaching the phone and missing the record.
 """
 
 import logging
@@ -52,11 +59,20 @@ StatusTuple = tuple[int, int, int, int]
 
 
 class Notifier:
-    """Sends ntfy notifications for one campaign. Disabled instances are no-ops."""
+    """Announces one campaign's lifecycle: an ntfy push, and the durable record beside it.
+
+    "Disabled" means the *push* is unconfigured, which makes only that half a no-op — the
+    record is a separate sink, and whether a campaign's life is kept must not depend on
+    whether somebody set up a phone topic.
+    """
 
     def __init__(self, campaign_id: str, *, topic: str = "",
-                 server: str = DEFAULT_SERVER, token: str = ""):
+                 server: str = DEFAULT_SERVER, token: str = "", events=None):
         self.campaign_id = campaign_id
+        #: The durable record the announcements are also written to, or ``None``.
+        #: Duck-typed on ``EventLog.append`` rather than imported: the execution layer
+        #: runs with no service around it, and must not depend on one to say what it did.
+        self.events = events
         self.topic = (topic or "").strip()
         self.server = (server or DEFAULT_SERVER).strip().rstrip("/")
         self.token = (token or "").strip()
@@ -70,20 +86,25 @@ class Notifier:
         self._terminal_sent = False
 
     @classmethod
-    def from_env(cls, campaign_id: str) -> "Notifier":
+    def from_env(cls, campaign_id: str, *, events=None) -> "Notifier":
         """Build a Notifier bound to *campaign_id* from the ``ROBOVAST_NTFY_*`` env.
 
-        Returns a disabled (no-op) instance when ``ROBOVAST_NTFY_TOPIC`` is unset.
+        Returns a *push*-disabled instance when ``ROBOVAST_NTFY_TOPIC`` is unset. Only the
+        push: *events* is not read from the environment because it is not configuration,
+        and a campaign still records what it did on a service that pushes nowhere.
         """
         return cls(
             campaign_id,
             topic=os.environ.get("ROBOVAST_NTFY_TOPIC", ""),
             server=os.environ.get("ROBOVAST_NTFY_SERVER", "") or DEFAULT_SERVER,
             token=os.environ.get("ROBOVAST_NTFY_TOKEN", ""),
+            events=events,
         )
 
     @property
     def enabled(self) -> bool:
+        """Whether the *push* is configured. Says nothing about the durable record, which
+        is a separate sink and is written whether or not anything is pushed anywhere."""
         return bool(self.topic)
 
     # -- wire ---------------------------------------------------------------
@@ -112,14 +133,40 @@ class Notifier:
         except Exception:  # pylint: disable=broad-except
             logger.debug("ntfy notification failed", exc_info=True)
 
+    def _record(self, kind: str, message: str, severity: str) -> None:
+        """Write the same announcement to the durable record. Never raises.
+
+        Best-effort like the push beside it, and for the same reason: this describes the
+        work, it is not the work, so a log that cannot be written must not end a campaign.
+        """
+        if self.events is None:
+            return
+        try:
+            self.events.append(kind, message=message, severity=severity,
+                               subject_type="campaign", subject_id=self.campaign_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("could not record a %s event", kind, exc_info=True)
+
+    def _announce(self, kind: str, message: str, *, severity: str, priority: int,
+                  tags: str) -> None:
+        """One lifecycle event, to both sinks.
+
+        The record first, then the push: the push reaches out over the network with a
+        timeout, and the fact is worth keeping even when the reaching-out is what fails.
+        """
+        self._record(kind, message, severity)
+        self._send(message, priority=priority, tags=tags)
+
     # -- lifecycle events ---------------------------------------------------
 
     def started(self, mode: str) -> None:
-        self._send(f"Campaign started ({mode}).", priority=3, tags="rocket")
+        self._announce("campaign.started", f"Campaign started ({mode}).",
+                       severity="info", priority=3, tags="rocket")
 
     def batch_finished(self, idx: int, n_units: int) -> None:
-        self._send(f"Batch {idx} finished — {n_units} unit(s).",
-                   priority=2, tags="white_check_mark")
+        self._announce("campaign.batch_finished",
+                       f"Batch {idx} finished — {n_units} unit(s).",
+                       severity="info", priority=2, tags="white_check_mark")
 
     def finished(self, summary: str, *, degraded: bool = False) -> None:
         """The campaign is over. *summary* says what it actually produced.
@@ -130,17 +177,20 @@ class Notifier:
         the one place nobody goes back to re-read.
         """
         if degraded:
-            self._send_terminal(f"Campaign finished WITH PROBLEMS. {summary}",
-                                priority=4, tags="warning")
+            self._announce_terminal("campaign.finished",
+                                    f"Campaign finished WITH PROBLEMS. {summary}",
+                                    severity="warning", priority=4, tags="warning")
         else:
-            self._send_terminal(f"Campaign finished. {summary}", priority=3,
-                                tags="checkered_flag")
+            self._announce_terminal("campaign.finished", f"Campaign finished. {summary}",
+                                    severity="success", priority=3,
+                                    tags="checkered_flag")
 
     def stopped(self, summary: str) -> None:
         """The campaign was stopped by request. Its own event, because silence here was
         indistinguishable from a campaign still running."""
-        self._send_terminal(f"Campaign STOPPED by request. {summary}", priority=4,
-                            tags="octagonal_sign")
+        self._announce_terminal("campaign.stopped",
+                                f"Campaign STOPPED by request. {summary}",
+                                severity="warning", priority=4, tags="octagonal_sign")
 
     def retriggered(self, new_campaign_id: str) -> None:
         """A re-run of this campaign was launched as *new_campaign_id*.
@@ -150,11 +200,13 @@ class Notifier:
         keeps whatever end-of-life message it is going to send, and the new campaign
         announces its own :meth:`started` separately.
         """
-        self._send(f"Retriggered as {new_campaign_id}.", priority=3, tags="repeat")
+        self._announce("campaign.retriggered", f"Retriggered as {new_campaign_id}.",
+                       severity="info", priority=3, tags="repeat")
 
     def uploaded(self, share_type: str) -> None:
-        self._send(f"Campaign uploaded to share ({share_type}).",
-                   priority=3, tags="outbox_tray")
+        self._announce("campaign.uploaded",
+                       f"Campaign uploaded to share ({share_type}).",
+                       severity="success", priority=3, tags="outbox_tray")
 
     def upload_failed(self, reason: str) -> None:
         """An upload-to-share failed. **Not** terminal, and deliberately not :meth:`failed`.
@@ -164,11 +216,13 @@ class Notifier:
         re-triggered. Sending :meth:`failed` here would both claim the campaign died and
         burn its one end-of-life message on something that is not the end of it.
         """
-        self._send(f"Upload to share FAILED: {reason}", priority=4, tags="warning")
+        self._announce("campaign.upload_failed", f"Upload to share FAILED: {reason}",
+                       severity="warning", priority=4, tags="warning")
 
     def postprocessed(self) -> None:
         """A re-run of postprocessing produced its derived data."""
-        self._send("Postprocessing complete.", priority=3, tags="bar_chart")
+        self._announce("campaign.postprocessed", "Postprocessing complete.",
+                       severity="success", priority=3, tags="bar_chart")
 
     def postprocessing_failed(self, reason: str) -> None:
         """A re-run of postprocessing failed. Not terminal, for the same reason as
@@ -176,24 +230,30 @@ class Notifier:
         step can be re-triggered. Within a campaign this case is instead folded into
         :meth:`finished` as ``degraded`` -- there it IS the campaign's ending.
         """
-        self._send(f"Postprocessing FAILED: {reason}", priority=4, tags="warning")
+        self._announce("campaign.postprocessing_failed",
+                       f"Postprocessing FAILED: {reason}",
+                       severity="warning", priority=4, tags="warning")
 
     def failed(self, reason: str) -> None:
-        self._send_terminal(f"Campaign FAILED: {reason}", priority=5,
-                            tags="rotating_light")
+        self._announce_terminal("campaign.failed", f"Campaign FAILED: {reason}",
+                                severity="error", priority=5, tags="rotating_light")
 
-    def _send_terminal(self, message: str, *, priority: int, tags: str) -> None:
-        """Send the campaign's one end-of-life message; ignore any later one.
+    def _announce_terminal(self, kind: str, message: str, *, severity: str, priority: int,
+                           tags: str) -> None:
+        """Announce the campaign's one end-of-life event; ignore any later one.
 
         Guarded rather than left to the callers because more than one scope may
         legitimately end a campaign (see :attr:`_terminal_sent`), and only the first of
         them is describing anything new. Making that the notifier's own invariant means
         no future caller can break it by being correct about something else.
+
+        The guard covers both sinks, so the record agrees with the phone about how a
+        campaign ended rather than carrying every scope's opinion of it.
         """
         if self._terminal_sent:
             return
         self._terminal_sent = True
-        self._send(message, priority=priority, tags=tags)
+        self._announce(kind, message, severity=severity, priority=priority, tags=tags)
 
     # -- hourly heartbeat ---------------------------------------------------
 
@@ -203,6 +263,10 @@ class Notifier:
 
         *status_fn* returns ``(batch, completed, total, batches_done)`` or ``None``
         when progress is not yet available. No-op when notifications are disabled.
+
+        Push only, deliberately: a heartbeat says the campaign is still alive *now*, which
+        is worth interrupting someone with and worthless once it is over. Recording one an
+        hour would fill the durable log with the one thing nobody reads back.
         """
         if not self.enabled or self._heartbeat_thread is not None:
             return

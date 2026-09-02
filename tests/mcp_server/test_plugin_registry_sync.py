@@ -472,8 +472,10 @@ def test_every_tool_returns_a_dict_or_an_image():
     and the nav tools raised, which reaches an MCP client as a broken server rather than
     as an answer. A caller could not write one branch that handled failure.
 
-    The two image tools are the stated exception — an ``Image`` has nowhere to put an
-    ``error`` key, so they raise, and say so in their docstrings.
+    The three image tools are the stated exception — an ``Image`` has nowhere to put an
+    ``error`` key, so they raise. That they SAY so is
+    :func:`test_a_tool_that_raises_says_so_where_a_model_reads_it`, because a docstring
+    section is not the same thing as text a model receives.
     """
     from fastmcp.utilities.types import Image
     wrong = {}
@@ -494,6 +496,39 @@ def test_a_shared_parameter_name_keeps_one_type():
                 types.setdefault(param, set()).add(spec["type"])
     mixed = {p: sorted(t) for p, t in types.items() if len(t) > 1}
     assert not mixed, f"parameters with more than one type across tools: {mixed}"
+
+
+def test_a_tool_that_raises_says_so_where_a_model_reads_it():
+    """A tool that breaks the ``{"error": …}`` convention must break it *in the open*.
+
+    FastMCP ships only the docstring's summary: ``Args:`` descriptions travel with the
+    JSON schema, and ``Returns:``/``Raises:`` are dropped. So the two image tools
+    documented "raises RunArtifactError" in a section no model ever sees, and the test
+    above asserted they "say so in their docstrings" -- true of the source, false of the
+    surface. A caller was told, everywhere else, that failure arrives as a dict.
+
+    Checked against the description FastMCP actually sends, not against the docstring,
+    since that gap is the whole defect.
+    """
+    import asyncio  # noqa: PLC0415
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    fns = {fn.__name__: fn
+           for mod in _registered_plugin_modules().values()
+           for fn in getattr(mod, "_TOOLS", [])}
+    silent = []
+    for tool in asyncio.run(_tools()):
+        fn = fns.get(tool.name)
+        doc = inspect.getdoc(fn) or "" if fn else ""
+        if not re.search(r"^Raises:$", doc, re.MULTILINE):
+            continue
+        if "rais" not in (tool.description or "").lower():
+            silent.append(tool.name)
+    assert not silent, (
+        f"tools that raise but do not say so in the description a model receives: "
+        f"{silent}. A `Raises:` section is dropped before it reaches any client.")
 
 
 #: Budget for the tool surface, in approximate tokens. Every description and schema is
@@ -640,6 +675,23 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: no headroom stops reading as "this change costs too much" and starts reading as "the suite is
 #: broken". 15_500 restores a margin the surface can grow into, and the rule for spending it is
 #: unchanged.
+#: **Not raised for the ``Raises:`` fix**, and the alternative it rejected is worth recording
+#: because it will be proposed again. FastMCP ships the docstring's summary plus the ``Args:``
+#: text that travels with the JSON schema, and drops ``Returns:`` entirely — so no tool tells a
+#: model its response shape before the call. Restoring every ``Returns:`` block into the
+#: descriptions was measured at **~4_100 tokens** (a lower bound; the scan misses a few
+#: oddly-indented blocks), i.e. +27% on a ~15_300 surface, paid on every request forever.
+#:
+#: Rejected, because the model *receives* the reply: a key it was not told about costs one
+#: reading, not a wrong call. What that argument does NOT cover is a tool whose failure does not
+#: arrive as a value at all — there the model needs to know before it calls, and three tools were
+#: relying on a section nobody sends. Those three sentences cost ~96 tokens and fit under the
+#: budget as it stands.
+#:
+#: Where a response shape genuinely gates a decision, the pattern that already works is to put it
+#: on the *parameter that selects it* — ``summarize``, ``group_by_run`` and ``preflight_only`` each
+#: name their shape in ``Args:``, which is sent. That is the cheap half of the same fix, and it is
+#: already done.
 _SURFACE_TOKEN_BUDGET = 15_500
 
 

@@ -474,9 +474,12 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
         run_id: Which run of that configuration.
 
     Returns:
-        ``{cached, in_progress, stage, error, note, world, overrides_known, bytes}``, or
-        ``{error}``. ``error`` carries the build's own reason. ``overrides_known: false`` means
-        the capture predates override recording, so geometry may miss per-config overrides.
+        ``{cached, in_progress, stage, stage_detail, error, note, world, overrides_known,
+        bytes}``, or ``{error}``. ``error`` carries the build's own reason. ``stage`` says which
+        step a build in flight is on and ``stage_detail`` the lane's own words for it — a pod's
+        ``ImagePullBackOff``, which is how a build waiting on an image this host cannot pull is
+        told apart from an ordinary cold start before it times out. ``overrides_known: false``
+        means the capture predates override recording, so geometry may miss per-config overrides.
     """
     try:
         client = service_access.service_client()
@@ -545,6 +548,9 @@ def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
     For a **human** to watch the run, prefer the file:
     ``read_file('/results/<campaign>/<config>/<run>/<name>.webm')`` returns a URL.
 
+    Returns a PNG, so a failure **raises** rather than coming back as ``{error}``: no
+    video, an ambiguous ``topic``, or an unreadable recording.
+
     Args:
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
@@ -612,6 +618,9 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     only. It runs a container in the campaign's simulation image: seconds if that image is on
     the node, minutes if it must be pulled. For a camera *mounted in the world during the run*
     use ``get_camera_frame`` instead — a cheap read of a recorded video, on any backend.
+
+    Returns a PNG, so a failure **raises** rather than coming back as ``{error}``: no such
+    capability, no recorded state, or a render that failed.
 
     Args:
         campaign_id: The id from ``start_campaign``.

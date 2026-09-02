@@ -190,8 +190,16 @@ def pod_workload_containers(pod) -> list:
     return regular + sidecars
 
 
-def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0) -> None:
+def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
+                   on_pending=None) -> None:
     """Block until *name* can be exec'd into, or fail saying why it cannot.
+
+    Args:
+        on_pending: called with :func:`pod_pending_reason` on every poll the pod is not Running
+            yet (``""`` while it has no container state at all). It exists so a caller can say
+            *why* a wait is still going while it is going: a pull that will never succeed backs
+            off for the whole timeout, and its reason is on the pod within seconds of the pod
+            existing. Without it the reason arrives only with the failure, minutes later.
 
     Raises:
         RuntimeError: the pod reached a terminal phase before it could be used, or it was
@@ -209,7 +217,10 @@ def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0) ->
             return
         if phase in ("Failed", "Succeeded"):
             raise RuntimeError(f"pod {name} ended before it could be used ({phase})")
-        last = pod_pending_reason(pod) or phase or ""
+        reason = pod_pending_reason(pod)
+        if on_pending:
+            on_pending(reason)
+        last = reason or phase or ""
         time.sleep(2)
     raise RuntimeError(f"pod {name} not ready after {int(timeout_s)}s: {last}")
 
