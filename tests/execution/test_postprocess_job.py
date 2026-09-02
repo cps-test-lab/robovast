@@ -856,6 +856,55 @@ def test_each_publish_replaces_rather_than_accumulates(monkeypatch):
     assert {key for key, _ in writes} == {"p/_execution/postprocessing.log"}
     assert [text.count("the whole log so far") for _key, text in writes] == [1, 1, 1]
 
+
+def _execution_dir(tmp_path, **files):
+    """A campaign root holding just the ``_execution/`` records named in *files*."""
+    import yaml
+    exec_dir = tmp_path / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    for name, payload in files.items():
+        (exec_dir / f"{name}.yaml").write_text(yaml.safe_dump(payload))
+    return tmp_path
+
+
+def test_execution_image_falls_back_to_launch_yaml(tmp_path):
+    """A campaign whose execution.yaml was never written is still convertible.
+
+    launch.yaml is written before the first job exists, so it survives a campaign that
+    ran to completion without its execution record. Refusing on execution.yaml's absence
+    stranded exactly those campaigns -- every run on disk and every bag intact, with no
+    way to convert them -- which is worse than converting in the image the launch itself
+    resolved.
+    """
+    root = _execution_dir(tmp_path, launch={
+        "campaign_name": "c", "images": {"sut": "example.com/sut:abc123"}})
+
+    assert pj.campaign_execution_image(root) == "example.com/sut:abc123"
+
+
+def test_execution_image_prefers_the_execution_record_over_the_launch_one(tmp_path):
+    """`declared` wins over `launched` where both exist.
+
+    They agree on a healthy campaign; where they differ, what the campaign asked for is
+    the better answer than what the launcher resolved before any job ran.
+    """
+    root = _execution_dir(
+        tmp_path,
+        launch={"campaign_name": "c", "images": {"sut": "example.com/sut:from-launch"}},
+        execution={"images": {"sut": "example.com/sut:from-execution"}})
+
+    assert pj.campaign_execution_image(root) == "example.com/sut:from-execution"
+
+
+def test_execution_image_still_refuses_when_nothing_is_recorded(tmp_path):
+    """Absence of a FILE is recoverable; absence of any image is not -- converting in the
+    wrong image deserializes the bags' custom ROS2 types wrongly or not at all."""
+    root = _execution_dir(tmp_path)
+
+    with pytest.raises(ValueError, match="no execution image recorded"):
+        pj.campaign_execution_image(root)
+
+
 def _pod_charge(manifest, resource):
     """What Kubernetes charges the pod for *resource*.
 
@@ -1026,3 +1075,4 @@ def test_raised_to_compares_quantities_rather_than_strings():
         "cpu": 2, "memory": "8Gi"}
     # An unparseable quantity keeps the floor rather than raising to nonsense.
     assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "lots"})["cpu"] == 2
+

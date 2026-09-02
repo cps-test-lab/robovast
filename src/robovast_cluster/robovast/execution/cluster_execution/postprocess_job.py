@@ -244,19 +244,30 @@ def campaign_execution_image(campaign_dir) -> str:
     from robovast.common.config import SCENARIO_CONTAINER  # noqa: PLC0415
 
     path = os.path.join(str(campaign_dir), "_execution", "execution.yaml")
-    if not os.path.exists(path):
-        raise ValueError(f"cannot read the campaign's execution image from {path}: "
-                         f"no such file")
+    # No pre-check that execution.yaml exists. It is the RICHEST record, not the only one:
+    # campaign_image_record falls back to launch.yaml, which is written before the first job
+    # and therefore survives a campaign whose execution record was never written. Refusing on
+    # the file's absence defeated that fallback and stranded finished campaigns -- every run
+    # on disk, every bag intact, and no way to convert them -- so absence is left to the "no
+    # image recorded anywhere" check below, which is the condition that actually matters.
     record = campaign_image_record(campaign_dir)
     if image_is_pullable(record.campaign_digest):
         return record.campaign_digest
     scenario = record.role(SCENARIO_CONTAINER)
-    image = record.campaign_image or (scenario.declared if scenario else "") or next(
-        (r.declared for r in record.roles.values() if r.declared), "")
+    # `launched` after `declared`, never instead of it: declared is what the campaign asked
+    # for, launched is what the launch resolved before the first job existed. They agree on a
+    # healthy campaign, and only launched survives one whose execution record was never
+    # written -- which is the case this chain exists to rescue.
+    image = (record.campaign_image
+             or (scenario.declared if scenario else "")
+             or next((r.declared for r in record.roles.values() if r.declared), "")
+             or (scenario.launched if scenario else "")
+             or next((r.launched for r in record.roles.values() if r.launched), ""))
     if not image:
         raise ValueError(
-            f"no execution image recorded in {path}; cannot pick the image whose "
-            "custom ROS2 types the rosbags need")
+            f"no execution image recorded for this campaign (looked in {path} and in "
+            "_execution/launch.yaml); cannot pick the image whose custom ROS2 types the "
+            "rosbags need")
     return str(image)
 
 
