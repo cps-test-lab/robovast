@@ -51,8 +51,36 @@ from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 
 logger = logging.getLogger(__name__)
 
-#: Staging prefix the Job mirrors its outputs to (campaign-relative layout preserved).
+#: Legacy staging prefix. The conversion Job used to mirror its outputs here and the
+#: service copied them onward to the canonical paths, so every postprocessed campaign kept
+#: a second copy of its derived data under a prefix every reader is told to ignore --
+#: storage classified as scratch and retained as canonical. The Job now writes the
+#: canonical paths directly and names what it wrote in :data:`OUTPUT_MANIFEST`, which is
+#: what the staging prefix was really buying: something cheaper to list than a campaign
+#: full of rosbags.
+#:
+#: Kept because campaigns converted by an older service still have one: :func:`sync_outputs`
+#: falls back to it when no manifest is present, and clears it once the data is safely at
+#: the canonical paths.
 POSTPROC_PREFIX = "_postproc"
+
+#: Campaign-relative path of the manifest the conversion Job writes listing every file it
+#: produced, one path per line. Riding inside ``/out`` means the same mirror that carries
+#: the outputs carries the index of them, so the two cannot disagree.
+#:
+#: This is what lets the outputs go straight to the canonical prefix: the service reads one
+#: known key and then fetches exactly the objects it names, instead of listing a prefix
+#: whose bulk is rosbags it does not want.
+OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
+
+#: Where the staging initContainer leaves its account of itself when it fails.
+#:
+#: Its own channel, not the conversion's: a failure here means the conversion container
+#: never starts, so nothing it would have written exists, and a diagnostic that rides the
+#: conversion's end-of-run mirror is a diagnostic that is only delivered when it is not
+#: needed. Staging pulls every bag onto the node, so it is also the step that meets a full
+#: disk first -- the failure most in need of an explanation is the one that had none.
+STAGING_LOG = "_execution/staging.log"
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
 
@@ -148,33 +176,132 @@ def campaign_execution_image(campaign_dir) -> str:
 
 def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
                  force: bool = False) -> int:
-    """Pull the Job's outputs (`_postproc/`) into *campaign_root*; return the count.
+    """Pull the Job's outputs into *campaign_root*; return the count.
 
-    Scoped to the staging prefix **on purpose**: mirroring the whole campaign prefix
-    would walk every rosbag to find the handful of CSVs beside them. The Job mirrored
-    its outputs at campaign-relative paths, so they land directly at
-    ``<campaign_root>/<config>/<run>/``.
+    The Job writes its outputs at campaign-relative paths under the canonical prefix and
+    lists them in :data:`OUTPUT_MANIFEST`, so this reads one known key and fetches exactly
+    what it names. That is what keeps the fetch cheap without a staging copy: listing the
+    campaign prefix would walk every rosbag to find the handful of CSVs beside them, which
+    is the cost the old ``_postproc/`` prefix existed to avoid, and it avoided it by
+    storing everything twice.
 
     *force* must be set whenever the conversion **replaced** outputs rather than adding
-    them, i.e. whenever it ran with the caches bypassed. ``download_prefix`` skips a local
-    file whose size already matches -- correct for the immutable durable home, wrong for a
-    re-postprocess that mutates objects in place, where a regenerated CSV that keeps its
-    byte count would be skipped and the campaign root would keep the file the user asked
-    to replace.
+    them, i.e. whenever it ran with the caches bypassed: a regenerated CSV that keeps its
+    byte count is otherwise indistinguishable from the copy already on disk, and the
+    campaign root would keep the file the user asked to replace.
 
-    Left off, the skip is what makes the search loop's per-batch call cheap: the staging
-    prefix only grows, and each batch re-lists it to fetch the few objects its own
-    conversion added.
+    A campaign converted by an older service has no manifest and its outputs sit under the
+    legacy prefix, so that case falls back to the prefix fetch. Either way the staging
+    prefix is cleared once its contents are safely at the canonical paths -- it is scratch,
+    and nothing has ever emptied it.
     """
     from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
-    n = storage.download_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}", campaign_root,
-                                force=force)
-    logger.info("Synced %d postprocessing output(s) into %s", n, campaign_root)
+
+    manifest = storage.read_object(bucket, f"{campaign_prefix}{OUTPUT_MANIFEST}")
+    if manifest is None:
+        n = storage.download_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}",
+                                    campaign_root, force=force)
+        logger.info("Synced %d postprocessing output(s) from the legacy staging prefix "
+                    "into %s", n, campaign_root)
+    else:
+        n = _fetch_manifested(storage, bucket, campaign_prefix, campaign_root,
+                              manifest, force=force)
+        logger.info("Synced %d postprocessing output(s) into %s", n, campaign_root)
+
+    if n:
+        _discard_staging(storage, bucket, campaign_prefix, campaign_id)
     return n
+
+
+def _report_staging_failure(cluster_config, campaign_id: str, campaign_root) -> None:
+    """Land the staging container's own log where the campaign log can show it.
+
+    Only reached when the conversion wrote nothing, which is the case the initContainer's
+    log exists for. Copied into ``_execution/`` so it is published with the rest and reads
+    in the campaign log beside the phases -- the reader who was told there is no
+    POSTPROCESSING section gets, in the same place, the reason there is none.
+    """
+    import os  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+    try:
+        bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
+            cluster_config, campaign_id)
+        storage = in_pod_storage.storage_client_for(cluster_config)
+        raw = storage.read_object(bucket, f"{campaign_prefix}{STAGING_LOG}")
+    except Exception as e:  # noqa: BLE001 - a diagnostic may not raise over the failure
+        logger.warning("Could not read the staging log for %s: %s", campaign_id, e)
+        return
+    if raw is None:
+        logger.warning("No staging log for %s either: the Job failed before either of "
+                       "its containers could report anything", campaign_id)
+        return
+    text = raw.decode("utf-8", "replace").rstrip()
+    logger.warning("Postprocessing failed while staging the campaign's bags:\n%s", text)
+    try:
+        dst = os.path.join(str(campaign_root), STAGING_LOG)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except OSError as e:
+        logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
+
+
+def _manifest_paths(manifest: bytes) -> list:
+    """The campaign-relative paths in a manifest, ignoring anything that escapes it.
+
+    The manifest is written by a container into a location the service then writes to, so
+    it is treated as input rather than as instructions: a path that is absolute or reaches
+    upwards would have this fetch write outside the campaign root.
+    """
+    import os  # noqa: PLC0415
+    paths = []
+    for line in manifest.decode("utf-8", "replace").splitlines():
+        rel = line.strip().lstrip("./")
+        if not rel or os.path.isabs(rel) or ".." in rel.split("/"):
+            continue
+        paths.append(rel)
+    return paths
+
+
+def _fetch_manifested(storage, bucket: str, campaign_prefix: str, campaign_root: str,
+                      manifest: bytes, force: bool = False) -> int:
+    """Fetch exactly the objects the manifest names; return how many were written."""
+    import os  # noqa: PLC0415
+    n = 0
+    for rel in _manifest_paths(manifest):
+        dst = os.path.join(campaign_root, rel)
+        if not force and os.path.exists(dst):
+            # Same rule download_prefix applies, and for the same reason: the durable home
+            # is immutable unless the conversion was told to replace what is there.
+            size = storage.stat_object(bucket, f"{campaign_prefix}{rel}")
+            if size is not None and size == os.path.getsize(dst):
+                continue
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        if storage.download_object(bucket, f"{campaign_prefix}{rel}", dst):
+            n += 1
+    return n
+
+
+def _discard_staging(storage, bucket: str, campaign_prefix: str, campaign_id: str) -> None:
+    """Drop a campaign's legacy staging prefix, best-effort.
+
+    Only ever called once the outputs are at the canonical paths, so this removes a second
+    copy and never the only one. Best-effort because a staging prefix nobody reads is not
+    worth failing a postprocess over -- it is space, not correctness.
+    """
+    try:
+        removed = storage.delete_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}")
+    except Exception as e:  # noqa: BLE001 - reclaiming space may not fail a postprocess
+        logger.warning("Could not clear the staging prefix for %s: %s", campaign_id, e)
+        return
+    if removed:
+        logger.info("Cleared %d staged object(s) for %s; the outputs are at their "
+                    "canonical paths", removed, campaign_id)
 
 
 def campaign_vast(campaign_root) -> str:
@@ -260,6 +387,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                 logger.warning("Postprocessing job for %s failed before it wrote a "
                                "conversion log; there is no POSTPROCESSING section",
                                campaign_id)
+                _report_staging_failure(cluster_config, campaign_id, campaign_root)
             return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
@@ -355,6 +483,40 @@ def _mirror_excludes() -> str:
     return f"--exclude {_shquote(PROBE_DIR + '/*')} "
 
 
+def _staging_script() -> str:
+    """The initContainer's shell: stage the campaign's bags, and account for itself.
+
+    Everything is captured to a file and echoed on, and on failure that file is pushed to
+    the store under :data:`STAGING_LOG`. Without it this container's failure is invisible:
+    the conversion container never starts, so nothing tees a line and the end-of-run mirror
+    that would have carried one never runs -- the campaign is left having failed
+    postprocessing with no account of why, anywhere, permanently.
+
+    ``|| true`` on that push, and the real status preserved through ``rc``: if the store is
+    what is unreachable then the upload cannot work either, and a failure to file the
+    report must not be mistaken for the failure being reported.
+
+    Plain ``sh``: no ``pipefail`` and no ``PIPESTATUS`` here, so the status is taken from
+    the group rather than through a pipe.
+    """
+    return "\n".join([
+        "log=/tools/staging.log",
+        "rc=0",
+        "{",
+        '  cp "$(command -v mc)" /tools/mc && chmod +x /tools/mc &&',
+        '  mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" &&',
+        "  mc mirror " + _mirror_excludes() +
+        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/',
+        '} > "$log" 2>&1 || rc=$?',
+        # Still on stdout, so a pod that is still around reads the same way it always did.
+        'cat "$log"',
+        'if [ "$rc" -ne 0 ]; then',
+        f'  mc cp "$log" "mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{STAGING_LOG}" || true',
+        "fi",
+        'exit "$rc"',
+    ])
+
+
 def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str:
     """The main container's shell: convert each batch, then mirror /out up.
 
@@ -391,8 +553,14 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str
         args.append("/bags")
         convert.append(" ".join(args))
 
-    mirror = ('/tools/mc mirror --overwrite /out/ '
-              f'"mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{POSTPROC_PREFIX}/"')
+    # Straight to the canonical prefix. /out holds only what this Job produced, at
+    # campaign-relative paths, and `mc mirror` without --remove writes exactly those keys,
+    # so there is nothing here a staging copy would have protected the campaign from.
+    mirror = '/tools/mc mirror --overwrite /out/ "mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX"'
+    # Written before the mirror so it rides up with what it describes. `find` runs after the
+    # conversion, so it names what was actually produced rather than what was intended.
+    manifest = (f'(cd /out && find . -type f | sed "s|^\\./||") > /out/{OUTPUT_MANIFEST} '
+                '2>/dev/null || true')
     lines = [
         "set -eo pipefail",
         # The log is created and the setup runs INSIDE it, and the mirror is a trap, so
@@ -404,7 +572,7 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str
         f"mkdir -p $(dirname {_POSTPROC_LOG}) || exit 1",
         # `|| true`: a failed mirror must not overwrite the conversion's own exit status
         # with its own, and there is nowhere left to report it to anyway.
-        f"trap '{mirror} || true' EXIT",
+        f"trap '{manifest}; {mirror} || true' EXIT",
         "rc=0",
         "(",
         # `set -e` ahead of the alias, so a store this Job cannot reach stops it here and
@@ -666,13 +834,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                             # arrive read-only from the ConfigMap volume above.)
                             "name": "s3-init",
                             "image": resolve_sidecar_image(),
-                            "command": ["sh", "-c",
-                                        'cp "$(command -v mc)" /tools/mc && '
-                                        'chmod +x /tools/mc; '
-                                        'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" '
-                                        '"$S3_SECRET_KEY" && '
-                                        'mc mirror ' + _mirror_excludes() +
-                                        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
+                            "command": ["sh", "-c", _staging_script()],
                             "env": s3_env,
                             "volumeMounts": [
                                 {"name": "tools", "mountPath": "/tools"},

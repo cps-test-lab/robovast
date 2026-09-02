@@ -3604,11 +3604,16 @@ class ClusterService(LocalTransport):
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
 
-    #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is
-    #: postprocessing's internal staging and ``.cache`` its rebuildable hash cache.
+    #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is a
+    #: legacy staging copy carried by campaigns converted before the conversion wrote the
+    #: canonical paths directly, and ``.cache`` is postprocessing's rebuildable hash cache.
     #: The first is what the download stream already drops; the second is
     #: ``campaign_archive.DEFAULT_EXCLUDE``, so an exported archive and one the
     #: campaign uploaded itself hold the same thing.
+    #:
+    #: Still excluded rather than removed from the set: a campaign that predates the change
+    #: keeps its copy until a postprocess clears it, and exporting the same derived data
+    #: twice would be the one thing the prefix was always wrong about.
     _SHARE_EXCLUDE_PREFIXES = frozenset({"_postproc", ".cache"})
 
     #: What `record_step_outcome` needs to reconstruct the campaign's Status, and all it
