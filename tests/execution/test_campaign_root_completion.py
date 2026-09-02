@@ -47,6 +47,11 @@ class _Backend:
     def ensure_campaign_root_complete(self, campaign_root):
         self.calls.append(("complete", campaign_root))
 
+    def publish_execution_records(self, campaign_root):
+        # The other direction: what the driver alone wrote has to reach the campaign's
+        # durable home before a reader that is not this process stages it from there.
+        self.calls.append(("publish", campaign_root))
+
 
 def test_the_root_is_completed_before_postprocessing_reads_it(monkeypatch):
     backend = _Backend()
@@ -63,10 +68,14 @@ def test_the_root_is_completed_before_postprocessing_reads_it(monkeypatch):
     controller._chain_postprocessing(backend, "/results/camp-a", "camp-a",
                                      state=None, options=RunOptions(postprocess=True))
 
-    assert backend.calls == [("complete", "/results/camp-a"),
-                             ("postprocess", "/results/camp-a")], (
-        "the root has to be whole BEFORE data.db is derived from it; afterwards is a "
+    # The ORDER, not the exact sequence: other work legitimately sits between these two
+    # (the driver's records are published to the durable home here too), and a test that
+    # pins the whole list fails on any such addition while guarding nothing more.
+    kinds = [kind for kind, _root in backend.calls]
+    assert kinds.index("complete") < kinds.index("postprocess"), (
+        "the root has to be whole BEFORE data is derived from it; afterwards is a "
         "truncated campaign that reports success")
+    assert all(root == "/results/camp-a" for _kind, root in backend.calls)
 
 
 def test_a_local_campaign_is_never_asked_to_complete_its_root(monkeypatch):
@@ -201,3 +210,24 @@ def test_a_backend_with_no_state_still_restores(tmp_path, monkeypatch):
                         lambda _cfg, **_kw: _FakeStorage({"a": 1}))
 
     backend.ensure_campaign_root_complete(str(tmp_path / "camp-a"))
+
+
+def test_both_directions_happen_before_postprocessing_reads_the_campaign(monkeypatch):
+    """The root is completed FROM the durable home and the driver's records are published
+    TO it, and postprocessing needs both: it reads the run tree the completion fetches and
+    stages the campaign the publish fills in. Either one after the submit is no better than
+    neither."""
+    backend = _Backend()
+
+    def _postprocess(_cfg, campaign_id, campaign_root, _ns, **_kw):
+        backend.calls.append(("postprocess", campaign_root))
+        return True, "done"
+
+    monkeypatch.setattr(postprocess_job, "postprocess_campaign", _postprocess)
+
+    controller._chain_postprocessing(backend, "/results/camp-1", "camp-1",
+                                     state=None, options=RunOptions(postprocess=True))
+
+    kinds = [kind for kind, _root in backend.calls]
+    assert kinds.index("complete") < kinds.index("postprocess")
+    assert kinds.index("publish") < kinds.index("postprocess")

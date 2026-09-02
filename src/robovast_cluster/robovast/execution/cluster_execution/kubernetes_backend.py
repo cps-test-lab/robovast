@@ -3350,6 +3350,32 @@ class KubernetesBackend(ExecutionBackend):
                               image_digests=getattr(runner, "_resolved_image_digests", None),
                               image_labels=image_labels or None)
 
+    def publish_execution_records(self, campaign_root: str) -> None:
+        """Publish the directories only the driver writes, so a reader elsewhere has them.
+
+        ``finalize_campaign`` would do it, and does it later; postprocessing runs before
+        that and, on this lane, stages the campaign out of the store. So what the driver
+        alone holds has to be up there first or the pod converts a campaign that cannot
+        say what produced it.
+
+        Small and one-off: two directories of records and logs, published once at the
+        boundary where a different process starts reading. Best-effort for the same reason
+        the record publish is -- the campaign's results are already home, and its
+        bookkeeping must not be what ends it.
+        """
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        try:
+            bucket, prefix = in_pod_storage.campaign_storage_location(
+                self.cluster_config, campaign_id)
+            storage = in_pod_storage.storage_client_for(self.cluster_config)
+            for name in ("_execution", "_transient"):
+                local = os.path.join(campaign_root, name)
+                if os.path.isdir(local):
+                    storage.upload_dir(local, bucket, f"{prefix}{name}")
+        except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
+            logger.warning("Could not publish the execution records of %s: %s",
+                           campaign_id, e)
+
     def publish_records(self, campaign_root: str) -> None:
         """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.
 
