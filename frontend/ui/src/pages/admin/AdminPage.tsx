@@ -111,6 +111,13 @@ export function AdminPage() {
     queryKey: ['version'],
     queryFn: robovast.version,
     enabled: active,
+    // Polled, not read once: what it describes is the pod answering right now, and that pod
+    // is replaced by an upgrade started from anywhere -- the CLI, another tab, or this page
+    // with the reload declined. Without a poll the panel keeps describing the pod that went
+    // away until someone reloads the document, which is the one reading an operator here is
+    // least able to spot as stale. Same period as the upgrade read below, so the two lines
+    // cannot disagree by more than one interval; it is a cheap in-pod read either way.
+    refetchInterval: 60_000,
     retry: false,
   })
   const upgrade = useQuery({
