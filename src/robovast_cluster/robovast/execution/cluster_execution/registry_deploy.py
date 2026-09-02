@@ -55,6 +55,8 @@ auth is an htpasswd Secret plus an Ingress annotation -- see ``docs/cluster_exec
 
 import logging
 
+from . import data_paths
+
 logger = logging.getLogger(__name__)
 
 #: The registry listens here inside the pod. Not 5000-on-the-host: nothing publishes this
@@ -76,8 +78,10 @@ REGISTRY_DATA_DIR = "/var/lib/registry"
 #: Name of the volume carrying :data:`REGISTRY_DATA_DIR`.
 REGISTRY_VOLUME_NAME = "registry-data"
 
-#: Default host path backing the registry when no StorageClass is available.
-DEFAULT_REGISTRY_HOST_PATH = "/var/lib/robovast-registry"
+#: Default host path backing the registry when no StorageClass is available. Declared in
+#: :mod:`.data_paths` with every other tenant's, so the resolver that places them all and the
+#: volume that reads one cannot disagree about it.
+DEFAULT_REGISTRY_HOST_PATH = data_paths.DEFAULT_REGISTRY_HOST_PATH
 
 #: What the scheduler reserves for the registry, and what it may grow to.
 #:

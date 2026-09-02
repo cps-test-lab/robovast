@@ -21,6 +21,9 @@ def test_cluster_cleanup_removes_the_governor_daemonset(monkeypatch):
                         lambda name: _types.SimpleNamespace(
                             cleanup_cluster=lambda **kw: calls.append("cluster_config")))
     monkeypatch.setattr(cluster_setup, "delete_controller_rbac", lambda **kw: None)
+    # Cleanup reads where this deployment's data is before removing the objects that name
+    # it; that is a cluster read, and this test is about the governor.
+    monkeypatch.setattr(cluster_setup, "_node_data_locations", lambda *a, **k: [])
     monkeypatch.setattr(cluster_setup, "uninstall_nvidia_device_plugin", lambda **kw: None)
     monkeypatch.setattr("robovast.execution.cluster_execution.cluster_execution."
                         "cleanup_cluster_campaign", lambda **kw: None)

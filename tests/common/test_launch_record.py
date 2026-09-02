@@ -15,7 +15,8 @@ pair answers it; neither number does alone.
 
 import yaml
 
-from robovast.common.campaign_data import read_launch_record, write_launch_record
+from robovast.common.campaign_data import (read_launch_record, update_launch_images,
+                                           write_launch_record)
 from robovast.service.interface import CreateCampaignRequest
 
 
@@ -124,3 +125,57 @@ def test_the_second_write_adds_images_without_losing_the_request(tmp_path):
     record = read_launch_record(tmp_path)
     assert record["config_filter"] == "pilot*" and record["runs"] == 3
     assert record["images"] == {"scenario": "img@sha256:def"}
+
+
+def _request():
+    return CreateCampaignRequest(
+        workspace_id="ws-abc", config_path="p.vast", config_filter="goal-1",
+        campaign_name="pilot", runs=1, postprocess=True, upload_to_share=False,
+        show_gui=False, description="")
+
+
+def test_a_container_the_campaign_did_not_build_reaches_the_record(tmp_path):
+    """The defect this closes: ``images`` held only what was BUILT.
+
+    A simulator supplied by its backend -- no ``image:`` in the ``.vast`` at all -- is never
+    in a build map, so it appeared nowhere. A retrigger then re-resolved its family tag and
+    ran the campaign against whatever had been pushed since, which is a different experiment
+    wearing the same name.
+    """
+    write_launch_record(tmp_path, _request(), images={"sut": "reg.example.com/sut:abc123"})
+
+    update_launch_images(tmp_path, {"simulation": "reg.example.com/roqsim@sha256:" + "1" * 64})
+
+    images = read_launch_record(tmp_path)["images"]
+    assert images["simulation"].endswith("@sha256:" + "1" * 64)
+    # Merged, not replaced: the caller knows its containers, not the request beside them.
+    assert images["sut"] == "reg.example.com/sut:abc123"
+    assert read_launch_record(tmp_path)["config_filter"] == "goal-1"
+
+
+def test_a_tag_already_recorded_is_replaced_by_the_digest(tmp_path):
+    """"Update it if it exists" -- the digest is the more concrete answer to the same
+    question, and leaving the tag would leave the record naming bytes that can move."""
+    write_launch_record(tmp_path, _request(), images={"sut": "reg.example.com/sut:latest"})
+
+    update_launch_images(tmp_path, {"sut": "reg.example.com/sut@sha256:" + "2" * 64})
+
+    assert read_launch_record(tmp_path)["images"]["sut"].endswith("@sha256:" + "2" * 64)
+
+
+def test_a_campaign_with_no_launch_record_does_not_gain_a_bare_one(tmp_path):
+    """A record holding images and no request reads as a campaign that asked for nothing --
+    worse than the absence, which every reader already handles."""
+    update_launch_images(tmp_path, {"sut": "reg.example.com/sut:abc"})
+
+    assert read_launch_record(tmp_path) is None
+
+
+def test_recording_nothing_leaves_the_record_alone(tmp_path):
+    """A lane that resolved no images must not blank the ones already there."""
+    write_launch_record(tmp_path, _request(), images={"sut": "reg.example.com/sut:abc"})
+
+    update_launch_images(tmp_path, {})
+    update_launch_images(tmp_path, {"simulation": ""})
+
+    assert read_launch_record(tmp_path)["images"] == {"sut": "reg.example.com/sut:abc"}

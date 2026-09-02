@@ -534,6 +534,121 @@ def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
     return {str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else {}
 
 
+#: How far back through an image's layers to look for the build manifest, and how large a
+#: layer may be before it is skipped. The manifest is written by the last steps of a build
+#: (``image_build._manifest_lines``), as its own layers so it never invalidates the install
+#: layers above it -- so it is at the end, and those layers hold nothing but a package list.
+#: The caps are what keep a miss cheap: an image built before the manifest existed costs a
+#: few small GETs instead of a full pull.
+_LOCK_LAYER_SCAN = 8
+_LOCK_LAYER_MAX_BYTES = 8 * 1024 * 1024
+
+
+
+def manifest_build_lock(image_ref: str, *, dockerconfigjson: str = "", insecure: bool = False,
+                        ca_path: str = "",
+                        patience_s: float = DEFAULT_PATIENCE) -> dict:
+    """The build-lock files baked into *image_ref*, as ``{name: text}``; ``{}`` when absent.
+
+    The lock answers what a digest cannot: *if this image is gone, would a rebuild install the
+    same software?* It is written into the image, so the usual way to read it is to look inside
+    a local copy -- which needs a container runtime. The controller pod has none, so on the
+    cluster lane the lock was unreadable, and a campaign's own persisted copy (the only one
+    that outlives the image) was never written for any campaign that ran there.
+
+    This reads it straight out of the registry instead: the manifest, then the trailing layer
+    blobs, extracting the manifest directory from the first one that carries it. No pull, and
+    no runtime.
+
+    Bounded on purpose -- see :data:`_LOCK_LAYER_SCAN`. A layer over the size cap is skipped
+    rather than downloaded, because the manifest layers are a package list and an install
+    layer is not; scanning one would trade the whole point of not pulling.
+
+    ``{}`` on every uncertainty, exactly as the readers above return ``""``: an unreachable
+    registry, a ref this deployment holds no credential for, an image built before the
+    manifest existed. The caller keeps whatever it had, and must not read the empty answer as
+    "this image installed nothing" -- that would make a rebuild install an empty set in place
+    of the author's intent.
+    """
+    import gzip  # noqa: PLC0415 - only this path unpacks a layer
+    import io  # noqa: PLC0415
+    import tarfile  # noqa: PLC0415
+
+    from robovast.common.execution import (BUILD_MANIFEST_DIR,  # noqa: PLC0415
+                                           BUILD_MANIFEST_FILES)
+
+    # A tar member carries no leading slash.
+    prefix = BUILD_MANIFEST_DIR.lstrip("/") + "/"
+
+    try:
+        host, repository, _ = split_image_ref(image_ref)
+    except ValueError as e:
+        logger.warning("registry check: %s", e)
+        return {}
+    manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
+                              insecure=insecure, ca_path=ca_path, patience_s=patience_s)
+    if manifest is None:
+        return {}
+    if "manifests" in manifest:
+        child = _index_child(manifest)
+        if not child:
+            return {}
+        manifest = _manifest_json(image_ref, digest=child,
+                                  dockerconfigjson=dockerconfigjson, insecure=insecure,
+                                  ca_path=ca_path, patience_s=patience_s)
+        if manifest is None:
+            return {}
+    layers = [layer for layer in (manifest.get("layers") or [])
+              if isinstance(layer, dict)]
+    out: dict = {}
+    for layer in reversed(layers[-_LOCK_LAYER_SCAN:]):
+        digest = layer.get("digest") or ""
+        if not digest.startswith("sha256:"):
+            continue
+        if int(layer.get("size") or 0) > _LOCK_LAYER_MAX_BYTES:
+            continue
+        resp = _registry_request(host, f"{repository}/blobs/{digest}", method="GET",
+                                 dockerconfigjson=dockerconfigjson, insecure=insecure,
+                                 ca_path=ca_path, accept="*/*", patience_s=patience_s)
+        if resp is None or resp.status_code != 200:
+            continue
+        blob = getattr(resp, "content", b"") or b""
+        try:
+            # Uncompressed layers are legal in the OCI spec and BuildKit emits them for some
+            # exporters, so this must not assume gzip.
+            if blob[:2] == b"\x1f\x8b":
+                blob = gzip.decompress(blob)
+            with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+                for member in tar.getmembers():
+                    name = member.name.lstrip("./")
+                    if not member.isfile() or not name.startswith(prefix):
+                        continue
+                    # Only the files the lock is made of. Anything else under that directory
+                    # is somebody else's, and decoding it would put unbounded image content
+                    # into a record whose whole value is being small and known.
+                    if name[len(prefix):] not in BUILD_MANIFEST_FILES:
+                        continue
+                    handle = tar.extractfile(member)
+                    if handle is None:
+                        continue
+                    # setdefault, and the walk runs newest layer first: a rebuilt manifest
+                    # in a later layer must win over the one it replaced.
+                    out.setdefault(name[len(prefix):],
+                                   handle.read().decode("utf-8", "replace"))
+        except (OSError, tarfile.TarError, EOFError, ValueError):
+            # A layer that will not unpack is not this campaign's problem: the lock is a
+            # record, and refusing to run over one would be worse than not having it.
+            logger.debug("could not read layer %s of %s", digest[:19], image_ref,
+                         exc_info=True)
+            continue
+        # Deliberately no early exit on the first hit: each manifest file is written by its
+        # own `RUN`, so each is in its own layer, and stopping here would return whichever
+        # one happened to be last and silently lose the others.
+        if all(name in out for name in BUILD_MANIFEST_FILES):
+            break
+    return out
+
+
 def _image_config(image_ref: str, *, dockerconfigjson: str = "",
                   insecure: bool = False, ca_path: str = "",
                   patience_s: float = DEFAULT_PATIENCE) -> "Optional[dict]":

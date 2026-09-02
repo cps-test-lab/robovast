@@ -154,7 +154,8 @@ class BaseConfig(object):
                              on_member=None) -> None:
         """Stream this campaign's stored objects into the open *tar* (no local copy).
 
-        Powers the postprocessed-download stream (``/campaigns/{id}/archive``): each
+        Powers the download stream (``/campaigns/{id}/archive``), for a postprocessed
+        campaign and a raw one alike -- whatever objects the campaign has, tarred: each
         object is fetched from storage and added to the streaming tar on the fly, so
         **no scratch is used on the service during or after the download**.
         *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive
@@ -406,19 +407,23 @@ class BaseConfig(object):
         return "s3"
 
     def get_store_usage(self, node_summaries, namespace="default"):
-        """``(used_bytes, capacity_bytes)`` for the campaign results store, or ``(None, None)``.
+        """``(used_bytes, capacity_bytes, reason)`` for the campaign store.
 
-        Called by the service's ``/usage`` endpoint to draw the results-store meter. The
-        default ``(None, None)`` means **this provider cannot say**, and the caller reports
-        no store figure rather than guessing. That is also the honest answer for a provider
-        backed by a cloud bucket: object storage has no capacity to fill, so there is no
-        meter to draw -- not a failure to draw one.
+        Called by the service's ``/usage`` endpoint to draw the results-store meter.
+        ``(None, None, "")`` means **this provider cannot say and the caller should keep
+        looking**; the default, and the honest answer for a provider backed by a cloud
+        bucket, where object storage has no capacity to fill and so no meter to draw -- not a
+        failure to draw one.
 
-        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched
-        by the caller, so an override needs no cluster round-trip of its own.
+        A non-empty *reason* means the opposite: there will be no figure, and here is what to
+        tell the reader instead. It travels to the UI and to an MCP client, so it says what is
+        true of the store rather than naming a node.
+
+        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched by
+        the caller, so an override needs no cluster round-trip of its own.
         """
         del node_summaries, namespace
-        return None, None
+        return None, None, ""
 
     def get_cluster_allocatable_resources(self, kube_context=None):
         """Return the total CPU and memory capacity admission should size against.
@@ -456,6 +461,12 @@ class BaseConfig(object):
                     robovast-service's env and read back by
                     :func:`~robovast.execution.cluster_execution.service_deploy.read_service_config_from_cluster`.
         """
+
+    #: Whether ``--store-path`` / ``--store-class`` mean anything here. ``False`` is the safe
+    #: default: a provider backed by a bucket has no directory to place, and one that builds
+    #: its own store volume would ignore the flag while reporting the setting as accepted.
+    #: The providers that mount the store from a volume this deployment chooses set it.
+    store_is_placeable = False
 
     @staticmethod
     def _apply_pod_node_selector(yaml_objects, node_labels):

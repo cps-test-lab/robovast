@@ -22,8 +22,9 @@ from kubernetes import client
 
 from robovast.execution.cluster_execution.kube_client import load_kube_config
 
-from ..cluster_execution import store_pod
+from ..cluster_execution import data_paths, store_pod
 from ..cluster_execution.kubernetes import apply_manifests, check_pod_running, delete_manifests
+from . import minio_store
 from .base_config import BaseConfig
 
 #: The embedded MinIO pod this config deploys, and the volume its ``/data`` mounts.
@@ -103,6 +104,8 @@ spec:
 
 class Rke2ClusterConfig(BaseConfig):
 
+    store_is_placeable = True
+
     @staticmethod
     def _refuse_a_store_pod_on_the_wrong_node(namespace, pod_name, node_labels):
         """Raise when a live store Pod sits somewhere the resolved placement does not want.
@@ -158,13 +161,26 @@ class Rke2ClusterConfig(BaseConfig):
         # The registry and the campaign index ride in this pod: setup-lifetime
         # infrastructure, created once here rather than in the service Deployment that
         # every upgrade rolls. See `cluster_execution.store_pod`.
+        # The store's own volume, before the pod is refused or applied. A campaign's whole
+        # directory is published into it, so this is the volume that decides whether a
+        # finished campaign survives its pod.
+        store_path = kwargs.get('store_storage_path', '') or data_paths.DEFAULT_STORE_HOST_PATH
+        store_class = kwargs.get('store_storage_class', '')
+        store_volume = minio_store.store_volume(store_path, store_class)
+        yaml_objects = minio_store.apply_store_volume(
+            yaml_objects, store_volume,
+            minio_store.store_pvc_manifest(namespace, store_class,
+                                           kwargs.get('store_storage_size', '')))
         yaml_objects = store_pod.attach_infrastructure(
             yaml_objects, namespace,
             index_storage_path=kwargs.get('index_storage_path', ''),
+            index_storage_class=store_class,
             registry_storage_path=kwargs.get('registry_storage_path', ''),
             registry_storage_class=kwargs.get('registry_storage_class', ''))
         yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         self._refuse_a_store_pod_on_the_wrong_node(namespace, MINIO_POD_NAME, control_node_labels)
+        minio_store.refuse_a_store_the_manifest_cannot_change(namespace, store_volume,
+                                                             MINIO_POD_NAME)
         try:
             apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
         except Exception as e:
@@ -201,9 +217,21 @@ class Rke2ClusterConfig(BaseConfig):
             **kwargs: Cluster-specific options (control_node_labels)
         """
         control_node_labels = kwargs.pop('control_node_labels', None)
-        docs = store_pod.attach_infrastructure(
+        namespace = kwargs.get('namespace', 'default')
+        # The same store volume `setup_cluster` would apply: a manifest written for a manual
+        # `kubectl apply` must describe the store this deployment actually uses, or following
+        # these instructions produces a different cluster from running the command.
+        store_path = kwargs.get('store_storage_path', '') or data_paths.DEFAULT_STORE_HOST_PATH
+        store_class = kwargs.get('store_storage_class', '')
+        docs = minio_store.apply_store_volume(
             list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))),
-            kwargs.get('namespace', 'default'))
+            minio_store.store_volume(store_path, store_class),
+            minio_store.store_pvc_manifest(namespace, store_class,
+                                           kwargs.get('store_storage_size', '')))
+        docs = store_pod.attach_infrastructure(
+            docs, namespace,
+            index_storage_path=kwargs.get('index_storage_path', ''),
+            index_storage_class=store_class)
         docs = self._apply_pod_node_selector(docs, control_node_labels)
         manifest_to_write = "---\n".join(
             yaml.dump(d, default_flow_style=False) for d in docs if d is not None
@@ -213,16 +241,19 @@ class Rke2ClusterConfig(BaseConfig):
 
         readme_content = """# RKE2 Cluster Setup Instructions
 
-Uses MinIO backed by an `emptyDir`, so it needs no storage class and no
-preparation on the nodes.
+Uses MinIO backed by a directory on the data node, so it needs no storage class
+and no preparation on the nodes.
 
 The store is where finished campaigns live: a campaign's full directory is
 published into it, and downloads, re-postprocessing and the campaign index all
-read from there. Because the volume is an `emptyDir`, that ends when the MinIO pod
-is restarted or rescheduled -- so archive anything worth keeping with `vast share`
-or pull it with `vast campaign download`. The volume declares no size limit, so it
-draws from the node filesystem, and the web UI's **Store** meter reports how full
-it is.
+read from there. It survives the pod being restarted or rescheduled, and
+`vast cluster cleanup` leaves it alone -- `vast cluster cleanup --delete-data` is
+what empties it. It is not a backup: one directory on one node is one disk, so
+archive anything that must outlive the machine with `vast share`.
+
+The directory draws from the node filesystem and declares no bound, so watch the
+web UI's **Disk** meter: a hostPath carries no per-volume stats of its own, and
+the disk it shares is the one that fills.
 
 ## Setup Steps
 
@@ -245,46 +276,15 @@ MinIO console is available at port 9001.
             f.write(readme_content)
 
     def get_store_usage(self, node_summaries, namespace="default"):
-        """The embedded MinIO pod's ``/data`` volume, from the kubelet's volume stats.
+        """The store volume's usage, from the kubelet's per-pod stats.
 
-        This config mounts ``/data`` as an ``emptyDir`` (see ``MINIO_MANIFEST_RKE2``), which
-        the kubelet therefore reports as a volume of the MinIO pod; because the ``emptyDir``
-        declares no ``sizeLimit`` it has no bound of its own. The meter matters because this
-        volume holds every campaign the deployment has finished -- a full one stalls
-        campaigns, and what it holds is not scratch.
-
-        THE DENOMINATOR IS ``used + available``, NOT ``capacityBytes``. For an unbounded
-        ``emptyDir`` the volume's ``capacityBytes`` is the whole node filesystem, which the
-        store shares with the images, the containers and every campaign directory -- so it
-        reported 29 GiB of 460 on a disk already 314 GiB full, inviting the reading that
-        there were 430 GiB of store headroom when there were about 146. ``availableBytes``
-        is what the filesystem will actually still take, so ``used + available`` is the
-        ceiling this store can really reach.
-
-        That makes the denominator move as the rest of the node fills, which is a feature
-        and not an artefact: the number an operator needs before a sweep is how much more
-        this buffer can hold *now*, and it genuinely shrinks when something else grows. A
-        fixed 460 was never that number for any reading.
-
-        ``(None, None)`` when the pod is not in the stats -- it may live on a node whose
-        kubelet was not read, and a store the caller cannot see is not a store of size zero.
-        Also ``(None, None)`` when the kubelet gave no ``availableBytes``: the honest
-        answer is no meter, rather than falling back to the capacity that caused this.
+        Delegated to :func:`minio_store.store_usage`, which every embedded-store provider
+        shares -- see it for the denominator and for the three outcomes, one of which is
+        "the pod is here and its volume is not", the shape a ``hostPath`` store takes from
+        the kubelet's point of view.
         """
         del namespace
-        for summary in (node_summaries or {}).values():
-            for pod in (summary.get("pods") or []):
-                if (pod.get("podRef") or {}).get("name") != MINIO_POD_NAME:
-                    continue
-                for volume in (pod.get("volume") or []):
-                    if volume.get("name") != MINIO_VOLUME_NAME:
-                        continue
-                    used = volume.get("usedBytes")
-                    available = volume.get("availableBytes")
-                    if used is None or available is None:
-                        return None, None
-                    return int(used), int(used) + int(available)
-        return None, None
+        return minio_store.store_usage(node_summaries, MINIO_POD_NAME, MINIO_VOLUME_NAME)
 
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
         """Ensure the embedded MinIO (``robovast``) pod is running before a run.
