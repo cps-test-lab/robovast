@@ -3,6 +3,7 @@
 """Unit tests for analysis postprocessing surfacing."""
 
 import logging
+import types
 
 import pytest
 
@@ -710,3 +711,141 @@ def test_a_root_without_the_ledger_does_not_read_as_no_interventions(tmp_path, m
     _cmds, _image, tolerate = pj._submit_inputs(object(), "camp", str(tmp_path))
 
     assert "_jobs/batch-1/job-27" in tolerate
+
+
+def test_the_running_job_publishes_its_log_as_the_phase(tmp_path, monkeypatch):
+    """Nothing the pod writes leaves it until it exits: the log is on a shared volume and
+    the last container uploads it at the end. So a conversion measured in minutes showed an
+    empty POSTPROCESSING section for all of them, and the only way to watch one was a pod
+    name nobody off-cluster has.
+
+    Read from the pod's stdout rather than its volume, because the volume is the pod's own
+    and nothing outside can see it -- every container in declaration order, so staging and
+    conversion read as the one section they are.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    uploaded = {}
+
+    class _Store:
+        def upload_file(self, local_path, bucket, key):
+            with open(local_path, encoding="utf-8") as f:
+                uploaded[key] = f.read()
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            spec = types.SimpleNamespace(
+                init_containers=[types.SimpleNamespace(name="stage"),
+                                 types.SimpleNamespace(name="convert")],
+                containers=[types.SimpleNamespace(name="host")])
+            pod = types.SimpleNamespace(metadata=types.SimpleNamespace(name="p1"),
+                                        spec=spec)
+            return types.SimpleNamespace(items=[pod])
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            from kubernetes import client
+            if container == "host":
+                raise client.exceptions.ApiException(status=400)  # not started yet
+            return f"{container} said something"
+
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+
+    assert pj.publish_live_log(_Core(), object(), "camp", "ns", "job-x") is True
+
+    text = uploaded["p/_execution/postprocessing.log"]
+    # Declaration order, and the container that has not started is simply absent -- which
+    # is also how "this stage has not run" should look.
+    assert text.index("stage said") < text.index("convert said")
+    assert "host" not in text
+
+def test_a_pod_that_cannot_be_read_does_not_fail_the_postprocess(monkeypatch):
+    """This is a read for someone watching. It must not fail the work it is watching."""
+    class _Broken:
+        def list_namespaced_pod(self, namespace, label_selector):
+            raise RuntimeError("no api")
+
+    assert pj.publish_live_log(_Broken(), object(), "camp", "ns", "job-x") is False
+
+def test_the_live_log_comes_from_the_newest_pod():
+    """A Job can have more than one pod -- a backoffLimit retry makes another, and replacing
+    a finished Job of the same name makes another still -- and the listing does not promise
+    an order. Publishing from an arbitrary one would make the section alternate between two
+    attempts each time this is called, which reads worse than either of them.
+    """
+    import datetime
+
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    uploaded = {}
+
+    class _Store:
+        def upload_file(self, local_path, bucket, key):
+            with open(local_path, encoding="utf-8") as f:
+                uploaded[key] = f.read()
+
+    def _pod(name, when):
+        return types.SimpleNamespace(
+            metadata=types.SimpleNamespace(name=name, creation_timestamp=when),
+            spec=types.SimpleNamespace(
+                init_containers=[], containers=[types.SimpleNamespace(name="host")]))
+
+    old = datetime.datetime(2026, 9, 2, 10, tzinfo=datetime.timezone.utc)
+    new = datetime.datetime(2026, 9, 2, 11, tzinfo=datetime.timezone.utc)
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            # Oldest first, which is the order that made this wrong.
+            return types.SimpleNamespace(items=[_pod("older", old), _pod("newer", new)])
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            return f"log of {name}"
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                            lambda cfg, cid: ("b", "p/"))
+        monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+
+        assert pj.publish_live_log(_Core(), object(), "camp", "ns", "job-x") is True
+    finally:
+        monkeypatch.undo()
+
+    assert uploaded["p/_execution/postprocessing.log"].strip() == "log of newer"
+
+def test_each_publish_replaces_rather_than_accumulates(monkeypatch):
+    """Called every thirty seconds for the length of a conversion, so anything but a
+    replacement would grow the section by a copy of itself each time. The store has no
+    append; this asserts the caller relies on that rather than on luck.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    writes = []
+
+    class _Store:
+        def upload_file(self, local_path, bucket, key):
+            with open(local_path, encoding="utf-8") as f:
+                writes.append((key, f.read()))
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            pod = types.SimpleNamespace(
+                metadata=types.SimpleNamespace(name="p1", creation_timestamp=None),
+                spec=types.SimpleNamespace(
+                    init_containers=[], containers=[types.SimpleNamespace(name="host")]))
+            return types.SimpleNamespace(items=[pod])
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            return "the whole log so far"
+
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+
+    for _ in range(3):
+        pj.publish_live_log(_Core(), object(), "camp", "ns", "job-x")
+
+    # Three writes, to one key, each carrying the log once.
+    assert {key for key, _ in writes} == {"p/_execution/postprocessing.log"}
+    assert [text.count("the whole log so far") for _key, text in writes] == [1, 1, 1]

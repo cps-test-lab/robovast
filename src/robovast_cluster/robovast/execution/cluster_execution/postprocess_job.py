@@ -41,6 +41,7 @@ from a per-campaign ConfigMap (the K8s analog of ``-v $SCRIPT_DIR:/scripts:ro``)
 the scripts always match the driver that generated the command.
 """
 
+import datetime
 import hashlib
 import json
 import logging
@@ -932,6 +933,92 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
     return True
 
 
+#: How often the Job's own log is published to the campaign's phase file while it runs.
+#:
+#: The pod is the writer here, and nothing it writes leaves the pod until it exits: its log
+#: lives on a shared volume and is uploaded by the last container at the end. So a
+#: postprocess that takes twenty minutes showed an empty POSTPROCESSING section for twenty
+#: minutes, and the only way to watch it was ``kubectl logs`` against a pod name nobody
+#: off-cluster has.
+#:
+#: An object store has no append, so each publish re-uploads the whole log -- which is why
+#: this is not every poll. Thirty seconds is slow enough for that to be a rounding error
+#: against a conversion measured in minutes, and fast enough to read as progress.
+_LIVE_LOG_INTERVAL = 30.0
+
+#: Sort key for a pod whose creation time the API did not fill in, so ordering by it never
+#: raises. Such a pod loses to any pod that has one, which is the right way round: a
+#: timestamp is present on anything the scheduler has seen.
+_EPOCH = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def publish_live_log(core, cluster_config, campaign_id: str, namespace: str,
+                     job_name: str) -> bool:
+    """Publish the running Job's log as the campaign's POSTPROCESSING phase. False if not.
+
+    Read from the pod rather than from the volume it writes: the volume is the pod's own and
+    nothing outside can see it, while the log is on the pod's stdout by construction -- the
+    conversion tees it there and the host step logs to it.
+
+    Every container's output in declaration order, so staging and conversion read as one
+    section in the order they ran. A container that has not started yet has no log and is
+    skipped, which is also how "this stage has not run" should look.
+
+    Best-effort throughout: this is a read for someone watching, and it must not fail the
+    postprocess it is watching.
+    """
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from kubernetes import client  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+    try:
+        pods = core.list_namespaced_pod(namespace=namespace,
+                                        label_selector=f"job-name={job_name}").items or []
+        if not pods:
+            return False
+        # The NEWEST pod, not whichever the listing put first. A Job can have more than one
+        # -- a backoffLimit retry makes another, and replacing a finished Job of the same
+        # name makes another still -- and the listing does not promise an order. Publishing
+        # from an arbitrary one would make the section alternate between two attempts as
+        # this is called again, which reads worse than either of them.
+        pod = max(pods, key=lambda p: (getattr(p.metadata, "creation_timestamp", None)
+                                       or _EPOCH, p.metadata.name))
+        names = [c.name for c in (pod.spec.init_containers or [])]
+        names += [c.name for c in (pod.spec.containers or [])]
+        chunks = []
+        for container in names:
+            try:
+                text = core.read_namespaced_pod_log(
+                    name=pod.metadata.name, namespace=namespace, container=container)
+            except client.exceptions.ApiException:
+                continue          # not started, or already gone: no output to place
+            if text:
+                chunks.append(text if text.endswith("\n") else text + "\n")
+        if not chunks:
+            return False
+        bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config,
+                                                                  campaign_id)
+        storage = in_pod_storage.storage_client_for(cluster_config)
+        # Through a file because the client uploads paths, not bytes. Named for the campaign
+        # so two of these running at once cannot write each other's log.
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".log",
+                                         prefix=f"live-{campaign_id}-",
+                                         delete=False) as handle:
+            handle.write("".join(chunks))
+            staged = handle.name
+        try:
+            storage.upload_file(staged, bucket, f"{prefix}{_POSTPROC_LOG_REL}")
+        finally:
+            os.unlink(staged)
+        return True
+    except Exception as e:  # noqa: BLE001 - a read for a watcher may not fail the work
+        logger.debug("could not publish the live postprocessing log of %s: %s",
+                     campaign_id, e)
+        return False
+
+
 def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     """Why this Job's pod actually died, read from the pod rather than from the pod's help.
 
@@ -1381,7 +1468,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                     image if rosbag_cmds else "none needed")
 
         deadline = time.time() + timeout
+        # Published from here because this is the only place that knows the Job is still
+        # running. Nothing the pod writes leaves it until it exits, so without this the
+        # POSTPROCESSING section stays empty for the whole of a conversion measured in
+        # minutes -- and the only way to watch one was a pod name nobody off-cluster has.
+        next_live_log = 0.0
         while time.time() < deadline:
+            if time.time() >= next_live_log:
+                publish_live_log(core, cluster_config, campaign_id, namespace, name)
+                next_live_log = time.time() + _LIVE_LOG_INTERVAL
             try:
                 status = batch.read_namespaced_job_status(
                     name=name, namespace=namespace).status
