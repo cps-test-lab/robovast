@@ -415,3 +415,41 @@ def test_an_unresolved_ref_cannot_reach_a_dockerfile(tmp_path, ref):
     spec = BuildSpec(tag="sim", python_packages=["./"])
     with pytest.raises(ValueError, match="unresolved image ref"):
         generate_dockerfile(spec, tmp_path, ref)
+
+
+# -- calibration travels with the container it sizes -------------------------------
+
+def test_the_plan_carries_each_container_s_calibration():
+    """``calibration`` has to reach the containers that will actually start.
+
+    Sizing runs against the plan, so a rule left behind in the config block is read by
+    nobody: the block validates, the file reads as configured, and every container is
+    allocated at its role default instead. That failure is silent -- there is no run to
+    inspect and no message -- which is why it is asserted here.
+    """
+    plan = plan_containers({"containers": {
+        "scenario": {"image": "a", "calibration": {"size_on": 99}},
+        "simulation": {"image": "b", "calibration": {"headroom": {"memory": 4.0}}},
+        "sut": {"image": "c"},
+    }})
+    by_name = {c.name: c for c in plan.containers}
+
+    assert by_name["scenario"].calibration == {"size_on": 99}
+    assert by_name["simulation"].calibration == {"headroom": {"memory": 4.0}}
+    assert by_name["sut"].calibration is None, "a container that states none must not invent one"
+
+
+def test_a_stepped_simulator_keeps_the_calibration_of_the_block_it_folds():
+    """Folding two blocks into one container must not drop the sizing rule.
+
+    A stepped simulator IS the scenario container, so the simulation block's rule has to
+    travel with it -- otherwise the container keeps the ceiling and loses the rule that
+    decides how a measurement becomes an allocation against it.
+    """
+    plan = plan_containers({"containers": {
+        "scenario": {"image": "a"},
+        "simulation": {"calibration": {"headroom": {"memory": 4.0}}},
+    }})
+    main = next(c for c in plan.containers if c.name == "scenario")
+
+    assert main.calibration == {"headroom": {"memory": 4.0}}
