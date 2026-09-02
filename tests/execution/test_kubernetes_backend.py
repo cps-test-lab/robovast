@@ -149,7 +149,14 @@ def _backend():
 
 
 def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path):
-    """execution.yaml is written in run_batch (so postprocess can read the image)."""
+    """execution.yaml is written in run_batch (so postprocess can read the image).
+
+    Twice: once as soon as the plan is pinned and again after the jobs. The digests are known
+    at the first point and this file is the only place they are recorded, so written only at
+    the end a campaign that died during its first batch named none of the images it ran --
+    which is the ordinary shape of a failure on this lane. The writer is idempotent, which is
+    what makes writing it twice free.
+    """
     calls = []
     monkeypatch.setattr("robovast.common.execution.create_execution_yaml",
                         lambda runs, out, **kw: calls.append((runs, out, kw)))
@@ -163,10 +170,10 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
         {"execution": {"containers": {"scenario": {"image": "img:test"}}}},
         campaign_root=str(tmp_path), batch_tag="b", runs=3, options=RunOptions())
 
-    assert len(calls) == 1
-    runs, out, kw = calls[0]
-    assert runs == 3 and out == str(tmp_path)
-    assert kw["execution_params"] == {"containers": {"scenario": {"image": "img:test"}}}
+    assert len(calls) == 2, "written once before the jobs and once after"
+    for runs, out, kw in calls:
+        assert runs == 3 and out == str(tmp_path)
+        assert kw["execution_params"] == {"containers": {"scenario": {"image": "img:test"}}}
 
 
 def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):
