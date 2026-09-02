@@ -113,6 +113,27 @@ DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
 #: spec unresolved is a hard error rather than an image name nothing can pull.
 FAMILY_IMAGE_PREFIX = "family:"
 
+
+#: Where a built image records what it actually contains. Baked into the image rather than
+#: written beside the campaign, because that is the only form that survives every path: both
+#: lanes get it without extra plumbing, it travels with the image if the image is copied or
+#: retagged, and a rebuild a year from now can read what the original installed and install
+#: exactly that.
+#:
+#: Here rather than beside the build that writes it, because it is now read by two layers that
+#: must not depend on each other -- the service's build code from a local image, and the
+#: cluster's registry client from a layer blob. A second literal in either would be a path that
+#: drifts silently, and the reader would simply find nothing.
+BUILD_MANIFEST_DIR = "/etc/robovast/build-manifest"
+
+#: Plain text, one record per line, rather than JSON. Both are produced by a shell `RUN`, where
+#: emitting valid JSON means quoting hundreds of package names correctly and a mistake yields a
+#: file that parses as something else; `pip freeze` output is also directly re-installable.
+#:
+#: Each is written by its own `RUN`, so each lands in its own layer -- which is why a reader
+#: walking layers must keep going after the first hit instead of stopping at it.
+BUILD_MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
+
 #: The RoboVAST contract image: ROS, scenario-execution, the VNC stack, ``/out``, the
 #: compat marker. What a campaign runs in when no simulator adds to it, and the ``FROM``
 #: every experiment image builds on. Carries no ``robovast`` Python package.

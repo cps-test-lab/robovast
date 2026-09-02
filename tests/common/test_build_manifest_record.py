@@ -11,6 +11,7 @@ So the campaign keeps its own copy, and the pre-flight prefers it.
 """
 
 import json
+import types
 
 import yaml
 
@@ -110,3 +111,103 @@ def test_persisting_never_fails_the_campaign(tmp_path, monkeypatch):
     instance = controller_module.CampaignController.__new__(controller_module.CampaignController)
     instance.campaign_root = str(tmp_path)
     instance._persist_build_manifests({"images": {"sut": "img:1"}})  # pylint: disable=protected-access
+
+
+def test_the_lock_is_read_from_the_image_that_ran_not_the_one_declared(tmp_path,
+                                                                      monkeypatch):
+    """``images`` is not the right ref to ask on every lane.
+
+    On the cluster lane it records what the ``.vast`` declared, and for a container robovast
+    builds that is its **base**. The base's lock describes different software than the image
+    the campaign actually ran -- it is missing exactly the packages the campaign added, which
+    are the ones a re-run has to pin. ``image_revisions`` is the digest of what ran.
+    """
+    from robovast.execution.controller import CampaignController
+
+    asked = []
+
+    def _local(image):
+        asked.append(image)
+        return {"apt": {"tree": "2.2.1-1"}} if "@sha256:" in image else {}
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest", _local)
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(read_build_lock=lambda _image: {})
+
+    controller._persist_build_manifests({
+        "images": {"sut": "reg.example.com/robovast:latest"},
+        "image_revisions": {"sut": "reg.example.com/sut@sha256:" + "a" * 64},
+    })
+
+    assert asked == ["reg.example.com/sut@sha256:" + "a" * 64]
+    assert read_build_manifests(tmp_path)["sut"]["apt"]["tree"] == "2.2.1-1"
+
+
+def test_the_lane_is_asked_when_no_local_image_can_answer(tmp_path, monkeypatch):
+    """The cluster case: the controller pod has no runtime, so the local read returns nothing
+    for an image that certainly has a lock. Before the lane was asked, that silence was taken
+    for "no lock" and the campaign kept no copy at all."""
+    from robovast.execution.controller import CampaignController
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest",
+                        lambda _image: {})
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(
+        read_build_lock=lambda _image: {"apt": {"curl": "8.5.0-2"}})
+
+    controller._persist_build_manifests({"images": {"sut": "reg.example.com/sut:t"}})
+
+    assert read_build_manifests(tmp_path)["sut"]["apt"]["curl"] == "8.5.0-2"
+
+
+def test_a_lane_that_cannot_read_one_writes_nothing(tmp_path, monkeypatch):
+    """No lock anywhere is a fact worth leaving absent, not an empty file that reads as
+    "installed nothing"."""
+    from robovast.execution.controller import CampaignController
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest",
+                        lambda _image: {})
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(read_build_lock=lambda _image: {})
+
+    controller._persist_build_manifests({"images": {"sut": "reg.example.com/sut:t"}})
+
+    assert read_build_manifests(tmp_path) == {}
+
+
+def test_every_backend_answers_the_lock_hook():
+    """A default on the ABC, so a lane needing nothing inherits the right behaviour."""
+    from robovast.execution.backends import ExecutionBackend
+
+    assert ExecutionBackend.read_build_lock(types.SimpleNamespace(), "img") == {}
+
+
+def test_a_missing_lock_for_an_image_we_built_is_reported(tmp_path, monkeypatch, caplog):
+    """A silent absence is what let this go unnoticed: the campaign looks complete either
+    way, and the cost surfaces only once the image is gone."""
+    from robovast.execution.controller import CampaignController
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest",
+                        lambda _image: {})
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(read_build_lock=lambda _image: {})
+
+    with caplog.at_level("WARNING"):
+        controller._persist_build_manifests({
+            "images": {"sut": "reg.example.com/sut:t", "vendor": "vendor.example.com/x:1"},
+            # `declared` marks an image the author described and robovast did not build --
+            # there was never a lock of ours in it, so it must not be reported as missing one.
+            "image_build_refs": {"sut": {"revision": "abc"},
+                                 "vendor": {"source": "https://v.example.com", "declared": True}},
+        })
+
+    assert "No build lock recorded for sut" in caplog.text
+    assert "vendor" not in caplog.text
