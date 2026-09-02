@@ -334,7 +334,9 @@ The move says what it abandoned, which is the only place that node is ever named
 
 None of these move the **data**. The workspaces and registry bytes stay on the old node's
 disk; a moved deployment starts with an empty registry and rebuilds what it needs. The
-results store is an ``emptyDir`` transfer buffer, so it has nothing durable to lose.
+results store does not come with it either, and that one is not cheap: it holds every
+campaign this deployment has finished. Archive what matters (``vast share``) before moving
+the placement.
 
 One thing a re-``setup`` cannot do by itself: applying a manifest over an object that already
 exists keeps the existing one, so a **running** store Pod cannot be relocated that way. Setup
@@ -806,22 +808,19 @@ store, and are pinned to the data node with the campaign store. Losing them is
 deliberate and cheap: images are rebuilt on demand, and the index is re-ingested from the
 campaign data.
 
-**The index's volume is an ``emptyDir``, and that is the point.** It shares this pod with
-the object store, whose volume is also an ``emptyDir`` — so the two are destroyed by the
-same event and a derived index can never outlive the results it was derived from. The
-invariant is structural rather than something cleanup has to remember.
-
-It was briefly a ``hostPath``, on the reasoning that a restart should not drop the index
-because re-ingesting a corpus takes hours. That premise was false, and the way it failed
-is worth recording: the object store is itself an ``emptyDir``, so a restart destroys the
-results in the same instant. Re-ingest was not slow, it was impossible. Observed on a live
-deployment — 66 campaigns' directories gone, while the index still served one campaign's
-10448 pose rows. An index that outlives its sources is worse than no index: it answers
+**The index's volume is an ``emptyDir``, and it matches the store's.** The index is derived
+data — every row in it was ingested from a campaign in the object store — so it must never
+outlive its sources. Sharing this pod with the store, on a volume of the same kind, is what
+makes that structural rather than something cleanup has to remember: the two are destroyed
+by the same event, and no sequence of restarts, evictions or operator mistakes can separate
+them. An index that outlives its sources is worse than no index, because it answers
 questions about campaigns nobody can reproduce or check, and it answers them confidently.
 
-Note what this makes of the object store: a **transfer buffer**, not the durable home for
-results — which is what ``store_is_node_local``'s comment has said all along. Anything that
-must survive a restart belongs in an archive (``vast share``), not in the store.
+Note what this makes of the object store on these providers. It **is** the durable home for
+results — a campaign's full directory is published into it, and downloads, re-postprocessing
+and the index all read from there — but it sits on a volume that a restart destroys. So a
+finished campaign is safe only until the store pod is restarted or rescheduled, and anything
+that must outlive that belongs in an archive (``vast share``), not in the store.
 
 All four ports (``s3``, ``console``, ``registry``, ``index``) are on the pod's single
 ClusterIP Service. It already selects exactly this pod, so extra Service objects would
@@ -1810,7 +1809,8 @@ RKE2
 
 Targets on-premise clusters managed by
 `Rancher RKE2 <https://docs.rke2.io/>`_.  Uses MinIO with an ``emptyDir``
-volume — data persists as long as the pod is alive.
+volume.  That store is where finished campaigns live, and it persists only as long
+as the pod does.
 
 **Prerequisites:**
 
