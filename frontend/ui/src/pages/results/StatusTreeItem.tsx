@@ -58,7 +58,12 @@ export const StatusTreeItem = forwardRef(function StatusTreeItem(
           <TreeItem2IconContainer {...getIconContainerProps()}>
             <TreeItem2Icon status={status} />
           </TreeItem2IconContainer>
-          {item && item.kind !== 'placeholder' ? (
+          {/* No dot where no verdict is knowable. A campaign being previewed has none until it is
+              postprocessed, and painting every run of every configuration with the same neutral
+              marker says nothing while looking like it says something — fifty identical dots read
+              as a verdict on fifty runs. The campaign's own node keeps its dot: that one IS a
+              verdict, and it is the one that pulses. */}
+          {item && item.kind !== 'placeholder' && !item.noVerdict ? (
             <Box
               // Named on hover: colour alone cannot separate "ran and failed" from
               // "never ran because its parameters were unrealizable", and reading one

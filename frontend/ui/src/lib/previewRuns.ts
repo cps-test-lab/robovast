@@ -88,6 +88,10 @@ export function previewRunRows(runsByConfig: Map<string, number[]>): Record<stri
       rows.push({
         config_name: configName,
         run_id: runId,
+        // Not a column `CAMPAIGN_RUNS_SQL` returns, and deliberately so: it says the verdict is
+        // not merely absent but UNKNOWABLE here, which the tree needs in order to draw nothing
+        // rather than a neutral marker. An indexed row never carries it.
+        preview: true,
         status: PREVIEW_STATUS,
         passed: null,
         objective: null,
