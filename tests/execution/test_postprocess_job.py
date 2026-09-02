@@ -401,9 +401,11 @@ def test_a_failed_conversion_still_writes_a_postprocessing_section(monkeypatch, 
     # The slot is decided by whether this file exists, so inside it there is nothing for it
     # to say -- and it must never reach a reader.
     assert pj.POINTER_SLOT not in text
-    # No staging log is a finding, not missing information: a SIGKILLed container cannot
-    # file one, and staging is what meets a full disk first.
-    assert 'disk' in text.lower()
+    # A missing staging log is NOT presented as the answer. It is uploaded, so an
+    # unreachable store and an outright kill both suppress it, and reading a cause into
+    # its absence is how a wrong diagnosis gets stated with confidence. The exit status is
+    # what carries the stage, and the text says to read that instead.
+    assert 'exit status' in text
 
 
 def test_the_staging_log_is_carried_into_the_section_when_there_is_one(monkeypatch, tmp_path):
@@ -492,3 +494,95 @@ def test_an_unreadable_pod_list_never_becomes_the_failure():
     assert pj.pod_failure_reason(_Broken(), 'ns', 'job-x') == ''
     # And the message is still complete without it.
     assert 'job-x' in pj.job_failed_message('job-x', pod_reason='')
+
+
+def test_each_staging_stage_exits_with_its_own_code():
+    """An exit code is the one channel that always survives -- it is in the pod status with
+    no store to reach and no file to write. A stage that fails *because* the object store
+    is unreachable can still say so; an uploaded log cannot, since the upload needs the
+    very thing whose absence it would report.
+    """
+    script = pj._staging_script()
+
+    for code in pj.STAGING_EXIT_REASONS:
+        assert f'exit {code}' in script, code
+    # Not 1: a bare "exited 1" is every failure at once and names none of them.
+    assert 1 not in pj.STAGING_EXIT_REASONS
+    # A SUBSHELL, or `exit` would end the script and skip the echo and the upload.
+    assert '\n(\n' in script and ') > "$log"' in script
+
+
+def test_a_staging_exit_code_is_reported_in_words():
+    """`exited 42` is a code chosen in order to be read; the reader should not have to."""
+    core = _core([_pod(init=[_CS(pj.STAGING_CONTAINER, exit_code=42)])])
+
+    reason = pj.pod_failure_reason(core, 'ns', 'job-x')
+
+    assert reason == f'container {pj.STAGING_CONTAINER} {pj.STAGING_EXIT_REASONS[42]}'
+    assert 'object store' in reason
+
+
+def test_an_unknown_exit_code_still_reports_the_number():
+    """The translation is a courtesy on top of the code, never a filter in front of it."""
+    core = _core([_pod(init=[_CS(pj.STAGING_CONTAINER, exit_code=7, reason='Error')])])
+
+    assert pj.pod_failure_reason(core, 'ns', 'job-x') == (
+        f'container {pj.STAGING_CONTAINER} exited 7 (Error)')
+
+
+class _FakeBatch:
+    """Enough of BatchV1Api to drive _adopt_or_replace."""
+
+    def __init__(self, active=None, missing=False):
+        self.active, self.missing = active, missing
+        self.calls = []
+
+    def read_namespaced_job(self, name, namespace):
+        self.calls.append('read')
+        if self.missing:
+            from kubernetes.client.rest import ApiException
+            raise ApiException(status=404)
+        return type('J', (), {'status': type('S', (), {'active': self.active})()})()
+
+    def delete_namespaced_job(self, name, namespace, propagation_policy=None):
+        self.calls.append('delete')
+        self.missing = True
+
+    def create_namespaced_job(self, namespace, body):
+        self.calls.append('create')
+
+
+def test_a_running_job_is_adopted_not_replaced():
+    """Two postprocesses of one campaign must not race each other's pods."""
+    batch = _FakeBatch(active=1)
+
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    assert 'delete' not in batch.calls
+
+
+def test_a_finished_job_is_replaced_rather_than_waited_on():
+    """The Job name comes from the campaign and is reused every retrigger, so waiting on
+    whatever answers to it reported the PREVIOUS attempt's outcome as this one's -- against
+    a pod whose containers ran an earlier version of the script.
+    """
+    batch = _FakeBatch(active=None)
+
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    assert batch.calls.index('delete') < batch.calls.index('create')
+
+
+def test_staging_is_not_allowed_less_memory_than_the_step_that_reads_the_data():
+    """Both containers are handed the same campaign, and the mirror's footprint grows with
+    the number of objects it moves -- so a limit well under the conversion's made the
+    FETCH the first thing to die on a large campaign, killed rather than failing, with no
+    chance to report it.
+
+    Headroom, not a bound: a campaign large enough still exceeds any fixed number, and the
+    fix for that is staging in chunks.
+    """
+    def _mem(spec):
+        value = spec["limits"]["memory"]
+        assert value.endswith("Gi"), value
+        return int(value[:-2])
+
+    assert _mem(pj.POSTPROCESS_INIT_RESOURCES) >= _mem(pj.POSTPROCESS_RESOURCES)

@@ -105,14 +105,25 @@ POSTPROCESS_RESOURCES = {
     "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
 }
 
-#: The mirror step's own reservation. It is I/O rather than CPU, but it is what writes the
-#: bags into the pod's ``emptyDir`` -- so the ephemeral-storage request is the load-bearing
-#: half. Without one, a campaign's worth of bags lands on whichever node the scheduler picked
-#: with nothing having reserved the disk for it, and the node hits disk pressure and evicts
-#: the campaign pods running beside it.
+#: The mirror step's own reservation. It is I/O rather than CPU, and it is what writes the
+#: campaign's run data into the pod's ``emptyDir`` -- so the ephemeral-storage request
+#: matters as much as the CPU one. Without it, a campaign's worth of data lands on whichever
+#: node the scheduler picked with nothing having reserved the disk for it, and the node hits
+#: disk pressure and evicts the campaign pods running beside it.
+#:
+#: **Memory is headroom here, not a bound.** The mirror's footprint grows with the number of
+#: objects it moves, so no fixed limit is right for every campaign: this one matches the
+#: conversion container's, because both are handed the same campaign and there is no reason
+#: for the half that fetches the data to be allowed less than the half that reads it. A
+#: campaign large enough will still exceed it, and the fix for that is to stage in chunks --
+#: peak memory tracking the largest chunk rather than the whole campaign -- not a larger
+#: number here.
+#:
+#: The request stays small against that limit for the reason the conversion's does: the work
+#: is bursty, nothing is under test in this pod, and the split is what buys the density.
 POSTPROCESS_INIT_RESOURCES = {
     "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "200Gi"},
+    "limits": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "200Gi"},
 }
 
 
@@ -274,13 +285,11 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
     if staging is None:
         lines += [
             "",
-            "The staging step filed no log of its own. A container the kubelet kills -- "
-            "under node disk pressure, or for memory -- runs no cleanup and files nothing, "
-            "so the absence of one is expected for exactly those failures rather than "
-            "evidence they did not happen. What the pod itself recorded is in the line "
-            "above, and it does not depend on any container having survived. Staging "
-            "copies this campaign's run data onto one node, so that node's free space is "
-            "the first thing to check.",
+            "The staging step filed no log of its own, which does not narrow much: it "
+            "files one by uploading it, so a step that failed because the object store "
+            "was unreachable cannot, and neither can a container the kubelet killed "
+            "outright. The stage named in the line above comes from the pod's exit status "
+            "and does not depend on either -- read that, not this absence.",
         ]
     else:
         lines += ["", "===== staging =====", staging]
@@ -534,34 +543,62 @@ def _mirror_excludes() -> str:
     return f"--exclude {_shquote(PROBE_DIR + '/*')} "
 
 
+#: Name of the container that stages the campaign's run data into the Job's pod.
+STAGING_CONTAINER = "s3-init"
+
+#: What each staging exit status means, keyed by the code the script exits with.
+#:
+#: **An exit code is the one channel that always survives.** It is in the pod's status
+#: whatever happened to the container -- no store to reach, no file to write, no cleanup to
+#: run -- so a stage that fails while the object store is exactly what is unreachable can
+#: still say which stage it was. Uploading a log cannot make that claim: the upload needs
+#: the very thing whose absence it would be reporting.
+#:
+#: Deliberately not 1. A bare ``exited 1`` is every failure at once and names none of them,
+#: which is what a staging failure looked like: the container that could not reach the store
+#: and the container that ran out of disk were the same single line.
+STAGING_EXIT_REASONS = {
+    41: "could not install the object-store client into the pod",
+    42: "could not reach the object store (its endpoint or credentials)",
+    43: "could not stage the campaign's run data into the pod "
+        "(node disk is what to check first)",
+}
+
+
 def _staging_script() -> str:
-    """The initContainer's shell: stage the campaign's bags, and account for itself.
+    """The initContainer's shell: stage the campaign's run data, and account for itself.
 
-    Everything is captured to a file and echoed on, and on failure that file is pushed to
-    the store under :data:`STAGING_LOG`. Without it this container's failure is invisible:
-    the conversion container never starts, so nothing tees a line and the end-of-run mirror
-    that would have carried one never runs -- the campaign is left having failed
-    postprocessing with no account of why, anywhere, permanently.
+    Each stage exits with its own code from :data:`STAGING_EXIT_REASONS`, so the pod's
+    status alone says which one failed. That is the account that cannot go missing; the
+    log below is the detail on top of it, not the mechanism.
 
-    ``|| true`` on that push, and the real status preserved through ``rc``: if the store is
-    what is unreachable then the upload cannot work either, and a failure to file the
-    report must not be mistaken for the failure being reported.
+    Everything is captured to a file, echoed on, and pushed to :data:`STAGING_LOG` on
+    failure. The alias is re-set immediately before that push: the first attempt may itself
+    be what failed, and re-trying costs nothing where giving up guarantees silence. It is
+    still best-effort -- if the store is genuinely unreachable no upload can work, which is
+    exactly why the exit code carries the answer instead.
 
-    Plain ``sh``: no ``pipefail`` and no ``PIPESTATUS`` here, so the status is taken from
-    the group rather than through a pipe.
+    Plain ``sh``: no ``pipefail`` and no ``PIPESTATUS`` here, so each stage's status is
+    taken directly rather than through a pipe.
     """
+    alias = ('mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"')
     return "\n".join([
         "log=/tools/staging.log",
         "rc=0",
-        "{",
-        '  cp "$(command -v mc)" /tools/mc && chmod +x /tools/mc &&',
-        '  mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" &&',
+        # A SUBSHELL, not a brace group: `exit 43` in a brace group would end the whole
+        # script and skip both the echo and the upload below, so the stage code would be
+        # the only thing that ever came out. Here it ends the subshell and `|| rc=$?`
+        # catches it.
+        "(",
+        '  cp "$(command -v mc)" /tools/mc && chmod +x /tools/mc || exit 41',
+        f"  {alias} || exit 42",
         "  mc mirror " + _mirror_excludes() +
-        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/',
-        '} > "$log" 2>&1 || rc=$?',
+        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/ || exit 43',
+        ') > "$log" 2>&1 || rc=$?',
         # Still on stdout, so a pod that is still around reads the same way it always did.
         'cat "$log"',
         'if [ "$rc" -ne 0 ]; then',
+        f"  {alias} >/dev/null 2>&1 || true",
         f'  mc cp "$log" "mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{STAGING_LOG}" || true',
         "fi",
         'exit "$rc"',
@@ -788,6 +825,66 @@ def with_log_pointer(message: str, log_path) -> str:
     return message.replace(POINTER_SLOT, pointer)
 
 
+def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
+    """Keep a still-running Job; delete and re-create a finished one. False if neither held.
+
+    A conversion Job's name comes from the campaign, so the same name is reused every time
+    postprocessing is retriggered. Waiting on whatever answers to it means a reaped-but-not-
+    yet-gone Job from an earlier attempt reports its outcome as the new attempt's -- the
+    retrigger looks like it ran and produces the previous answer.
+
+    ``propagationPolicy=Foreground`` so the delete returns only once the pods are going,
+    and the re-create cannot race the corpse of the run it replaces.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        existing = batch.read_namespaced_job(name=name, namespace=namespace)
+    except ApiException as e:
+        # Gone between the create and this read: the name is free, so try once more.
+        if e.status == 404:
+            try:
+                batch.create_namespaced_job(namespace=namespace, body=manifest)
+                return True
+            except ApiException:
+                return False
+        return False
+
+    status = getattr(existing, "status", None)
+    if getattr(status, "active", None):
+        logger.info("Postprocessing job %s is already running; waiting on it", name)
+        return True
+
+    logger.info("Replacing finished postprocessing job %s", name)
+    try:
+        batch.delete_namespaced_job(name=name, namespace=namespace,
+                                    propagation_policy="Foreground")
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Could not delete %s: %s", name, e)
+            return False
+
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            batch.read_namespaced_job(name=name, namespace=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                break
+            return False
+        time.sleep(_POLL_SECONDS)
+    else:
+        logger.warning("Postprocessing job %s did not go away", name)
+        return False
+
+    try:
+        batch.create_namespaced_job(namespace=namespace, body=manifest)
+    except ApiException as e:
+        logger.warning("Could not re-create %s: %s", name, e)
+        return False
+    return True
+
+
 def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     """Why this Job's pod actually died, read from the pod rather than from the pod's help.
 
@@ -837,6 +934,11 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
             code = getattr(term, "exit_code", None) if term else None
             if isinstance(code, int) and code != 0:
                 name = getattr(cs, "name", None) or "?"
+                # The staging stage's own vocabulary, where it has one. `exited 1 (Error)`
+                # is every failure at once and names none of them; `exited 42` is a code
+                # this script chose in order to be read.
+                if name == STAGING_CONTAINER and code in STAGING_EXIT_REASONS:
+                    return f"container {name} {STAGING_EXIT_REASONS[code]}"
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited
@@ -1053,8 +1155,17 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
         try:
             batch.create_namespaced_job(namespace=namespace, body=manifest)
         except ApiException as e:
-            if e.status != 409:  # already exists → fall through and wait on it
+            if e.status != 409:
                 return False, f"could not create postprocessing job: {e}"
+            # 409 means a Job of this name is already here, and the name is derived from
+            # the campaign -- so a FINISHED one from an earlier attempt is indistinguishable
+            # from a running one until it is read. Falling through to wait on it reported
+            # that earlier attempt's outcome as this attempt's: a retrigger that changed
+            # nothing, against a pod whose containers ran a previous version of this
+            # script, presented as a fresh result. Adopt a live one; replace a finished one.
+            if not _adopt_or_replace(batch, namespace, name, manifest):
+                return False, (f"postprocessing job {name} already exists and could not be "
+                               f"replaced; retry once it has been removed")
         logger.info("Postprocessing job %s created (image=%s)", name, image)
 
         deadline = time.time() + timeout
