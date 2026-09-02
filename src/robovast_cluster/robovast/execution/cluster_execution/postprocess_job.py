@@ -210,18 +210,30 @@ def publish_execution_dir(cluster_config, campaign_id: str, campaign_root) -> No
     storage.upload_dir(str(Path(campaign_root) / "_execution"), bucket, f"{prefix}_execution")
 
 
-def publish_execution_dir_quietly(cluster_config, campaign_id: str, campaign_root) -> None:
-    """:func:`publish_execution_dir`, for the paths where it is an improvement not a duty.
+def publish_postprocessing_log(cluster_config, campaign_id: str, campaign_root) -> None:
+    """Make the POSTPROCESSING section readable now, best-effort.
 
-    Mid-run publishes make the section readable early; failing one must not fail the
-    postprocess that is otherwise fine. The tail publish, which is the one that has to
-    land, is the caller's and is not this.
+    The one file, not the directory: this runs while the postprocess is in progress, and
+    the fetched root it publishes from holds the *other* phases' files too, fetched or
+    stale, whose live copies are the service's own. Only ``postprocessing.log`` is
+    produced here, so only it is this call's to mirror. The tail publish, once the
+    postprocess is over and every phase file is final, is the wholesale one.
+
+    Best-effort, including resolving the store: an early read is not worth failing a
+    postprocess that is otherwise fine. The tail publish is the one that has to land, and
+    it is the caller's.
     """
+    from . import in_pod_storage  # noqa: PLC0415
     try:
-        publish_execution_dir(cluster_config, campaign_id, campaign_root)
+        bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config,
+                                                                  campaign_id)
+        storage = in_pod_storage.storage_client_for(cluster_config)
     except Exception as e:  # noqa: BLE001 - an early read is not worth a failed postprocess
-        logger.warning("Could not publish the postprocessing account for %s yet: %s",
-                       campaign_id, e)
+        logger.warning("Could not reach the store to publish the postprocessing account "
+                       "for %s yet: %s", campaign_id, e)
+        return
+    in_pod_storage.publish_execution_file(storage, bucket, prefix, campaign_root,
+                                          "postprocessing.log")
 
 
 def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
@@ -466,7 +478,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
         # The conversion's log is now local; get it readable before the host stage, which
         # is the long half. Waiting for the caller's tail is what made a running
         # postprocess show an empty POSTPROCESSING section.
-        publish_execution_dir_quietly(cluster_config, campaign_id, campaign_root)
+        publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
         if not ok:
             # Echo the conversion error to the service console too. The web UI already
             # has it via the synced postprocessing.log (POSTPROCESSING section); no
@@ -488,8 +500,9 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                                    log_path, message)
             # Written and published together: this is the whole account of a failure whose
             # Job is reaped 300 s later, so the window in which it can still be published
-            # is the one it was written in.
-            publish_execution_dir_quietly(cluster_config, campaign_id, campaign_root)
+            # is the one it was written in. The staging log the account quotes needs no
+            # publish of its own -- the store is where it was just read from.
+            publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
             return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",

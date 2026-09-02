@@ -2655,17 +2655,11 @@ class BatchJobRunner:
                                 campaign_prefix, filename) -> None:
         """Push one ``_execution/`` file to the object store now, best-effort.
 
-        Best-effort because it is a mirror: the local copy is already written, and a
-        transfer that fails must not cost the record it was copying.
+        The argument order this class already has, over the one definition of where such
+        a file lands (:func:`in_pod_storage.publish_execution_file`).
         """
-        path = Path(campaign_root) / "_execution" / filename
-        if not path.is_file():
-            return
-        try:
-            storage.upload_file(str(path), bucket_name,
-                                f"{campaign_prefix}_execution/{filename}")
-        except Exception as exc:  # noqa: BLE001 - a mirror, not the record
-            logger.debug("Could not publish %s: %s", filename, exc)
+        in_pod_storage.publish_execution_file(storage, bucket_name, campaign_prefix,
+                                              campaign_root, filename)
 
     def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
         """Upload, run and download one batch; this batch's results and the
