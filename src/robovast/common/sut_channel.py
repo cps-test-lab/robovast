@@ -268,6 +268,16 @@ def materialize(execution: dict, vast_dir: str, block: dict, out_dir: str,
         else:
             _source.fmt.set(doc, path, copy.deepcopy(value))
 
+    # EVERY declared source is staged, not only the ones this configuration's factors reached.
+    # The original is dropped from `run_files` for the campaign as a whole, so a configuration that
+    # happens to address nothing in a file would otherwise reach its containers with no copy of that
+    # file at all -- and the failure surfaces in the stack as a missing path, far from the
+    # declaration that caused it. It also makes the mount uniform: every cell of a campaign sees the
+    # file at the same place whether or not that cell varied it.
+    for source in sources.values():
+        if source.name not in touched:
+            touched[source.name] = (source, source.fmt.load(source.abs_path))
+
     for source, doc in touched.values():
         written = os.path.join(out_dir, config_name, source.rel_path)
         os.makedirs(os.path.dirname(written), exist_ok=True)
