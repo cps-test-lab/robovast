@@ -2455,8 +2455,25 @@ container writes CSVs **in place**. Nothing to sync. The **scripts** are bind-mo
 driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
 ``robovast.results_processing.data``), so the script version always matches the driver.
 
-**Cluster.** A pod cannot bind-mount the caller's filesystem, so the conversion runs as a Job
-(:mod:`robovast.execution.cluster_execution.postprocess_job`) modeled on the run Jobs:
+**Cluster.** A pod cannot bind-mount the caller's filesystem, so **all** of postprocessing runs
+as one Job (:mod:`robovast.execution.cluster_execution.postprocess_job`), with one copy of the
+campaign in it. A ``campaign`` ``emptyDir`` mounted at ``/campaign`` in every container carries
+the tree, and Kubernetes alone orders the containers — initContainers run sequentially to
+completion in declaration order:
+
+* ``stage`` (initContainer, controller image,
+  :mod:`~robovast.execution.cluster_execution.postprocess_stage`) fetches the campaign's recorded
+  run data into that mount, one object at a time, so its memory is a function of page size rather
+  than of the campaign. Calibration probes are never fetched, and where no conversion is
+  configured neither are the rosbags — nothing else in the pod opens one.
+* ``convert`` (initContainer, the campaign's execution image) runs the ``rosbags_*`` → CSV step
+  against the same mount. It exists only where the campaign declares a plugin needing that image.
+* ``host`` (container, controller image,
+  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything after the
+  conversion — the index ingest and metadata — and is what uploads.
+
+The conversion container holds **no** object-store or index credentials: it is an arbitrary user
+image and reads and writes the shared mount only. Further:
 
 * **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
   not a silent wrong-image conversion);
@@ -2468,13 +2485,13 @@ driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
   running ahead of a published image cannot skew them (a skew surfaces as a spurious
   ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
   ``robovast`` import) and small; nothing is ever baked into the user's image;
-* inputs (``/bags``, mirrored from the object store) and outputs (``/out``) are **separate dirs** —
-  the run-Job pattern — enabled by ``rosbags_process.py --output-root``. Its default is the input
-  root, i.e. "beside the bag", so the local path is unchanged. The Job then mirrors ``/out``
-  wholesale to a ``<campaign_prefix>_postproc/`` staging prefix; no rosbag is ever re-uploaded.
+* ``rosbags_process.py --output-root`` is the shared campaign tree itself, so every output lands
+  at its campaign-relative path and goes to its canonical key with no mapping step. Its default is
+  the input root, i.e. "beside the bag", so the local path is unchanged.
 
-Stage 2 (index ingest + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
-skipped (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence.
+The host stage is pure Python and reuses the normal pipeline with the rosbag steps skipped
+(``run_host_postprocessing``), so there is no second copy of the postprocessing sequence — the
+same function the local lane calls, run beside the data instead of fetching it.
 
 Two entry points share that one implementation (``postprocess_campaign``):
 
@@ -2485,8 +2502,9 @@ Two entry points share that one implementation (``postprocess_campaign``):
   the campaign's existing upload rather than needing one of their own.
 * **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
-  results root and no ROS runtime. It fetches the campaign, runs the same two stages, and publishes
-  ``_execution/`` back. This backs the web **Retrigger postprocessing** dialog, the MCP
+  results root and no ROS runtime. It submits the Job, whose pod is what holds the campaign, and
+  materialises only the few small status objects it edits and publishes back — before and again
+  after the pod, since the pod is what wrote the provenance the reconstruction reads. This backs the web **Retrigger postprocessing** dialog, the MCP
   ``run_postprocessing`` tool, and the CLI. It reads the campaign's own ``_config/<name>.vast`` (which
   the edit dialog overwrites in place — the single source of truth resolved by
   ``common.results_utils.campaign_vast``), refreshes the durable outcome (clearing/setting

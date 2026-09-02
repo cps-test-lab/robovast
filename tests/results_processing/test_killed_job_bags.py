@@ -170,10 +170,21 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
 # the mirror image of the two above, so the pair cannot drift apart again unnoticed.
 
 
+#: The campaign the cluster-lane helper below builds a command for. The conversion reads
+#: and writes the one shared campaign mount, so the input root is that campaign's tree
+#: inside the pod -- which is what the flags below have to be emitted ahead of.
+_CAMPAIGN = "camp-2026-08-27-12000000"
+
+
 def _cluster_script(tolerate_under=()):
     from robovast.execution.cluster_execution.postprocess_job import _conversion_script
     return _conversion_script([{"plugins": [{"type": "rosout_to_csv"}]}], False,
-                              tolerate_under)
+                              tolerate_under, campaign_id=_CAMPAIGN)
+
+
+def _input_root():
+    from robovast.execution.cluster_execution.postprocess_job import CAMPAIGN_MOUNT
+    return f"{CAMPAIGN_MOUNT}/{_CAMPAIGN}"
 
 
 def test_the_cluster_job_passes_a_tolerate_flag_per_killed_job():
@@ -188,9 +199,10 @@ def test_the_cluster_job_passes_no_flag_for_an_untouched_campaign():
 
 
 def test_the_cluster_flag_precedes_the_input_root():
-    """`/bags` is positional, so a flag emitted after it would be parsed as a second input."""
+    """The input root is positional, so a flag emitted after it would be parsed as a
+    second input."""
     script = _cluster_script(["_jobs/batch-0/job-2"])
-    assert script.index("--tolerate-under") < script.index("/bags")
+    assert script.index("--tolerate-under") < script.rindex(_input_root())
 
 
 def test_the_cluster_lane_reads_the_same_ledger_the_local_one_does(tmp_path):
@@ -204,15 +216,23 @@ def test_the_cluster_lane_reads_the_same_ledger_the_local_one_does(tmp_path):
     assert "--tolerate-under _jobs/batch-0/job-125" in script
 
 
-def test_the_cluster_flag_reaches_the_containers_command():
+def test_the_cluster_flag_reaches_the_containers_command(monkeypatch):
     """End of the wire, as far as a unit test can follow it: flag lands in the Job manifest."""
+    from robovast.common.index_db import DSN_ENV
     from robovast.execution.cluster_execution.postprocess_job import build_manifest
+
+    # No manifest is built without an index DSN in the submitting process; this test is
+    # about the flag, not about that refusal.
+    monkeypatch.setenv(DSN_ENV, "host=index.example.com dbname=robovast")
 
     manifest = build_manifest(
         "camp", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
         ("ep", "ak", "sk", "bucket", "camp/"), "default",
         tolerate_under=["_jobs/batch-0/job-125"])
-    containers = manifest["spec"]["template"]["spec"]["containers"]
+    # The conversion is an initContainer of a one-pod Job -- Kubernetes runs it before the
+    # host container -- so the command has to be looked for in both lists.
+    spec = manifest["spec"]["template"]["spec"]
+    containers = spec["initContainers"] + spec["containers"]
     command = " ".join(c["command"][-1] for c in containers if c.get("command"))
     assert "--tolerate-under _jobs/batch-0/job-125" in command
 

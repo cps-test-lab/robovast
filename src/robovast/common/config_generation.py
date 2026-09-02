@@ -755,19 +755,26 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     half needs nothing from either execution lane.
     """
     from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
-        ENV_SOURCE, SutChannelError, materialize, merge_sut_block, split_destination)
+        ENV_SOURCE, SutChannelError, declared_sources, materialize, merge_sut_block,
+        split_destination)
 
     execution = parameters.get("execution", {}) or {}
     authored = {c.get("name"): (c.get("sut") or {})
                 for c in (parameters.get("configuration") or [])}
-    if not any(authored.values()) and not any(c.get("sut") for c in configs):
+    # A DECLARED SOURCE IS STAGED EVEN WHEN NOTHING ADDRESSES IT. Declaring one drops the original
+    # from run_files for the campaign as a whole, so returning early here leaves a campaign that
+    # declares a source and varies nothing with no copy of that file anywhere -- and the stack fails
+    # on a missing path, a long way from the declaration.
+    if not declared_sources(execution, vast_dir):
         return
 
     for config in configs:
         block = merge_sut_block(authored.get(config.get("_config_name")) or {},
                                 config.get("sut") or {})
-        if not block:
-            continue
+        # No `continue` on an empty block, for the same reason: this configuration still needs its
+        # copy of every declared source. `materialize` writes an untouched source out as loaded, so
+        # an empty block yields a file equivalent to the campaign's own -- which is exactly what a
+        # control cell should run.
         # The environment is the channel's second carrier and no execution backend
         # delivers it per configuration yet. Refused rather than dropped: a destination
         # that quietly does nothing is a campaign whose factor did not vary, reported

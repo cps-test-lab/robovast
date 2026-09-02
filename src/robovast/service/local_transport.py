@@ -371,7 +371,8 @@ class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
     __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
-                 "description", "created_by", "workspace_id", "origin")
+                 "description", "created_by", "workspace_id", "origin",
+                 "elsewhere_written_phase_files")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
@@ -379,6 +380,12 @@ class _LocalCampaign:
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
+        # Phase files this entry's operation writes somewhere OTHER than ``results_dir``,
+        # so a reader knows not to believe the copy it finds there. Empty for a campaign
+        # this process drives and for every operation that writes where it is tracked --
+        # which is the whole of the local lane. It outlives the operation on purpose: the
+        # stale local copy is still stale after the operation that superseded it ended.
+        self.elsewhere_written_phase_files = frozenset()
         # Which workspace this campaign is *currently* reading its project from, so a
         # push can be refused while it runs. Live-only and deliberately never persisted:
         # ``write_launch_record`` leaves ``workspace_id`` out because a finished campaign
@@ -1029,20 +1036,70 @@ class LocalTransport(RobovastInterface):
     def _staging_dir(self) -> Path:
         return self._campaigns_root() / self._STAGING_DIRNAME
 
+    def campaign_is_live(self, campaign_id: str) -> bool:
+        """Whether work is still happening on *campaign_id* as far as this service knows.
+
+        The registry, plus the lanes a multi-lane service does not itself drive. A campaign
+        it has never heard of is not live: what a download of it produces is whatever is on
+        disk, which for a finished campaign of a previous service life is all of it.
+        """
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None:
+            return not self._is_done(entry)
+        return campaign_id in self._extra_live_ids()
+
+    def _snapshot_facts(self, campaign_id: str) -> dict:
+        """What the snapshot marker says about the moment a live campaign was archived.
+
+        Best-effort by construction: this runs to describe a campaign that is moving, so a
+        status read that fails describes it no worse than one that succeeds and is stale by
+        the time it lands. The marker's value is that it EXISTS; the tallies are a courtesy.
+        """
+        try:
+            snap = self.get_status(campaign_id)
+        except Exception:  # noqa: BLE001 - a marker is not worth failing a download over
+            return {}
+        return {"phase": str(snap.phase),
+                "runs_completed": snap.runs.completed, "runs_total": snap.runs.total}
+
+    def campaign_archive_name(self, campaign_id: str) -> str:
+        """The file name this campaign's archive is offered under.
+
+        A campaign still running is named ``<id>.incomplete.tar.gz``, and that is the whole
+        reason the name is computed rather than composed by each caller: a snapshot has the
+        shape of a finished campaign, so once it is sitting in a downloads directory next to
+        real ones its name is all that distinguishes it. The browser, the CLI and anyone who
+        forwards the file get the same warning without opening it.
+        """
+        from robovast.execution.share_providers.naming import \
+            INCOMPLETE, archive_name  # pylint: disable=import-outside-toplevel
+        if self.campaign_is_live(campaign_id):
+            return archive_name(campaign_id, INCOMPLETE)
+        return f"{campaign_id}.tar.gz"
+
     def campaign_tar_stream(self, campaign_id: str):
         """Tar this host's campaign directory straight into the response.
 
         The local counterpart of the cluster's object-store tar: same exclusions, same
         streaming, so a caller cannot tell which lane answered. ``_postproc/`` is left
         out with ``.cache`` -- it is postprocessing's staging, not part of the campaign.
+
+        A campaign that is still running is tarred *tolerantly* and carries a snapshot
+        marker (see ``campaign_archive.iter_campaign_tar``): the directory is being written
+        to under the walk, so a file that vanishes mid-archive must cost one member rather
+        than the download -- past the first byte the status line is already 200 and a
+        failure reaches the caller as a truncated body.
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         campaign_dir = self._campaign_dir(campaign_id)
         if not campaign_dir.is_dir():
             raise KeyError(f"no campaign {campaign_id!r} on this service")
+        live = self.campaign_is_live(campaign_id)
         return campaign_archive.iter_campaign_tar(
             str(campaign_dir),
-            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"})
+            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
+            snapshot=self._snapshot_facts(campaign_id) if live else None)
 
     def create_archive_upload(self) -> UploadGrant:
         token = secrets.token_urlsafe(32)
@@ -3199,6 +3256,10 @@ class LocalTransport(RobovastInterface):
         from robovast.service.interface import JobState
 
         job = self._require_running_job(campaign_id, job_name)
+        # `unavailable` is a pydantic list field; the linter reads the class attribute as
+        # the FieldInfo descriptor rather than the instance's list and calls every append
+        # below an error. Scoped to this function, which is the only place it appears.
+        # pylint: disable=no-member
         state = JobState(job_name=job_name, status=job.status)
         try:
             target, run_dir = self._job_state_target(campaign_id, job_name, SCENARIO_CONTAINER)
@@ -4143,7 +4204,8 @@ class LocalTransport(RobovastInterface):
         return PostprocessingSource(campaign_id=request.campaign_id,
                                     content=request.content)
 
-    def _dispatch_background(self, campaign_id: str, *, phase: str, work) -> ActionResult:
+    def _dispatch_background(self, campaign_id: str, *, phase: str, work,
+                             elsewhere_written_phase_files=frozenset()) -> ActionResult:
         """Run a post-run operation (postprocessing / share) as a tracked background
         campaign and return immediately, so the campaign view shows it live.
 
@@ -4171,6 +4233,10 @@ class LocalTransport(RobovastInterface):
             state.update(campaign_id=campaign_id)
             state.set_phase(phase)
             entry = _LocalCampaign(campaign_id, str(self._campaigns_root()), state)
+            # A lane whose operation works against a fetched root, not the tracked one,
+            # says so here -- see the attribute. Default empty: this lane's own operations
+            # write where they are tracked, so the local copy is the live one.
+            entry.elsewhere_written_phase_files = frozenset(elsewhere_written_phase_files)
             # The store's recorded start time, not now: re-running postprocessing or
             # sharing must not restamp (and so re-order) a finished campaign. Read
             # directly rather than via _started_at_for — we already hold self._lock,

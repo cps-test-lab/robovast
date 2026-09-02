@@ -458,6 +458,62 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
+#: What the conversion step reserves when a ``.vast`` says nothing.
+#:
+#: **It is a reservation AND a ceiling, and it is also the worker count** -- see
+#: :class:`~robovast.common.config.PostprocessResourcesConfig` for why the two are equal here.
+#: One figure serves both because the step converts one bag per process: sizing the pod without
+#: sizing the fan-out is what let a conversion open a worker per core of the *machine* inside a
+#: four-core allocation, where the workers then spend the conversion competing for the quota
+#: they collectively already exceeded.
+#:
+#: Four cores rather than a figure derived from the cluster. A derived default would be a third
+#: sizing policy beside ``sizing: calibrated``, and its inputs are not knowable where this is
+#: read: capacity measured here is spent by whatever else is admitted between the reading and
+#: the pod, so the number would carry an authority it does not have. Four is what one node can
+#: give up without the trials beside it noticing, and a campaign that has measured its own
+#: conversion raises it in its ``.vast``.
+POSTPROCESS_CONVERT_DEFAULTS = {"cpu": 4, "memory": "4Gi"}
+
+
+def postprocess_convert_resources(config_path, resolver=None) -> dict:
+    """``{"cpu": …, "memory": …}`` the conversion step runs at.
+
+    The single place the figure is decided, for both lanes: the Kubernetes lane renders it as
+    a container's requests and limits, the local lane as ``docker run --cpus/--memory``, and
+    both derive the worker count from the same ``cpu``. Keeping the decision here is what
+    stops the two lanes from meaning different things by one ``.vast`` block.
+
+    *config_path* may be ``None``, for a caller that has no ``.vast`` to read -- a campaign
+    tree whose config was never projected into it. The block is optional, so its absence and
+    an unreadable file mean the same thing as declaring nothing: the shared defaults. What
+    would be wrong is refusing to convert over an optional block nobody wrote.
+
+    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a lane that
+    has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
+    A lane without one -- the local lane, where there is no context and so no entry to choose
+    -- passes ``None``, and a list then raises rather than being guessed at.
+    """
+    if not config_path:
+        return dict(POSTPROCESS_CONVERT_DEFAULTS)
+    data_config = load_config(config_path, subsection="results_processing", allow_missing=True)
+    declared = ((data_config or {}).get("resources") or {}) if data_config else {}
+    if resolver is not None:
+        declared = resolver(declared) or {}
+    resolved = dict(POSTPROCESS_CONVERT_DEFAULTS)
+    for key in ("cpu", "memory"):
+        value = declared.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            raise ValueError(
+                f"results_processing.resources.{key} is declared per cluster, but this "
+                f"lane has no cluster context to choose an entry with. Give it a plain "
+                f"value, or run the postprocessing on a cluster.")
+        resolved[key] = value
+    return resolved
+
+
 #: Written by a conversion that ran elsewhere -- the cluster lane's postprocessing Job --
 #: and carried back with its outputs. Named here and in
 #: ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
@@ -875,9 +931,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # `skip_db` is deliberately not special-cased: a caller who skipped the ingest asked
     # for a campaign that is not queryable, and the record still describes what was
     # derived, which is what an archive's recipient reads it for.
+    # Written before the metadata step, and still written when that step fails: it records
+    # what was DERIVED, which is true either way. Withholding it to express the failure
+    # would tell every reader the CSVs and index rows are absent when they are there, and
+    # trade one wrong signal for another -- the failure is carried by the return below.
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Generate metadata.yaml in each campaign directory
+    meta_failure = ""
     if skip_metadata:
         output("Skipping metadata generation")
     else:
@@ -886,18 +947,36 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             campaign=campaign,
         )
         if not meta_success:
-            output(f"Warning: Metadata generation failed: {meta_msg}")
+            # A failure, not a warning. What goes unwritten is the campaign's FAIR
+            # provenance record -- what an archive's recipient reads to know what produced
+            # the data -- and a warning in a log left the campaign reporting unqualified
+            # success while missing it, so it would export and be shared as complete.
+            meta_failure = meta_msg
+            output(f"Metadata generation failed: {meta_msg}")
 
-    if success:
+    if success and not meta_failure:
         return True, "Postprocessing completed successfully!"
-    if not failures:
+
+    reasons = []
+    if failures:
+        detail = "; ".join(failures[:3])
+        more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+        reasons.append(f"{len(failures)} of {len(commands)} step(s) — {detail}{more}")
+    if meta_failure:
+        # Its own reason rather than one of the counted steps: metadata generation is not
+        # in `commands`, so counting it there would make the denominator lie. Says what is
+        # missing and what it costs to fix, because the derived data IS complete -- the
+        # marker above records that truthfully, and re-running rewrites the record without
+        # re-deriving anything.
+        reasons.append(
+            f"the campaign has no FAIR provenance record: {meta_failure}. Its derived data "
+            "is complete and queryable; re-running postprocessing writes the record without "
+            "re-deriving it")
+    if not reasons:
         # Belt and braces: a future early-exit that sets success=False without recording why
         # would otherwise regress to the message this replaced.
         return False, "Postprocessing failed (no step reported a reason; see the log)"
-    detail = "; ".join(failures[:3])
-    more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
-    return False, (f"Postprocessing failed: {len(failures)} of {len(commands)} step(s) — "
-                   f"{detail}{more}")
+    return False, "Postprocessing failed: " + " | ".join(reasons)
 
 
 def _campaign_provider_records(campaign_dir) -> list:

@@ -18,6 +18,8 @@
 
 import logging
 
+from robovast.common import campaign_logs
+
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log, assemble_log_from_dir,
                                            phase_banner)
@@ -237,3 +239,72 @@ def test_a_later_source_is_not_consulted_when_the_first_has_every_phase():
     scratch = _store_reader({name: b"x\n" for _, name in _ALL_PHASE_FILES})
     assemble_log(layered_get_bytes(scratch, _tracking), offset=0, eof=True)
     assert asked == []
+
+
+def test_a_phase_is_read_from_whoever_writes_it():
+    """A local copy wins by default, and loses for a phase file the caller names as
+    written elsewhere.
+
+    On the cluster lane a postprocess writes its log into a fetched root and publishes it,
+    so the copy under the tracked root is whatever an earlier attempt left behind. Present,
+    frozen and wrong is the one combination an absence-only fallback cannot see past -- and
+    it inverts the answer, showing a postprocess that succeeded as the failure before it.
+    """
+    local = {"controller.log": b"live run", "postprocessing.log": b"an older attempt"}
+    remote = {"controller.log": b"lagging run", "postprocessing.log": b"what the pod wrote"}
+
+    get_bytes = campaign_logs.layered_by_writer(local.get, remote.get,
+                                                {"postprocessing.log"})
+
+    assert get_bytes("controller.log") == b"live run"
+    assert get_bytes("postprocessing.log") == b"what the pod wrote"
+
+
+def test_nothing_is_read_remotely_unless_the_caller_says_so():
+    """Empty by default, because which files those are is a fact about one operation on one
+    lane and not about the phase: the same postprocessing log is written into the tracked
+    root locally and into a fetched one on the cluster. A set fixed in this module would
+    make every reader pay two store round-trips per poll for the one case it applies to,
+    behind an SSE stream that re-polls while a user watches.
+    """
+    remote_calls = []
+
+    def _remote(filename):
+        remote_calls.append(filename)
+        return b"durable"
+
+    get_bytes = campaign_logs.layered_by_writer(
+        {f: b"local" for _p, f in campaign_logs.INFRA_PHASES}.get, _remote)
+
+    for _phase, filename in campaign_logs.INFRA_PHASES:
+        assert get_bytes(filename) == b"local", filename
+    assert remote_calls == []
+
+
+def test_either_source_still_covers_the_other_absence():
+    """Changing which copy is believed must not cost the coverage: a phase present in only
+    one place is still served, whichever place that is. Reading one location alone drops
+    whole phases silently, since a missing phase file is also the normal "has not run yet".
+    """
+    get_bytes = campaign_logs.layered_by_writer(
+        {"controller.log": b"only local"}.get,
+        {"postprocessing.log": b"only remote"}.get,
+        {"postprocessing.log"})
+
+    assert get_bytes("controller.log") == b"only local"
+    assert get_bytes("postprocessing.log") == b"only remote"
+    assert get_bytes("variation.log") is None
+
+
+def test_the_source_of_a_phase_cannot_change_mid_campaign():
+    """The choice is by writer, never by which copy is longer or newer: a size or mtime
+    comparison would flip as a file grows, and a poll that returned fewer bytes than the
+    last one leaves the client's offset past the end of the stream.
+    """
+    for local_len, remote_len in ((1, 500), (500, 1)):
+        get_bytes = campaign_logs.layered_by_writer(
+            {"postprocessing.log": b"x" * local_len}.get,
+            {"postprocessing.log": b"y" * remote_len}.get,
+            {"postprocessing.log"})
+
+        assert get_bytes("postprocessing.log") == b"y" * remote_len

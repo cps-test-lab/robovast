@@ -209,7 +209,7 @@ class StorageClient:
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         """Download every object under *prefix* into *local_dir*.
 
         Objects in the durable home are immutable, so by default a file that
@@ -230,14 +230,24 @@ class StorageClient:
         is an extra listing: a caller that only wants a running count in a log should not
         pay for a denominator nobody displays.
 
-        *include*, if given, is called with each object's key **relative to the prefix** and
-        selects what is fetched; ``None`` fetches everything, which is what every caller but
-        one wants. It exists for campaign resume, which needs a campaign's control plane
-        (records, config, verdicts) to re-enter it but not the run artifacts, and which runs
-        before the service binds its port -- so the difference is between a restart that takes
-        seconds and one the liveness probe kills. Pass the same predicate to
-        :meth:`count_pending` or the progress denominator describes a different transfer from
-        the one running.
+        *include*, if given, is called with each object's key **relative to the prefix**,
+        POSIX-separated and with no leading slash -- never the full key. Every backend
+        guarantees that form, so a predicate can be written against the campaign-relative
+        layout (``_calibration/...``, ``_jobs/<batch>/...``) and stays correct wherever the
+        campaign lives, per-campaign bucket or shared bucket with a prefix. It selects what
+        is fetched; ``None`` fetches everything. It serves callers that need only part of a
+        campaign: resume needs the control plane (records, config, verdicts) and not the run
+        artifacts, and in-cluster postprocessing needs the run data without the probe bags.
+        Pass the same predicate to :meth:`count_pending` or the progress denominator
+        describes a different transfer from the one running.
+
+        *executable_bits* controls whether the executable flag :meth:`upload_dir` records in
+        object metadata is restored on each fetched file. Reading that flag is a separate
+        metadata round-trip per fetched file, so on a campaign holding tens of thousands of
+        them it dominates the transfer. Pass ``False`` when the fetched tree is data the
+        caller only reads -- staged campaign run data carries no executable bit worth
+        preserving -- and the round-trips are skipped. The default preserves the bit, so a
+        caller fetching something that has to stay runnable needs to do nothing.
         """
         raise NotImplementedError
 
@@ -485,18 +495,18 @@ class _S3StorageClient(StorageClient):
         naming the endpoint, what was being attempted (*what*, phrased to follow
         "while") and the transport's own reason. This is the single place every S3
         operation here funnels through, so no caller has to enumerate botocore's
-        transport exceptions to avoid a 90-line traceback; the one that did, for
-        ``EndpointConnectionError`` only, still 500'd on a connection reset.
+        transport exceptions to avoid a 90-line traceback. The tuple and the sentence
+        come from :mod:`store_errors`, which the S3 callers outside this class share:
+        one list of what counts as "no answer", so no path is left translating a
+        subset of it.
         """
-        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
-            ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError, ReadTimeoutError)
-
         from robovast.common.errors import \
             ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.common.shutdown import \
             is_shutting_down  # pylint: disable=import-outside-toplevel
-        transient = (ReadTimeoutError, ConnectTimeoutError,
-                     EndpointConnectionError, ConnectionClosedError)
+
+        from . import store_errors  # pylint: disable=import-outside-toplevel
+        transient = store_errors.transport_exceptions()
         last = None
         for attempt in range(self._reconnect_attempts):
             try:
@@ -519,15 +529,8 @@ class _S3StorageClient(StorageClient):
                     "retrying (attempt %d/%d)",
                     type(exc).__name__, attempt + 2, self._reconnect_attempts)
                 self._connect(force_reconnect=True)
-        # botocore's message already quotes the endpoint URL, but of the failed
-        # *request* — for a port-forward that rotates, the client's current endpoint is
-        # the one an operator can probe, so name it here.
         raise ObjectStoreUnreachableError(
-            f"Object store at {self._endpoint} is unreachable while {what}: {last}. "
-            "Check that the object store (MinIO) is running; off-cluster it is reached "
-            "through a kubectl port-forward, which the service's keep-alive reopens "
-            "within ~10 s of a stall — so retrying shortly may be all that is needed."
-        ) from last
+            store_errors.unreachable_message(self._endpoint, what, last)) from last
 
     @staticmethod
     def _strip_expect_header(request, **kwargs):
@@ -577,7 +580,7 @@ class _S3StorageClient(StorageClient):
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         clean = prefix.rstrip("/")
         key_prefix = f"{clean}/" if clean else ""
         # Outside ``op``: the denominator describes the whole transfer, so a reconnect retry
@@ -602,11 +605,15 @@ class _S3StorageClient(StorageClient):
                         continue
                     _download_atomic(
                         dst, lambda p, k=key: self._s3.download_file(bucket, k, p))
-                    # ``head_object`` (an extra round-trip) only to read the
-                    # executable flag — done only for files we actually fetched.
-                    head = self._s3.head_object(Bucket=bucket, Key=key)
-                    if (head.get("Metadata") or {}).get("executable") == "yes":
-                        os.chmod(dst, os.stat(dst).st_mode | 0o111)
+                    if executable_bits:
+                        # ``head_object`` is a round-trip of its own, spent only to read
+                        # the executable flag, and only for files actually fetched. It is
+                        # still one per file, which is why a caller fetching a campaign's
+                        # run data turns it off: see ``executable_bits`` on
+                        # ``StorageClient.download_prefix``.
+                        head = self._s3.head_object(Bucket=bucket, Key=key)
+                        if (head.get("Metadata") or {}).get("executable") == "yes":
+                            os.chmod(dst, os.stat(dst).st_mode | 0o111)
                     count += 1
                     fetched_bytes += int(obj.get("Size") or 0)
                     if on_file is not None:
@@ -761,7 +768,7 @@ class _GcsStorageClient(StorageClient):
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
@@ -779,7 +786,10 @@ class _GcsStorageClient(StorageClient):
             if not force and _same_size(dst, blob.size):
                 continue
             _download_atomic(dst, blob.download_to_filename)
-            if (blob.metadata or {}).get("executable") == "yes":
+            # ``executable_bits=False`` is honoured for interface parity, but costs nothing
+            # here either way: the listing already carries each blob's metadata, so there is
+            # no per-file round-trip to skip. The S3 backend is where the saving is.
+            if executable_bits and (blob.metadata or {}).get("executable") == "yes":
                 os.chmod(dst, os.stat(dst).st_mode | 0o111)
             count += 1
             fetched_bytes += int(blob.size or 0)
@@ -880,6 +890,32 @@ def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, st
     if shared:
         return shared, f"{campaign_bucket}/"
     return campaign_bucket, ""
+
+
+def publish_execution_file(storage, bucket: str, prefix: str, campaign_root,
+                           filename: str) -> bool:
+    """Mirror one file of a campaign's ``_execution/`` to the store; ``True`` if it went.
+
+    Best-effort by contract, and the reason is the same wherever it is called from: the
+    local file is the record and the object is its mirror, so a transfer that fails must
+    not cost the record it was copying, nor the operation that produced it. A caller for
+    which the upload is a duty rather than an improvement -- the one publish that has to
+    land before the campaign root goes away -- uses ``upload_dir`` and handles its error.
+
+    One definition of where an ``_execution/`` file lands, because a file two callers
+    upload is a file two callers can disagree about where. A caller with a resolved
+    client passes it; resolving one is the caller's, since a client is worth reusing
+    across a run of these.
+    """
+    path = os.path.join(str(campaign_root), "_execution", filename)
+    if not os.path.isfile(path):
+        return False
+    try:
+        storage.upload_file(path, bucket, f"{prefix}_execution/{filename}")
+    except Exception as e:  # noqa: BLE001 - a mirror, not the record
+        logger.debug("Could not publish _execution/%s: %s", filename, e)
+        return False
+    return True
 
 
 # -- the campaign index -----------------------------------------------------

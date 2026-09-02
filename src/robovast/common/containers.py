@@ -77,6 +77,12 @@ class PlannedContainer:
     #: is preserved but does not decide build order: every entry lands in one workspace and one
     #: ``colcon build``, which resolves the order itself from the packages' own dependencies.
     ros_packages: tuple = ()
+    #: How a measurement becomes this container's allocation, under ``sizing: calibrated``.
+    #: Carried on the PLAN and not read from the config block later, because the sizing runs
+    #: against the containers that will actually start: a stepped simulator folds two blocks
+    #: into one container, and a rule left behind in the block would size nothing while the
+    #: allocation it governs moved. ``None`` means the role's own defaults decide.
+    calibration: object = None
 
     @property
     def builds(self) -> bool:
@@ -180,6 +186,10 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
         system_packages=_merged(scenario_blocks, 'system_packages'),
         python_packages=_merged(scenario_blocks, 'python_packages'),
         ros_packages=_merged(scenario_blocks, 'ros_packages'),
+        # First block that states one, so a folded simulation block can supply the rule when
+        # the scenario block does not -- the same precedence `image` and `command` use above.
+        calibration=next((b.get('calibration') for b in scenario_blocks
+                          if b.get('calibration') is not None), None),
     )]
     if folded:
         # The name still resolves -- to the container the simulator runs in.
@@ -200,6 +210,7 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
             system_packages=_merged([block], 'system_packages'),
             python_packages=_merged([block], 'python_packages'),
             ros_packages=_merged([block], 'ros_packages'),
+            calibration=block.get('calibration'),
         ))
         if name in CONTAINER_ROLES:
             roles[name] = name

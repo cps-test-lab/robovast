@@ -40,6 +40,7 @@ Configuration format:
       - simple_plugin_name
 """
 import csv
+import glob
 import json
 import logging
 import math
@@ -56,8 +57,47 @@ from robovast.common import log_summary, scenario_markers
 from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
                                        is_campaign_dir)
+from robovast.common.quantity import to_bytes, to_cores
+from robovast.common.results_utils import campaign_vast
 
 logger = logging.getLogger(__name__)
+
+
+def _campaign_config_path(results_dir: str, config_dir: str):
+    """The ``.vast`` describing *results_dir*, or ``None`` when there is none to read.
+
+    The campaign's own frozen config comes first: it is the single source of truth for what
+    ran, it is the file the cluster lane reads, and it is what a re-run dialog edits -- so
+    preferring it keeps both lanes answering from the same place. A campaign tree need not
+    hold one, though. Results are projected into it by a step that may not have run, and this
+    plugin is also called against a directory that is no campaign tree at all; then
+    *config_dir* answers, being the directory holding the ``.vast`` being executed, which is
+    why it is a parameter at all.
+
+    ``None`` rather than an exception when neither has one: what this feeds is an optional
+    block, so its absence is an answer -- the shared defaults -- and not a missing input.
+    """
+    try:
+        return str(campaign_vast(results_dir))
+    except (ValueError, OSError):
+        pass
+    candidates = sorted(glob.glob(os.path.join(config_dir or ".", "*.vast")))
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _docker_cpus(cpu) -> str:
+    """A cpu declaration as ``docker run --cpus`` wants it (``"500m"`` -> ``"0.5"``).
+
+    Docker takes a decimal core count and rejects Kubernetes' millicore spelling, exactly as
+    Compose does -- see ``execute_local._compose_cpus``, which solves this for the execution
+    lane. Kept as its own function rather than imported from there because that module drives
+    campaign execution and this one runs after it; an unparseable value passes through so
+    docker's own error names it, since the config layer has already refused those.
+    """
+    cores = to_cores(cpu)
+    if cores is None:
+        return str(cpu)
+    return str(int(cores)) if float(cores).is_integer() else str(cores)
 
 
 class BasePostprocessingPlugin:
@@ -293,6 +333,21 @@ class RosbagsProcess(BasePostprocessingPlugin):
                 - type: to_csv
                   topics: [/cmd_vel, /odom]
                 - type: rosout_to_csv
+
+    **How much of the machine it uses is not set here.** The step converts one bag per
+    process, and how many run at once follows the CPU the conversion is allowed -- which is
+    ``results_processing.resources`` (see
+    :class:`~robovast.common.config.PostprocessResourcesConfig`), one block that sizes both
+    lanes. Left alone, a conversion takes the shared default rather than a worker per core of
+    whatever machine it landed on::
+
+        results_processing:
+          resources:
+            cpu: 8
+            memory: 16Gi
+
+    ``workers`` below overrides just the fan-out, for a conversion whose bags are large
+    enough that fewer, fatter workers beat one per core.
     """
 
     def __call__(
@@ -313,7 +368,10 @@ class RosbagsProcess(BasePostprocessingPlugin):
             results_dir: Path to the campaign-<id> directory to process.
             config_dir: Directory containing the config file.
             plugins: List of handler config dicts, each with a ``type`` key.
-            workers: Optional number of parallel workers.
+            workers: Bags to convert at once. Omitted -- the normal case -- the conversion
+                derives it from the CPU it is actually allowed (its cgroup quota), so it
+                matches ``results_processing.resources.cpu`` on either lane. Set it only to
+                override that.
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
@@ -338,6 +396,21 @@ class RosbagsProcess(BasePostprocessingPlugin):
         if provenance_file:
             cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
         cmd.extend(["--config", config_json])
+        # What this conversion may use, from the campaign's `results_processing.resources`
+        # over the shared defaults -- the same figure the cluster lane reserves for its
+        # conversion container, so one block means one thing on both lanes.
+        #
+        # The worker count is deliberately NOT passed with it. rosbags_process reads its own
+        # cgroup quota, so the cap below already decides the fan-out; passing the number a
+        # second time would be a copy that can disagree with the limit actually in force.
+        # `workers` stays available for a campaign that wants to override that.
+        from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+            postprocess_convert_resources)
+
+        sized = postprocess_convert_resources(
+            _campaign_config_path(results_dir, config_dir))
+        cmd.extend(["--cpus", _docker_cpus(sized["cpu"]),
+                    "--memory", str(to_bytes(sized["memory"]))])
         if workers is not None:
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:

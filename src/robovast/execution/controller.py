@@ -356,14 +356,62 @@ class CampaignController:
         images = execution.get("images") or {}
         if not images:
             return
+        # Every role that OUGHT to have a lock, which is not the same as every role in
+        # ``images``: that map holds only the containers whose image the campaign names, so a
+        # container robovast supplies is absent from it and was never even asked. It is the
+        # same set the report below measures against, so what is asked for and what is
+        # reported missing cannot drift apart -- they did, and the gap read as a failed read
+        # rather than as a question never put.
+        ours = {role for role, refs in (execution.get("image_build_refs") or {}).items()
+                if isinstance(refs, dict) and not refs.get("declared")}
+        roles = sorted(ours | set(images))
+        # The roles are the campaign's containers, but the REF has to be what actually ran.
+        # On the cluster lane ``images`` records what the .vast declared, and for a container
+        # robovast builds that is its *base* -- whose lock describes different software than
+        # the image the campaign ran. ``image_revisions`` is the digest of the built image.
+        revisions = execution.get("image_revisions") or {}
         try:
             from robovast.common.campaign_data import write_build_manifests
             from robovast.service.image_build import read_image_build_manifest
 
-            manifests = {role: read_image_build_manifest(image)
-                         for role, image in sorted(images.items())}
-            write_build_manifests(self.campaign_root,
-                                  {role: m for role, m in manifests.items() if m})
+            manifests = {}
+            for role in roles:
+                image = revisions.get(role) or images.get(role)
+                if not image:
+                    continue
+                # Per role, so one role's failure cannot discard the locks already read for
+                # the others. Both readers reach outside the process -- a container runtime,
+                # a registry -- and either can fail for one image and work for the next.
+                try:
+                    # Local first: it needs no network, and it answers for an image built
+                    # here that may never have been pushed anywhere.
+                    lock = read_image_build_manifest(image)
+                    if not lock:
+                        # getattr, so a backend from outside this tree that predates the hook
+                        # degrades to "cannot read one here" instead of losing every lock.
+                        reader = getattr(self.backend, "read_build_lock", None)
+                        lock = reader(image) if callable(reader) else {}
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug("Could not read the build lock of %s.", image,
+                                 exc_info=True)
+                    continue
+                if lock:
+                    manifests[role] = lock
+            write_build_manifests(self.campaign_root, manifests)
+            # Say so when a lock is missing for an image ROBOVAST BUILT. Those are the ones
+            # that must have one, and a silent absence is what let this go unnoticed: the
+            # campaign looks complete either way, and the cost only appears much later, when
+            # the image is gone and the rebuild installs current versions instead of the
+            # recorded ones. A container whose `provenance:` the author declared is skipped --
+            # robovast did not build it, so there was never a lock of ours to find.
+            missing = sorted(ours - set(manifests))
+            if missing:
+                logger.warning(
+                    "No build lock recorded for %s. This campaign can be re-run while its "
+                    "images exist, but not rebuilt from its own record: a rebuild would "
+                    "re-resolve the declared packages and install whatever is current, "
+                    "which is a different experiment under the same name.",
+                    ", ".join(missing))
         except Exception:  # pylint: disable=broad-except
             logger.debug("Could not persist build manifests.", exc_info=True)
 
@@ -1087,6 +1135,11 @@ class CampaignController:
         path gives: the conversion tees its own error into ``postprocessing.log`` and mirrors
         it out, so skipping the sync on failure discards the only account of what went wrong.
 
+        **Conversion only.** The postprocessing pod also carries the host stage; a search
+        must not run it, because that stage is the campaign-level account of a *finished*
+        campaign and this runs per batch on one that is still growing. ``host_stage=False``
+        is what keeps this pod to the bags.
+
         On a local backend there is no Job to submit and the in-process path is already
         correct, so the commands fall through to it. A failure is reported and does not
         raise: the extractor decides whether a batch is scorable and refuses loudly when its
@@ -1099,6 +1152,14 @@ class CampaignController:
                 rosbag_cmds, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
             return
+        # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
+        # opened, ever, and must not fail the conversion for every job that finished. A
+        # search feels that harder than the campaign-level path it is copied from: one
+        # stopped job stays in the campaign root for the rest of the search, so without
+        # this every *later* batch's conversion fails on it too and nothing scores again.
+        from robovast.common.results_utils import campaign_vast
+        from robovast.results_processing.postprocessing import postprocess_convert_resources
+        from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
         try:
             run_job, sync, image_for, complete_message = _conversion_job_runner()
             ok, message = run_job(
@@ -1107,7 +1168,21 @@ class CampaignController:
                 image_for(self.campaign_root),
                 unwrap_conversion_commands(rosbag_cmds),
                 kube_context=getattr(self.backend, "kube_context", None),
-                discriminator=tag)
+                discriminator=tag,
+                tolerate_under=_interrupted_job_dirs(self.campaign_root),
+                # Conversion only: the pod's host stage is the campaign-level postprocess
+                # -- index ingest, metadata, the provenance marker -- and a search reaches
+                # this once per batch, on a campaign that is still growing. Running it here
+                # would ingest a partial campaign as if it were finished (and mark it
+                # postprocessed) once per batch, and the batch needs nothing from it but
+                # the CSVs. The campaign-level chain runs the host stage after the search.
+                host_stage=False,
+                # The same sizing the campaign-level conversion uses. A search converts
+                # once per batch, so a conversion left at the default here would be the
+                # one place a campaign's declared figure did not apply -- and it is the
+                # path that runs it most often.
+                convert_resources=postprocess_convert_resources(
+                    str(campaign_vast(self.campaign_root))))
             sync(cluster_config, self.campaign_id, self.campaign_root)
             # Only now can the message say where the conversion error is: the sync is what
             # decides whether a POSTPROCESSING section exists to point at.
@@ -1238,9 +1313,10 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     """Run analysis postprocessing in-cluster, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
-    ``campaign.db`` is flushed — the index ingest mirrors it) and
-    **before** :func:`_finalize`, so the resulting CSVs ride the existing
-    campaign upload instead of needing one of their own.
+    ``campaign.db`` is flushed — the index ingest mirrors it) and **before**
+    :func:`_finalize`. Running before the campaign's own upload means the driver's records
+    are not in the campaign's durable home yet, and postprocessing reads them from there,
+    so this publishes them first (``publish_execution_records``).
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
     and a no-op otherwise. This is an **option, not an env var**, because the service
@@ -1269,6 +1345,16 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     backend.ensure_campaign_root_complete(campaign_root)
+    # And the other direction, before a reader that is not this process looks: what the
+    # DRIVER alone wrote has to reach the campaign's durable home. Postprocessing stages
+    # the campaign from there, while `finalize_campaign` publishes it only after this tail
+    # returns -- so the pod was handed a campaign with no `execution.yaml`, and its metadata
+    # step had nothing to say what produced the results it had just derived.
+    #
+    # The docstring above explains the old order as letting the derived CSVs ride the
+    # existing campaign upload. That reason is spent: the derived data is published by
+    # whatever produced it now, so there is nothing left for this to ride.
+    backend.publish_execution_records(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
         ok, message = postprocess_campaign(

@@ -530,9 +530,13 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   // Every lane serves the archive now: the cluster streams it from the object store, and a
   // local service tars its own results directory (`campaign_tar_stream` is on the interface,
-  // implemented by both). So the only thing gating the download is whether the campaign is
-  // still being written to, not which backend it ran on.
-  const canDownload = !running
+  // implemented by both), and neither waits on postprocessing. So nothing gates the download:
+  // a running campaign is offered as a SNAPSHOT -- what has been written so far, named
+  // `<id>.incomplete.tar.gz` by the service and carrying a marker the import reads. Hiding it
+  // while a campaign runs withheld the download from precisely the campaign a reader is
+  // watching, and the reason for hiding it -- the tree is moving -- is a property of the
+  // archive to state, not of the button to refuse.
+  const archiveName = running ? `${id}.incomplete.tar.gz` : `${id}.tar.gz`
 
   // One listing for the whole page: every card asks under the same react-query key, so
   // they collapse into a single request, and the share answers for itself rather than
@@ -659,17 +663,21 @@ function CampaignCard({ summary, newest, openedByLink }: {
     ) : null,
   ].filter(Boolean)
 
-  const takeItems = canDownload
-    ? [
+  const takeItems = [
         <MenuItem
           key="download"
           component="a"
           href={robovast.archiveUrl(id)}
-          download={`${id}.tar.gz`}
+          download={archiveName}
           onClick={closeMenu}
         >
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Download</ListItemText>
+          <ListItemText
+            primary={running ? 'Download snapshot' : 'Download'}
+            // What the reader gets, in the words the file itself will carry: the campaign is
+            // still running, so runs that have not finished are not in it.
+            secondary={running ? `Incomplete — saved as ${archiveName}` : undefined}
+          />
         </MenuItem>,
         // Omitted where the provider has no openable link -- sftp never has one, and a webdav
         // URL often needs credentials the recipient lacks.
@@ -686,8 +694,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
             <ListItemText>Copy share link</ListItemText>
           </MenuItem>
         ) : null,
-      ].filter(Boolean)
-    : []
+  ].filter(Boolean)
 
   // Nothing here while the campaign runs: each one either re-runs a step of it or destroys it.
   const actItems = running

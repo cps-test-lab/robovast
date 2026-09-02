@@ -47,6 +47,7 @@ from robovast.common.config_plugins import GIT_TOKEN_ENVS
 from robovast.common.index_db import DSN_ENV as INDEX_DSN_ENV
 from robovast.service.interface import DEFAULT_PORT
 
+from . import data_paths
 from .cluster_execution import BLOCKED_GRACE_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 #: ever changed. Here the manifest names the path it mounts.
 WORKSPACES_VOLUME_NAME = "workspaces-data"
 WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
-DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
+DEFAULT_WORKSPACES_HOST_PATH = data_paths.DEFAULT_WORKSPACES_HOST_PATH
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 
 #: Where the service keeps the working root of the campaigns it drives, and the volume
@@ -129,7 +130,7 @@ WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 #: change to the workspaces mount silently un-mounts this one again.
 RESULTS_VOLUME_NAME = "results-data"
 RESULTS_DATA_DIR = "/var/lib/robovast-results"
-DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
+DEFAULT_RESULTS_HOST_PATH = data_paths.DEFAULT_RESULTS_HOST_PATH
 
 #: What the scheduler reserves for the service container, and what it may grow to.
 #:
@@ -201,7 +202,7 @@ def _results_host_path(workspaces_storage_path=""):
     """
     if not workspaces_storage_path:
         return DEFAULT_RESULTS_HOST_PATH
-    return str(pathlib.PurePosixPath(workspaces_storage_path).parent / "robovast-results")
+    return data_paths.derive_sibling(workspaces_storage_path, "workspaces", "results")
 
 
 def results_volume(storage_path="", storage_class=""):
@@ -220,13 +221,12 @@ def results_volume(storage_path="", storage_class=""):
     one it already tests, results cannot become node-local behind its back and be abandoned by
     a pod that was free to move.
 
-    And it commits no public API to an arrangement that may not last. The driver mirrors a
-    campaign whose durable home is the object store -- it downloads Job output it did not
-    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what keeps
-    that necessary is only that per-run extraction runs driver-side against a local path
+    And it commits no public API to an arrangement that may not last. This is the driver's
+    mirror of a campaign whose home is the object store -- it downloads Job output it did not
+    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what
+    keeps that necessary is only that per-run extraction runs driver-side against a local path
     (``search.extractor.Extractor.extract``). Move extraction into a Job, as rosbag conversion
-    already is, and this volume stops being needed. Give it its own ``--results-storage-*``
-    flags when someone actually needs to split it from the workspaces store, not before.
+    already is, and this volume stops being needed.
     """
     if storage_class:
         return {"name": RESULTS_VOLUME_NAME,
@@ -2248,6 +2248,14 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
             lambda c=cm: core.create_namespaced_config_map(namespace, c, dry_run=dr),
             lambda c=cm, n=name: core.replace_namespaced_config_map(
                 n, namespace, c, dry_run=dr))
+    # Claims, before the Deployment that mounts them: a pod scheduled against a claim that
+    # does not exist yet stays Pending. Tolerated on conflict and never replaced -- most of a
+    # bound PVC's spec is immutable, so a replace either fails or asks for a resize nobody
+    # requested. Without this the claims are rendered and never created, and a class-backed
+    # workspaces store is a Deployment waiting on a volume no one asked the cluster for.
+    for claim in [m for m in manifests if m["kind"] == "PersistentVolumeClaim"]:
+        _create_or_ok(lambda c=claim: core.create_namespaced_persistent_volume_claim(
+            namespace, c, dry_run=dr))
     # Deployment (patch spec on conflict, so a `setup --force` over a live
     # service updates it in place instead of failing)
     _create_or_replace(

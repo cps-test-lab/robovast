@@ -53,21 +53,42 @@ import tempfile
 import time
 import zlib
 from abc import ABC, abstractmethod
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 from typing import Any, Dict, List, Optional, Tuple
 
+#: One thread per native library, set before those libraries are imported.
+#:
+#: Every one of these defaults to a thread per core of the *machine*, and this script already
+#: runs one process per bag: left alone, the two fan-outs multiply inside a single CPU
+#: allocation, and the threads spend the conversion contending rather than converting. The
+#: parallelism that pays here is across bags -- a bag's own decode is not the bottleneck -- so
+#: one thread each is what keeps the process count equal to the figure the allocation was
+#: sized for.
+#:
+#: **Before the imports below, and that placement is the whole point.** These runtimes read
+#: their environment once, when they initialize their pool at import time; setting them later
+#: -- in ``main``, or in a worker after the fork -- leaves the pool already built at the
+#: machine's width, so the variable reads as set while nothing acts on it.
+for _thread_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_thread_var, "1")
+
+# These imports come after the pins by construction -- see above -- so the rule this file
+# has to break is silenced only for them.
+# pylint: disable=wrong-import-position
 import numpy as np
 import rosbag2_py
 import yaml
 from rclpy.serialization import deserialize_message
 from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
                             DEFAULT_CLOCK_TOLERANCE_S, BagResult, ClockDecimator,
-                            failing_bag_output, find_rosbags, gen_msg_values,
+                            available_cpus, failing_bag_output, find_rosbags, gen_msg_values,
                             handler_error_pointer, is_under_tolerated_root, register_video,
                             resolve_tolerated_roots, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 from tf2_ros import Buffer
+# pylint: enable=wrong-import-position
 
 # ---------------------------------------------------------------------------
 # Base handler class
@@ -901,6 +922,12 @@ class ToWebmHandler(RosbagHandler):
             "-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0",
             "-g", str(max(1, round(fps * self._KEYFRAME_SECONDS))),
             "-deadline", "realtime", "-cpu-used", "8",
+            # ffmpeg threads itself by core count, and this runs INSIDE a bag worker -- so
+            # without a cap the two fan-outs multiply and every worker's encoder oversubscribes
+            # the same allocation. One thread each keeps the process count equal to the worker
+            # count, which is the figure the allocation was sized for; the encode is one of
+            # many running in parallel, so its own latency is not what matters.
+            "-threads", "1",
             self._output_file,
         ]
         proc = subprocess.Popen(
@@ -1276,8 +1303,10 @@ def main() -> int:
     parser.add_argument(
         "--workers",
         type=int,
-        default=cpu_count(),
-        help=f"Number of parallel workers (default: {cpu_count()})",
+        default=available_cpus(),
+        help="Number of bags converted at once (default: this process's CPU budget, "
+             f"here {available_cpus()}). One worker per bag, so this is also the peak "
+             "memory multiplier: each holds a bag's messages while it converts.",
     )
     parser.add_argument(
         "--provenance-file",

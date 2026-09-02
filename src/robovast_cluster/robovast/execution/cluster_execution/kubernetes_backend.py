@@ -60,6 +60,7 @@ import re
 import shlex
 import tempfile
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -650,7 +651,7 @@ class BatchJobRunner:
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
                   built_images=None, image_digest_cache=None, admission=None,
-                  image_label_cache=None):
+                  image_label_cache=None, build_lock_cache=None):
         self = cls()
         # The process-wide admission queue, or None. None means "create every job at once",
         # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
@@ -723,6 +724,10 @@ class BatchJobRunner:
         # labels of a ref cannot change between two batches of one campaign, and asking the
         # registry per batch would put a round trip in front of every one of a sweep's.
         self._image_label_cache = {} if image_label_cache is None else image_label_cache
+        # Shared with the backend for the same reason as the two caches above, and for one
+        # more: the backend is asked for a campaign's locks after the batch, when no runner
+        # is alive, and only a runner holds the registry credentials to read them.
+        self._build_lock_cache = {} if build_lock_cache is None else build_lock_cache
         self._pin_image_refs(image_digest_cache)
         # Immediately after the pin and before any manifest is written, so the verdict is
         # about the exact bytes the pods will run and no pod is created if it fails.
@@ -1724,17 +1729,30 @@ class BatchJobRunner:
         declared = getattr(container, "calibration", None)
         if declared is None:
             return out
+
+        def _field(obj, name):
+            """One field of a calibration block, whether it arrived as a model or a mapping.
+
+            The plan carries what the `.vast` stated, and that is a plain mapping on the path
+            through a container block. Reading it with ``getattr`` alone returned ``None`` for
+            every field, so a stated block resolved to the role defaults -- configured in the
+            file, inert in the allocation, and silent about it.
+            """
+            if isinstance(obj, Mapping):
+                return obj.get(name)
+            return getattr(obj, name, None)
+
         for field in ("size_on", "limit"):
-            value = getattr(declared, field, None)
+            value = _field(declared, field)
             if value is not None:
                 out[field] = value
-        headroom = getattr(declared, "headroom", None)
+        headroom = _field(declared, "headroom")
         if headroom is not None:
             # Per field, so stating only `cpu` keeps the memory default rather than losing it.
             out["headroom"] = {
                 **out["headroom"],
-                **{f: getattr(headroom, f) for f in ("cpu", "memory")
-                   if getattr(headroom, f, None) is not None}}
+                **{f: _field(headroom, f) for f in ("cpu", "memory")
+                   if _field(headroom, f) is not None}}
         return out
 
     def _calibration_by_container(self) -> dict:
@@ -2168,6 +2186,7 @@ class BatchJobRunner:
                         ", ".join(f"{r} -> {d.rsplit('@', 1)[-1]}"
                                   for r, d in sorted(moved.items())))
         unpinned = sorted(ref for ref in refs if not cache.get(ref))
+        self._refuse_absent_images(unpinned)
         if unpinned:
             logger.warning(
                 "Could not resolve %d image ref(s) to a digest: %s. They keep their tag "
@@ -2175,6 +2194,83 @@ class BatchJobRunner:
                 "registry -- which a wide batch can rate-limit itself out of. The pods "
                 "also carry no guarantee of running the same bytes for the whole "
                 "campaign.", len(unpinned), ", ".join(unpinned))
+
+    def build_lock(self, image: str) -> dict:
+        """The build lock inside *image*, read from the registry; ``{}`` when unreadable.
+
+        On the runner because this is where the registry credentials live -- the same ones
+        :meth:`_resolve_digest` uses, resolved from this deployment's pull Secret. The
+        backend cannot do it: it has no Kubernetes client of its own, so it holds the cache
+        and lets a runner fill it.
+
+        Cached per campaign, not per batch: what an image contains cannot change between two
+        batches of one campaign, and the read fetches a layer.
+        """
+        if not image:
+            return {}
+        if image in self._build_lock_cache:
+            return self._build_lock_cache[image]
+        from robovast.service.image_build import parse_build_manifest_files  # noqa: PLC0415
+
+        from .registry_client import manifest_build_lock  # noqa: PLC0415
+        lock = {}
+        try:
+            registry = self.cluster_config.get_registry_config()
+            lock = parse_build_manifest_files(manifest_build_lock(
+                image, dockerconfigjson=self._registry_dockerconfig(registry),
+                insecure=getattr(registry, "insecure", False),
+                ca_path=self._registry_ca_path(registry)))
+        except Exception:  # noqa: BLE001 - a record must never fail a campaign
+            logger.warning("could not read the build lock of %s", image, exc_info=True)
+        self._build_lock_cache[image] = lock
+        return lock
+
+    def _refuse_absent_images(self, unresolved: list) -> None:
+        """Refuse the campaign when the registry says an image it needs is simply not there.
+
+        The pin above asks the registry, with the **pull** credential, what each ref resolves
+        to -- which is the same question the kubelet asks a moment later. A ref it could not
+        resolve was treated as a missed optimisation and the campaign went ahead; if the reason
+        was that the image does not exist, every job then died at once on ``ErrImagePull ...
+        NotFound``, having already been scheduled. The answer was in hand one step before any
+        pod existed, next to the compat check that refuses here for the same reason: a refusal
+        costs no pods.
+
+        Only on a **definite** absence -- ``ABSENT`` is a 404 and nothing else. A registry that
+        is unreachable, or one this deployment holds no credential for, answers ``UNKNOWN`` and
+        is left alone: refusing on that is the mistake the image store's ``present`` exists to
+        prevent, since it blames the artifact for a problem with reaching it. So this cannot be
+        tripped by a registry blip, only by an image that is genuinely gone.
+
+        A campaign whose own image is missing needs it rebuilt, and says so, rather than
+        reporting a whole batch that could not start.
+        """
+        if not unresolved:
+            return
+        from .registry_client import ABSENT, manifest_state  # noqa: PLC0415 - optional path
+        try:
+            registry = self.cluster_config.get_registry_config()
+        except Exception:  # noqa: BLE001 - a registry is optional
+            return
+        missing = []
+        for ref in unresolved:
+            try:
+                state = manifest_state(
+                    ref, dockerconfigjson=self._registry_dockerconfig(registry),
+                    insecure=getattr(registry, "insecure", False),
+                    ca_path=self._registry_ca_path(registry))
+            except Exception:  # noqa: BLE001 - not knowing is not a refusal
+                continue
+            if state == ABSENT:
+                missing.append(ref)
+        if missing:
+            raise CampaignConfigError(
+                f"the registry does not have {', '.join(missing)}, so every job of this "
+                f"campaign would fail to start. Checked before any pod was created, with the "
+                f"credential the kubelet uses. An image robovast builds for a campaign is "
+                f"identified by its inputs, so a tag that is absent has never been pushed -- "
+                f"rebuild it (vast image build) and launch again. If the image is one you "
+                f"supplied, check the reference and its pull credentials.")
 
     def _check_image_compat(self) -> None:
         """Refuse the campaign here if this host cannot drive the image its pods will run.
@@ -2236,16 +2332,24 @@ class BatchJobRunner:
         labels". Anything raised on the way is `None` too -- it is another way of not having
         asked.
         """
-        from .registry_client import manifest_labels  # noqa: PLC0415 - optional path
+        from .registry_client import (LAUNCH_PATIENCE,  # noqa: PLC0415 - optional path
+                                      manifest_labels)
         if ref in self._image_label_cache:
             return self._image_label_cache[ref]
         labels = None
         try:
             registry = self.cluster_config.get_registry_config()
+            # The patient budget, because this read decides whether a campaign launches:
+            # unread means refused, and the outage that makes it unread -- concurrent
+            # multi-gigabyte pulls after a service upgrade starving a small request of
+            # egress -- lasts minutes. Every other caller of this reader keeps the short
+            # default, since a status read that stalls for minutes is worse than one that
+            # says it does not know.
             labels = manifest_labels(
                 ref, dockerconfigjson=self._registry_dockerconfig(registry),
                 insecure=getattr(registry, "insecure", False),
-                ca_path=self._registry_ca_path(registry))
+                ca_path=self._registry_ca_path(registry),
+                patience_s=LAUNCH_PATIENCE)
         except Exception:  # noqa: BLE001 - "could not ask" is an answer; the caller decides
             # Warning, not debug. This path makes the compat check refuse the campaign, and a
             # refusal whose cause is only visible at debug level is one nobody can act on: the
@@ -2278,45 +2382,16 @@ class BatchJobRunner:
 
     def _registry_dockerconfig(self, registry) -> str:
         """The pull Secret's ``.dockerconfigjson``, or ``""``. Never returned to a client."""
-        import base64  # noqa: PLC0415
-        name = getattr(registry, "pull_secret_name", "") or getattr(
-            registry, "push_secret_name", "")
-        if not name:
-            return ""
-        try:
-            secret = self.k8s_client.read_namespaced_secret(name, self.namespace)
-        except Exception:  # noqa: BLE001 - the probe is optional, the campaign is not
-            return ""
-        data = (secret.data or {}).get(".dockerconfigjson")
-        if not data:
-            return ""
-        try:
-            return base64.b64decode(data).decode()
-        except (ValueError, UnicodeDecodeError):
-            return ""
+        return registry_dockerconfig(self.k8s_client, self.namespace, registry)
 
     def _registry_ca_path(self, registry) -> str:
         """The registry CA materialised to a file for ``requests``' ``verify=``, or ``""``.
 
         Cached on the instance: one file per runner, not one per ref.
         """
-        name = getattr(registry, "ca_configmap_name", "")
-        if not name:
-            return ""
         if self._registry_ca_file is not None:
             return self._registry_ca_file
-        self._registry_ca_file = ""
-        try:
-            cm = self.k8s_client.read_namespaced_config_map(name, self.namespace)
-            pem = (cm.data or {}).get("ca.pem", "")
-        except Exception:  # noqa: BLE001
-            pem = ""
-        if pem:
-            fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the process
-                mode="w", suffix=".pem", prefix="robovast-registry-ca-", delete=False)
-            fd.write(pem)
-            fd.close()
-            self._registry_ca_file = fd.name
+        self._registry_ca_file = registry_ca_file(self.k8s_client, self.namespace, registry)
         return self._registry_ca_file
 
     def _discover_gpu_support(self) -> None:
@@ -2655,17 +2730,11 @@ class BatchJobRunner:
                                 campaign_prefix, filename) -> None:
         """Push one ``_execution/`` file to the object store now, best-effort.
 
-        Best-effort because it is a mirror: the local copy is already written, and a
-        transfer that fails must not cost the record it was copying.
+        The argument order this class already has, over the one definition of where such
+        a file lands (:func:`in_pod_storage.publish_execution_file`).
         """
-        path = Path(campaign_root) / "_execution" / filename
-        if not path.is_file():
-            return
-        try:
-            storage.upload_file(str(path), bucket_name,
-                                f"{campaign_prefix}_execution/{filename}")
-        except Exception as exc:  # noqa: BLE001 - a mirror, not the record
-            logger.debug("Could not publish %s: %s", filename, exc)
+        in_pod_storage.publish_execution_file(storage, bucket_name, campaign_prefix,
+                                              campaign_root, filename)
 
     def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
         """Upload, run and download one batch; this batch's results and the
@@ -3117,6 +3186,59 @@ class BatchJobRunner:
             base=read_job_links(campaign_root))
 
 
+def registry_dockerconfig(k8s_client, namespace: str, registry) -> str:
+    """A registry's pull Secret as ``.dockerconfigjson`` text, or ``""``.
+
+    Module level because two callers need the identical answer -- the batch runner, resolving
+    digests before it writes pods, and the backend, reading a build lock out of the registry
+    after the campaign has run. A second copy would be a second place for the Secret-name
+    fallback to drift, and the symptom of a drift here is an empty read that looks exactly
+    like an image with nothing to report.
+
+    Never returned to a client, and never raised from: a credential that cannot be read means
+    the registry cannot be asked, which every caller already handles.
+    """
+    import base64  # noqa: PLC0415
+    name = getattr(registry, "pull_secret_name", "") or getattr(
+        registry, "push_secret_name", "")
+    if not name or k8s_client is None:
+        return ""
+    try:
+        secret = k8s_client.read_namespaced_secret(name, namespace)
+    except Exception:  # noqa: BLE001 - the probe is optional, the campaign is not
+        return ""
+    data = (secret.data or {}).get(".dockerconfigjson")
+    if not data:
+        return ""
+    try:
+        return base64.b64decode(data).decode()
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
+def registry_ca_file(k8s_client, namespace: str, registry) -> str:
+    """The registry's CA written to a file for ``requests``' ``verify=``, or ``""``.
+
+    Returns a fresh path each call; a caller that asks more than once caches it, because the
+    file lives for the process.
+    """
+    name = getattr(registry, "ca_configmap_name", "")
+    if not name or k8s_client is None:
+        return ""
+    try:
+        cm = k8s_client.read_namespaced_config_map(name, namespace)
+        pem = (cm.data or {}).get("ca.pem", "")
+    except Exception:  # noqa: BLE001
+        pem = ""
+    if not pem:
+        return ""
+    fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the process
+        mode="w", suffix=".pem", prefix="robovast-registry-ca-", delete=False)
+    fd.write(pem)
+    fd.close()
+    return fd.name
+
+
 class KubernetesBackend(ExecutionBackend):
     """Run batches as Kubernetes Jobs from inside the controller pod.
 
@@ -3150,12 +3272,17 @@ class KubernetesBackend(ExecutionBackend):
         # between batches anyway (see BatchJobRunner._pin_image_refs).
         self._image_digest_cache: dict = {}
         self._image_label_cache: dict = {}
+        # image ref -> its build lock, filled by the runners and read by the controller after
+        # the batch. See read_build_lock for why the backend cannot fill it itself.
+        self._build_lock_cache: dict = {}
         # node label -> that machine's facts, built once and reused. A campaign's runs
         # land on the same handful of machines thousands of times, and what a machine IS
         # cannot change between two runs of one campaign, so this is asked once per
         # campaign rather than once per job -- the same reasoning _discover_gpu_support
         # states for the GPU probe.
         self._node_facts_cache: dict | None = None
+        # None until asked, then the path or "" -- one file per backend, not one per image.
+        self._registry_ca_file: str | None = None
 
     def node_facts(self, label: str) -> dict | None:
         """The machine behind *label*, from this cluster's own nodes. See the base.
@@ -3177,6 +3304,10 @@ class KubernetesBackend(ExecutionBackend):
         rather than ending the run.
         """
         try:
+            # Both members are set by the mixin this class is composed with, which the
+            # linter does not follow. Scoped to this block, so a real typo elsewhere in the
+            # method is still an error.
+            # pylint: disable=no-member
             self._init_k8s_clients()
             v1 = client.CoreV1Api(self.k8s_api_client)
             nodes = (v1.list_node().items or [])
@@ -3209,6 +3340,61 @@ class KubernetesBackend(ExecutionBackend):
             }
         return facts
 
+    @staticmethod
+    def _record_launch_images(campaign_root: str, runner) -> None:
+        """Record every planned container's pinned image in ``_execution/launch.yaml``.
+
+        The launch record's ``images`` otherwise holds only what the campaign *built*, so a
+        container the backend supplies -- a simulator named by no ``image:`` in the ``.vast``
+        -- appears nowhere in it, and a retrigger re-resolves its family tag to whatever has
+        been pushed since.
+
+        Keyed by container name **and** by every role it backs, roles first so a name always
+        wins: a role is how a reader asks ("which simulator ran?") while the name is what the
+        pod calls it, and a stepped simulator makes one container answer to both.
+
+        Never fatal. This improves a record; the campaign it describes is already running.
+
+        Effective only where the driver shares a filesystem with whoever wrote the launch
+        record. It does on the local lane. On this one the record is written by the service
+        and the driver runs elsewhere, so there is nothing here to merge into and this does
+        nothing -- deliberately, rather than creating a launch record holding images and no
+        request, which every reader would take for a campaign that asked for nothing. What
+        answers "which bytes did this campaign run?" here is ``execution.yaml``'s
+        ``image_revisions``, which is why that file is now written before the jobs too.
+        """
+        from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
+        plan = getattr(runner, "plan", None)
+        containers = tuple(getattr(plan, "containers", ()) or ())
+        images = {}
+        for container in containers:
+            if not getattr(container, "image", None):
+                continue
+            for role in getattr(container, "roles", ()) or ():
+                images[role] = container.image
+        for container in containers:
+            if getattr(container, "image", None):
+                images[container.name] = container.image
+        try:
+            update_launch_images(Path(campaign_root), images)
+        except (OSError, ValueError) as e:
+            logger.warning("Could not record the launched images for %s: %s",
+                           campaign_root, e)
+
+    def read_build_lock(self, image: str) -> dict:
+        """The build lock inside *image*, from what this campaign's runners read. See the base.
+
+        A lookup, not a read. The lock has to come from the registry on this lane, because the
+        controller pod has no container runtime to inspect a local image with -- but that pod
+        has no Kubernetes client either, so it cannot resolve the pull Secret the registry read
+        needs. A runner can, and does, into the cache this consults.
+
+        Reading it here directly could never work: the client such a read reaches for does not
+        exist on this class, so every call raised and was swallowed into "this image carries no
+        lock" -- indistinguishable from the absence it was meant to fix.
+        """
+        return dict(self._build_lock_cache.get(image) or {})
+
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
@@ -3229,8 +3415,16 @@ class KubernetesBackend(ExecutionBackend):
             built_images=options.images,
             image_digest_cache=self._image_digest_cache,
             image_label_cache=self._image_label_cache,
+            build_lock_cache=self._build_lock_cache,
             admission=self._admission,
         )
+        # Now, and not after the batch: the runner's plan carries the digest every pod will
+        # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
+        # that dies in its first batch still leaves a record naming the exact bytes it was
+        # launched against, which is what makes it re-runnable as the same experiment.
+        self._record_launch_images(campaign_root, runner)
+        self._record_execution_yaml(runner, campaign_root, execution_params, runs,
+                                    with_locks=False)
         batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
@@ -3320,11 +3514,28 @@ class KubernetesBackend(ExecutionBackend):
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
 
-        # Record _execution/execution.yaml now (not at finalize), so the campaign
-        # root is complete before the controller chains analysis postprocessing —
-        # which reads the execution image from it. This mirrors the local backend,
-        # whose run.sh writes execution.yaml during the run. Best-effort cluster
-        # info; degrades in-pod. Idempotent across a search's repeated batches.
+        self._record_execution_yaml(runner, campaign_root, execution_params, runs,
+                                    with_locks=True)
+
+    def _record_execution_yaml(self, runner, campaign_root: str, execution_params: dict,
+                               runs: int, *, with_locks: bool) -> None:
+        """Write ``_execution/execution.yaml`` from what the runner has resolved.
+
+        Not at finalize, so the campaign root is complete before the controller chains
+        analysis postprocessing -- which reads the execution image from it. This mirrors the
+        local backend, whose run.sh writes execution.yaml during the run. Best-effort cluster
+        info; degrades in-pod. Idempotent across a search's repeated batches, which is also
+        what lets it be written twice per batch.
+
+        Called **before** the jobs as well as after, because the digests are known as soon as
+        the plan is pinned and this file is the only place they are recorded. Written only at
+        the end, a campaign that died during its first batch named none of the images it ran
+        -- and dying in the first batch is the ordinary shape of a failure here.
+
+        *with_locks* is off for the early write: a lock read fetches a layer, and delaying
+        every campaign's start to record something the end of the batch will record anyway
+        buys nothing.
+        """
         from robovast.common.execution import \
             create_execution_yaml  # pylint: disable=import-outside-toplevel
         # The labels this campaign's images carry, read from the registry when the protocol
@@ -3333,16 +3544,47 @@ class KubernetesBackend(ExecutionBackend):
         image_labels = {}
         plan = getattr(runner, "plan", None)
         for container in getattr(plan, "containers", ()) or ():
-            if container.image:
-                found = runner._image_labels(container.image)   # noqa: SLF001 - same package
-                if found:
-                    image_labels[container.name] = found
+            if not container.image:
+                continue
+            found = runner._image_labels(container.image)   # noqa: SLF001 - same package
+            if found:
+                image_labels[container.name] = found
+            if with_locks:
+                # Into the cache the controller reads after the batch, when no runner is
+                # alive to ask. Only a runner holds the registry credentials for it.
+                runner.build_lock(container.image)
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
                               image_digests=getattr(runner, "_resolved_image_digests", None),
                               image_labels=image_labels or None)
+
+    def publish_execution_records(self, campaign_root: str) -> None:
+        """Publish the directories only the driver writes, so a reader elsewhere has them.
+
+        ``finalize_campaign`` would do it, and does it later; postprocessing runs before
+        that and, on this lane, stages the campaign out of the store. So what the driver
+        alone holds has to be up there first or the pod converts a campaign that cannot
+        say what produced it.
+
+        Small and one-off: two directories of records and logs, published once at the
+        boundary where a different process starts reading. Best-effort for the same reason
+        the record publish is -- the campaign's results are already home, and its
+        bookkeeping must not be what ends it.
+        """
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        try:
+            bucket, prefix = in_pod_storage.campaign_storage_location(
+                self.cluster_config, campaign_id)
+            storage = in_pod_storage.storage_client_for(self.cluster_config)
+            for name in ("_execution", "_transient"):
+                local = os.path.join(campaign_root, name)
+                if os.path.isdir(local):
+                    storage.upload_dir(local, bucket, f"{prefix}{name}")
+        except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
+            logger.warning("Could not publish the execution records of %s: %s",
+                           campaign_id, e)
 
     def publish_records(self, campaign_root: str) -> None:
         """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.

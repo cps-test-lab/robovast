@@ -14,37 +14,43 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-cluster rosbag→CSV conversion Job — the ROS2 half of analysis postprocessing.
+"""In-cluster analysis postprocessing Job — the whole of it, in one pod.
 
-Analysis postprocessing splits along a natural seam: only the ``rosbags_*`` → CSV
-step needs ROS2; everything after it (the index ingest, metadata) is plain
-Python that runs wherever robovast is installed. Locally ``docker_exec.sh`` runs the
-conversion in a container and *bind-mounts* the campaign dir, so outputs appear in
-place. A pod cannot bind-mount the caller's filesystem, so in-cluster the conversion
-runs as a **Job** and this module builds/creates/tracks it.
+Locally ``docker_exec.sh`` runs the ROS2 conversion in a container and *bind-mounts*
+the campaign dir, so outputs appear in place and the pure-Python half runs beside it.
+A pod cannot bind-mount the caller's filesystem, so in-cluster postprocessing runs as
+a **Job** and this module builds/creates/tracks it.
 
-Two properties matter:
+One pod, one copy of the data. A ``campaign`` ``emptyDir`` mounted at
+:data:`CAMPAIGN_MOUNT` in every container holds the campaign tree; the containers are
+ordered by Kubernetes alone, because initContainers run sequentially to completion in
+declaration order before the regular containers start:
 
-* **The Job runs the campaign's own execution image** (the system-under-test's
-  image, recorded in ``<campaign>/_execution/execution.yaml``) — rosbags carry the
-  SUT's *custom ROS2 message types* and only deserialize there. This mirrors local,
-  which passes that same image to ``docker_exec.sh --image``.
-* **Nothing is baked into that image.** The conversion scripts are *mounted in* via
-  an initContainer + emptyDir (the K8s analog of ``-v $SCRIPT_DIR:/scripts:ro``),
-  exactly as the run Jobs receive ``entrypoint.sh``/config through a volume. Inputs
-  (``/bags``) and outputs (``/out``) are separate dirs — the run-Job pattern — so the
-  Job uploads ``/out`` wholesale to a ``<campaign_prefix>_postproc/`` staging prefix
-  without ever re-uploading a rosbag.
+* ``stage`` (initContainer, controller image) fetches the campaign's recorded run data
+  into the shared mount.
+* ``convert`` (initContainer, the campaign's execution image) runs the ``rosbags_*`` →
+  CSV step, reading and writing that mount only. It exists **only when the campaign
+  declares a plugin needing the execution image** — rosbags carry the system under
+  test's *custom ROS2 message types* and only deserialize in its image, which is also
+  why nothing else may be asked of that image.
+* ``host`` (container, controller image) runs everything after the conversion — the
+  index ingest and metadata — and is what uploads the results.
+
+**Nothing is baked into the execution image.** The conversion scripts are mounted in
+from a per-campaign ConfigMap (the K8s analog of ``-v $SCRIPT_DIR:/scripts:ro``), so
+the scripts always match the driver that generated the command.
 """
 
+import datetime
+import copy
 import hashlib
 import json
 import logging
 import re
 import time
 
-from robovast.common.campaign_data import PROBE_DIR
-from robovast.common.execution import resolve_sidecar_image
+from robovast.common.execution import resolve_controller_image
+from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
 from .node_placement import CAMPAIGN_NODE_TOLERATIONS
@@ -65,11 +71,11 @@ logger = logging.getLogger(__name__)
 POSTPROC_PREFIX = "_postproc"
 
 #: Campaign-relative path of the manifest the Job writes listing every file it produced,
-#: one path per line. Riding inside ``/out`` means the same mirror that carries the outputs
+#: one path per line. Riding inside the campaign tree means whatever carries the outputs
 #: carries the index of them, so the two cannot disagree.
 #:
-#: Built by walking ``/out``, so it describes whatever the Job produced rather than what
-#: any one plugin was expected to produce. The payload is whatever declared
+#: Describes whatever the Job produced rather than what any one plugin was expected to
+#: produce. The payload is whatever declared
 #: ``needs_execution_image`` -- the rosbag conversion today, and that flag exists on the
 #: plugin base class precisely so it will not always be only that.
 #:
@@ -78,42 +84,117 @@ POSTPROC_PREFIX = "_postproc"
 #: whose bulk is rosbags it does not want.
 OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 
-#: Where the staging initContainer leaves its account of itself when it fails.
+#: Where the campaign tree lives inside the Job's pod, mounted from one ``emptyDir`` into
+#: every container. There is exactly one copy of the data in the pod: the stage container
+#: writes it, the conversion reads and writes it in place at campaign-relative paths, and
+#: the host container reads it and uploads. Separate input and output trees would mean
+#: either a second copy of the run data or a merge step, and the campaign-relative paths
+#: are what let outputs go straight to their canonical keys.
+CAMPAIGN_MOUNT = "/campaign"
+
+#: Group every container in this pod shares, so one campaign tree can be written by all of
+#: them. They do not share a user: the controller image runs as root and an execution image
+#: runs as its own unprivileged user (1000 for the family's), and the tree is created by one
+#: and written by the other. ``fsGroup`` makes the kubelet group-own the shared volume and
+#: set setgid on it, so everything created inside inherits the group -- and the containers
+#: that create directories do so with a group-writable umask, because inheriting a group
+#: buys nothing if the mode denies it write.
 #:
-#: Its own channel, not the step's: a failure here means the step container never starts,
-#: so nothing it would have written exists, and a diagnostic that rides the step's
-#: end-of-run mirror is a diagnostic that is only delivered when it is not needed. Staging
-#: copies the campaign's run data onto the node, so it is also the step that meets a full
-#: disk first -- the failure most in need of an explanation is the one that had none.
-STAGING_LOG = "_execution/staging.log"
+#: 1000 rather than a derived value: it is the family images' own user, and an execution
+#: image that runs as something else still shares this group through ``supplementalGroups``.
+CAMPAIGN_TREE_GID = 1000
+
+#: Name of the container that stages the campaign's run data into the Job's pod.
+STAGE_CONTAINER = "stage"
+
+#: Name of the container that converts what needs the campaign's own execution image. It is
+#: the one container in this pod that is not ours, so several rules are stated in terms of
+#: it -- no credentials, no umask of ours, writes only the shared mount.
+CONVERT_CONTAINER = "convert"
+
+#: Name of the container that runs everything after the conversion.
+HOST_CONTAINER = "host"
+
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
 
-#: What the conversion container reserves.
+#: Disk the pod reserves and may use, for every step. Not settable by a campaign.
 #:
-#: **A request, not a tuning knob: without one this pod was invisible to admission.** The
-#: budget provider counts the *requests* of every bound pod, so a container that declares none
-#: contributes zero -- and this one runs on the same nodes as the trials, deserializing every
-#: rosbag of a campaign, while admission believed those cores were free. That is the same
-#: class of error the CPU governor work exists to remove: a run's figures becoming a function
-#: of what else happened to be on the machine, with nothing downstream able to detect it.
-#:
-#: The limit is well above the request because the work is bursty and nothing is under test
-#: here -- the split is what buys the density, exactly as it does for the simulator.
-POSTPROCESS_RESOURCES = {
-    "requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
-}
+#: The request is what keeps a campaign's worth of staged data from landing on a node that
+#: reserved no disk for it -- without it the node hits disk pressure and evicts the campaign
+#: pods running beside it. It stays split from the limit, unlike cpu and memory: disk is
+#: reclaimed as the conversion writes its outputs and the staged bags are dropped, so a
+#: ceiling near the reservation would fail a large campaign that never held that much at once,
+#: while a reservation near the ceiling would price every postprocessing pod at a disk figure
+#: almost none of them reach.
+POSTPROCESS_EPHEMERAL_REQUEST = "20Gi"
+POSTPROCESS_EPHEMERAL_LIMIT = "200Gi"
 
-#: The mirror step's own reservation. It is I/O rather than CPU, but it is what writes the
-#: bags into the pod's ``emptyDir`` -- so the ephemeral-storage request is the load-bearing
-#: half. Without one, a campaign's worth of bags lands on whichever node the scheduler picked
-#: with nothing having reserved the disk for it, and the node hits disk pressure and evicts
-#: the campaign pods running beside it.
-POSTPROCESS_INIT_RESOURCES = {
-    "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "200Gi"},
-}
+
+def step_resources(cpu, memory) -> dict:
+    """One step's ``resources``, with cpu and memory as reservation *and* ceiling.
+
+    **The equality is the point, and it is about comparability rather than thrift.** This pod
+    runs on the nodes that run trials, so a step allowed past its reservation takes cores from
+    a run whose own request was honest -- and that run's timing becomes a function of which
+    campaign happened to be postprocessing beside it. That is precisely the hidden variable
+    the CPU governor work exists to remove, reintroduced from a direction nothing downstream
+    looks at: no artifact of the affected run records that a conversion was running.
+
+    Nothing here is under test, so the throughput given up is real and the measurement it
+    protects is worth more.
+    """
+    quantities = {"cpu": str(cpu), "memory": str(memory)}
+    return {
+        "requests": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_REQUEST}),
+        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_LIMIT}),
+    }
+
+
+#: What the stage step gets. **Fixed, and a campaign's figure does not raise it** -- unlike
+#: the host step below.
+#:
+#: Staging lists the campaign's objects a page at a time and streams one object at a time to
+#: disk, so its footprint is set by that construction and not by the size of the campaign. The
+#: small memory bound is therefore a GUARD rather than a reservation: a regression in that
+#: streaming shows up as this step failing, and a limit that grew with whatever the campaign
+#: asked for is exactly the limit that would absorb it silently. This step also runs only our
+#: own code, so there is nothing here whose appetite a ``.vast`` would know better than we do.
+POSTPROCESS_STAGE_RESOURCES = step_resources(2, "1Gi")
+
+#: The floor under the host step, which is where **everything the campaign declared that is
+#: not a rosbag conversion runs** -- its own metric plugins, metadata, publication, the health
+#: checks and the index ingest (see :func:`run_host_postprocessing`, which runs the ordinary
+#: pipeline with only the rosbag steps skipped).
+#:
+#: That is why a campaign's figure raises this step too. A knob that sized only the conversion
+#: would leave the steps most likely to need memory -- a campaign's own analysis code, whose
+#: appetite RoboVAST cannot know -- pinned at a figure they could not change, and the symptom
+#: would be an OOM kill of a step whose declared allocation said it had room.
+POSTPROCESS_HOST_FLOOR = {"cpu": 2, "memory": "4Gi"}
+
+
+def raised_to(floor: dict, declared: dict) -> dict:
+    """*floor*, or *declared* where that asks for more. Never less than *floor*.
+
+    **Raise-only, and the asymmetry is the point.** A campaign knows when its own analysis
+    needs more than the default and should get it. It cannot know that the index ingest still
+    fits in less -- and being wrong in that direction is not a slow step but an OOM kill of
+    the step that publishes the results, so the floor holds whatever the ``.vast`` says.
+    """
+    out = dict(floor)
+    for key, convert in (("cpu", to_cores), ("memory", to_bytes)):
+        want = (declared or {}).get(key)
+        if want is None:
+            continue
+        try:
+            if convert(want) > convert(floor[key]):
+                out[key] = want
+        except (TypeError, ValueError):
+            # An unparseable quantity keeps the floor. The config layer refuses these, so
+            # reaching here means a caller bypassed it; the floor is the safe answer.
+            continue
+    return out
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -163,20 +244,77 @@ def campaign_execution_image(campaign_dir) -> str:
     from robovast.common.config import SCENARIO_CONTAINER  # noqa: PLC0415
 
     path = os.path.join(str(campaign_dir), "_execution", "execution.yaml")
-    if not os.path.exists(path):
-        raise ValueError(f"cannot read the campaign's execution image from {path}: "
-                         f"no such file")
+    # No pre-check that execution.yaml exists. It is the RICHEST record, not the only one:
+    # campaign_image_record falls back to launch.yaml, which is written before the first job
+    # and therefore survives a campaign whose execution record was never written. Refusing on
+    # the file's absence defeated that fallback and stranded finished campaigns -- every run
+    # on disk, every bag intact, and no way to convert them -- so absence is left to the "no
+    # image recorded anywhere" check below, which is the condition that actually matters.
     record = campaign_image_record(campaign_dir)
     if image_is_pullable(record.campaign_digest):
         return record.campaign_digest
     scenario = record.role(SCENARIO_CONTAINER)
-    image = record.campaign_image or (scenario.declared if scenario else "") or next(
-        (r.declared for r in record.roles.values() if r.declared), "")
+    # `launched` after `declared`, never instead of it: declared is what the campaign asked
+    # for, launched is what the launch resolved before the first job existed. They agree on a
+    # healthy campaign, and only launched survives one whose execution record was never
+    # written -- which is the case this chain exists to rescue.
+    image = (record.campaign_image
+             or (scenario.declared if scenario else "")
+             or next((r.declared for r in record.roles.values() if r.declared), "")
+             or (scenario.launched if scenario else "")
+             or next((r.launched for r in record.roles.values() if r.launched), ""))
     if not image:
         raise ValueError(
-            f"no execution image recorded in {path}; cannot pick the image whose "
-            "custom ROS2 types the rosbags need")
+            f"no execution image recorded for this campaign (looked in {path} and in "
+            "_execution/launch.yaml); cannot pick the image whose custom ROS2 types the "
+            "rosbags need")
     return str(image)
+
+
+def publish_execution_dir(cluster_config, campaign_id: str, campaign_root) -> None:
+    """Upload a campaign's ``_execution/`` to the store. Raises if the store refuses.
+
+    The POSTPROCESSING section of the campaign log IS ``_execution/postprocessing.log`` in
+    the store: `get_campaign_logs` reads the tracked scratch dir first and the store second,
+    and a postprocess runs against its own fetched root, which is neither. So the account
+    exists nowhere a reader can see it until this has run.
+
+    Callable from here rather than only from the service's tail, because "at the end" is
+    too late twice over: a long postprocess shows no section at all while it runs, and a
+    failure whose tail cannot reach the store leaves no account anywhere, permanently.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+    bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
+    storage = in_pod_storage.storage_client_for(cluster_config)
+    storage.upload_dir(str(Path(campaign_root) / "_execution"), bucket, f"{prefix}_execution")
+
+
+def publish_postprocessing_log(cluster_config, campaign_id: str, campaign_root) -> None:
+    """Make the POSTPROCESSING section readable now, best-effort.
+
+    The one file, not the directory: this runs while the postprocess is in progress, and
+    the fetched root it publishes from holds the *other* phases' files too, fetched or
+    stale, whose live copies are the service's own. Only ``postprocessing.log`` is
+    produced here, so only it is this call's to mirror. The tail publish, once the
+    postprocess is over and every phase file is final, is the wholesale one.
+
+    Best-effort, including resolving the store: an early read is not worth failing a
+    postprocess that is otherwise fine. The tail publish is the one that has to land, and
+    it is the caller's.
+    """
+    from . import in_pod_storage  # noqa: PLC0415
+    try:
+        bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config,
+                                                                  campaign_id)
+        storage = in_pod_storage.storage_client_for(cluster_config)
+    except Exception as e:  # noqa: BLE001 - an early read is not worth a failed postprocess
+        logger.warning("Could not reach the store to publish the postprocessing account "
+                       "for %s yet: %s", campaign_id, e)
+        return
+    in_pod_storage.publish_execution_file(storage, bucket, prefix, campaign_root,
+                                          "postprocessing.log")
 
 
 def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
@@ -199,12 +337,24 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
     legacy prefix, so that case falls back to the prefix fetch. Either way the staging
     prefix is cleared once its contents are safely at the canonical paths -- it is scratch,
     and nothing has ever emptied it.
+
+    ``_execution/`` is fetched unconditionally and first, because it is the one part that
+    must arrive whatever else did: the campaign's POSTPROCESSING section, the outcome and
+    the provenance live there, and it is a fixed prefix holding a handful of small files
+    rather than something that has to be discovered. A failure in the pod produces exactly
+    that and no outputs, which is the case where the manifest is the thing that is missing.
     """
+    import os  # noqa: PLC0415
+
     from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
+
+    execution = storage.download_prefix(
+        bucket, f"{campaign_prefix}_execution",
+        os.path.join(str(campaign_root), "_execution"), force=force)
 
     manifest = storage.read_object(bucket, f"{campaign_prefix}{OUTPUT_MANIFEST}")
     if manifest is None:
@@ -219,32 +369,12 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
 
     if n:
         _discard_staging(storage, bucket, campaign_prefix, campaign_id)
-    return n
+    return n + execution
 
 
-def _staging_log_text(cluster_config, campaign_id: str) -> "str | None":
-    """The staging container's own log, or ``None`` when it filed none.
-
-    It files one only if it survived long enough to: a pod SIGKILLed by the kubelet under
-    node disk pressure, or OOM-killed, never reaches its own report. Staging copies the
-    campaign's run data onto the node, so that is the likeliest way it dies -- which is
-    why the absence of this log is itself a finding and not simply missing information.
-    """
-    from . import in_pod_storage  # noqa: PLC0415
-    try:
-        bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
-            cluster_config, campaign_id)
-        storage = in_pod_storage.storage_client_for(cluster_config)
-        raw = storage.read_object(bucket, f"{campaign_prefix}{STAGING_LOG}")
-    except Exception as e:  # noqa: BLE001 - a diagnostic may not raise over the failure
-        logger.warning("Could not read the staging log for %s: %s", campaign_id, e)
-        return None
-    return None if raw is None else raw.decode("utf-8", "replace").rstrip()
-
-
-def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
-                       log_path: str, message: str) -> None:
-    """Write the POSTPROCESSING phase file when the conversion produced none.
+def _write_failure_log(cluster_config, campaign_id: str,  # pylint: disable=unused-argument
+                       campaign_root, log_path: str, message: str) -> None:
+    """Write the POSTPROCESSING phase file when the Job produced none.
 
     The phase file IS the section: every surface assembles the campaign log from the files
     that exist (``campaign_logs.INFRA_PHASES``), so a conversion that wrote nothing left a
@@ -259,7 +389,6 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
     """
     import os  # noqa: PLC0415
 
-    staging = _staging_log_text(cluster_config, campaign_id)
     # The message still carries POINTER_SLOT: the pointer is decided after this file is
     # written, precisely BY whether it was. Inside the file the slot has nothing to say --
     # the reader is already in the section it would point at.
@@ -267,25 +396,21 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
     lines = [
         f"Postprocessing failed: {headline}",
         "",
-        "The step container produced no log, so it did not run. The Job stages the "
-        "campaign's recorded run data into the pod before postprocessing it; that is "
-        "where this failed.",
+        "No postprocessing log arrived, so the Job failed in an initContainer: they run "
+        "to completion before the host container starts, so a failure there means the "
+        "step that writes this log never ran. The Job first stages the campaign's "
+        "recorded run data into the pod and then, where the campaign needs it, converts "
+        "its rosbags; those are the two candidates.",
+        "",
+        "Which of them, and why, is in the line above: each stage exits with a code of "
+        "its own and the pod's status carries it whatever happened to the container. "
+        "That is the one channel that always survives -- a stage that failed because the "
+        "object store was unreachable cannot upload an explanation, and a container the "
+        "kubelet killed under node disk pressure runs no cleanup at all. Node disk and "
+        "the object store are what to check.",
     ]
-    if staging is None:
-        lines += [
-            "",
-            "The staging step filed no log of its own. A container the kubelet kills -- "
-            "under node disk pressure, or for memory -- runs no cleanup and files nothing, "
-            "so the absence of one is expected for exactly those failures rather than "
-            "evidence they did not happen. What the pod itself recorded is in the line "
-            "above, and it does not depend on any container having survived. Staging "
-            "copies this campaign's run data onto one node, so that node's free space is "
-            "the first thing to check.",
-        ]
-    else:
-        lines += ["", "===== staging =====", staging]
     text = "\n".join(lines) + "\n"
-    logger.warning("Postprocessing failed before its step ran; recording the account "
+    logger.warning("Postprocessing failed before its host step ran; recording the account "
                    "for %s", campaign_id)
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -293,15 +418,6 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
             f.write(text)
     except OSError as e:
         logger.warning("Could not write the postprocessing log for %s: %s", campaign_id, e)
-        return
-    if staging is not None:
-        try:
-            dst = os.path.join(str(campaign_root), STAGING_LOG)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst, "w", encoding="utf-8") as f:
-                f.write(staging + "\n")
-        except OSError as e:
-            logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
 
 
 def _manifest_paths(manifest: bytes) -> list:
@@ -367,104 +483,179 @@ def campaign_vast(campaign_root) -> str:
     return str(_campaign_vast(campaign_root))
 
 
-def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
-                         namespace: str, force: bool = False,
+def _read_submit_inputs(read_root: str, skip=None, skip_rosout: bool = False) -> tuple:
+    """``(rosbag_cmds, image, tolerate_under, convert_resources)`` from a campaign tree.
+
+    The four facts the manifest needs about a campaign, and all four come from files: the
+    ``.vast`` says whether a conversion is configured at all and how much it may use,
+    ``execution.yaml`` names the image its rosbags deserialize in, and the intervention
+    ledger names the runs whose bags were cut short mid-write.
+    """
+    from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+        postprocess_convert_resources)
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        _interrupted_job_dirs)
+
+    vast_path = campaign_vast(read_root)
+    rosbag_cmds = rosbag_commands_for(vast_path, skip=skip, skip_rosout=skip_rosout)
+    if not rosbag_cmds:
+        # No image is resolved at all for a host-only campaign: nothing in the pod pulls
+        # one, so a campaign whose execution image has since gone from the registry still
+        # postprocesses. The sizing goes the same way: with no conversion container there is
+        # nothing for it to size.
+        return [], None, (), None
+    # The same seam the local lane reads, for the same reason: a bag belonging to a job
+    # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
+    # must not fail the conversion for every job that finished.
+    return (rosbag_cmds, campaign_execution_image(read_root),
+            tuple(_interrupted_job_dirs(read_root)),
+            postprocess_convert_resources(vast_path))
+
+
+def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
+                   skip=None, skip_rosout: bool = False) -> tuple:
+    """:func:`_read_submit_inputs`, against a campaign the submitter may not hold.
+
+    The campaign lives in the object store and the pod is what stages it, so the submitting
+    process cannot assume a populated root -- but the manifest depends on three facts about
+    the campaign, so it cannot be built without reading them either. All three are single
+    small files, so this assembles exactly those rather than a campaign in order to answer
+    three questions about it.
+
+    **Assembled per file, never chosen wholesale.** A local copy is preferred where there is
+    one -- the controller built the root, or a raw archive was imported into it, and fetching
+    over that could only replace a file with the store's copy of itself. But "is this root
+    local?" has no single answer: the service's cache dir holds whatever earlier calls put
+    there, so a root can carry the ``.vast`` and not ``execution.yaml``. Deciding from one
+    file that the rest are present is how that partial state turns into "no such file" on
+    the next read, at submit time, on a campaign whose results are fine.
+
+    ``_config/`` needs a listing because the ``.vast``'s name is the campaign's own; the
+    other two are at fixed paths.
+    """
+    import glob  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+
+    root = str(campaign_root)
+    local_vast = sorted(glob.glob(os.path.join(root, "_config", "*.vast")))
+    wanted = ["_execution/execution.yaml", "_execution/interventions.json"]
+    if local_vast and all(os.path.isfile(os.path.join(root, *w.split("/")))
+                          for w in wanted):
+        # EVERY file the read needs, the intervention ledger included. Absence of that file
+        # is not absence of interventions: its reader answers "nobody intervened" either
+        # way, so a root that happens not to hold it silently drops every bag the
+        # conversion was supposed to tolerate -- and the bags in that ledger are the ones
+        # that cannot be opened at all, so dropping them fails the whole conversion.
+        return _read_submit_inputs(root, skip=skip, skip_rosout=skip_rosout)
+
+    bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
+    storage = in_pod_storage.storage_client_for(cluster_config)
+    with tempfile.TemporaryDirectory(prefix="robovast-postproc-") as tmp:
+        if local_vast:
+            rel = os.path.join("_config", os.path.basename(local_vast[0]))
+            os.makedirs(os.path.join(tmp, "_config"), exist_ok=True)
+            shutil.copyfile(local_vast[0], os.path.join(tmp, rel))
+        else:
+            # Sorted and first: a campaign has one .vast, and a deterministic choice keeps
+            # two submissions of the same campaign from disagreeing if it ever has two.
+            keys = sorted(k for k in storage.list_keys(bucket, f"{prefix}_config/")
+                          if k.endswith(".vast"))
+            if not keys:
+                raise ValueError(
+                    f"campaign {campaign_id} has no .vast under its _config/, locally or in "
+                    "the object store; postprocessing cannot tell what it configures")
+            wanted.insert(0, keys[0][len(prefix):])
+        for rel in wanted:
+            dst = os.path.join(tmp, *rel.split("/"))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            src = os.path.join(root, *rel.split("/"))
+            if os.path.isfile(src):
+                shutil.copyfile(src, dst)
+            else:
+                # Unchecked: the readers below name a genuinely missing input better than a
+                # check here could, and the ledger is allowed to be absent.
+                storage.download_object(bucket, f"{prefix}{rel}", dst)
+        return _read_submit_inputs(tmp, skip=skip, skip_rosout=skip_rosout)
+
+
+def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=unused-argument
+                         campaign_root: str, namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False,
                          kube_context=None, state=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
     The single implementation behind both entry points — the per-campaign controller
-    (auto-chain) and the service (explicit re-run):
+    (auto-chain) and the service (explicit re-run). All of the work happens in the Job:
 
-    1. **conversion Job** — rosbags→CSV in the campaign's own execution image (ROS2);
-    2. **sync** its outputs (`_postproc/`) into *campaign_root* — done **regardless
-       of the Job's outcome**, so a failed conversion's ``postprocessing.log`` (teed
-       and mirrored even on failure) lands in the campaign log the web UI shows;
-    3. **stage 2** — index ingest + metadata, pure Python, right here (success only).
+    1. **submit** the Job and wait for it — it stages the campaign into its pod,
+       converts rosbags where the campaign asks for it, and runs the host steps (index
+       ingest, metadata) in its last container;
+    2. **sync** its outputs into *campaign_root* — done **regardless of the Job's
+       outcome**, so a failed run's ``postprocessing.log`` lands in the campaign log the
+       web UI shows, and so this process's status objects describe what actually exists.
 
-    *campaign_root* must already hold the campaign (`_config/`, `campaign.db`,
-    `test.xml`s) — true for the controller (it built it) and for the service after
-    ``fetch_campaign``.
+    *campaign_root* is where the Job's outputs are pulled down to, and does **not** have
+    to hold the campaign: the pod stages the campaign itself, and the three facts the
+    manifest needs about it are read by :func:`_submit_inputs`, from the store when they
+    are not local. A root that does hold it — the controller built it there, or a raw
+    archive was imported into it — is used as it stands.
 
     *kube_context* must be the same context the campaign's Jobs were submitted with;
     ``None`` means the active kubeconfig context, which is only correct when the caller
     has none of its own.
 
-    *state*, when the caller has one, is where stage 2's step lines are published as the live
-    ``stage`` marker (see
-    :func:`~robovast.execution.control_server.stage_output_callback`). Stage 1 is deliberately
-    **not** covered: it runs in a pod, so its progress reaches this process only when the Job
-    ends and its log is synced — the marker therefore stays empty for the conversion and
-    starts moving at ``[1/n]``. Reporting stage 1 means tailing the Job's log from
-    :func:`run_conversion_job`'s existing poll, which is a separate change.
+    *state* is accepted for the caller's call shape and stays empty on this lane: every
+    step now runs in a pod, so a step's line reaches this process only once the Job ends
+    and its log is synced, and a live ``stage`` marker fed from here would be a marker
+    that only ever moves after the phase it describes is over.
     """
-    rosbag_cmds = rosbag_commands_for(campaign_vast(campaign_root), skip=skip,
-                                      skip_rosout=skip_rosout)
-    if rosbag_cmds:
-        # The same seam the local lane reads, for the same reason: a bag belonging to a job
-        # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
-        # must not fail the conversion for every job that finished.
-        from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
-            _interrupted_job_dirs)
-        tolerate_under = _interrupted_job_dirs(campaign_root)
-        image = campaign_execution_image(campaign_root)
-        ok, message = run_conversion_job(
-            cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
-            kube_context=kube_context, tolerate_under=tolerate_under)
-        # Sync the Job's outputs regardless of outcome. The conversion tees its
-        # stdout/stderr to postprocessing.log and mirrors /out to the object store
-        # even on failure, so this lands the POSTPROCESSING section (with the
-        # conversion error) in the campaign log the web UI shows and finalize
-        # uploads — without it, a failure surfaces only as a terse "kubectl logs"
-        # hint the user cannot act on off-cluster.
-        # force rides along: it made the Job bypass its caches and REPLACE the CSVs, and
-        # the fetch skips same-size files unless told not to.
-        sync_outputs(cluster_config, campaign_id, campaign_root, force=force)
-        if not ok:
-            # Echo the conversion error to the service console too. The web UI already
-            # has it via the synced postprocessing.log (POSTPROCESSING section); no
-            # campaign log handler is attached at this point, so this reaches the
-            # ``vast serve`` stdout only — not duplicated into the campaign log.
-            #
-            # The sync above is also what settles WHERE the message may send the reader:
-            # a Job that died before its first ``tee`` mirrored no log, so the section it
-            # would name does not exist. Deciding here is the whole point — this is the
-            # first place that can tell the two apart.
-            import os  # noqa: PLC0415
-            log_path = os.path.join(campaign_root, "_execution", "postprocessing.log")
-            if os.path.isfile(log_path):
-                with open(log_path, encoding="utf-8") as f:
-                    logger.warning("Postprocessing conversion failed:\n%s",
-                                   f.read().rstrip())
-            else:
-                _write_failure_log(cluster_config, campaign_id, campaign_root,
-                                   log_path, message)
-            return False, with_log_pointer(message, log_path)
-    else:
-        logger.info("Campaign %s configures no rosbag conversion; host steps only",
-                    campaign_id)
     import os  # noqa: PLC0415
 
-    from robovast.client.logging_config import add_campaign_log_handler  # noqa: PLC0415
-    from robovast.client.logging_config import remove_campaign_log_handler
-
-    # Append the pure-Python host stage's narrative to the same postprocessing.log
-    # the conversion Job produced (mode "a"), so both stages form one ordered
-    # POSTPROCESSING section. _finalize (auto-chain) / the re-run then upload it to
-    # {prefix}_execution/postprocessing.log.
+    rosbag_cmds, image, tolerate_under, convert_resources = _submit_inputs(
+        cluster_config, campaign_id, campaign_root, skip=skip, skip_rosout=skip_rosout)
+    if not rosbag_cmds:
+        logger.info("Campaign %s configures no rosbag conversion; the Job runs its host "
+                    "steps only, and stages the campaign without its rosbags", campaign_id)
+    ok, message = run_conversion_job(
+        cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
+        kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
+        convert_resources=convert_resources)
+    # Sync the Job's outputs regardless of outcome. The pod tees its stdout/stderr to
+    # postprocessing.log and uploads what it produced even on failure, so this lands the
+    # POSTPROCESSING section (with the error) in the campaign log the web UI shows and
+    # finalize uploads — without it, a failure surfaces only as a terse "kubectl logs"
+    # hint the user cannot act on off-cluster. It is also what makes the campaign root
+    # this process serves its status objects from match what the Job wrote.
+    # force rides along: it made the Job bypass its caches and REPLACE the CSVs, and
+    # the fetch skips same-size files unless told not to.
+    sync_outputs(cluster_config, campaign_id, campaign_root, force=force)
     log_path = os.path.join(str(campaign_root), "_execution", "postprocessing.log")
-    handler = None
-    try:
-        handler = add_campaign_log_handler(log_path)
-    except Exception:  # pylint: disable=broad-except
-        logger.warning("Could not open postprocessing.log; continuing without it.",
-                       exc_info=True)
-    try:
-        return run_host_postprocessing(
-            os.path.dirname(str(campaign_root).rstrip(os.sep)),
-            campaign_id, force=force, skip=skip, state=state)
-    finally:
-        remove_campaign_log_handler(handler)
+    publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
+    if ok:
+        return True, message
+    # Echo the error to the service console too. The web UI already has it via the
+    # synced postprocessing.log (POSTPROCESSING section); no campaign log handler is
+    # attached at this point, so this reaches the ``vast serve`` stdout only — not
+    # duplicated into the campaign log.
+    #
+    # The sync above is also what settles WHERE the message may send the reader: a Job
+    # that died in an initContainer uploaded no log, so the section it would name does
+    # not exist. Deciding here is the whole point — this is the first place that can tell
+    # the two apart.
+    if os.path.isfile(log_path):
+        with open(log_path, encoding="utf-8") as f:
+            logger.warning("Postprocessing failed:\n%s", f.read().rstrip())
+    else:
+        _write_failure_log(cluster_config, campaign_id, campaign_root, log_path, message)
+    # Written and published together: this is the whole account of a failure whose Job is
+    # reaped 300 s later, so the window in which it can still be published is the one it
+    # was written in.
+    publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
+    return False, with_log_pointer(message, log_path)
 
 
 def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = False,
@@ -490,102 +681,62 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
         output_callback=stage_output_callback(state, logger.info))
 
 
-#: This Job pod runs in a separate context from the controller, so its stdout is
-#: otherwise only a transient ``kubectl logs``. Teeing the conversion output to this
-#: campaign-relative path lets it ride the wholesale ``/out`` mirror below into the
-#: object store, where :func:`sync_outputs` lands it at
-#: ``<campaign_root>/_execution/postprocessing.log`` — the POSTPROCESSING section of
-#: the unified campaign log (the host stage then appends to the same file).
-_POSTPROC_LOG = "/out/_execution/postprocessing.log"
+#: Campaign-relative path of the conversion's log. This Job pod runs in a separate context
+#: from the controller, so its stdout is otherwise only a transient ``kubectl logs``. Teeing
+#: the conversion output here puts it in the campaign tree the host container uploads, where
+#: :func:`sync_outputs` lands it at ``<campaign_root>/_execution/postprocessing.log`` — the
+#: POSTPROCESSING section of the unified campaign log. The host container appends to the
+#: same file, so the two read as one ordered section.
+_POSTPROC_LOG_REL = "_execution/postprocessing.log"
 
-#: Where the conversion records what it produced from what. Under ``/out`` for the same
-#: reason the log is: the wholesale mirror below carries it into the object store, and
-#: ``sync_outputs`` lands it beside the campaign's other ``_execution`` artifacts, where
-#: the host stage picks it up.
+#: Campaign-relative path where the conversion records what it produced from what.
 #:
-#: Without this the Job passed no ``--provenance-file`` at all, so every ``rosbags_*``
-#: step produced its tables and recorded nothing -- and the host stage runs with those
-#: steps *skipped*, so it had nothing to record either. A cluster campaign's
-#: ``postprocessing_steps`` table therefore held one row (``resource_usage``, from the
-#: host stage) while four steps had run. The local lane, which does pass one, was
-#: unaffected -- so the provenance a campaign carries depended on the lane it ran on.
-_ROSBAG_PROVENANCE = "/out/_execution/rosbags_provenance.json"
+#: The conversion must pass ``--provenance-file``: the host steps run with the ``rosbags_*``
+#: steps *skipped*, so they have nothing to record for them, and a campaign whose conversion
+#: passed none carries a ``postprocessing_steps`` table naming only the host's own steps
+#: while the conversion's had run. The local lane passes one, so without this the provenance
+#: a campaign carries would depend on the lane it ran on.
+_ROSBAG_PROVENANCE_REL = "_execution/rosbags_provenance.json"
 
 
-def _mirror_excludes() -> str:
-    """Keep the calibration probes out of the Job's copy of the campaign tree.
+def _campaign_dir(campaign_id: str) -> str:
+    """Where the campaign tree sits inside the pod: the stage container's destination.
 
-    The alternative -- mirror everything and tell the scanner to skip -- was the first fix
-    and it is the weaker one. What the Job never receives it cannot convert, cannot fail
-    on, and does not pay to download; and the rule lives in the one place that decides what
-    this Job is given, rather than in a flag a second lane can forget to pass. That
-    forgetting is not hypothetical: ``--tolerate-under`` had exactly this shape and held
-    off-cluster only, and the skip list repeated the omission here.
-
-    A probe is deliberately not a run, so its bag is not campaign data. Converting it cost
-    a bag's work per node, and an interrupted probe's unfinalized bag failed the whole step
-    on something nothing was ever going to read.
-
-    **Only ``_calibration``, not every reserved directory.** The others hold data this Job
-    needs: ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log bag, so excluding
-    the set wholesale would silently drop every ``/rosout`` record in the campaign. The two
-    look interchangeable from their names alone and are not.
+    One definition, because three containers have to agree on it: the stage container is
+    told it as ``ROBOVAST_STAGE_DEST`` plus the campaign id, the conversion's arguments are
+    built from it here, and the host container resolves the same path from the same two
+    environment values.
     """
-    return f"--exclude {_shquote(PROBE_DIR + '/*')} "
+    return f"{CAMPAIGN_MOUNT}/{campaign_id}" if campaign_id else CAMPAIGN_MOUNT
 
 
-def _staging_script() -> str:
-    """The initContainer's shell: stage the campaign's bags, and account for itself.
+def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
+                       campaign_id: str = "") -> str:
+    """The conversion initContainer's shell: convert each batch, in place.
 
-    Everything is captured to a file and echoed on, and on failure that file is pushed to
-    the store under :data:`STAGING_LOG`. Without it this container's failure is invisible:
-    the conversion container never starts, so nothing tees a line and the end-of-run mirror
-    that would have carried one never runs -- the campaign is left having failed
-    postprocessing with no account of why, anywhere, permanently.
+    Reads and writes the shared campaign mount and nothing else. **No object-store
+    credentials and no upload:** this container runs an arbitrary user image (the system
+    under test's), and the host container that follows it is what talks to the store, so
+    there is nothing here for a credential to be needed for.
 
-    ``|| true`` on that push, and the real status preserved through ``rc``: if the store is
-    what is unreachable then the upload cannot work either, and a failure to file the
-    report must not be mistaken for the failure being reported.
+    ``--output-root`` is the campaign tree itself, so every output lands at its
+    campaign-relative path and the host container can upload it to its canonical key
+    without a mapping step.
 
-    Plain ``sh``: no ``pipefail`` and no ``PIPESTATUS`` here, so the status is taken from
-    the group rather than through a pipe.
+    All setup and conversion stdout/stderr is teed into the campaign's
+    ``postprocessing.log`` so it becomes the POSTPROCESSING section of the unified campaign
+    log; the host container appends to the same file. ``pipefail`` preserves the
+    conversion's exit status through the ``tee`` pipe.
     """
-    return "\n".join([
-        "log=/tools/staging.log",
-        "rc=0",
-        "{",
-        '  cp "$(command -v mc)" /tools/mc && chmod +x /tools/mc &&',
-        '  mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" &&',
-        "  mc mirror " + _mirror_excludes() +
-        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/',
-        '} > "$log" 2>&1 || rc=$?',
-        # Still on stdout, so a pod that is still around reads the same way it always did.
-        'cat "$log"',
-        'if [ "$rc" -ne 0 ]; then',
-        f'  mc cp "$log" "mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{STAGING_LOG}" || true',
-        "fi",
-        'exit "$rc"',
-    ])
-
-
-def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str:
-    """The main container's shell: convert each batch, then mirror /out up.
-
-    All setup and conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes
-    the POSTPROCESSING section of the campaign's unified log. ``pipefail`` preserves the
-    conversion's exit status through the ``tee`` pipe, and the ``/out`` mirror is an EXIT
-    trap so the log (with any error) is uploaded however the script ends -- including the
-    setup failures that abort it before the conversion runs at all.
-    """
+    root = _campaign_dir(campaign_id)
+    log = f"{root}/{_POSTPROC_LOG_REL}"
     convert = []
     for params in rosbag_cmds:
         args = [
             "/scripts/ros2_exec.sh", "/scripts/rosbags_process.py",
             "--config", _shquote(json.dumps({"plugins": params.get("plugins", [])})),
-            # Outputs go to their own tree (never beside the bags), so the upload
-            # below carries only what this Job produced.
-            "--output-root", "/out",
-            "--provenance-file", _ROSBAG_PROVENANCE,
+            "--output-root", _shquote(root),
+            "--provenance-file", _shquote(f"{root}/{_ROSBAG_PROVENANCE_REL}"),
         ]
         if params.get("bag_dir") is not None:
             args += ["--bag-dir", _shquote(str(params["bag_dir"]))]
@@ -597,43 +748,24 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str
         # mid-write, so its rosbag is unfinalized and can never be opened. Without these
         # the whole campaign's conversion exits non-zero on that one bag, costing the
         # metrics of every job that DID finish -- see `_interrupted_job_dirs`, which is the
-        # shared seam for this rule and which the LOCAL lane has always consulted here.
-        # This lane built its own arg list and did not, so the rule held off-cluster only.
+        # shared seam for this rule and which both lanes consult.
         for job_dir in tolerate_under:
             args += ["--tolerate-under", _shquote(str(job_dir))]
-        args.append("/bags")
+        args.append(_shquote(root))
         convert.append(" ".join(args))
 
-    # Straight to the canonical prefix. /out holds only what this Job produced, at
-    # campaign-relative paths, and `mc mirror` without --remove writes exactly those keys,
-    # so there is nothing here a staging copy would have protected the campaign from.
-    mirror = '/tools/mc mirror --overwrite /out/ "mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX"'
-    # Written before the mirror so it rides up with what it describes. `find` runs after the
-    # conversion, so it names what was actually produced rather than what was intended.
-    manifest = (f'(cd /out && find . -type f | sed "s|^\\./||") > /out/{OUTPUT_MANIFEST} '
-                '2>/dev/null || true')
     lines = [
         "set -eo pipefail",
-        # The log is created and the setup runs INSIDE it, and the mirror is a trap, so
-        # that every way this script can end still leaves an account behind. Setup under
-        # `set -e` is exactly where the silent failures live: an unwritable /out or an
-        # unreachable object store aborts before the conversion's own `tee`, and a plain
-        # trailing mirror is then never reached. The campaign is left pointed at a
-        # POSTPROCESSING section that does not exist and cannot be made to exist.
-        f"mkdir -p $(dirname {_POSTPROC_LOG}) || exit 1",
-        # `|| true`: a failed mirror must not overwrite the conversion's own exit status
-        # with its own, and there is nowhere left to report it to anyway.
-        f"trap '{manifest}; {mirror} || true' EXIT",
+        # The log directory is created before anything else, and the setup runs inside the
+        # tee, because setup under `set -e` is exactly where the silent failures live: an
+        # unwritable campaign tree aborts before the conversion's own output, and the
+        # campaign is then pointed at a POSTPROCESSING section that does not exist.
+        f"mkdir -p $(dirname {log}) || exit 1",
         "rc=0",
         "(",
-        # `set -e` ahead of the alias, so a store this Job cannot reach stops it here and
-        # says so in the log, rather than letting every conversion run on and fail with an
-        # error about bags.
         "  set -e",
-        '  /tools/mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
-        # Run the conversions in the same subshell, teeing all of it to the log.
         "\n".join("  " + c for c in convert),
-        f') 2>&1 | tee -a "{_POSTPROC_LOG}" || rc=$?',
+        f') 2>&1 | tee -a "{log}" || rc=$?',
         "exit $rc",
     ]
     return "\n".join(lines)
@@ -738,11 +870,12 @@ LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for what 
 #:
 #: The message names the STAGE rather than a cause, because two very different failures
 #: land here and the message cannot tell them apart. The conversion container can abort in
-#: setup ahead of its first ``tee``; or -- the one that leaves no trace at all -- the
-#: ``s3-init`` initContainer can fail while staging the campaign's bags into the pod, in
-#: which case the conversion container never starts and there is nothing anywhere to tee.
-#: Staging is the likelier of the two on a campaign of any size: it pulls every bag onto
-#: the node, so it is the step that meets a full disk first.
+#: setup ahead of its first ``tee``; or -- the one that leaves no trace at all -- the stage
+#: initContainer can fail while copying the campaign's run data into the pod, in which case
+#: nothing after it starts and there is nothing anywhere to tee. Staging is the likelier of
+#: the two on a campaign of any size: it pulls the campaign onto the node, so it is the step
+#: that meets a full disk first. Which one it was is in the pod's exit status, which
+#: :func:`pod_failure_reason` reads and puts ahead of this.
 NO_LOG_POINTER = ("— before its step produced any output, so the campaign log has no "
                   "POSTPROCESSING section and nothing it reported to read. The step did "
                   "not run: the Job failed while staging the campaign's run data into the "
@@ -788,6 +921,152 @@ def with_log_pointer(message: str, log_path) -> str:
     return message.replace(POINTER_SLOT, pointer)
 
 
+def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
+    """Keep a still-running Job; delete and re-create a finished one. False if neither held.
+
+    A conversion Job's name comes from the campaign, so the same name is reused every time
+    postprocessing is retriggered. Waiting on whatever answers to it means a reaped-but-not-
+    yet-gone Job from an earlier attempt reports its outcome as the new attempt's -- the
+    retrigger looks like it ran and produces the previous answer.
+
+    ``propagationPolicy=Foreground`` so the delete returns only once the pods are going,
+    and the re-create cannot race the corpse of the run it replaces.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        existing = batch.read_namespaced_job(name=name, namespace=namespace)
+    except ApiException as e:
+        # Gone between the create and this read: the name is free, so try once more.
+        if e.status == 404:
+            try:
+                batch.create_namespaced_job(namespace=namespace, body=manifest)
+                return True
+            except ApiException:
+                return False
+        return False
+
+    status = getattr(existing, "status", None)
+    if getattr(status, "active", None):
+        logger.info("Postprocessing job %s is already running; waiting on it", name)
+        return True
+
+    logger.info("Replacing finished postprocessing job %s", name)
+    try:
+        batch.delete_namespaced_job(name=name, namespace=namespace,
+                                    propagation_policy="Foreground")
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Could not delete %s: %s", name, e)
+            return False
+
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            batch.read_namespaced_job(name=name, namespace=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                break
+            return False
+        time.sleep(_POLL_SECONDS)
+    else:
+        logger.warning("Postprocessing job %s did not go away", name)
+        return False
+
+    try:
+        batch.create_namespaced_job(namespace=namespace, body=manifest)
+    except ApiException as e:
+        logger.warning("Could not re-create %s: %s", name, e)
+        return False
+    return True
+
+
+#: How often the Job's own log is published to the campaign's phase file while it runs.
+#:
+#: The pod is the writer here, and nothing it writes leaves the pod until it exits: its log
+#: lives on a shared volume and is uploaded by the last container at the end. So a
+#: postprocess that takes twenty minutes showed an empty POSTPROCESSING section for twenty
+#: minutes, and the only way to watch it was ``kubectl logs`` against a pod name nobody
+#: off-cluster has.
+#:
+#: An object store has no append, so each publish re-uploads the whole log -- which is why
+#: this is not every poll. Thirty seconds is slow enough for that to be a rounding error
+#: against a conversion measured in minutes, and fast enough to read as progress.
+_LIVE_LOG_INTERVAL = 30.0
+
+#: Sort key for a pod whose creation time the API did not fill in, so ordering by it never
+#: raises. Such a pod loses to any pod that has one, which is the right way round: a
+#: timestamp is present on anything the scheduler has seen.
+_EPOCH = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def publish_live_log(core, cluster_config, campaign_id: str, namespace: str,
+                     job_name: str) -> bool:
+    """Publish the running Job's log as the campaign's POSTPROCESSING phase. False if not.
+
+    Read from the pod rather than from the volume it writes: the volume is the pod's own and
+    nothing outside can see it, while the log is on the pod's stdout by construction -- the
+    conversion tees it there and the host step logs to it.
+
+    Every container's output in declaration order, so staging and conversion read as one
+    section in the order they ran. A container that has not started yet has no log and is
+    skipped, which is also how "this stage has not run" should look.
+
+    Best-effort throughout: this is a read for someone watching, and it must not fail the
+    postprocess it is watching.
+    """
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from kubernetes import client  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+    try:
+        pods = core.list_namespaced_pod(namespace=namespace,
+                                        label_selector=f"job-name={job_name}").items or []
+        if not pods:
+            return False
+        # The NEWEST pod, not whichever the listing put first. A Job can have more than one
+        # -- a backoffLimit retry makes another, and replacing a finished Job of the same
+        # name makes another still -- and the listing does not promise an order. Publishing
+        # from an arbitrary one would make the section alternate between two attempts as
+        # this is called again, which reads worse than either of them.
+        pod = max(pods, key=lambda p: (getattr(p.metadata, "creation_timestamp", None)
+                                       or _EPOCH, p.metadata.name))
+        names = [c.name for c in (pod.spec.init_containers or [])]
+        names += [c.name for c in (pod.spec.containers or [])]
+        chunks = []
+        for container in names:
+            try:
+                text = core.read_namespaced_pod_log(
+                    name=pod.metadata.name, namespace=namespace, container=container)
+            except client.exceptions.ApiException:
+                continue          # not started, or already gone: no output to place
+            if text:
+                chunks.append(text if text.endswith("\n") else text + "\n")
+        if not chunks:
+            return False
+        bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config,
+                                                                  campaign_id)
+        storage = in_pod_storage.storage_client_for(cluster_config)
+        # Through a file because the client uploads paths, not bytes. Named for the campaign
+        # so two of these running at once cannot write each other's log.
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".log",
+                                         prefix=f"live-{campaign_id}-",
+                                         delete=False) as handle:
+            handle.write("".join(chunks))
+            staged = handle.name
+        try:
+            storage.upload_file(staged, bucket, f"{prefix}{_POSTPROC_LOG_REL}")
+        finally:
+            os.unlink(staged)
+        return True
+    except Exception as e:  # noqa: BLE001 - a read for a watcher may not fail the work
+        logger.debug("could not publish the live postprocessing log of %s: %s",
+                     campaign_id, e)
+        return False
+
+
 def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     """Why this Job's pod actually died, read from the pod rather than from the pod's help.
 
@@ -827,8 +1106,8 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
 
     for pod in pods:
         status = getattr(pod, "status", None)
-        # Init containers first and in declaration order: staging runs before the step, so
-        # when staging is what failed the step container's status says nothing.
+        # Init containers first and in declaration order: staging runs before everything
+        # else, so when staging is what failed the later containers' statuses say nothing.
         statuses = list(getattr(status, "init_container_statuses", None) or []) + \
             list(getattr(status, "container_statuses", None) or [])
         for cs in statuses:
@@ -837,6 +1116,12 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
             code = getattr(term, "exit_code", None) if term else None
             if isinstance(code, int) and code != 0:
                 name = getattr(cs, "name", None) or "?"
+                # The stage container's own vocabulary, where it has one. `exited 1
+                # (Error)` is every failure at once and names none of them; `exited 42` is
+                # a code chosen in order to be read.
+                from .postprocess_stage import STAGE_EXIT_REASONS  # noqa: PLC0415
+                if name == STAGE_CONTAINER and code in STAGE_EXIT_REASONS:
+                    return f"container {name} {STAGE_EXIT_REASONS[code]}"
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited
@@ -860,36 +1145,132 @@ def _blocked_reason(core, namespace: str, job_name: str) -> str:
         return ""
 
 
-def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
+def _pod_env(names) -> list:
+    """Project the named variables out of this pod's own environment.
+
+    The stage and host containers rebuild the cluster config from the environment, so they
+    need the same values the service was configured with. Reading them here rather than
+    re-deriving them is what keeps the Job pointed at the same store the campaign was
+    written to: a second derivation would be a second answer to a question the service has
+    already answered.
+
+    A variable that is not set is left out rather than passed empty. The entry points fail
+    loudly on a missing one, which is the report that names it; an empty string would be a
+    config value that looks present and is not.
+    """
+    import os  # noqa: PLC0415
+    return [{"name": n, "value": os.environ[n]} for n in names
+            if os.environ.get(n, "").strip()]
+
+
+#: The environment the stage and host containers rebuild the cluster config from -- the
+#: same contract ``ClusterService`` builds its own from. Named here because the manifest and
+#: the entry points must not drift: a value the pod is not given is a container that exits
+#: at start.
+_CLUSTER_CONFIG_ENV = ("ROBOVAST_CLUSTER_CONFIG_NAME", "ROBOVAST_CLUSTER_CONFIG_KWARGS")
+
+
+def _index_env(namespace: str) -> list:
+    """The index DSN for the host container, with the password kept out of the Job spec.
+
+    A Job spec is printed by ``vast service manifests``, read back with ``kubectl get`` and
+    quoted in issues, so a password inline in it is a password in all three. Where the DSN
+    names the in-cluster index there is a Secret already holding that password, so this
+    passes the DSN without it and the password itself as ``PGPASSWORD`` from that Secret --
+    libpq reads that variable whenever the connection string omits a password, so the
+    container connects with exactly the credentials it would have had.
+
+    A deployment pointed at an index outside the cluster has no such Secret, and there the
+    DSN is passed as it stands: the alternative is a host container that stages a campaign
+    and then cannot authenticate, which is worse than a credential in a spec the operator
+    configured themselves.
+    """
+    import os  # noqa: PLC0415
+
+    from robovast.common.index_db import DSN_ENV  # noqa: PLC0415
+
+    from . import index_deploy  # noqa: PLC0415
+
+    dsn = os.environ.get(DSN_ENV, "").strip()
+    if not dsn:
+        # Refused here rather than in the pod: the host container's whole purpose is the
+        # index ingest, so a Job submitted without a DSN would stage a campaign's worth of
+        # data onto a node before failing on config the submitter could already see.
+        raise ValueError(
+            f"the central index is not configured in this process ({DSN_ENV}); "
+            "postprocessing cannot be submitted, because its host step is the index "
+            "ingest")
+    without_password = re.sub(r"\s*password\s*=\s*\S+", "", dsn).strip()
+    if without_password != index_deploy.index_dsn(namespace=namespace):
+        return [{"name": DSN_ENV, "value": dsn}]
+    return [
+        {"name": DSN_ENV, "value": without_password},
+        {"name": "PGPASSWORD",
+         "valueFrom": {"secretKeyRef": {"name": index_deploy.INDEX_SECRET_NAME,
+                                        "key": index_deploy.INDEX_PASSWORD_KEY}}},
+    ]
+
+
+def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
-                   tolerate_under=()) -> dict:
-    """Build the conversion Job manifest.
+                   tolerate_under=(), skip=None, host_stage: bool = True,
+                   convert_resources=None) -> dict:
+    """Build the postprocessing Job manifest.
 
     Args:
-        campaign_id: The campaign to convert.
+        campaign_id: The campaign to postprocess.
         image: **The campaign's execution image** (the SUT image from
-            ``_execution/execution.yaml``) — required for its custom ROS2 types.
-        rosbag_cmds: :func:`rosbag_commands_for` output.
+            ``_execution/execution.yaml``) — required for its custom ROS2 types, and
+            required *only* for them. Ignored when *rosbag_cmds* is empty: a campaign with
+            no rosbag conversion needs no conversion container, so its execution image is
+            never pulled and an image that has since gone from the registry does not stop
+            it being postprocessed.
+        rosbag_cmds: :func:`rosbag_commands_for` output. Empty means no conversion
+            container at all.
         s3: ``(endpoint, access_key, secret_key, bucket, campaign_prefix)``.
         namespace: Kubernetes namespace.
-        force: Bypass the per-rosbag caches.
+        force: Bypass the per-rosbag caches, and replace what the host step already wrote.
         tolerate_under: Campaign-relative artifact dirs of jobs that were cut short
             (:func:`~robovast.results_processing.postprocessing_plugins._interrupted_job_dirs`).
             Their bags are unreadable by construction, so the conversion reports them and
             succeeds instead of failing the campaign.
-        pull_secret_name: Secret for this pod's OWN image pulls -- the sidecar that mirrors
-            the bags, and the campaign's execution image. Missing entirely until a
-            private-registry deployment sat in ``ImagePullBackOff`` while the Job stayed
-            ``active``, so the wait below reported a timeout and named neither the image nor
-            the registry. Same omission the build Job had, in the same direction.
+        skip: Postprocessing steps the host step must not run.
+        convert_resources: ``{"cpu": …, "memory": …}`` the conversion step runs at, from
+            :func:`~robovast.results_processing.postprocessing.postprocess_convert_resources`
+            -- the campaign's ``results_processing.resources`` over that function's defaults.
+            ``None`` takes those defaults, which is what a caller with no ``.vast`` in reach
+            must do.
+        host_stage: Whether this Job runs the host step. ``False`` builds a
+            conversion-only Job, for a caller converting the batches of a campaign that is
+            still growing: the host step writes the campaign's provenance marker and drives
+            the index ingest, so running it per batch would mark a partial campaign
+            postprocessed, repeatedly. With it off the conversion is the pod's *main*
+            container rather than an initContainer — a pod needs one to complete, and it
+            is also where ``get_job_log`` looks.
+        pull_secret_name: Secret for this pod's OWN image pulls -- the controller image
+            both robovast containers run, and the campaign's execution image. Without it a
+            private-registry deployment sits in ``ImagePullBackOff`` while the Job stays
+            ``active``, so the wait reports a timeout naming neither the image nor the
+            registry.
 
     The ``/scripts`` come from a per-campaign ConfigMap (see
     :func:`scripts_configmap_manifest`) built from the driver's own
     ``results_processing/data`` — the K8s analog of ``docker_exec.sh``'s
-    ``-v <scripts>:/scripts`` — so the script version always matches the driver.
+    ``-v <scripts>:/scripts`` — so the script version always matches the driver. It is
+    mounted, and the ConfigMap volume declared, only where a conversion container exists.
     """
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
+    from .postprocess_host import ENV_FORCE, ENV_SKIP  # noqa: PLC0415
+    from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
+                                    ENV_STAGE_DEST)
+
+    from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+        POSTPROCESS_CONVERT_DEFAULTS)
+
+    sized = convert_resources or POSTPROCESS_CONVERT_DEFAULTS
+    convert_resources_block = step_resources(sized["cpu"], sized["memory"])
+    host_block = step_resources(**raised_to(POSTPROCESS_HOST_FLOOR, sized))
 
     endpoint, access_key, secret_key, bucket, campaign_prefix = s3
     safe = _label_safe_campaign(campaign_id)
@@ -900,6 +1281,97 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         {"name": "S3_SECRET_KEY", "value": secret_key},
         {"name": "S3_CAMPAIGN_PREFIX", "value": campaign_prefix},
     ]
+    # The two robovast containers talk to the store and the index; the conversion does
+    # neither, and gets none of this. See the conversion container below.
+    robovast_env = s3_env + _pod_env(_CLUSTER_CONFIG_ENV) + [
+        {"name": ENV_CAMPAIGN_ID, "value": campaign_id},
+        {"name": ENV_STAGE_DEST, "value": CAMPAIGN_MOUNT},
+    ]
+    campaign_mount = {"name": "campaign", "mountPath": CAMPAIGN_MOUNT}
+
+    stage = {
+        "name": STAGE_CONTAINER,
+        "image": resolve_controller_image(),
+        # `umask 0002` is not cosmetic: this container creates the campaign tree, and the
+        # conversion container writes its outputs INTO it as a different user. Root's default
+        # umask makes those directories group-readable and not group-writable, so the
+        # conversion fails on its first output file with EACCES -- after staging the whole
+        # campaign. Inheriting the group via fsGroup buys nothing if the mode denies write.
+        "command": ["sh", "-c",
+                    "umask 0002 && exec python3 -m "
+                    "robovast.execution.cluster_execution.postprocess_stage"],
+        # Bags are staged only where something in this pod opens one. The host step never
+        # does -- it reads the derived tables and the run metadata -- so a campaign with no
+        # conversion container stages the campaign tree WITHOUT its rosbags, which is the
+        # bulk of a campaign by orders of magnitude. Staging them anyway would spend the
+        # whole download and the whole node disk on data nothing in the pod reads.
+        "env": robovast_env + ([] if rosbag_cmds
+                               else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
+        "volumeMounts": [campaign_mount],
+        "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
+    }
+    convert = {
+        "name": CONVERT_CONTAINER,
+        # The system-under-test's own image: custom ROS2 types only deserialize here.
+        # ros2_exec.sh sources /opt/ros + /ws/install.
+        "image": image,
+        "command": ["/bin/bash", "-c",
+                    _conversion_script(rosbag_cmds, force, tolerate_under,
+                                       campaign_id=campaign_id)],
+        # **No store credentials, deliberately.** This container reads and writes the
+        # shared campaign mount and nothing else, and it is an arbitrary user image -- the
+        # campaign's own -- so it is the one container in this pod that must hold nothing
+        # that would let it reach the store or the index.
+        "volumeMounts": [
+            {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
+            campaign_mount,
+            {"name": "tmp", "mountPath": "/tmp"},
+        ],
+        "resources": convert_resources_block,
+    }
+    host = {
+        "name": HOST_CONTAINER,
+        "image": resolve_controller_image(),
+        # Same umask as the stage container, and for a reason that outlives this pod: what
+        # this step derives is uploaded as the campaign's own, so a re-run staging it again
+        # must be able to write over it.
+        "command": ["sh", "-c",
+                    "umask 0002 && exec python3 -m "
+                    "robovast.execution.cluster_execution.postprocess_host"],
+        # The index DSN is injected HERE and nowhere else: this is the only container that
+        # writes to the index.
+        "env": robovast_env + _index_env(namespace) + [
+            {"name": ENV_FORCE, "value": "1" if force else "0"},
+            {"name": ENV_SKIP, "value": ",".join(sorted(set(skip or ())))},
+        ],
+        "volumeMounts": [campaign_mount],
+        "resources": host_block,
+    }
+
+    init_containers = [stage]
+    if rosbag_cmds and host_stage:
+        init_containers.append(convert)
+    # initContainers run sequentially to completion in declaration order and the main
+    # containers start only after they all succeed. That ordering IS the orchestration
+    # here; there is no code sequencing these steps.
+    containers = [host] if host_stage else [convert]
+
+    volumes = [
+        # One copy of the campaign, shared by every container.
+        {"name": "campaign", "emptyDir": {}},
+    ]
+    if rosbag_cmds:
+        # Scratch for the conversion, which is the only container that mounts it. Declared
+        # with that container rather than always: a volume nothing mounts is a volume a
+        # reader of this spec has to work out the purpose of.
+        volumes.append({"name": "tmp", "emptyDir": {}})
+        # The driver's own conversion scripts, executable (0755). Declared only where a
+        # container mounts them: a ConfigMap volume whose source does not exist holds the
+        # pod in ContainerCreating, and a host-only Job creates no such ConfigMap.
+        volumes.insert(0, {"name": "scripts",
+                           "configMap": {"name": _scripts_cm_name(campaign_id,
+                                                                  discriminator),
+                                         "defaultMode": 0o755}})
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -925,66 +1397,37 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                     # its nodes to campaigns has nowhere to put this at all, and the Job
                     # sits Pending until its three-hour timeout. Easy to miss here, because
                     # this Job is created outside the admission path entirely.
+                    # One tree, written by containers that run as different users -- see
+                    # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose
+                    # own user is not the family's.
+                    "securityContext": {"fsGroup": CAMPAIGN_TREE_GID,
+                                        "supplementalGroups": [CAMPAIGN_TREE_GID]},
                     "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
                     **({"imagePullSecrets": [{"name": pull_secret_name}]}
                        if pull_secret_name else {}),
-                    "volumes": [
-                        # The driver's own conversion scripts, executable (0755).
-                        {"name": "scripts",
-                         "configMap": {"name": _scripts_cm_name(campaign_id,
-                                                                    discriminator),
-                                       "defaultMode": 0o755}},
-                        {"name": "tools", "emptyDir": {}},
-                        {"name": "bags", "emptyDir": {}},
-                        {"name": "out", "emptyDir": {}},
-                        {"name": "tmp", "emptyDir": {}},
-                    ],
-                    "initContainers": [
-                        {
-                            # mc for the upload + mirror the campaign (rosbags) down.
-                            # (The scripts are not copied by an initContainer — they
-                            # arrive read-only from the ConfigMap volume above.)
-                            "name": "s3-init",
-                            "image": resolve_sidecar_image(),
-                            "command": ["sh", "-c", _staging_script()],
-                            "env": s3_env,
-                            "volumeMounts": [
-                                {"name": "tools", "mountPath": "/tools"},
-                                {"name": "bags", "mountPath": "/bags"},
-                            ],
-                            "resources": POSTPROCESS_INIT_RESOURCES,
-                        },
-                    ],
-                    "containers": [{
-                        "name": "convert",
-                        # The system-under-test's own image: custom ROS2 types only
-                        # deserialize here. ros2_exec.sh sources /opt/ros + /ws/install.
-                        "image": image,
-                        "command": ["/bin/bash", "-c",
-                                    _conversion_script(rosbag_cmds, force, tolerate_under)],
-                        "env": s3_env,
-                        "volumeMounts": [
-                            {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
-                            {"name": "tools", "mountPath": "/tools", "readOnly": True},
-                            {"name": "bags", "mountPath": "/bags"},
-                            {"name": "out", "mountPath": "/out"},
-                            {"name": "tmp", "mountPath": "/tmp"},
-                        ],
-                        "resources": POSTPROCESS_RESOURCES,
-                    }],
+                    "volumes": volumes,
+                    "initContainers": init_containers,
+                    "containers": containers,
                 },
             },
         },
     }
 
 
-def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: str,
+def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
-                       discriminator: str = "", tolerate_under=()) -> tuple:
-    """Create the conversion Job and wait for it. Returns ``(ok, message)``.
+                       discriminator: str = "", tolerate_under=(), skip=None,
+                       host_stage: bool = True, convert_resources=None) -> tuple:
+    """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
-    A no-op success when the campaign configures no rosbag conversion.
+    *image* is the campaign's execution image, and is needed only for the conversion: an
+    empty *rosbag_cmds* builds a Job that never pulls it. Callers that cannot know in
+    advance whether it is needed should pass ``None`` and let *rosbag_cmds* decide, so a
+    campaign whose image has gone from the registry still postprocesses.
+
+    *host_stage* off makes this a conversion-only Job -- see :func:`build_manifest`. With
+    it off and nothing to convert there is no work at all, which is a no-op success.
 
     *discriminator* names WHICH conversion of this campaign this is, and must be set by
     any caller that converts the same campaign more than once -- a search, which converts
@@ -994,8 +1437,14 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     campaign-level name, where the 409 fallthrough is right: a retry of a single conversion
     should wait on the Job already in flight rather than launch a second copy.
     """
-    if not rosbag_cmds:
+    if not rosbag_cmds and not host_stage:
         return True, "no rosbag conversion configured; nothing to run"
+    if rosbag_cmds and not image:
+        # Refused rather than defaulted: converting in the wrong image deserializes the
+        # campaign's custom message types against a stranger's definitions, and what comes
+        # out of that is wrong data rather than an error.
+        return False, ("no execution image for the campaign's rosbag conversion; its "
+                       "custom ROS2 types deserialize in no other image")
 
     from kubernetes import client  # noqa: PLC0415
     from kubernetes.client.rest import ApiException  # noqa: PLC0415
@@ -1023,42 +1472,72 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     manifest = build_manifest(
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
-        discriminator=discriminator, tolerate_under=tolerate_under)
+        discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
+        host_stage=host_stage, convert_resources=convert_resources)
     name = manifest["metadata"]["name"]
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
     # Job (the pod waits in ContainerCreating until the volume source exists) and delete
-    # it once the Job is done.
-    cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
-    cm_name = cm["metadata"]["name"]
-    # First call that actually touches the API server, so it is where an unreachable
-    # cluster surfaces. Reported as a reason on the campaign's postprocessing_error and
-    # re-runnable once the cluster is back -- the runs themselves are already published --
-    # rather than reaching the caller as a urllib3 traceback.
-    try:
-        with api_transport_errors("submitting the postprocessing job"):
-            try:
-                core.create_namespaced_config_map(namespace=namespace, body=cm)
-            except ApiException as e:
-                if e.status == 409:  # a stale copy from a prior run — replace it
-                    core.replace_namespaced_config_map(name=cm_name, namespace=namespace,
-                                                       body=cm)
-                else:
-                    return False, f"could not create postprocessing scripts ConfigMap: {e}"
-    except ClusterUnreachableError as e:
-        return False, f"postprocessing cannot be scheduled: {e}"
+    # it once the Job is done. Only where something mounts it: a Job with no conversion
+    # container declares no such volume, and creating the ConfigMap anyway would leave one
+    # behind for every host-only postprocess.
+    cm_name = ""
+    if rosbag_cmds:
+        cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
+        cm_name = cm["metadata"]["name"]
+        # First call that actually touches the API server, so it is where an unreachable
+        # cluster surfaces. Reported as a reason on the campaign's postprocessing_error and
+        # re-runnable once the cluster is back -- the runs themselves are already
+        # published -- rather than reaching the caller as a urllib3 traceback.
+        try:
+            with api_transport_errors("submitting the postprocessing job"):
+                try:
+                    core.create_namespaced_config_map(namespace=namespace, body=cm)
+                except ApiException as e:
+                    if e.status == 409:  # a stale copy from a prior run — replace it
+                        core.replace_namespaced_config_map(name=cm_name,
+                                                           namespace=namespace, body=cm)
+                    else:
+                        return False, ("could not create postprocessing scripts "
+                                       f"ConfigMap: {e}")
+        except ClusterUnreachableError as e:
+            return False, f"postprocessing cannot be scheduled: {e}"
 
     try:
         try:
-            batch.create_namespaced_job(namespace=namespace, body=manifest)
+            # Wrapped even though the ConfigMap create above usually gets there first: a
+            # host-only Job creates none, so this is then the first call to touch the API
+            # server and the one place an unreachable cluster can surface.
+            with api_transport_errors("submitting the postprocessing job"):
+                batch.create_namespaced_job(namespace=namespace, body=manifest)
+        except ClusterUnreachableError as e:
+            return False, f"postprocessing cannot be scheduled: {e}"
         except ApiException as e:
-            if e.status != 409:  # already exists → fall through and wait on it
+            if e.status != 409:
                 return False, f"could not create postprocessing job: {e}"
-        logger.info("Postprocessing job %s created (image=%s)", name, image)
+            # 409 means a Job of this name is already here, and the name is derived from
+            # the campaign -- so a FINISHED one from an earlier attempt is indistinguishable
+            # from a running one until it is read. Falling through to wait on it reported
+            # that earlier attempt's outcome as this attempt's: a retrigger that changed
+            # nothing, against a pod whose containers ran a previous version of this
+            # script, presented as a fresh result. Adopt a live one; replace a finished one.
+            if not _adopt_or_replace(batch, namespace, name, manifest):
+                return False, (f"postprocessing job {name} already exists and could not be "
+                               f"replaced; retry once it has been removed")
+        logger.info("Postprocessing job %s created (conversion image=%s)", name,
+                    image if rosbag_cmds else "none needed")
 
         deadline = time.time() + timeout
+        # Published from here because this is the only place that knows the Job is still
+        # running. Nothing the pod writes leaves it until it exits, so without this the
+        # POSTPROCESSING section stays empty for the whole of a conversion measured in
+        # minutes -- and the only way to watch one was a pod name nobody off-cluster has.
+        next_live_log = 0.0
         while time.time() < deadline:
+            if time.time() >= next_live_log:
+                publish_live_log(core, cluster_config, campaign_id, namespace, name)
+                next_live_log = time.time() + _LIVE_LOG_INTERVAL
             try:
                 status = batch.read_namespaced_job_status(
                     name=name, namespace=namespace).status
@@ -1069,7 +1548,8 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
             if not status.active:
                 if status.succeeded:
                     logger.info("Postprocessing job %s succeeded", name)
-                    return True, "rosbag conversion complete"
+                    return True, ("postprocessing complete" if host_stage
+                                  else "rosbag conversion complete")
                 if status.failed:
                     # Read before the message is built: ttlSecondsAfterFinished reaps this
                     # Job 300 s after it fails, and by the time anyone reads the campaign
@@ -1083,18 +1563,20 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
             blocked = _blocked_reason(core, namespace, name)
             if blocked:
                 return False, (
-                    f"postprocessing job {name} cannot start: {blocked}. The conversion runs "
-                    f"in the campaign's own execution image and mirrors its bags with the "
-                    f"sidecar, so this is about pulling or scheduling those -- not about the "
-                    f"conversion, which has not run. Nothing about the campaign's results is "
-                    f"wrong; re-run postprocessing once the pod can start.")
+                    f"postprocessing job {name} cannot start: {blocked}. Its containers "
+                    f"run the controller image and, where the campaign has rosbags, the "
+                    f"campaign's own execution image, so this is about pulling or "
+                    f"scheduling those -- not about postprocessing, which has not run. "
+                    f"Nothing about the campaign's results is wrong; re-run "
+                    f"postprocessing once the pod can start.")
             time.sleep(_POLL_SECONDS)
         return False, f"postprocessing job {name} timed out after {timeout}s"
     finally:
         # Best-effort cleanup of the scripts ConfigMap (labeled for manual sweep if the
         # driver dies before this runs). The Job's own ttlSecondsAfterFinished reaps it.
-        try:
-            core.delete_namespaced_config_map(name=cm_name, namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Could not delete scripts ConfigMap %s: %s", cm_name, e)
+        if cm_name:
+            try:
+                core.delete_namespaced_config_map(name=cm_name, namespace=namespace)
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning("Could not delete scripts ConfigMap %s: %s", cm_name, e)

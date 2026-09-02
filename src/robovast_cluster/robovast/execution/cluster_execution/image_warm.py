@@ -209,11 +209,16 @@ def warm_image(k8s_batch, namespace: str, image_ref: str,
 #: family and what both roqsim shapes run. ``robovast-sidecar`` is tiny but sits on the
 #: critical path of every exec pod and build Job as their init container.
 #:
-#: ``robovast-controller`` is deliberately absent: it *is* the service Deployment, which
-#: runs ``imagePullPolicy: Always``, so the kubelet pulls it during the rollout that
-#: ``setup``/``upgrade`` already performs. Warming it would duplicate that pull.
+#: ``robovast-controller`` is here because postprocessing runs in it. The service
+#: Deployment's own ``imagePullPolicy: Always`` puts it on the node that carries the
+#: service and nowhere else, which was the whole story while the Python half of
+#: postprocessing ran inside that pod. It runs in a Job now, so the image is needed on
+#: whichever node the Job lands on -- a campaign node that has no reason to have ever
+#: pulled it. Without warming, every postprocess on a fresh node pays a full pull of it on
+#: the critical path, and a registry that is merely slow fails the Job outright.
 #:
-WARM_FAMILY_MEMBERS = ("robovast", "robovast-roqsim", "robovast-sidecar")
+WARM_FAMILY_MEMBERS = ("robovast", "robovast-roqsim", "robovast-sidecar",
+                       "robovast-controller")
 
 #: Name of the DaemonSet holding the family images on the nodes. Fixed, not derived: it is one
 #: object per deployment, and a stable name is what makes an ``upgrade`` patch the existing one

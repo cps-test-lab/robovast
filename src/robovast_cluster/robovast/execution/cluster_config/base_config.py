@@ -154,7 +154,8 @@ class BaseConfig(object):
                              on_member=None) -> None:
         """Stream this campaign's stored objects into the open *tar* (no local copy).
 
-        Powers the postprocessed-download stream (``/campaigns/{id}/archive``): each
+        Powers the download stream (``/campaigns/{id}/archive``), for a postprocessed
+        campaign and a raw one alike -- whatever objects the campaign has, tarred: each
         object is fetched from storage and added to the streaming tar on the fly, so
         **no scratch is used on the service during or after the download**.
         *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive
@@ -406,19 +407,23 @@ class BaseConfig(object):
         return "s3"
 
     def get_store_usage(self, node_summaries, namespace="default"):
-        """``(used_bytes, capacity_bytes)`` for the campaign results store, or ``(None, None)``.
+        """``(used_bytes, capacity_bytes, reason)`` for the campaign store.
 
-        Called by the service's ``/usage`` endpoint to draw the results-store meter. The
-        default ``(None, None)`` means **this provider cannot say**, and the caller reports
-        no store figure rather than guessing. That is also the honest answer for a provider
-        backed by a cloud bucket: object storage has no capacity to fill, so there is no
-        meter to draw -- not a failure to draw one.
+        Called by the service's ``/usage`` endpoint to draw the results-store meter.
+        ``(None, None, "")`` means **this provider cannot say and the caller should keep
+        looking**; the default, and the honest answer for a provider backed by a cloud
+        bucket, where object storage has no capacity to fill and so no meter to draw -- not a
+        failure to draw one.
 
-        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched
-        by the caller, so an override needs no cluster round-trip of its own.
+        A non-empty *reason* means the opposite: there will be no figure, and here is what to
+        tell the reader instead. It travels to the UI and to an MCP client, so it says what is
+        true of the store rather than naming a node.
+
+        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched by
+        the caller, so an override needs no cluster round-trip of its own.
         """
         del node_summaries, namespace
-        return None, None
+        return None, None, ""
 
     def get_cluster_allocatable_resources(self, kube_context=None):
         """Return the total CPU and memory capacity admission should size against.
@@ -456,6 +461,12 @@ class BaseConfig(object):
                     robovast-service's env and read back by
                     :func:`~robovast.execution.cluster_execution.service_deploy.read_service_config_from_cluster`.
         """
+
+    #: Whether ``--store-path`` / ``--store-class`` mean anything here. ``False`` is the safe
+    #: default: a provider backed by a bucket has no directory to place, and one that builds
+    #: its own store volume would ignore the flag while reporting the setting as accepted.
+    #: The providers that mount the store from a volume this deployment chooses set it.
+    store_is_placeable = False
 
     @staticmethod
     def _apply_pod_node_selector(yaml_objects, node_labels):
@@ -495,13 +506,24 @@ def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
     Reads the ``_transient/job_links.yaml`` manifest object (written by robovast
     for packed campaigns) and adds one real symlink member per entry so the
     tar.gz is navigable. No-op when the manifest object is absent.
+
+    Only *absent* is a no-op. A store that stopped answering is not a campaign
+    without links, and swallowing it here would finish the archive without them and
+    report success -- so the transport error propagates, translated by the caller's
+    :func:`_store_errors_as` block.
     """
     import yaml  # pylint: disable=import-outside-toplevel
+    from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
     manifest_key = (prefix or "") + "_transient/job_links.yaml"
     try:
         resp = s3.get_object(Bucket=bucket_name, Key=manifest_key)
-    except Exception:  # pylint: disable=broad-except
-        return  # no manifest → nothing to link
+    except ClientError as exc:
+        # Only "it is not there" is the unpacked-campaign case. Anything else the store
+        # answered (a denied read, a bucket that is gone) would produce the same
+        # link-less archive for a reason the operator has to know about.
+        if exc.response.get("Error", {}).get("Code", "") in ("NoSuchKey", "404"):
+            return
+        raise
     links = yaml.safe_load(resp["Body"].read()) or {}
     for link_rel, target in links.items():
         tarinfo = tarfile.TarInfo(name=f"{archive_label}/{link_rel}")
@@ -509,6 +531,17 @@ def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
         tarinfo.linkname = target
         tarinfo.mode = 0o777
         tar.addfile(tarinfo)
+
+
+def _store_errors_as(endpoint, what: str):
+    """The shared transport-error translation, as a context manager.
+
+    Imported per call so this module stays importable without botocore, which the
+    configs backed by another store and the YAML helpers above do not need.
+    """
+    from robovast.execution.cluster_execution import \
+        store_errors  # pylint: disable=import-outside-toplevel
+    return store_errors.store_errors_as(endpoint, what)
 
 
 def _s3_client(endpoint, access_key, secret_key, region):
@@ -536,12 +569,13 @@ def _s3_campaign_bytes(bucket, *, endpoint, access_key, secret_key,
     if prefix:
         paginate_kwargs["Prefix"] = prefix
     total = 0
-    for page in s3.get_paginator("list_objects_v2").paginate(**paginate_kwargs):
-        for obj in page.get("Contents", []):
-            relative_key = obj["Key"][len(prefix):] if prefix else obj["Key"]
-            if excluded and relative_key.startswith(excluded):
-                continue
-            total += obj["Size"]
+    with _store_errors_as(endpoint, "listing a campaign's stored objects"):
+        for page in s3.get_paginator("list_objects_v2").paginate(**paginate_kwargs):
+            for obj in page.get("Contents", []):
+                relative_key = obj["Key"][len(prefix):] if prefix else obj["Key"]
+                if excluded and relative_key.startswith(excluded):
+                    continue
+                total += obj["Size"]
     return total
 
 
@@ -566,19 +600,25 @@ def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
         paginate_kwargs["Prefix"] = prefix
     paginator = s3.get_paginator("list_objects_v2")
 
-    for page in paginator.paginate(**paginate_kwargs):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            relative_key = key[len(prefix):] if prefix else key
-            if excluded and relative_key.startswith(excluded):
-                continue
-            tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
-            tarinfo.size = obj["Size"]
-            response = s3.get_object(Bucket=bucket, Key=key)
-            tarinfo.mode = (
-                0o755 if response.get("Metadata", {}).get("executable") == "yes"
-                else 0o644)
-            tar.addfile(tarinfo, response["Body"])
-            if on_member is not None:
-                on_member(tarinfo.size)
-    _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)
+    # Covers the object bodies too, not just the requests that fetch them: ``addfile``
+    # reads each ``Body`` here, so a connection lost mid-object raises inside this
+    # block. It runs in the tar writer thread, whose exception is re-raised when the
+    # stream closes -- where a raw botocore traceback names the one key it died on and
+    # not the transfer it belongs to.
+    with _store_errors_as(endpoint, "streaming a campaign's stored objects"):
+        for page in paginator.paginate(**paginate_kwargs):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                relative_key = key[len(prefix):] if prefix else key
+                if excluded and relative_key.startswith(excluded):
+                    continue
+                tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
+                tarinfo.size = obj["Size"]
+                response = s3.get_object(Bucket=bucket, Key=key)
+                tarinfo.mode = (
+                    0o755 if response.get("Metadata", {}).get("executable") == "yes"
+                    else 0o644)
+                tar.addfile(tarinfo, response["Body"])
+                if on_member is not None:
+                    on_member(tarinfo.size)
+        _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)

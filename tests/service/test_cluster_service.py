@@ -184,7 +184,7 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
     Response ended prematurely``, which names neither the campaign nor the problem, and
     left a ``.part`` file behind. Raised eagerly it is a 404 with a sentence in it.
 
-    The predicate is the one ``list_campaigns`` answers with, so the archive route and the
+    The predicate covers everything ``list_campaigns`` shows, so the archive route and the
     listing cannot disagree about what this service has.
     """
 
@@ -196,6 +196,40 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
 
     with pytest.raises(KeyError, match="camp-2026-01-01-000000"):
         cs.campaign_tar_stream("camp-2026-01-01-000000")
+
+
+@pytest.mark.parametrize("live_by", ["driven_here", "driven_elsewhere"])
+def test_campaign_tar_stream_serves_a_campaign_the_index_has_not_caught_up_with(
+        cs, monkeypatch, live_by):
+    """A live campaign downloads even with no index marker, wherever it is driven.
+
+    The marker is written best-effort at the head of the driver, so it can be missing
+    while the campaign is listed all the same (the listing unions the live registry in).
+    Refusing the download there hides it behind an object nobody can see, on the campaign
+    a reader is most likely to be watching -- so the predicate has to cover both halves of
+    that union, this pod's own campaigns and the ones another pod is driving.
+    """
+    campaign_id = "camp-2026-01-01-000000"
+    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: set())
+    if live_by == "driven_here":
+        monkeypatch.setattr(cs, "_extra_live_ids", lambda: set())
+        cs._campaigns[campaign_id] = types.SimpleNamespace(
+            campaign_id=campaign_id, thread=None,
+            state=types.SimpleNamespace(
+                snapshot=lambda: types.SimpleNamespace(phase="running")))
+    else:
+        monkeypatch.setattr(cs, "_extra_live_ids", lambda: {campaign_id})
+
+    tarred = []
+    monkeypatch.setattr(
+        cs, "_cluster_config",
+        lambda: types.SimpleNamespace(
+            add_campaign_members=lambda tar, cid, exclude_prefixes=(): tarred.append(
+                (cid, tuple(exclude_prefixes)))))
+
+    b"".join(cs.campaign_tar_stream(campaign_id))
+
+    assert tarred == [(campaign_id, ("_postproc",))]
 
 
 def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):
@@ -1271,6 +1305,30 @@ def test_the_node_walk_stops_once_the_store_answers(cs, monkeypatch):
         "the walk must stop as soon as the provider recognises its store"
 
 
+def test_the_walk_stops_when_the_store_is_here_and_cannot_be_measured(cs, monkeypatch):
+    """A hostPath store is in the stats as a pod with no volume entry.
+
+    No further node will change that, so the walk must end there. Walking on would spend the
+    disk budget re-learning it on every node, on the one lane where the store is a directory
+    -- which is the default.
+    """
+    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
+    from robovast.execution.cluster_config.minio_store import MINIO_POD_NAME
+
+    unmeasurable = {"podRef": {"name": MINIO_POD_NAME, "namespace": "default"}, "volume": []}
+    core = _disk_env(cs, monkeypatch, ["n1", "n2", "n3"],
+                     {"n1": _summary(400, 600, pods=[unmeasurable]),
+                      "n2": _summary(1, 1), "n3": _summary(1, 1)},
+                     service_node="n1")
+    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
+
+    usage = cs.resource_usage()
+    assert usage.store is None, "no figure is honest; a wrong one is not"
+    assert usage.disk is not None, "the disk meter must survive a store that cannot answer"
+    assert core.proxy_calls == [("n1", "stats/summary")], \
+        "an unmeasurable store must end the walk, not restart it on every node"
+
+
 def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatch):
     """A provider that cannot measure its store reports none — not a store of size zero.
 
@@ -1287,10 +1345,14 @@ def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatc
 
 
 def test_base_config_reports_no_store_usage_by_default():
-    """The hook defaults to "cannot say", so a provider opts in rather than out."""
+    """The hook defaults to "cannot say", so a provider opts in rather than out.
+
+    The empty reason is the load-bearing half: it means *keep looking*, so a caller walking
+    nodes does not stop at a provider that simply has not been asked yet.
+    """
     from robovast.execution.cluster_config.base_config import BaseConfig
 
-    assert BaseConfig.get_store_usage(object(), {"n1": {}}) == (None, None)
+    assert BaseConfig.get_store_usage(object(), {"n1": {}}) == (None, None, "")
 
 
 def _usage_node(name, cpu, mem):
@@ -2453,12 +2515,18 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
 # -- the campaign log's two byte sources ------------------------------------
 
 
-def _tracked(cs, campaign_id, results_dir, terminal=True):
-    """Register *campaign_id* as tracked here, rooted at *results_dir*."""
+def _tracked(cs, campaign_id, results_dir, terminal=True, elsewhere=frozenset()):
+    """Register *campaign_id* as tracked here, rooted at *results_dir*.
+
+    *elsewhere* mirrors ``_LocalCampaign.elsewhere_written_phase_files``: the phase files
+    this entry's operation writes somewhere other than *results_dir*. Empty is the campaign
+    case -- a campaign this process drives writes every phase where it is tracked.
+    """
     from robovast.client.status import Phase
     phase = Phase.FINISHED if terminal else Phase.RUNNING
     cs._campaigns[campaign_id] = types.SimpleNamespace(
         results_dir=str(results_dir), thread=None,
+        elsewhere_written_phase_files=frozenset(elsewhere),
         state=types.SimpleNamespace(snapshot=lambda: types.SimpleNamespace(phase=phase)))
 
 
@@ -2600,3 +2668,27 @@ def test_without_results_dir_the_lane_keeps_its_default(cs):
     """No flag, no surprise: the shared ``local_results_root`` precedence still decides."""
     from robovast.common.results_root import local_results_root
     assert cs._campaigns_root() == local_results_root(cs.store.registry.root)
+
+
+def test_a_postprocess_that_ran_elsewhere_is_read_from_the_store(cs, monkeypatch, tmp_path):
+    """A retriggered postprocess writes its log into a fetched root and publishes it, so
+    the copy under the tracked root is an earlier attempt's -- present, frozen, and the
+    winner under an absence-only fallback. That is how a postprocess which had just
+    ingested twenty thousand rows showed the image-pull failure of the attempt before it.
+
+    Only that phase moves: the driver's own phases must still be read locally, or a running
+    campaign would show a stale RUN section for its whole life.
+    """
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"live run\n")
+    (exec_dir / "postprocessing.log").write_bytes(b"an older attempt\n")
+    _tracked(cs, "camp-1", tmp_path, elsewhere={"postprocessing.log"})
+    _fake_store(cs, monkeypatch, {
+        "camp-1/_execution/controller.log": b"lagging run\n",
+        "camp-1/_execution/postprocessing.log": b"what the pod wrote\n"})
+
+    text = cs.get_campaign_logs("camp-1").text
+
+    assert "what the pod wrote" in text and "an older attempt" not in text
+    assert "live run" in text and "lagging run" not in text

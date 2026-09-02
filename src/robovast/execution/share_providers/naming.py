@@ -39,14 +39,27 @@ from robovast.common.campaign_data import POSTPROCESSING_RECORD
 
 from robovast.common.execution import is_campaign_dir
 
-__all__ = ["RAW", "POSTPROCESSED", "VARIANTS", "POSTPROCESSING_RECORD", "archive_name",
-           "parse_archive_name", "campaign_variant", "variant_from_record"]
+__all__ = ["RAW", "POSTPROCESSED", "INCOMPLETE", "VARIANTS", "SHARE_VARIANTS",
+           "POSTPROCESSING_RECORD",
+           "archive_name", "parse_archive_name", "campaign_variant", "variant_from_record"]
 
 RAW = "raw"
 POSTPROCESSED = "postprocessed"
+#: A campaign archived while it was still running. Not a postprocessing state like the
+#: other two but a completeness one, and it sits in the same slot because it answers the
+#: same question a variant answers -- "what will I get if I import this?" -- and because a
+#: name is the only thing a file carries into a downloads directory. Runs that had not
+#: finished are simply absent, so it is the one variant an importer must warn about.
+INCOMPLETE = "incomplete"
 
 #: Longest first, so ``.postprocessed`` is never read as an unsuffixed name.
-VARIANTS = (POSTPROCESSED, RAW)
+VARIANTS = (POSTPROCESSED, INCOMPLETE, RAW)
+
+#: The variants a *share* can hold. A share copy is written at the campaign's end, so
+#: :data:`INCOMPLETE` is not among them -- it names a download taken mid-run, which nothing
+#: uploads. Offered to a caller choosing a variant; :data:`VARIANTS` stays the set a name
+#: is *read* against, because a name that arrives from elsewhere is not ours to bound.
+SHARE_VARIANTS = (POSTPROCESSED, RAW)
 
 _SUFFIX = ".tar.gz"
 

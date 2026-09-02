@@ -1558,9 +1558,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """Stream a ``tar.gz`` of the campaign, on either lane.
 
         Backs ``vast campaign download`` and the web UI's download button. What comes
-        out is the campaign as this service holds it -- postprocessed, if it has been.
-        Internal ``_postproc/`` staging is excluded so the archive is the clean
-        campaign layout.
+        out is the campaign as this service holds it -- postprocessed if it has been,
+        raw if it has not, and a campaign whose postprocessing failed downloads like any
+        other: derived data is an addition to a campaign, never the condition for reading
+        one, so nothing on this path waits on it. Internal ``_postproc/`` staging is
+        excluded so the archive is the clean campaign layout.
 
         Nothing is buffered and no scratch is used, on either lane: the cluster fetches
         objects from the store and tars them on the fly, the local lane tars its own
@@ -1574,10 +1576,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
+        # The name before the stream: a running campaign is offered as
+        # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
+        # -- which saves whatever this says and never sees the marker inside the archive.
+        name = _guard(lambda: impl.campaign_archive_name(campaign_id))
         return StreamingResponse(
             _guard(lambda: impl.campaign_tar_stream(campaign_id)),
             media_type="application/gzip",
-            headers={"Content-Disposition": f'attachment; filename="{campaign_id}.tar.gz"'})
+            headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @app.get(Routes.campaign_postprocessing("{campaign_id}"), tags=["results"])
     def get_postprocessing(campaign_id: str):

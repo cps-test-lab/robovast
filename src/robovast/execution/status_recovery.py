@@ -212,10 +212,16 @@ def record_step_outcome(campaign_dir: str | Path, *,
     status.phase = Phase.FINISHED
     if postprocessing is not None:
         ok, message = postprocessing
-        # ``postprocessed`` follows postprocessing's on-disk record (reconstruct already
-        # set it);
-        # here we only clear/set the failure marker.
         status.postprocessing_error = None if ok else message
+        if ok:
+            # Asked AGAIN, after the error is cleared. The reconstruction refuses to
+            # promote the flag over a recorded ``postprocessing_error`` -- deliberately, so
+            # a half-built database cannot hide a failure behind "results are ready" -- but
+            # the error it read is the one THIS call has just cleared. Left as it was, a
+            # campaign whose postprocessing failed once and then succeeded reported
+            # ``postprocessed: False`` with no error to explain it, and every reader was
+            # told the run derived nothing while its rows sat in the index.
+            status.postprocessed = campaign_has_derived_data(campaign_dir)
     if share is not None:
         ok, message = share
         status.share_error = None if ok else message

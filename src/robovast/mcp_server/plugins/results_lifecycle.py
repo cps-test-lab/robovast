@@ -212,6 +212,11 @@ def get_campaign_download(campaign_id: str) -> dict:
 
     Never writes to the MCP-server host, which may not be a machine you can reach.
 
+    A campaign that is **still running** downloads too, as a snapshot: the service serves
+    it under ``<campaign-id>.incomplete.tar.gz`` and the archive carries a marker an import
+    reports as degraded. Runs that had not finished are absent from it, so it answers "what
+    does this campaign have so far", never "what did this campaign produce".
+
     Args:
         campaign_id: The campaign to download.
 

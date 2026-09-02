@@ -149,7 +149,14 @@ def _backend():
 
 
 def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path):
-    """execution.yaml is written in run_batch (so postprocess can read the image)."""
+    """execution.yaml is written in run_batch (so postprocess can read the image).
+
+    Twice: once as soon as the plan is pinned and again after the jobs. The digests are known
+    at the first point and this file is the only place they are recorded, so written only at
+    the end a campaign that died during its first batch named none of the images it ran --
+    which is the ordinary shape of a failure on this lane. The writer is idempotent, which is
+    what makes writing it twice free.
+    """
     calls = []
     monkeypatch.setattr("robovast.common.execution.create_execution_yaml",
                         lambda runs, out, **kw: calls.append((runs, out, kw)))
@@ -163,10 +170,10 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
         {"execution": {"containers": {"scenario": {"image": "img:test"}}}},
         campaign_root=str(tmp_path), batch_tag="b", runs=3, options=RunOptions())
 
-    assert len(calls) == 1
-    runs, out, kw = calls[0]
-    assert runs == 3 and out == str(tmp_path)
-    assert kw["execution_params"] == {"containers": {"scenario": {"image": "img:test"}}}
+    assert len(calls) == 2, "written once before the jobs and once after"
+    for runs, out, kw in calls:
+        assert runs == 3 and out == str(tmp_path)
+        assert kw["execution_params"] == {"containers": {"scenario": {"image": "img:test"}}}
 
 
 def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):
@@ -670,3 +677,42 @@ def test_the_flattened_tag_is_a_legal_kubernetes_label():
     import re
     tag = _tag_for("batch-12/reps-5", 7)
     assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", tag), tag
+
+
+def test_calibration_stated_in_the_vast_reaches_the_allocation():
+    """A stated `calibration` block must actually size the container.
+
+    It arrives from the plan as the mapping the `.vast` wrote, not as a model, so reading
+    it with ``getattr`` alone resolved every field to ``None`` and fell back to the role
+    defaults. The block validated, so the file read as configured while the allocation was
+    the default one -- and nothing said so. Measured on a real campaign: a simulator whose
+    peak was 181 MiB was held at 256 MiB (181 x the default 1.25) and OOM-killed on the
+    heavier configurations, with `headroom.memory: 10.0` stated in the file.
+    """
+    from robovast.common.containers import plan_containers
+    from robovast.execution.cluster_execution.kubernetes_backend import \
+        calibrated_resources
+
+    plan = plan_containers({"containers": {
+        "scenario": {"image": "a", "resources": {"cpu": 2, "memory": "1Gi"},
+                     "calibration": {"size_on": 99, "headroom": {"memory": 10.0}}},
+        "simulation": {"image": "b", "resources": {"cpu": 2, "memory": "2Gi"},
+                       "calibration": {"headroom": {"memory": 10.0}}},
+    }})
+    runner = object.__new__(BatchJobRunner)
+    runner.plan = plan
+
+    resolved = runner._calibration_by_container()  # noqa: SLF001 - the unit under test
+    assert resolved["scenario"]["size_on"] == 99, "size_on fell back to the role default"
+    assert resolved["simulation"]["headroom"]["memory"] == 10.0
+    # Stating only memory keeps the cpu default rather than losing it.
+    assert resolved["simulation"]["headroom"]["cpu"] == 1.25
+
+    sized = calibrated_resources(
+        {"cpu": 2, "memory": "2Gi"}, "simulation",
+        {"simulation": {"memory_peak": 181 * 1024 * 1024}},
+        roles=("simulation",), bootstrap=True, settings=resolved["simulation"])
+
+    assert int(sized["memory"]) > 256 * 1024 * 1024, "still sized at the default headroom"
+    # Never above what the author declared: calibration sizes down, it does not raise a ceiling.
+    assert int(sized["memory"]) <= 2 * 1024 ** 3

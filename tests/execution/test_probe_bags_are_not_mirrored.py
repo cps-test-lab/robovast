@@ -2,21 +2,102 @@
 # SPDX-License-Identifier: Apache-2.0
 """The cluster lane keeps probe bags out by never fetching them.
 
-``/bags`` is an ``mc mirror`` of the campaign prefix, not a bind mount, so "do not give the
-Job the probe output" is an exclusion on that mirror. What the Job never receives it cannot
-convert, cannot fail on, and does not pay to download.
+The postprocessing pod is given the campaign by a staging fetch, not a bind mount, so "do
+not give the pod the probe output" is a predicate on that fetch. What the pod never receives
+it cannot convert, cannot fail on, and does not pay to download.
 """
 
 from robovast.common.campaign_data import PROBE_DIR
-from robovast.execution.cluster_execution.postprocess_job import _mirror_excludes
+from robovast.execution.cluster_execution.postprocess_stage import (BAG_DIR_NAMES,
+                                                                    build_include)
 
 
-def test_the_probe_directory_is_excluded_from_the_mirror():
-    assert f"--exclude '{PROBE_DIR}/*'" in _mirror_excludes()
+def test_the_probe_directory_is_never_staged():
+    include = build_include(skip_bags=False)
+
+    assert not include(f"{PROBE_DIR}/node-a/rosbag2/rosbag2_0.mcap")
+    assert include("cfg-a/0/rosbag2/rosbag2_0.mcap")
 
 
-def test_nothing_else_is_excluded():
-    """``_jobs`` holds every job's real ``logs/rosout_bag``; excluding the reserved set
+def test_the_reserved_directories_are_not_excluded_as_a_set():
+    """``_jobs`` holds every job's real ``logs/rosout_bag``, so excluding the reserved set
     wholesale would drop the campaign's whole /rosout record while still exiting zero."""
-    assert _mirror_excludes().count("--exclude") == 1
-    assert "_jobs" not in _mirror_excludes()
+    include = build_include(skip_bags=False)
+
+    assert include("_jobs/batch-0/job-1/logs/rosout_bag/rosout_bag_0.mcap")
+    assert include("_execution/execution.yaml")
+    assert include("campaign.db")
+
+
+def test_a_campaign_with_no_conversion_is_not_given_bags_at_all():
+    """The host stage never reads a bag, so a pod with no conversion container must not pay
+    to fetch them -- on a large campaign they are effectively the whole download."""
+    include = build_include(skip_bags=True)
+
+    for name in BAG_DIR_NAMES:
+        assert not include(f"cfg-a/0/{name}/rosbag2_0.mcap"), name
+    assert not include("_jobs/batch-0/job-1/logs/rosout_bag/rosout_bag_0.mcap")
+    # What that stage does read still comes down.
+    assert include("cfg-a/0/out.csv")
+    assert include("cfg-a/0/test.xml")
+    assert include("_jobs/batch-0/job-1/resource_usage_sut.csv")
+    assert include("campaign.db")
+
+
+def test_staging_restores_the_job_links_the_store_cannot_hold(tmp_path, monkeypatch):
+    """A campaign has every file in the object store and none of its links.
+
+    A symlink is not an object, so ``<config>/<run>/job`` -- the way into a run's job
+    artifacts -- cannot survive the round trip. Metadata generation reads sysinfo.yaml
+    through that link, and failed with "sysinfo.yaml not found" on a campaign whose
+    sysinfo.yaml had been staged all along. The link manifest does survive, so staging
+    completes the tree from it.
+    """
+    import yaml
+
+    from robovast.common.campaign_data import read_sysinfo
+    from robovast.execution.cluster_execution import in_pod_storage, postprocess_stage
+
+    campaign_id = "camp-1"
+    root = tmp_path / campaign_id
+    job = root / "_jobs" / "batch-0" / "job-0"
+    job.mkdir(parents=True)
+    (job / "sysinfo.yaml").write_text(yaml.safe_dump({"cpu_name": "Intel Xeon"}))
+    (root / "cfg-a" / "0").mkdir(parents=True)
+    (root / "_transient").mkdir()
+    (root / "_transient" / "job_links.yaml").write_text(
+        yaml.safe_dump({"cfg-a/0/job": "../../_jobs/batch-0/job-0"}))
+
+    class _Store:
+        def download_prefix(self, *_a, **_kw):
+            return 0  # the tree above stands in for what a real fetch would have written
+
+    monkeypatch.setattr(postprocess_stage, "cluster_config_from_env", lambda: object())
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+    monkeypatch.setenv(postprocess_stage.ENV_CAMPAIGN_ID, campaign_id)
+    monkeypatch.setenv(postprocess_stage.ENV_STAGE_DEST, str(tmp_path))
+
+    assert postprocess_stage.main() == 0
+    # The link exists, and what reads through it now resolves.
+    assert (root / "cfg-a" / "0" / "job").is_symlink()
+    assert read_sysinfo(root / "cfg-a" / "0")["cpu_name"] == "Intel Xeon"
+
+
+def test_the_log_this_attempt_writes_is_not_staged_back_into_it():
+    """The conversion APPENDS to `_execution/postprocessing.log`, so a copy of the previous
+    attempt's would become the head of this attempt's log -- and did: a postprocess whose
+    conversion failed presented, as its own account, the image-pull failure of the attempt
+    before it. It is also where the running Job's log is published, so staging it back would
+    fold this attempt's own head into itself.
+    """
+    from robovast.execution.cluster_execution.postprocess_stage import NOT_STAGED_LOG
+
+    for skip_bags in (False, True):
+        include = build_include(skip_bags=skip_bags)
+
+        assert not include(NOT_STAGED_LOG), skip_bags
+        # Its neighbours in the same directory are still needed.
+        assert include("_execution/execution.yaml")
+        assert include("_execution/interventions.json")

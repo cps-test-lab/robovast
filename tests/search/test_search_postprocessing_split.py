@@ -31,6 +31,20 @@ def _names(commands):
 
 # -- the split --------------------------------------------------------------
 
+@pytest.fixture(name="campaign_root")
+def _campaign_root(tmp_path):
+    """A campaign root shaped the way the controller always finds one.
+
+    The conversion reads the campaign's ``.vast`` -- for what to convert and, now, for how
+    much the conversion may use -- so a root without one is not a state this code path can
+    be in. It used to be a placeholder string here because nothing opened it.
+    """
+    root = tmp_path / "campaign-c"
+    (root / "_config").mkdir(parents=True)
+    (root / "_config" / "c.vast").write_text(
+        "version: 3\nmetadata: {name: c}\n", encoding="utf-8")
+    return str(root)
+
 def test_a_pure_python_plugin_stays_in_process():
     """A local-file metrics plugin needs no image and must not pay for a Job."""
     container, local = split_container_postprocessing(['search/nav_metrics.py:NavMetrics'])
@@ -180,7 +194,7 @@ def test_unwrapping_leaves_a_non_rosbag_container_command_alone():
 
 # -- the conversion is two steps, not one -----------------------------------
 
-def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch):
+def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch, campaign_root):
     """A conversion Job writes its output to the object store; something has to pull it
     into the campaign root before anything can read it.
 
@@ -210,14 +224,14 @@ def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch):
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
     obj.campaign_id = 'c'
-    obj.campaign_root = '/tmp/does-not-matter'
+    obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
     obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
 
     assert calls == ['job', 'sync'], f'expected run then sync, got {calls}'
 
 
-def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
+def test_the_sync_happens_even_when_the_job_failed(monkeypatch, campaign_root):
     """Unconditionally, for the reason the campaign-level path gives: the conversion tees
     its own error into postprocessing.log and mirrors it out, so skipping the sync on
     failure loses the only account of what went wrong."""
@@ -237,7 +251,7 @@ def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
     obj.campaign_id = 'c'
-    obj.campaign_root = '/tmp/does-not-matter'
+    obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
     obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
 
@@ -246,7 +260,7 @@ def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
 
 # -- each batch's conversion is its own Job ----------------------------------
 
-def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch):
+def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch, campaign_root):
     """The Job name was the campaign's alone, so batch 1's create returned 409, the wait
     read batch 0's already-completed Job, and the conversion reported success having done
     nothing -- 0 outputs synced, and an extractor that then blamed the world.
@@ -273,7 +287,7 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch):
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
     obj.campaign_id = 'c'
-    obj.campaign_root = '/tmp/does-not-matter'
+    obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
     cmds = [{'rosbags_process': {'plugins': []}}]
     obj._convert_bags_in_cluster(cmds, 'batch-0')
@@ -283,7 +297,7 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch):
     assert len(set(seen)) == 3, f'conversions shared a Job identity: {seen}'
 
 
-def test_the_batch_tag_reaches_the_conversion(monkeypatch):
+def test_the_batch_tag_reaches_the_conversion(monkeypatch, campaign_root):
     """`_run_postprocessing` is the only caller and it must pass the tag through, or the
     discriminator is threaded everywhere except where it is produced."""
     from robovast.execution import controller as ctrl
@@ -292,7 +306,7 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch):
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}}]
     obj.vast_dir = '/tmp'
-    obj.campaign_root = '/tmp'
+    obj.campaign_root = campaign_root
     monkeypatch.setattr(ctrl.CampaignController, '_convert_bags_in_cluster',
                         lambda self, cmds, tag: passed.append(tag))
     monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
@@ -303,7 +317,7 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch):
 
 # -- a conversion that could not run is not a conversion that found nothing ---
 
-def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
+def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch, campaign_root):
     """These are different failures and were reported as the same one.
 
     A conversion that RAN and produced nothing is the extractor's business -- it refuses the
@@ -329,7 +343,7 @@ def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
     obj.campaign_id = 'c'
-    obj.campaign_root = '/tmp/does-not-matter'
+    obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -339,7 +353,7 @@ def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
     assert "could not" in message.lower() or "cannot" in message.lower()
 
 
-def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeypatch):
+def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeypatch, campaign_root):
     """Unchanged: the Job started, so this batch's inputs may be partly there and the
     extractor is the thing that decides whether a batch is scorable."""
     from robovast.execution import controller as ctrl
@@ -356,6 +370,89 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
     obj.campaign_id = 'c'
-    obj.campaign_root = '/tmp/does-not-matter'
+    obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
     obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')  # no raise
+
+
+def test_the_drivers_records_are_published_before_postprocessing_reads_them(monkeypatch,
+                                                                           tmp_path):
+    """Postprocessing stages the campaign from its durable home, and the driver's own
+    records reach that home only at `finalize_campaign` -- which runs after this tail. So
+    the pod was handed a campaign with no `execution.yaml`, and its metadata step had
+    nothing to say what produced the results it had just derived.
+
+    Asserted as an ORDER, not merely as a call: publishing after the submit would be no
+    better than not publishing at all.
+    """
+    from robovast.execution import controller as ctrl
+
+    calls = []
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+        def ensure_campaign_root_complete(self, root):
+            calls.append("complete")
+
+        def publish_execution_records(self, root):
+            calls.append("publish")
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.postprocess_job.postprocess_campaign",
+        lambda *a, **kw: calls.append("postprocess") or (True, "done"))
+
+    ctrl._chain_postprocessing(_Backend(), str(tmp_path), "camp-1",
+                               options=ctrl.RunOptions(postprocess=True))
+
+    assert calls.index("publish") < calls.index("postprocess")
+
+
+def test_a_lane_whose_disk_is_the_durable_home_publishes_nothing_extra():
+    """The default is a no-op because on the local lane the driver's disk IS the durable
+    home: postprocessing there reads exactly what the driver just wrote, and an upload
+    would be a copy to nowhere."""
+    from robovast.execution.backends import ExecutionBackend
+
+    assert ExecutionBackend.publish_execution_records(object(), "/tmp/whatever") is None
+
+
+def test_a_batch_conversion_runs_at_the_campaigns_declared_size(monkeypatch, tmp_path):
+    """A search's per-batch conversion is sized by the same block as the campaign's.
+
+    This is the path that converts *most often* -- once per batch, for the length of the
+    search -- so a default left in place here would be the one place a campaign's declared
+    figure did not apply, and the one where that costs the most.
+    """
+    from robovast.execution import controller as ctrl
+
+    campaign = tmp_path / "campaign-c"
+    (campaign / "_config").mkdir(parents=True)
+    (campaign / "_config" / "c.vast").write_text(
+        "version: 3\nmetadata: {name: c}\n"
+        "results_processing:\n  resources:\n    cpu: 6\n    memory: 12Gi\n",
+        encoding="utf-8")
+
+    seen = {}
+
+    def _fake_job(*_a, **kwargs):
+        seen.update(kwargs)
+        return True, "rosbag conversion complete"
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (_fake_job, lambda *a, **kw: None,
+                                 lambda root: 'img', lambda m, _p: m))
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = str(campaign)
+    obj.vast_dir = str(campaign / "_config")
+    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+
+    assert seen["convert_resources"] == {"cpu": 6, "memory": "12Gi"}

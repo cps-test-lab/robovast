@@ -161,6 +161,42 @@ def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes
     return _read
 
 
+def layered_by_writer(
+    local: Callable[[str], Optional[bytes]],
+    remote: Callable[[str], Optional[bytes]],
+    remote_written: "frozenset[str]" = frozenset(),
+) -> Callable[[str], Optional[bytes]]:
+    """A ``get_bytes`` asking, per phase file, whoever writes it first.
+
+    A local copy is preferred by default because a process appending to a phase file runs
+    ahead of the durable one. *remote_written* names the phase files for which that is
+    false -- the ones an operation writes somewhere other than where it is tracked, so the
+    local copy is an earlier attempt's. Present, frozen and wrong is the one combination an
+    absence-only fallback cannot see past, and it inverts the answer: a postprocess that
+    succeeded then reads as the failure that preceded it.
+
+    **Empty by default, and named by the caller that knows.** Which files those are is a
+    fact about one operation on one lane, not about the phase: the same postprocessing log
+    is written into the tracked root on the local lane and into a fetched one on the
+    cluster. A set fixed here would make every reader pay for the one case it applies to --
+    two store round-trips per poll behind an SSE stream that re-polls while a user watches.
+
+    Both directions remain :func:`layered_get_bytes`, so either source still covers the
+    other's absence: what changes is which is believed when both have the file, never
+    whether a phase is served at all. And the choice is constant for a phase over a
+    campaign's life, so the assembled stream cannot shrink between polls -- which the byte
+    offset protocol requires.
+    """
+    local_first = layered_get_bytes(local, remote)
+    remote_first = layered_get_bytes(remote, local)
+
+    def _read(filename: str) -> Optional[bytes]:
+        source = remote_first if filename in remote_written else local_first
+        return source(filename)
+
+    return _read
+
+
 def layered_get_bytes(
     *sources: Callable[[str], Optional[bytes]]
 ) -> Callable[[str], Optional[bytes]]:

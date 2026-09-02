@@ -495,3 +495,60 @@ def test_open_object_does_not_retry_a_half_consumed_stream(monkeypatch):
             stream.read(4)
 
     assert opens == [1], "a failed read must not re-open the object"
+
+
+# -- the executable-bit round-trip ------------------------------------------
+#
+# Preserving a fetched file's executable bit costs a ``head_object`` per file, because the
+# flag rides in the object's metadata and a listing does not carry it. That is fine for a
+# handful of files and dominates the transfer for a campaign's worth of them, so the
+# caller says whether it needs the bit at all.
+
+
+class _PagedStore:
+    """A boto stub with a paginator, recording every ``head_object`` it is asked for."""
+
+    def __init__(self, keys):
+        self._keys = list(keys)
+        self.heads = []
+
+    def get_paginator(self, _name):
+        pages = [{"Contents": [{"Key": k, "Size": 3} for k in self._keys]}]
+        return type("P", (), {"paginate": lambda _s, **_kw: pages})()
+
+    def download_file(self, _bucket, _key, path):
+        with open(path, "wb") as handle:
+            handle.write(b"abc")
+
+    # pylint: disable=invalid-name  # boto3's own kwarg names, which the client passes
+    def head_object(self, Bucket, Key):  # noqa: N803
+        self.heads.append(Key)
+        return {"Metadata": {}}
+
+
+def test_staging_a_campaign_skips_the_per_file_metadata_read(monkeypatch, tmp_path):
+    """``executable_bits=False`` is what keeps staging's cost the transfer's own.
+
+    The bit lives in each object's metadata, so preserving it is one extra round-trip per
+    fetched file -- and a campaign holds tens of thousands. The staged tree is read and
+    never executed, so those round-trips buy nothing there. Without this the fetch pays
+    twice per file for a flag nothing in the pod consults.
+    """
+    store = _PagedStore(["camp-1/a/one.csv", "camp-1/a/two.csv"])
+    client = _interactive_client(monkeypatch, store)
+
+    assert client.download_prefix("b", "camp-1", str(tmp_path),
+                                  executable_bits=False) == 2
+    assert store.heads == [], "staging paid a metadata round-trip per file"
+    assert (tmp_path / "a" / "one.csv").read_bytes() == b"abc"
+
+
+def test_the_default_still_preserves_the_executable_bit(monkeypatch, tmp_path):
+    """The opt-out must stay an opt-out: a caller fetching something that has to stay
+    runnable does nothing and keeps the bit. Flipping the default would silently strip the
+    executable flag from every script any other caller downloads."""
+    store = _PagedStore(["camp-1/bin/run.sh"])
+    client = _interactive_client(monkeypatch, store)
+
+    assert client.download_prefix("b", "camp-1", str(tmp_path)) == 1
+    assert store.heads == ["camp-1/bin/run.sh"]

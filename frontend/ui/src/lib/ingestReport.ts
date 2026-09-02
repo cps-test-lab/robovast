@@ -3,7 +3,7 @@
 // same spirit as `campaignDetails.ts` — the component renders what this returns and owns no
 // wording of its own.
 //
-// The shape is `IngestReport` from the service (see `robovast.service.ingest`): four stages,
+// The shape is `IngestReport` from the service (see `robovast.service.ingest`): a handful of stages,
 // each with a verdict, and `ok` false only when one genuinely BLOCKS. The distinction this
 // module exists to keep is that a *degraded* import succeeded — it is a campaign somebody
 // already has, listing and displaying but under-reporting — so it must read as a caveat on an

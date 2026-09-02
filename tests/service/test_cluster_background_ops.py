@@ -32,10 +32,13 @@ def svc():
 def _capture(svc, monkeypatch):
     seen = {}
 
-    def _dispatch(campaign_id, *, phase, work):
+    def _dispatch(campaign_id, *, phase, work, elsewhere_written_phase_files=frozenset()):
         seen["campaign_id"] = campaign_id
         seen["phase"] = phase
         seen["work"] = work
+        # Which phase file this operation writes somewhere other than the tracked root, so
+        # the campaign log knows not to believe the copy it finds there.
+        seen["elsewhere"] = frozenset(elsewhere_written_phase_files)
         return ActionResult(ok=True, message="dispatched")
 
     monkeypatch.setattr(svc, "_dispatch_background", _dispatch)
@@ -115,9 +118,13 @@ def test_postprocess_campaign_forwards_the_context(monkeypatch):
         raise _Stop  # stop before the object-store sync, which needs a cluster
 
     monkeypatch.setattr(postprocess_job, "run_conversion_job", _conversion)
-    monkeypatch.setattr(postprocess_job, "rosbag_commands_for", lambda *a, **k: ["echo"])
-    monkeypatch.setattr(postprocess_job, "campaign_vast", lambda root: "vast")
-    monkeypatch.setattr(postprocess_job, "campaign_execution_image", lambda root: "img")
+    # The facts the manifest needs about the campaign come through `_submit_inputs`, which
+    # reads them from the object store when the root does not hold the campaign -- the pod
+    # is what stages it. Patched at that seam, so this test needs neither a campaign tree
+    # nor a store.
+    monkeypatch.setattr(postprocess_job, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        (["echo"], "img", (), None))
 
     with pytest.raises(_Stop):
         postprocess_job.postprocess_campaign(
@@ -228,3 +235,22 @@ def test_export_of_a_campaign_with_no_frozen_config_is_refused(svc, monkeypatch)
     with pytest.raises(CampaignConfigError, match="_config/"):
         svc._stream_campaign_to_share("camp-1", "/nonexistent", MagicMock())  # pylint: disable=protected-access
     assert listed == ["campaigns/camp-1/_config"], "one listing, of the one prefix that decides"
+
+
+def test_each_background_operation_names_the_phase_file_it_writes_elsewhere(svc, monkeypatch):
+    """Both of these work against a fetched campaign root and publish their phase file from
+    there, never into the tracked root a local log read looks in. Saying so is what stops
+    the campaign log serving an earlier attempt's copy -- which is how a postprocess that
+    had just ingested twenty thousand rows displayed the image-pull failure before it.
+
+    Named per operation rather than per phase because the same file is written into the
+    tracked root on the local lane: it is a fact about where this operation runs.
+    """
+    for call, request, expected in (
+            ("run_postprocessing", RunPostprocessingRequest(campaign_id="camp-1"),
+             "postprocessing.log"),
+            ("run_share", RunShareRequest(campaign_id="camp-1"), "share.log")):
+        seen = _capture(svc, monkeypatch)
+        getattr(svc, call)(request)
+
+        assert seen["elsewhere"] == frozenset({expected}), call

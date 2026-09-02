@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from robovast.common.config import RESERVED_ENV_NAMES
+from robovast.common.config_generation import _resolve_config_sut_blocks
 from robovast.common.sut_channel import (ABSENT, SutChannelError, check_destinations,
                                          declared_sources, is_absent, materialize,
                                          merge_sut_block, resolve_sut_path,
@@ -243,6 +244,42 @@ def test_a_configuration_that_varies_nothing_still_gets_every_source(campaign, t
     # unvaried, so byte-for-byte the campaign's own values
     assert params["local_costmap"]["local_costmap"]["ros__parameters"][
         "inflation_layer"]["inflation_radius"] == 0.55
+
+
+def test_a_configuration_with_no_sut_block_is_still_given_every_source(campaign, tmp_path):
+    """Through the RESOLVER, not through materialize().
+
+    materialize() has staged every declared source since #285, but the resolver reached it only
+    for configurations whose merged block was non-empty -- so a campaign's control cell, the one
+    that varies nothing, still received no copy and its stack died on a missing path. A unit test
+    calling materialize({}) directly passes while the pipeline fails, which is exactly what
+    happened; this one goes through the caller.
+    """
+    execution, vast_dir = campaign
+    out = str(tmp_path / "out")
+    parameters = {"execution": execution, "configuration": [{"name": "control"}]}
+    configs = [{"name": "control", "_config_name": "control"}]
+
+    _resolve_config_sut_blocks(configs, parameters, vast_dir, out)
+
+    staged = {rel for rel, _ in configs[0].get("_config_files", [])}
+    assert staged == {"files/nav2_params.yaml", "files/nav2_bt.xml"}, (
+        "a configuration that addresses no destination still needs its copy of every declared "
+        "source: the originals are dropped from run_files campaign-wide"
+    )
+
+
+def test_a_campaign_declaring_no_source_stages_nothing(campaign, tmp_path):
+    """The other side of that guard: without a declared source there is nothing to stage, and the
+    resolver must not start writing files for campaigns that never used the channel."""
+    _, vast_dir = campaign
+    out = str(tmp_path / "out")
+    configs = [{"name": "plain", "_config_name": "plain"}]
+
+    _resolve_config_sut_blocks(configs, {"execution": {}, "configuration": [{"name": "plain"}]},
+                               vast_dir, out)
+
+    assert not configs[0].get("_config_files")
 
 
 def test_absence_removes_the_node_rather_than_emptying_it(campaign, tmp_path):
