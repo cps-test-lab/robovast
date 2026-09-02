@@ -53,6 +53,7 @@ from robovast.common.execution import resolve_controller_image
 from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
+from . import postprocess_usage
 from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 
 logger = logging.getLogger(__name__)
@@ -766,6 +767,11 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
         "  set -e",
         "\n".join("  " + c for c in convert),
         f') 2>&1 | tee -a "{log}" || rc=$?',
+        # AFTER the tee'd block and outside it, on purpose. What the conversion used is
+        # worth recording whether or not it succeeded -- a conversion killed for exceeding
+        # its memory is exactly the case the record exists for -- and it must not be able to
+        # change `rc`, which is the conversion's own verdict.
+        postprocess_usage.shell_record(root, CONVERT_CONTAINER),
         "exit $rc",
     ]
     return "\n".join(lines)
@@ -839,6 +845,14 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
         raise RuntimeError(
             "conversion scripts not found in robovast.results_processing.data; "
             "cannot build the postprocessing ConfigMap")
+
+    # The resource sampler travels with them, from the package that owns it rather than a
+    # copy: the conversion container is the campaign's own image, so it can import nothing
+    # of robovast, and this is the only way it can report what it cost. Its container-level
+    # probes are stdlib-only -- psutil is imported inside the per-process loop and that loop
+    # is not what `--once` runs -- so it works in an image that has no psutil.
+    sampler = files("robovast.execution.data") / "monitor_resources.py"
+    payload["monitor_resources.py"] = sampler.read_text(encoding="utf-8")
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
