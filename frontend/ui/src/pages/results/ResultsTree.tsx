@@ -4,7 +4,7 @@ import { RichTreeView } from '@mui/x-tree-view/RichTreeView'
 import {
   isPreviewable, robovast, RobovastError, type CampaignSummary,
 } from '@/lib/robovastClient'
-import { configDirs, previewRunRows, runIds } from '@/lib/previewRuns'
+import { configDirs, previewRunRows, replayableRunIds } from '@/lib/previewRuns'
 import { formatDataFetchLabel } from '@/lib/format'
 import {
   ancestorIds,
@@ -60,26 +60,33 @@ export function runsQuery(c: CampaignSummary | undefined) {
  *  key prefix, absent means a 404 rather than an empty listing. Every OTHER failure is raised: an
  *  unreachable service and a campaign that has produced nothing look identical once both are an
  *  empty tree, and the one that needs saying is the one that would then never be said. */
-async function listedOrAbsent(campaignId: string, path: string): Promise<string[] | null> {
+async function listedOrAbsent(
+  campaignId: string, path: string, opts: { recursive?: boolean } = {},
+): Promise<string[] | null> {
   try {
-    return (await robovast.listResultsDir(campaignId, path)).entries
+    return (await robovast.listResultsDir(campaignId, path, opts)).entries
   } catch (err) {
     if (err instanceof RobovastError && err.status === 404) return null
     throw err
   }
 }
 
-/** A running campaign's runs, from its output tree, in `queryCampaignDataSql`'s reply shape.
+/** A running campaign's REPLAYABLE runs, from its output tree, in `queryCampaignDataSql`'s shape.
  *
- *  One listing for the configurations, then one per configuration for its runs -- so the cost is a
- *  few dozen requests carrying one short name per run, not the tens of thousands of paths a
- *  recursive listing of the same tree returns (it lists every FILE beneath it, rosbags included). */
+ *  One listing for the configurations, then one per configuration for its runs — so the cost is a
+ *  request per configuration, not per run, and never the whole campaign's tree at once.
+ *
+ *  Only runs that have written a recording are listed, and a configuration with none of them
+ *  contributes no rows and so gets no node. What is offered is what can be opened: a picker that
+ *  listed every run directory would fill up with runs that are still going, indistinguishable from
+ *  the ones worth clicking — and on a campaign of five configurations that is most of the tree. */
 async function previewRows(campaignId: string): Promise<{ rows: Record<string, unknown>[] }> {
   const configs = configDirs((await listedOrAbsent(campaignId, '')) ?? [])
   const runs = new Map<string, number[]>()
   await Promise.all(configs.map(async (name) => {
-    const entries = await listedOrAbsent(campaignId, name)
-    if (entries) runs.set(name, runIds(entries))
+    const paths = await listedOrAbsent(campaignId, name, { recursive: true })
+    const replayable = replayableRunIds(paths ?? [])
+    if (replayable.length) runs.set(name, replayable)
   }))
   return { rows: previewRunRows(runs) }
 }
