@@ -42,3 +42,44 @@ def test_a_campaign_with_no_conversion_is_not_given_bags_at_all():
     assert include("cfg-a/0/test.xml")
     assert include("_jobs/batch-0/job-1/resource_usage_sut.csv")
     assert include("campaign.db")
+
+
+def test_staging_restores_the_job_links_the_store_cannot_hold(tmp_path, monkeypatch):
+    """A campaign has every file in the object store and none of its links.
+
+    A symlink is not an object, so ``<config>/<run>/job`` -- the way into a run's job
+    artifacts -- cannot survive the round trip. Metadata generation reads sysinfo.yaml
+    through that link, and failed with "sysinfo.yaml not found" on a campaign whose
+    sysinfo.yaml had been staged all along. The link manifest does survive, so staging
+    completes the tree from it.
+    """
+    import yaml
+
+    from robovast.common.campaign_data import read_sysinfo
+    from robovast.execution.cluster_execution import in_pod_storage, postprocess_stage
+
+    campaign_id = "camp-1"
+    root = tmp_path / campaign_id
+    job = root / "_jobs" / "batch-0" / "job-0"
+    job.mkdir(parents=True)
+    (job / "sysinfo.yaml").write_text(yaml.safe_dump({"cpu_name": "Intel Xeon"}))
+    (root / "cfg-a" / "0").mkdir(parents=True)
+    (root / "_transient").mkdir()
+    (root / "_transient" / "job_links.yaml").write_text(
+        yaml.safe_dump({"cfg-a/0/job": "../../_jobs/batch-0/job-0"}))
+
+    class _Store:
+        def download_prefix(self, *_a, **_kw):
+            return 0  # the tree above stands in for what a real fetch would have written
+
+    monkeypatch.setattr(postprocess_stage, "cluster_config_from_env", lambda: object())
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+    monkeypatch.setenv(postprocess_stage.ENV_CAMPAIGN_ID, campaign_id)
+    monkeypatch.setenv(postprocess_stage.ENV_STAGE_DEST, str(tmp_path))
+
+    assert postprocess_stage.main() == 0
+    # The link exists, and what reads through it now resolves.
+    assert (root / "cfg-a" / "0" / "job").is_symlink()
+    assert read_sysinfo(root / "cfg-a" / "0")["cpu_name"] == "Intel Xeon"
