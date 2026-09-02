@@ -149,6 +149,26 @@ class ExecutionBackend(ABC):
         through object storage fetch them in one shot rather than per config.
         """
 
+    def publish_execution_records(self, campaign_root: str) -> None:
+        """Hook called before postprocessing reads the campaign from its durable home.
+
+        The driver writes ``_execution/`` and ``_transient/`` on its own disk, and on a
+        lane where that disk is scratch they reach the store only at
+        :meth:`finalize_campaign` -- which runs *after* the campaign tail. Postprocessing
+        happens in that tail, and where it stages the campaign out of the store rather
+        than reading the driver's disk, it is given a campaign missing every file only the
+        driver has: ``execution.yaml`` among them, without which metadata generation has
+        nothing to say what ran.
+
+        Distinct from :meth:`publish_records`, which publishes ``campaign.db`` alone at
+        every batch boundary. These directories hold growing logs, so publishing them per
+        batch would re-upload a controller log once per batch to no purpose. Once, when a
+        reader that is not this process is about to need them, is the whole requirement.
+
+        Default no-op: on the local lane the driver's disk IS the durable home, so
+        postprocessing reads what the driver just wrote.
+        """
+
     def publish_records(self, campaign_root: str) -> None:
         """Hook called whenever the campaign's records change materially.
 

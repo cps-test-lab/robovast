@@ -359,3 +359,46 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
     obj.campaign_root = '/tmp/does-not-matter'
     obj.vast_dir = '/tmp'
     obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')  # no raise
+
+
+def test_the_drivers_records_are_published_before_postprocessing_reads_them(monkeypatch,
+                                                                           tmp_path):
+    """Postprocessing stages the campaign from its durable home, and the driver's own
+    records reach that home only at `finalize_campaign` -- which runs after this tail. So
+    the pod was handed a campaign with no `execution.yaml`, and its metadata step had
+    nothing to say what produced the results it had just derived.
+
+    Asserted as an ORDER, not merely as a call: publishing after the submit would be no
+    better than not publishing at all.
+    """
+    from robovast.execution import controller as ctrl
+
+    calls = []
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+        def ensure_campaign_root_complete(self, root):
+            calls.append("complete")
+
+        def publish_execution_records(self, root):
+            calls.append("publish")
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.postprocess_job.postprocess_campaign",
+        lambda *a, **kw: calls.append("postprocess") or (True, "done"))
+
+    ctrl._chain_postprocessing(_Backend(), str(tmp_path), "camp-1",
+                               options=ctrl.RunOptions(postprocess=True))
+
+    assert calls.index("publish") < calls.index("postprocess")
+
+
+def test_a_lane_whose_disk_is_the_durable_home_publishes_nothing_extra():
+    """The default is a no-op because on the local lane the driver's disk IS the durable
+    home: postprocessing there reads exactly what the driver just wrote, and an upload
+    would be a copy to nowhere."""
+    from robovast.execution.backends import ExecutionBackend
+
+    assert ExecutionBackend.publish_execution_records(object(), "/tmp/whatever") is None

@@ -1257,9 +1257,10 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     """Run analysis postprocessing in-cluster, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
-    ``campaign.db`` is flushed — the index ingest mirrors it) and
-    **before** :func:`_finalize`, so the resulting CSVs ride the existing
-    campaign upload instead of needing one of their own.
+    ``campaign.db`` is flushed — the index ingest mirrors it) and **before**
+    :func:`_finalize`. Running before the campaign's own upload means the driver's records
+    are not in the campaign's durable home yet, and postprocessing reads them from there,
+    so this publishes them first (``publish_execution_records``).
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
     and a no-op otherwise. This is an **option, not an env var**, because the service
@@ -1288,6 +1289,16 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     backend.ensure_campaign_root_complete(campaign_root)
+    # And the other direction, before a reader that is not this process looks: what the
+    # DRIVER alone wrote has to reach the campaign's durable home. Postprocessing stages
+    # the campaign from there, while `finalize_campaign` publishes it only after this tail
+    # returns -- so the pod was handed a campaign with no `execution.yaml`, and its metadata
+    # step had nothing to say what produced the results it had just derived.
+    #
+    # The docstring above explains the old order as letting the derived CSVs ride the
+    # existing campaign upload. That reason is spent: the derived data is published by
+    # whatever produced it now, so there is nothing left for this to ride.
+    backend.publish_execution_records(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
         ok, message = postprocess_campaign(
