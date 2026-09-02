@@ -37,6 +37,8 @@ import logging
 import os
 import sys
 
+from . import postprocess_usage
+
 logger = logging.getLogger(__name__)
 
 #: Campaign to stage. Required -- there is no default campaign.
@@ -210,6 +212,15 @@ def main() -> int:
         logger.warning("Could not restore the job links of %s: %s", campaign_id, e)
     else:
         logger.info("Restored %d job link(s) of campaign %s", links, campaign_id)
+
+    # What staging cost. It is the step whose memory bound is a GUARD rather than a
+    # reservation -- it streams one object at a time, so its footprint should not grow with
+    # the campaign -- and this is the only thing that would show it had started to.
+    try:
+        logger.info("%s", postprocess_usage.summary_line(
+            postprocess_usage.record(campaign_root, "stage")))
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not record what the stage step used.", exc_info=True)
     return 0
 
 

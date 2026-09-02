@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 
+from . import postprocess_usage
 from .postprocess_stage import ENV_CAMPAIGN_ID, ENV_STAGE_DEST, cluster_config_from_env
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,15 @@ def main() -> int:
         failure = e
         message = f"{type(e).__name__}: {e}"
     finally:
+        # What this step cost, before the log handler closes so the figure lands in the
+        # POSTPROCESSING section. Its memory peak is the peak up to *here* and so excludes
+        # the upload that follows -- which is the right cut anyway: the ingest above is this
+        # step's work, and the upload streams rather than accumulating.
+        try:
+            logger.info("%s", postprocess_usage.summary_line(
+                postprocess_usage.record(campaign_root, "host")))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not record what the host step used.", exc_info=True)
         # Before the upload, so the log file holds everything this stage logged.
         remove_campaign_log_handler(handler)
         try:
