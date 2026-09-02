@@ -89,8 +89,25 @@ OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 #: are what let outputs go straight to their canonical keys.
 CAMPAIGN_MOUNT = "/campaign"
 
+#: Group every container in this pod shares, so one campaign tree can be written by all of
+#: them. They do not share a user: the controller image runs as root and an execution image
+#: runs as its own unprivileged user (1000 for the family's), and the tree is created by one
+#: and written by the other. ``fsGroup`` makes the kubelet group-own the shared volume and
+#: set setgid on it, so everything created inside inherits the group -- and the containers
+#: that create directories do so with a group-writable umask, because inheriting a group
+#: buys nothing if the mode denies it write.
+#:
+#: 1000 rather than a derived value: it is the family images' own user, and an execution
+#: image that runs as something else still shares this group through ``supplementalGroups``.
+CAMPAIGN_TREE_GID = 1000
+
 #: Name of the container that stages the campaign's run data into the Job's pod.
 STAGE_CONTAINER = "stage"
+
+#: Name of the container that converts what needs the campaign's own execution image. It is
+#: the one container in this pod that is not ours, so several rules are stated in terms of
+#: it -- no credentials, no umask of ours, writes only the shared mount.
+CONVERT_CONTAINER = "convert"
 
 #: Name of the container that runs everything after the conversion.
 HOST_CONTAINER = "host"
@@ -1125,7 +1142,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     stage = {
         "name": STAGE_CONTAINER,
         "image": resolve_controller_image(),
-        "command": ["python3", "-m",
+        # `umask 0002` is not cosmetic: this container creates the campaign tree, and the
+        # conversion container writes its outputs INTO it as a different user. Root's default
+        # umask makes those directories group-readable and not group-writable, so the
+        # conversion fails on its first output file with EACCES -- after staging the whole
+        # campaign. Inheriting the group via fsGroup buys nothing if the mode denies write.
+        "command": ["sh", "-c",
+                    "umask 0002 && exec python3 -m "
                     "robovast.execution.cluster_execution.postprocess_stage"],
         # Bags are staged only where something in this pod opens one. The host step never
         # does -- it reads the derived tables and the run metadata -- so a campaign with no
@@ -1138,7 +1161,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         "resources": POSTPROCESS_INIT_RESOURCES,
     }
     convert = {
-        "name": "convert",
+        "name": CONVERT_CONTAINER,
         # The system-under-test's own image: custom ROS2 types only deserialize here.
         # ros2_exec.sh sources /opt/ros + /ws/install.
         "image": image,
@@ -1159,7 +1182,11 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     host = {
         "name": HOST_CONTAINER,
         "image": resolve_controller_image(),
-        "command": ["python3", "-m",
+        # Same umask as the stage container, and for a reason that outlives this pod: what
+        # this step derives is uploaded as the campaign's own, so a re-run staging it again
+        # must be able to write over it.
+        "command": ["sh", "-c",
+                    "umask 0002 && exec python3 -m "
                     "robovast.execution.cluster_execution.postprocess_host"],
         # The index DSN is injected HERE and nowhere else: this is the only container that
         # writes to the index.
@@ -1220,6 +1247,11 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                     # its nodes to campaigns has nowhere to put this at all, and the Job
                     # sits Pending until its three-hour timeout. Easy to miss here, because
                     # this Job is created outside the admission path entirely.
+                    # One tree, written by containers that run as different users -- see
+                    # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose
+                    # own user is not the family's.
+                    "securityContext": {"fsGroup": CAMPAIGN_TREE_GID,
+                                        "supplementalGroups": [CAMPAIGN_TREE_GID]},
                     "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
                     **({"imagePullSecrets": [{"name": pull_secret_name}]}
                        if pull_secret_name else {}),
