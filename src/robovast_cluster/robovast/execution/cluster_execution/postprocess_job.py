@@ -64,9 +64,14 @@ logger = logging.getLogger(__name__)
 #: the canonical paths.
 POSTPROC_PREFIX = "_postproc"
 
-#: Campaign-relative path of the manifest the conversion Job writes listing every file it
-#: produced, one path per line. Riding inside ``/out`` means the same mirror that carries
-#: the outputs carries the index of them, so the two cannot disagree.
+#: Campaign-relative path of the manifest the Job writes listing every file it produced,
+#: one path per line. Riding inside ``/out`` means the same mirror that carries the outputs
+#: carries the index of them, so the two cannot disagree.
+#:
+#: Built by walking ``/out``, so it describes whatever the Job produced rather than what
+#: any one plugin was expected to produce. The payload is whatever declared
+#: ``needs_execution_image`` -- the rosbag conversion today, and that flag exists on the
+#: plugin base class precisely so it will not always be only that.
 #:
 #: This is what lets the outputs go straight to the canonical prefix: the service reads one
 #: known key and then fetches exactly the objects it names, instead of listing a prefix
@@ -75,10 +80,10 @@ OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 
 #: Where the staging initContainer leaves its account of itself when it fails.
 #:
-#: Its own channel, not the conversion's: a failure here means the conversion container
-#: never starts, so nothing it would have written exists, and a diagnostic that rides the
-#: conversion's end-of-run mirror is a diagnostic that is only delivered when it is not
-#: needed. Staging pulls every bag onto the node, so it is also the step that meets a full
+#: Its own channel, not the step's: a failure here means the step container never starts,
+#: so nothing it would have written exists, and a diagnostic that rides the step's
+#: end-of-run mirror is a diagnostic that is only delivered when it is not needed. Staging
+#: copies the campaign's run data onto the node, so it is also the step that meets a full
 #: disk first -- the failure most in need of an explanation is the one that had none.
 STAGING_LOG = "_execution/staging.log"
 _POLL_SECONDS = 5
@@ -221,8 +226,8 @@ def _staging_log_text(cluster_config, campaign_id: str) -> "str | None":
     """The staging container's own log, or ``None`` when it filed none.
 
     It files one only if it survived long enough to: a pod SIGKILLed by the kubelet under
-    node disk pressure, or OOM-killed, never reaches its own report. Staging pulls every
-    bag of the campaign onto the node, so that is the likeliest way it dies -- which is
+    node disk pressure, or OOM-killed, never reaches its own report. Staging copies the
+    campaign's run data onto the node, so that is the likeliest way it dies -- which is
     why the absence of this log is itself a finding and not simply missing information.
     """
     from . import in_pod_storage  # noqa: PLC0415
@@ -262,9 +267,9 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
     lines = [
         f"Postprocessing failed: {headline}",
         "",
-        "The conversion container produced no log, so it did not run. The Job stages the "
-        "campaign's bags into the pod before converting them; that step is where this "
-        "failed.",
+        "The step container produced no log, so it did not run. The Job stages the "
+        "campaign's recorded run data into the pod before postprocessing it; that is "
+        "where this failed.",
     ]
     if staging is None:
         lines += [
@@ -273,15 +278,15 @@ def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
             "under node disk pressure, or for memory -- runs no cleanup and files nothing, "
             "so the absence of one is expected for exactly those failures rather than "
             "evidence they did not happen. What the pod itself recorded is in the line "
-            "above, and it does not depend on any container having survived. Staging pulls "
-            "every bag of this campaign onto one node, so that node's free space is the "
-            "first thing to check.",
+            "above, and it does not depend on any container having survived. Staging "
+            "copies this campaign's run data onto one node, so that node's free space is "
+            "the first thing to check.",
         ]
     else:
         lines += ["", "===== staging =====", staging]
     text = "\n".join(lines) + "\n"
-    logger.warning("Postprocessing failed before the conversion ran; recording the "
-                   "account for %s", campaign_id)
+    logger.warning("Postprocessing failed before its step ran; recording the account "
+                   "for %s", campaign_id)
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "w", encoding="utf-8") as f:
@@ -724,8 +729,8 @@ POINTER_SLOT = "<<log>>"
 #: Appended to a failed Job's message once the conversion log has actually been synced
 #: down. Kept apart from :func:`job_failed_message` because only the caller that has run
 #: :func:`sync_outputs` knows whether the section it names exists.
-LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
-               "conversion error")
+LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for what it "
+               "reported")
 
 #: The same slot when no log arrived, and then there is no POSTPROCESSING section and
 #: never will be. Pointing at one regardless sends the reader to an empty panel and reads
@@ -738,11 +743,11 @@ LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
 #: which case the conversion container never starts and there is nothing anywhere to tee.
 #: Staging is the likelier of the two on a campaign of any size: it pulls every bag onto
 #: the node, so it is the step that meets a full disk first.
-NO_LOG_POINTER = ("— before the conversion produced any output, so the campaign log has "
-                  "no POSTPROCESSING section and no conversion error to read. The "
-                  "conversion did not run: the Job failed while staging the campaign's "
-                  "bags into the pod, or while setting up around them. Node disk and the "
-                  "object store are what to check.")
+NO_LOG_POINTER = ("— before its step produced any output, so the campaign log has no "
+                  "POSTPROCESSING section and nothing it reported to read. The step did "
+                  "not run: the Job failed while staging the campaign's run data into the "
+                  "pod, or while setting up around it. Node disk and the object store are "
+                  "what to check.")
 
 
 def job_failed_message(job_name: str, pod_reason: str = "") -> str:
@@ -792,11 +797,16 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     graceful failures and misses the ones that matter most. The kubelet, meanwhile, has
     recorded ``Evicted`` with a message naming ephemeral storage all along.
 
+    Nothing here is specific to what the Job was running. The payload is whatever
+    postprocessing plugin declared ``needs_execution_image`` -- today the rosbag
+    conversion, deliberately not only that -- and a pod's cause of death is the same
+    question either way.
+
     Infrastructure causes come from :func:`pod_termination_reason`, shared with the run
     loop so both lanes agree on what those mean. A plain non-zero exit is added here, which
     that function deliberately omits: for a *run* the reason is in the scenario's own log,
-    but this Job's conversion may have died before writing one, and then the container's
-    name and exit code are the whole of what is known.
+    but this Job's step may have died before writing one, and then the container's name and
+    exit code are the whole of what is known.
 
     Advisory: this runs while reporting a failure, so it must not raise one of its own.
     """
@@ -817,8 +827,8 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
 
     for pod in pods:
         status = getattr(pod, "status", None)
-        # Init containers first and in declaration order: staging runs before the
-        # conversion, so when it is what failed the conversion's status says nothing.
+        # Init containers first and in declaration order: staging runs before the step, so
+        # when staging is what failed the step container's status says nothing.
         statuses = list(getattr(status, "init_container_statuses", None) or []) + \
             list(getattr(status, "container_statuses", None) or [])
         for cs in statuses:
