@@ -592,7 +592,9 @@ def test_a_running_job_is_adopted_not_replaced():
     """Two postprocesses of one campaign must not race each other's pods."""
     batch = _FakeBatch(active=1)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    # Reported as adoption rather than as bare success: the caller has to know it is a
+    # waiter on someone else's Job, because that decides what it may write and delete.
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
 
@@ -603,7 +605,7 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     """
     batch = _FakeBatch(active=None)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
 
 
@@ -1075,3 +1077,120 @@ def test_raised_to_compares_quantities_rather_than_strings():
         "cpu": 2, "memory": "8Gi"}
     # An unparseable quantity keeps the floor rather than raising to nonsense.
     assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "lots"})["cpu"] == 2
+
+
+
+class _SubmitBatch:
+    """Enough of BatchV1Api to drive a whole `run_conversion_job` submit and wait."""
+
+    def __init__(self, existing_active=None, calls=None):
+        self.existing_active = existing_active
+        self.calls = [] if calls is None else calls
+
+    def read_namespaced_job(self, name, namespace):
+        self.calls.append('read-job')
+        if self.existing_active is None:
+            from kubernetes.client.rest import ApiException
+            raise ApiException(status=404)
+        return type('J', (), {'status': type('S', (), {
+            'active': self.existing_active})()})()
+
+    def create_namespaced_job(self, namespace, body):
+        self.calls.append('create-job')
+        self.existing_active = 1
+
+    def read_namespaced_job_status(self, name, namespace):
+        # Succeeded on the first poll: these tests are about what the submit writes around
+        # the Job, so the wait must end without a second of sleeping.
+        return type('J', (), {'status': type('S', (), {
+            'active': None, 'succeeded': 1, 'failed': None})()})()
+
+
+class _SubmitCore:
+    """Enough of CoreV1Api to record every write to the scripts ConfigMap."""
+
+    def __init__(self, conflict=False, calls=None):
+        self.conflict = conflict
+        self.calls = [] if calls is None else calls
+
+    def create_namespaced_config_map(self, namespace, body):
+        self.calls.append('create-cm')
+        if self.conflict:
+            from kubernetes.client.rest import ApiException
+            raise ApiException(status=409)
+
+    def replace_namespaced_config_map(self, name, namespace, body):
+        self.calls.append('replace-cm')
+
+    def delete_namespaced_config_map(self, name, namespace):
+        self.calls.append('delete-cm')
+
+
+def _submit(monkeypatch, core, batch):
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    cluster_config = types.SimpleNamespace(
+        get_s3_credentials=lambda: ("key", "secret"),
+        get_s3_endpoint=lambda: "https://store.example.com")
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("bucket", "prefix/"))
+    monkeypatch.setattr("robovast.execution.cluster_execution.cluster_execution."
+                        "resolve_pull_secret", lambda cfg, core_, ns: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: "test")
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr(pj, "publish_live_log",
+                        lambda *a, **k: None)
+    return pj.run_conversion_job(cluster_config, "camp", "ns", "img",
+                                 [{"plugins": []}])
+
+
+def test_adopting_a_live_job_does_not_touch_the_scripts_it_mounts(monkeypatch):
+    """A second attempt meeting a live Job must write NOTHING the Job mounts.
+
+    The scripts ConfigMap is mounted at /scripts in the conversion container, which is
+    executing out of that mount. The kubelet syncs new content into every mount of a
+    ConfigMap, so replacing it swaps the script out from under the running interpreter and
+    the container exits 1 -- and deleting it on the way out removes the mount entirely.
+    Either write destroys a healthy in-flight conversion, and the attempt that did it is
+    the one that reports the failure as the campaign's. So the live-Job check has to come
+    before the ConfigMap, and an adopted Job's resources belong to the attempt that created
+    them.
+    """
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=1, calls=calls)
+
+    ok, message = _submit(monkeypatch, core, batch)
+
+    assert ok is True and "complete" in message
+    # Neither created, replaced, nor deleted -- and no second Job launched at the live one.
+    assert calls == ['read-job']
+
+
+def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch):
+    """Nothing is running under this name, so this attempt owns the scripts it writes."""
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, _message = _submit(monkeypatch, core, batch)
+
+    assert ok is True
+    # The scripts land before the Job -- the pod holds in ContainerCreating until the
+    # volume source exists -- and are swept up once the Job is done.
+    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
+
+
+def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
+    """No live Job means the ConfigMap left behind is nobody's, and this attempt's Job
+    needs its own scripts there -- so the conflict is resolved by replacing it."""
+    calls = []
+    core = _SubmitCore(conflict=True, calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, _message = _submit(monkeypatch, core, batch)
+
+    assert ok is True
+    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
