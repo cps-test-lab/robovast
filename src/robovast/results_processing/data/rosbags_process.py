@@ -73,6 +73,9 @@ for _thread_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"
                     "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
     os.environ.setdefault(_thread_var, "1")
 
+# These imports come after the pins by construction -- see above -- so the rule this file
+# has to break is silenced only for them.
+# pylint: disable=wrong-import-position
 import numpy as np
 import rosbag2_py
 import yaml
@@ -85,6 +88,7 @@ from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FA
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 from tf2_ros import Buffer
+# pylint: enable=wrong-import-position
 
 # ---------------------------------------------------------------------------
 # Base handler class
