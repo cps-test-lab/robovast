@@ -45,7 +45,8 @@ from robovast.common.build_context import BUILD_CONTEXT_IGNORE
 from robovast.common.config_plugins import canonical_name
 from robovast.common.containers import plan_containers, ros_repo_name
 from robovast.common.execution import GIT_TOKEN_SECRET_ID as _GIT_TOKEN_SECRET_ID
-from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
+from robovast.common.execution import (BUILD_IMAGE_PREFIX, BUILD_MANIFEST_DIR,
+                                       BUILD_MANIFEST_FILES, DEFAULT_IMAGE_USER,
                                        FAMILY_IMAGE_PREFIX)
 from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
 
@@ -267,17 +268,11 @@ def _ros_entry(entry) -> dict:
 # python_packages classification (shared vocabulary with top-level ``plugins:``)
 # ---------------------------------------------------------------------------
 
-#: Where a built image records what it actually contains. Baked into the image rather than
-#: written beside the campaign, because that is the only form that survives every path: both
-#: lanes get it without extra plumbing, it travels with the image if the image is copied or
-#: retagged, and a rebuild a year from now can read what the original installed and install
-#: exactly that.
-BUILD_MANIFEST_DIR = "/etc/robovast/build-manifest"
-
-#: Plain text, one record per line, rather than JSON. Both are produced by a shell `RUN`, where
-#: emitting valid JSON means quoting hundreds of package names correctly and a mistake yields a
-#: file that parses as something else; `pip freeze` output is also directly re-installable.
-_MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
+# BUILD_MANIFEST_DIR and BUILD_MANIFEST_FILES are imported from robovast.common.execution,
+# which both readers of the lock can reach -- this module writes it from a local image, and the
+# cluster's registry client reads it out of a layer blob. A second literal in either would be a
+# path that drifts silently, and the reader would simply find nothing.
+_MANIFEST_FILES = BUILD_MANIFEST_FILES
 
 
 #: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
@@ -853,6 +848,24 @@ def read_image_build_manifest(image: str) -> dict:
         key = name.removesuffix(".txt")
         out[key] = _parse_manifest(key, text)
     return out
+
+
+def parse_build_manifest_files(texts: dict) -> dict:
+    """``{apt: {...}, pip: {...}, vcs: {...}}`` from the raw ``{filename: text}`` of a lock.
+
+    The reading half split out from :func:`read_image_build_manifest`, which can only ask an
+    image that is present locally. A caller that obtained the same files some other way -- the
+    cluster's registry client reads them out of a layer blob, because the controller pod has no
+    container runtime -- parses them through here rather than through a second parser that
+    would have to agree with this one forever.
+    """
+    out = {}
+    for name, text in (texts or {}).items():
+        if name not in BUILD_MANIFEST_FILES or text is None:
+            continue
+        key = name.removesuffix(".txt")
+        out[key] = _parse_manifest(key, text)
+    return {key: value for key, value in out.items() if value}
 
 
 def pin_specs_from_lock(spec: BuildSpec, lock: dict) -> "tuple[list, list]":
