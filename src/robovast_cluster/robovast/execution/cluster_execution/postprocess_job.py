@@ -513,15 +513,22 @@ POINTER_SLOT = "<<log>>"
 LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
                "conversion error")
 
-#: The same slot when no log arrived. A Job can fail before the conversion writes a line
-#: -- an unwritable ``/out``, or an object store it cannot reach, either of which aborts
-#: the script under ``set -e`` ahead of the first ``tee`` -- and then there is no
-#: POSTPROCESSING section and never will be. Pointing at one regardless sends the reader
-#: to an empty panel and reads as a second fault on top of the first.
-NO_LOG_POINTER = ("— before it produced any conversion output, so the campaign "
-                  "log has no POSTPROCESSING section. The conversion itself never ran: the "
-                  "Job could not write its output directory or could not reach the object "
-                  "store. Re-run postprocessing once that is addressed.")
+#: The same slot when no log arrived, and then there is no POSTPROCESSING section and
+#: never will be. Pointing at one regardless sends the reader to an empty panel and reads
+#: as a second fault on top of the first.
+#:
+#: The message names the STAGE rather than a cause, because two very different failures
+#: land here and the message cannot tell them apart. The conversion container can abort in
+#: setup ahead of its first ``tee``; or -- the one that leaves no trace at all -- the
+#: ``s3-init`` initContainer can fail while staging the campaign's bags into the pod, in
+#: which case the conversion container never starts and there is nothing anywhere to tee.
+#: Staging is the likelier of the two on a campaign of any size: it pulls every bag onto
+#: the node, so it is the step that meets a full disk first.
+NO_LOG_POINTER = ("— before the conversion produced any output, so the campaign log has "
+                  "no POSTPROCESSING section and no conversion error to read. The "
+                  "conversion did not run: the Job failed while staging the campaign's "
+                  "bags into the pod, or while setting up around them. Node disk and the "
+                  "object store are what to check.")
 
 
 def job_failed_message(job_name: str) -> str:
