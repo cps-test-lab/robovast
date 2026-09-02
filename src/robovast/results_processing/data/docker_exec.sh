@@ -37,6 +37,8 @@ OPTIONS:
     --compat-version VER    Highest container protocol this host speaks
     --min-compat-version V  Lowest container protocol this host still supports
     --provenance-file PATH  Mount dirname(PATH) at /provenance in the container (for provenance JSON output)
+    --cpus N                Cores the container may use, as a decimal count (e.g. 4, 2.5)
+    --memory SIZE           Memory the container may use, in docker's spelling (e.g. 4g)
     -h, --help              Show this help message
 
 EXAMPLE:
@@ -46,6 +48,12 @@ EOF
 
 # Provenance mount (optional)
 PROVENANCE_MOUNT=()
+# What the container may use. Unset runs it uncontained, which is what a direct caller of this
+# script gets; the postprocessing plugin always passes both, so that the local lane holds a
+# conversion to the same figure the cluster lane reserves for it. The figure also reaches the
+# conversion's worker count on its own: rosbags_process reads its cgroup quota rather than the
+# machine's core count, so a capped container converts as many bags at once as it has cores.
+LIMITS=()
 COMPAT_VERSION=""
 MIN_COMPAT_VERSION=""
 COMPAT_LABEL="org.robovast.compat-version"
@@ -67,6 +75,22 @@ while [ $# -gt 0 ]; do
             ;;
         --min-compat-version)
             MIN_COMPAT_VERSION="$2"
+            shift 2
+            ;;
+        --cpus)
+            if [ -z "${2:-}" ]; then
+                echo "Error: --cpus requires a core count"
+                exit 1
+            fi
+            LIMITS+=(--cpus "$2")
+            shift 2
+            ;;
+        --memory)
+            if [ -z "${2:-}" ]; then
+                echo "Error: --memory requires a size"
+                exit 1
+            fi
+            LIMITS+=(--memory "$2")
             shift 2
             ;;
         --provenance-file)
@@ -168,6 +192,7 @@ docker run \
     --rm \
     --user $(id -u):$(id -g) \
     -e PYTHONUNBUFFERED=1 \
+    "${LIMITS[@]}" \
     -v "$SCRIPT_DIR:/scripts:ro" \
     "${INPUT_MOUNT[@]}" \
     "${PROVENANCE_MOUNT[@]}" \

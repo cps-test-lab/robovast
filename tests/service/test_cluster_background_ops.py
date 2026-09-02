@@ -118,13 +118,13 @@ def test_postprocess_campaign_forwards_the_context(monkeypatch):
         raise _Stop  # stop before the object-store sync, which needs a cluster
 
     monkeypatch.setattr(postprocess_job, "run_conversion_job", _conversion)
-    # The three facts the manifest needs about the campaign come through `_submit_inputs`,
-    # which reads them from the object store when the root does not hold the campaign --
-    # the pod is what stages it. Patched at that seam, so this test needs neither a
-    # campaign tree nor a store.
+    # The facts the manifest needs about the campaign come through `_submit_inputs`, which
+    # reads them from the object store when the root does not hold the campaign -- the pod
+    # is what stages it. Patched at that seam, so this test needs neither a campaign tree
+    # nor a store.
     monkeypatch.setattr(postprocess_job, "_submit_inputs",
                         lambda cfg, cid, cr, skip=None, skip_rosout=False:
-                        (["echo"], "img", ()))
+                        (["echo"], "img", (), None))
 
     with pytest.raises(_Stop):
         postprocess_job.postprocess_campaign(
