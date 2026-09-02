@@ -589,6 +589,10 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
                          kube_context=None, state=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
+    ``ok`` carries :func:`run_conversion_job`'s three values through unchanged, ``None``
+    among them: this process losing sight of the Job is not the Job failing, and the
+    persisting callers key off ``None`` to leave the campaign's recorded outcome alone.
+
     The single implementation behind both entry points — the per-campaign controller
     (auto-chain) and the service (explicit re-run). All of the work happens in the Job:
 
@@ -638,6 +642,13 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
     if ok:
         return True, message
+    if ok is None:
+        # Passed through untouched, and in particular no failure log is authored: that log
+        # is the account of a fault, and there is no fault to account for -- the Job may be
+        # converting still. The synced log above is whatever the Job has written so far,
+        # which is exactly what a reader wants while the outcome is open.
+        logger.warning("Postprocessing outcome unknown: %s", message)
+        return None, message
     # Echo the error to the service console too. The web UI already has it via the
     # synced postprocessing.log (POSTPROCESSING section); no campaign log handler is
     # attached at this point, so this reaches the ``vast serve`` stdout only — not
@@ -1479,6 +1490,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        host_stage: bool = True, convert_resources=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
+    ``ok`` is three-valued, and the third value is the point of it: ``True`` the Job was
+    read as succeeded, ``False`` it was read as failed, ``None`` **this process can no
+    longer see what the Job is doing** -- the API server would not answer, or the wait
+    reached its deadline while the Job was still active. ``None`` is not a synonym for
+    ``False``: the Job runs in the cluster and outlives this process, so a driver that
+    loses sight of it has learned nothing about the conversion. Recorded as a failure it
+    sends someone to redo hours of work over a conversion that finished, and marks a
+    campaign whose derived data is complete as carrying none.
+
     *image* is the campaign's execution image, and is needed only for the conversion: an
     empty *rosbag_cmds* builds a Job that never pulls it. Callers that cannot know in
     advance whether it is needed should pass ``None`` and let *rosbag_cmds* decide, so a
@@ -1635,13 +1655,23 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
             except ApiException as e:
                 if e.status == 404:  # reaped (ttl) — treat as finished
                     return True, "postprocessing job finished (reaped)"
-                return False, f"could not read postprocessing job status: {e}"
+                # Unknown, not failed: the Job is a cluster object and keeps converting
+                # while this process cannot read it. What is lost here is the observation,
+                # and an observation that did not happen is not a negative result.
+                return None, (f"could not read the status of postprocessing job {name}, "
+                              f"so what it did is unknown; the Job may still be running: "
+                              f"{e}")
             if not status.active:
                 if status.succeeded:
                     logger.info("Postprocessing job %s succeeded", name)
                     return True, ("postprocessing complete" if host_stage
                                   else "rosbag conversion complete")
                 if status.failed:
+                    # The only place a postprocess is reported as failed, because it is the
+                    # only place a failure was actually READ: `backoffLimit: 0` makes one
+                    # container exit terminal, so this field is the Job controller's own
+                    # verdict. Every other exit from this loop is an unknown.
+                    #
                     # Read before the message is built: ttlSecondsAfterFinished reaps this
                     # Job 300 s after it fails, and by the time anyone reads the campaign
                     # the pod that knows why is gone.
@@ -1661,7 +1691,13 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                     f"Nothing about the campaign's results is wrong; re-run "
                     f"postprocessing once the pod can start.")
             time.sleep(_POLL_SECONDS)
-        return False, f"postprocessing job {name} timed out after {timeout}s"
+        # The deadline is this process's patience, not a verdict about the Job: nothing
+        # here stops it, and a conversion measured in hours is still running when the wait
+        # gives up. Reported as unknown so the campaign keeps whatever it already says
+        # about postprocessing, and re-reading the Job (a retrigger) settles it.
+        return None, (f"stopped waiting for postprocessing job {name} after {timeout}s; "
+                      f"it was still running, so its outcome is unknown -- re-run "
+                      f"postprocessing to read it")
     finally:
         # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
         # manual sweep if the driver dies before this runs). The Job's own

@@ -56,6 +56,7 @@ readers and the results store); nothing here reaches back up into ``service`` or
 ``mcp_server``.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +65,8 @@ from robovast.common.campaign_data import (campaign_has_derived_data,
                                            write_execution_outcome)
 from robovast.common.store import read_campaign_mode, read_run_counts
 from robovast.execution.control_server import Phase, Status, is_terminal
+
+logger = logging.getLogger(__name__)
 
 
 def _runs_from_verdicts(counts: dict, total: int) -> dict:
@@ -202,7 +205,9 @@ def record_step_outcome(campaign_dir: str | Path, *,
     preserved), the given step's field is refreshed, and it is written back.
 
     Each of *postprocessing* / *share*, when given, is an ``(ok, message)`` pair; only
-    the provided step is touched. ``phase`` is normalised to ``finished`` — a re-trigger
+    the provided step is touched. For *postprocessing*, ``ok is None`` means the step's
+    outcome could not be established, and then its recorded fields are left exactly as
+    they were -- ``False`` is reserved for a step that was read as failed. ``phase`` is normalised to ``finished`` — a re-trigger
     runs on an already-finished campaign and never changes that.
 
     Returns the written :class:`Status`.
@@ -212,7 +217,21 @@ def record_step_outcome(campaign_dir: str | Path, *,
     status.phase = Phase.FINISHED
     if postprocessing is not None:
         ok, message = postprocessing
-        status.postprocessing_error = None if ok else message
+        if ok is None:
+            # ``ok is None`` is "the step's outcome could not be established" -- the
+            # cluster lane returns it when the driver can no longer read the Job that is
+            # doing the work. Nothing is written: the recorded outcome is a claim about
+            # the campaign, and this call has no claim to make. The previous record stands
+            # (a success stays a success, an earlier error stays readable) and the next
+            # re-trigger, which can read the Job, settles it. Writing *message* onto
+            # ``postprocessing_error`` here would be a terminal negative built from an
+            # unanswered question, and it is what tells a reader to redo work that a
+            # still-running conversion is about to finish.
+            logger.info("Postprocessing outcome for %s could not be established; the "
+                        "recorded outcome is left as it stands: %s",
+                        campaign_dir.name, message)
+        else:
+            status.postprocessing_error = None if ok else message
         if ok:
             # Asked AGAIN, after the error is cleared. The reconstruction refuses to
             # promote the flag over a recorded ``postprocessing_error`` -- deliberately, so
