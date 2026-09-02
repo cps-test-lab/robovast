@@ -670,3 +670,44 @@ def test_the_flattened_tag_is_a_legal_kubernetes_label():
     import re
     tag = _tag_for("batch-12/reps-5", 7)
     assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", tag), tag
+
+
+def test_calibration_stated_in_the_vast_reaches_the_allocation():
+    """A stated `calibration` block must actually size the container.
+
+    It arrives from the plan as the mapping the `.vast` wrote, not as a model, so reading
+    it with ``getattr`` alone resolved every field to ``None`` and fell back to the role
+    defaults. The block validated, so the file read as configured while the allocation was
+    the default one -- and nothing said so.
+
+    The peak below is a fixture, not a measurement: it is chosen so the two headrooms land
+    on different sides of a granularity step, which is what makes the assertion able to tell
+    a stated block from an ignored one at all.
+    """
+    from robovast.common.containers import plan_containers
+    from robovast.execution.cluster_execution.kubernetes_backend import \
+        calibrated_resources
+
+    plan = plan_containers({"containers": {
+        "scenario": {"image": "a", "resources": {"cpu": 2, "memory": "1Gi"},
+                     "calibration": {"size_on": 99, "headroom": {"memory": 10.0}}},
+        "simulation": {"image": "b", "resources": {"cpu": 2, "memory": "2Gi"},
+                       "calibration": {"headroom": {"memory": 10.0}}},
+    }})
+    runner = object.__new__(BatchJobRunner)
+    runner.plan = plan
+
+    resolved = runner._calibration_by_container()  # noqa: SLF001 - the unit under test
+    assert resolved["scenario"]["size_on"] == 99, "size_on fell back to the role default"
+    assert resolved["simulation"]["headroom"]["memory"] == 10.0
+    # Stating only memory keeps the cpu default rather than losing it.
+    assert resolved["simulation"]["headroom"]["cpu"] == 1.25
+
+    sized = calibrated_resources(
+        {"cpu": 2, "memory": "2Gi"}, "simulation",
+        {"simulation": {"memory_peak": 181 * 1024 * 1024}},
+        roles=("simulation",), bootstrap=True, settings=resolved["simulation"])
+
+    assert int(sized["memory"]) > 256 * 1024 * 1024, "still sized at the default headroom"
+    # Never above what the author declared: calibration sizes down, it does not raise a ceiling.
+    assert int(sized["memory"]) <= 2 * 1024 ** 3
