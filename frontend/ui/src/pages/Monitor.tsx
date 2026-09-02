@@ -539,6 +539,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // watching, and the reason for hiding it -- the tree is moving -- is a property of the
   // archive to state, not of the button to refuse.
   const archiveName = running ? `${id}.incomplete.tar.gz` : `${id}.tar.gz`
+  const archiveStage = running
+    ? 'incomplete'
+    : summary.postprocessed
+      ? 'postprocessed'
+      : 'raw'
 
   // One listing for the whole page: every card asks under the same react-query key, so
   // they collapse into a single request, and the share answers for itself rather than
@@ -693,12 +698,10 @@ function CampaignCard({ summary, newest, openedByLink }: {
           onClick={closeMenu}
         >
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText
-            primary={running ? 'Download snapshot' : 'Download'}
-            // What the reader gets, in the words the file itself will carry: the campaign is
-            // still running, so runs that have not finished are not in it.
-            secondary={running ? `Incomplete — saved as ${archiveName}` : undefined}
-          />
+          {/* The label states which of the three things the archive can be: a running campaign's
+              snapshot is missing the runs that have not finished, and a finished campaign's
+              results are raw until postprocessing has produced its tables and plots. */}
+          <ListItemText primary={`Download (${archiveStage})`} />
         </MenuItem>,
         // Omitted where the provider has no openable link -- sftp never has one, and a webdav
         // URL often needs credentials the recipient lacks.
