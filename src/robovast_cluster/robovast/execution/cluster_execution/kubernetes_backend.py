@@ -3239,6 +3239,30 @@ def registry_ca_file(k8s_client, namespace: str, registry) -> str:
     return fd.name
 
 
+def _planned_images(runner) -> dict:
+    """``{role or container name: image ref}`` from the runner's PLAN.
+
+    The plan is where a pinned ref lives: ``_pin_image_refs`` rewrites every container's image
+    to the digest it names before a single pod is written, so this is the earliest moment the
+    bytes a campaign will run are known -- and, on a batch that has not finished, the only one.
+
+    Keyed by container name **and** by every role it backs, roles first so a name always wins:
+    a role is how a reader asks ("which simulator ran?") while the name is what the pod calls
+    it, and a stepped simulator makes one container answer to both.
+    """
+    plan = getattr(runner, "plan", None)
+    containers = tuple(getattr(plan, "containers", ()) or ())
+    images = {}
+    for container in containers:
+        for role in getattr(container, "roles", ()) or ():
+            if getattr(container, "image", None):
+                images[role] = container.image
+    for container in containers:
+        if getattr(container, "image", None):
+            images[container.name] = container.image
+    return images
+
+
 class KubernetesBackend(ExecutionBackend):
     """Run batches as Kubernetes Jobs from inside the controller pod.
 
@@ -3357,24 +3381,15 @@ class KubernetesBackend(ExecutionBackend):
 
         Effective only where the driver shares a filesystem with whoever wrote the launch
         record. It does on the local lane. On this one the record is written by the service
-        and the driver runs elsewhere, so there is nothing here to merge into and this does
-        nothing -- deliberately, rather than creating a launch record holding images and no
-        request, which every reader would take for a campaign that asked for nothing. What
-        answers "which bytes did this campaign run?" here is ``execution.yaml``'s
-        ``image_revisions``, which is why that file is now written before the jobs too.
+        and the driver runs elsewhere, so there may be nothing here to merge into -- and then
+        this does nothing, deliberately, rather than creating a launch record holding images
+        and no request, which every reader would take for a campaign that asked for nothing.
+        What answers "which bytes did this campaign run?" in that case is ``execution.yaml``'s
+        ``image_revisions``, which is why that file is written before the jobs too -- and from
+        the same :func:`_planned_images`, so the two records cannot name different bytes.
         """
         from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
-        plan = getattr(runner, "plan", None)
-        containers = tuple(getattr(plan, "containers", ()) or ())
-        images = {}
-        for container in containers:
-            if not getattr(container, "image", None):
-                continue
-            for role in getattr(container, "roles", ()) or ():
-                images[role] = container.image
-        for container in containers:
-            if getattr(container, "image", None):
-                images[container.name] = container.image
+        images = _planned_images(runner)
         try:
             update_launch_images(Path(campaign_root), images)
         except (OSError, ValueError) as e:
@@ -3560,11 +3575,27 @@ class KubernetesBackend(ExecutionBackend):
                 # Into the cache the controller reads after the batch, when no runner is
                 # alive to ask. Only a runner holds the registry credentials for it.
                 runner.build_lock(container.image)
+        # The digests, from the plan first and from the pods second. `_resolved_image_digests` is
+        # read back off a pod, so before the batch it is empty -- and this method now runs before
+        # the batch, where the plan is the only source there is. Reading only the pods left the
+        # early record naming its images by TAG, with no `image_revisions` at all: enough to say
+        # what was asked for and not enough to attribute an artifact to the bytes that produced
+        # it, which is refused rather than guessed at. The plan already carries those bytes
+        # (`_pin_image_refs`), and the launch record beside this one was already writing them.
+        #
+        # Only refs that name bytes: pinning is fail-soft, so an unresolvable ref stays a tag,
+        # and a tag in `image_revisions` would claim an identity it does not have. It is left
+        # out, and the write after the batch fills it in from the pod that ran it.
+        from robovast.common.campaign_data import \
+            image_identifies_bytes  # pylint: disable=import-outside-toplevel
+        digests = {name: ref for name, ref in _planned_images(runner).items()
+                   if image_identifies_bytes(ref)}
+        digests.update(getattr(runner, "_resolved_image_digests", None) or {})
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
-                              image_digests=getattr(runner, "_resolved_image_digests", None),
+                              image_digests=digests or None,
                               image_labels=image_labels or None)
 
     def publish_execution_records(self, campaign_root: str) -> None:
