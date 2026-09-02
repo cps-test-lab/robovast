@@ -666,3 +666,47 @@ def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, mon
     assert rosbag_cmds and image == "img:1"
     assert "p/_execution/execution.yaml" in fetched
     assert not any(k.endswith(".vast") for k in fetched)
+
+
+def test_a_root_without_the_ledger_does_not_read_as_no_interventions(tmp_path, monkeypatch):
+    """Absence of the intervention ledger is not absence of interventions.
+
+    Its reader answers "nobody intervened" for a missing file and for a file saying so
+    alike, so a root that happens not to hold it drops every path the conversion was told
+    to tolerate. Those paths are the bags of jobs the runner invalidated -- unfinalized,
+    impossible to open, ever -- so dropping them does not lose a nicety: it fails the whole
+    conversion on bags nothing was ever going to read. A 30 GB campaign's postprocess died
+    that way, on eight bags out of 1452.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    (tmp_path / "_config").mkdir()
+    (tmp_path / "_config" / "x.vast").write_text(
+        "version: 3\nmetadata: {name: x}\nresults_processing:\n"
+        "  postprocessing:\n  - rosbags_tf_to_csv\n")
+    (tmp_path / "_execution").mkdir()
+    (tmp_path / "_execution" / "execution.yaml").write_text("image: img:1\n")
+    # The ledger is NOT here, and the store has one.
+
+    class _Store:
+        def list_keys(self, bucket, prefix):
+            return [f"{prefix}x.vast"]
+
+        def download_object(self, bucket, key, dst):
+            if key.endswith("execution.yaml"):
+                with open(dst, "w", encoding="utf-8") as f:
+                    f.write("image: img:1\n")
+                return True
+            if key.endswith("interventions.json"):
+                with open(dst, "w", encoding="utf-8") as f:
+                    f.write('[{"kind": "invalid", "job_dir": "_jobs/batch-1/job-27"}]')
+                return True
+            return False
+
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
+
+    _cmds, _image, tolerate = pj._submit_inputs(object(), "camp", str(tmp_path))
+
+    assert "_jobs/batch-1/job-27" in tolerate
