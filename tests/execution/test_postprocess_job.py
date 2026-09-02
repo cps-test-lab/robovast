@@ -1075,4 +1075,3 @@ def test_raised_to_compares_quantities_rather_than_strings():
         "cpu": 2, "memory": "8Gi"}
     # An unparseable quantity keeps the floor rather than raising to nonsense.
     assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "lots"})["cpu"] == 2
-
