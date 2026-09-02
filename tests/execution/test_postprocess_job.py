@@ -432,3 +432,63 @@ def test_the_message_points_at_the_section_once_it_has_been_written(tmp_path):
     assert 'no POSTPROCESSING section' in pj.with_log_pointer(raw, log)
     log.write_text('an account')
     assert 'see the POSTPROCESSING section' in pj.with_log_pointer(raw, log)
+
+
+class _Term:
+    def __init__(self, exit_code=None, reason=None):
+        self.exit_code, self.reason = exit_code, reason
+
+
+class _CS:
+    def __init__(self, name, exit_code=None, reason=None):
+        self.name = name
+        self.state = type('S', (), {'terminated': _Term(exit_code, reason)})()
+
+
+def _pod(reason=None, message=None, init=(), main=()):
+    status = type('St', (), {'reason': reason, 'message': message,
+                             'init_container_statuses': list(init),
+                             'container_statuses': list(main)})()
+    return type('P', (), {'status': status})()
+
+
+def _core(pods):
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return type('L', (), {'items': pods})()
+    return _Core()
+
+
+def test_an_evicted_pod_explains_itself_without_the_container_helping():
+    """The failure that most needs an account is the one that can file none: a pod
+    SIGKILLed by the kubelet under node disk pressure runs no cleanup. The kubelet recorded
+    the reason all along -- reading it needs nothing from the dead container.
+    """
+    core = _core([_pod(reason='Evicted',
+                       message='Pod ephemeral local storage usage exceeds the total limit')])
+
+    reason = pj.pod_failure_reason(core, 'ns', 'job-x')
+
+    assert reason.startswith('Evicted:') and 'ephemeral' in reason
+    assert 'Evicted' in pj.job_failed_message('job-x', pod_reason=reason)
+
+
+def test_the_staging_container_is_read_before_the_conversion():
+    """Init containers run first, so when staging is what failed the conversion container's
+    status says nothing at all -- and reading only the regular containers saw exactly that.
+    """
+    core = _core([_pod(init=[_CS('s3-init', exit_code=1)],
+                       main=[_CS('convert')])])
+
+    assert pj.pod_failure_reason(core, 'ns', 'job-x') == 'container s3-init exited 1'
+
+
+def test_an_unreadable_pod_list_never_becomes_the_failure():
+    """This runs while reporting a failure, so it must not raise one of its own."""
+    class _Broken:
+        def list_namespaced_pod(self, namespace, label_selector):
+            raise RuntimeError('no api')
+
+    assert pj.pod_failure_reason(_Broken(), 'ns', 'job-x') == ''
+    # And the message is still complete without it.
+    assert 'job-x' in pj.job_failed_message('job-x', pod_reason='')
