@@ -1295,6 +1295,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         {"name": "S3_SECRET_KEY", "value": secret_key},
         {"name": "S3_CAMPAIGN_PREFIX", "value": campaign_prefix},
     ]
+    # Every container in this pod, because the campaign log is read from the pod's stdout
+    # (see publish_live_log) and stdout here is a pipe rather than a terminal. Python
+    # block-buffers a pipe, so without this a step's output reaches the log in ~8 KB clumps
+    # long after it happened -- and the reason to publish a running postprocess at all is
+    # that someone is watching it. Logging handlers flush per record and are unaffected;
+    # what this recovers is `print` and the conversion's own progress output.
+    unbuffered_env = [{"name": "PYTHONUNBUFFERED", "value": "1"}]
     # The two robovast containers talk to the store and the index; the conversion does
     # neither, and gets none of this. See the conversion container below.
     robovast_env = s3_env + _pod_env(_CLUSTER_CONFIG_ENV) + [
@@ -1319,7 +1326,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # conversion container stages the campaign tree WITHOUT its rosbags, which is the
         # bulk of a campaign by orders of magnitude. Staging them anyway would spend the
         # whole download and the whole node disk on data nothing in the pod reads.
-        "env": robovast_env + ([] if rosbag_cmds
+        "env": unbuffered_env + robovast_env + ([] if rosbag_cmds
                                else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
         "volumeMounts": [campaign_mount],
         "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
@@ -1335,7 +1342,10 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # **No store credentials, deliberately.** This container reads and writes the
         # shared campaign mount and nothing else, and it is an arbitrary user image -- the
         # campaign's own -- so it is the one container in this pod that must hold nothing
-        # that would let it reach the store or the index.
+        # that would let it reach the store or the index. Buffering is not a credential:
+        # this is where the conversion's progress output comes from, and it is the longest
+        # step, so it is the one whose output most needs to arrive while it runs.
+        "env": unbuffered_env,
         "volumeMounts": [
             {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
             campaign_mount,
@@ -1354,7 +1364,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                     "robovast.execution.cluster_execution.postprocess_host"],
         # The index DSN is injected HERE and nowhere else: this is the only container that
         # writes to the index.
-        "env": robovast_env + _index_env(namespace) + [
+        "env": unbuffered_env + robovast_env + _index_env(namespace) + [
             {"name": ENV_FORCE, "value": "1" if force else "0"},
             {"name": ENV_SKIP, "value": ",".join(sorted(set(skip or ())))},
         ],
