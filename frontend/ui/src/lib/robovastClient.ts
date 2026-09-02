@@ -107,6 +107,16 @@ export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocess
 export const hasRecordedRuns = (c: CampaignSummary) =>
   c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
+// Whether the Run view may replay this campaign's finished runs *while it is still running*.
+// A preview: the 3D scene replays from each run's own capture file, and nothing else works, because
+// a running campaign has no rows in the index at all (they are written by postprocessing).
+//
+// This is deliberately NOT the same question as "has something to replay". A capture is written at a
+// run's clean stop, so a campaign on its first run passes this and has nothing to show yet; answering
+// exactly would mean probing every run of every card. The Run view says "no run has finished yet"
+// instead — a state that resolves itself within one run.
+export const isPreviewable = (c: CampaignSummary) => isRunning(c) && c.num_runs > 0
+
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
 // Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from
@@ -356,11 +366,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 // Read any address in the space above, whichever namespace it is in — the campaign-config viewer
 // reads `/results/<id>/_config/...` with the same two calls the workspace editor uses for
-// `/sources/<ws>/...`. Recursive and undetailed: every consumer builds a path tree and none shows a
-// size, so ask for the names only. Deliberately read-only: there is no `writeFileAt`, because only
-// `/sources` accepts writes and the write calls below name a workspace id for that reason.
-const listFilesAt = (address: string) =>
-  request<FileListing>('GET', `${address}?recursive=1&limit=0`)
+// `/sources/<ws>/...`. Recursive by default and undetailed: those consumers build a path tree and none
+// shows a size, so ask for the names only. Deliberately read-only: there is no `writeFileAt`, because
+// only `/sources` accepts writes and the write calls below name a workspace id for that reason.
+//
+// `recursive: false` lists ONE level, files and directories, with a trailing `/` on each directory —
+// which is what a caller walking down a large tree wants. The difference is not cosmetic: a recursive
+// listing returns every file beneath the address, so over a campaign of thousands of runs it is tens
+// of thousands of paths (and a full prefix listing on the cluster), where one level is a handful of
+// names. Walk down deliberately rather than fetching the tree to look at its top.
+const listFilesAt = (address: string, opts: { recursive?: boolean } = {}) =>
+  request<FileListing>(
+    'GET', `${address}?recursive=${opts.recursive === false ? 0 : 1}&limit=0`)
 
 const readFileAt = (address: string) =>
   request<FileText>('GET', `${address}?as=text&lines=0`)
@@ -557,12 +574,23 @@ export const robovast = {
   // robovast/common/file_address.py): /sources/<workspace>/<path> for the inputs a user
   // authors, /results/<campaign>/<path> for a campaign's outputs (read-only). The path
   // segments are encoded individually so the '/' separators survive.
-  // Recursive and undetailed: every consumer builds a path tree, and none of them shows
-  // a size — so ask for the names only.
+  // Recursive and undetailed by default: those consumers build a path tree, and none of
+  // them shows a size — so ask for the names only.
   listFilesAt,
   readFileAt,
 
   listProjectFiles: (id: string) => listFilesAt(sourcesUrl(id, '')),
+
+  // One level of a campaign's output tree: the child directories (trailing `/`) and files of
+  // `<campaign>/<path>`. The Run view's preview picker walks the tree down this way — root for
+  // the configurations, then one call per configuration for its runs — because a running
+  // campaign has no index rows to ask instead, and a recursive listing of a large campaign is
+  // tens of thousands of paths to learn a few dozen names.
+  // A trailing slash is what makes the address a *directory* in this space (`/results/<c>/nav/`
+  // lists, `/results/<c>/nav` reads), so it is appended here rather than left to every caller.
+  listResultsDir: (campaignId: string, path: string) =>
+    listFilesAt(resultsUrl(campaignId, path.endsWith('/') || !path ? path : `${path}/`),
+                { recursive: false }),
 
   readProjectFile: (id: string, path: string) => readFileAt(sourcesUrl(id, path)),
 

@@ -1224,7 +1224,10 @@ Each campaign card in **Campaigns** also offers shortcuts — in its **actions m
 button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
 offers what it can deliver: **Open in Results Explorer** once the campaign is finished **and**
 postprocessed (the same gate the Results tab itself applies), and **Open in Run
-view** only if the campaign also recorded runs to replay. They are named lines in a menu rather
+view** only if the campaign also recorded runs to replay. The Run view's entry appears
+**while the campaign is still running** too, reading **Open in Run View (preview)** — it leads to a
+replay of the runs that have already finished (see :ref:`run-view-preview`), and it is the only
+route to one, since the jobs list above drops a run as soon as it completes. They are named lines in a menu rather
 than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
 same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
 step, so **Back** always returns to where you came from in one press; a jump *between* views is a
@@ -1384,6 +1387,48 @@ The run picker lists only campaigns that actually **recorded runs** (``num_runs 
 tallied from ``campaign.db``). A campaign that never started, or that ended before its
 store was written, has nothing to replay, so it is not offered here at all — rather
 than being selectable and then answering with an empty view.
+
+.. _run-view-preview:
+
+Previewing a campaign that is still running
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A campaign's finished runs can be replayed **while the rest of it is still running**, as a
+**preview**. This is the only way to see one at all before the campaign ends: the Monitor's jobs
+list is live-only, so a run leaves it the moment it completes, and the other Results views wait for
+postprocessing.
+
+Only the **3D replay** works. ``scene3d`` reads a run's own ``capture/capture.json`` and a scene
+descriptor compiled on demand, neither of which needs postprocessing; every other panel reads the
+index, and a running campaign has **no rows there at all** — they are written when postprocessing
+ingests the campaign. So the preview mounts the 3D scene and the playback transport and leaves the
+rest out, rather than mounting panels that could only report the same failure once each per run.
+
+That is also why a campaign is offered as a preview **only if it has a scene to replay**. A
+simulator that records no capture contributes no ``scene3d``, so there would be nothing at all to
+show; such a campaign simply does not appear — in the run picker or in its card's menu — until it
+has finished, when its real results exist. Both surfaces ask the campaign's served panel list, so
+neither can offer what the other refuses.
+For the same reason there is no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>`
+reports nothing to trim, and **Edit visualization** is disabled — saving writes a ``.vast`` override
+into the campaign's own ``_config/``, which its remaining runs are configured from, so editing the
+view would edit the experiment.
+
+It says so in both places it can be misread: a **Preview** chip at the top right of the scene, whose
+hover explains what is and is not available, and the word ``preview`` beside the campaign in the run
+picker, where the campaign is actually chosen.
+
+The picker's rows come from the campaign's **output directories** — one listing for its
+configurations, then one per configuration for its runs — because the query the Explorer uses
+answers nothing for a campaign that has not been ingested. That is deliberately a listing of runs
+rather than of *replayable* runs: knowing which have written a recording would cost a request per
+run, which is the one shape that does not scale to a campaign of thousands. A run still in progress
+is therefore listed, and says it has no recording yet when opened. The rows carry no verdict either
+— pass/fail is not readable without the index — so a configuration shows how many runs it has
+rather than a ``0/N`` that would be indistinguishable from every run having failed.
+
+When the campaign finishes, nothing swaps under the reader: the **Refresh** button beside the picker
+reports that there is something new, and taking it re-reads the campaign with all of its panels.
 
 .. _shutdown-toggle:
 
