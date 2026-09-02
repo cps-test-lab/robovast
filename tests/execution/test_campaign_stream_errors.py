@@ -49,7 +49,8 @@ class _FakeS3:
                 return iter(outer._pages)
         return _P()
 
-    def get_object(self, Bucket, Key):  # noqa: N803 - boto3's own kwarg names
+    # boto3's own kwarg names, so the fake is called exactly as the real client is.
+    def get_object(self, Bucket, Key):  # pylint: disable=invalid-name
         del Bucket
         if Key.endswith("_transient/job_links.yaml"):
             if isinstance(self._links, BaseException):

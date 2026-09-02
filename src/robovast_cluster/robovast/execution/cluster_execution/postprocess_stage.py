@@ -100,6 +100,16 @@ def cluster_config_from_env():
     return cfg
 
 
+#: The phase file this pod is about to write, which it must not be handed a copy of.
+#:
+#: The conversion APPENDS to it, so a previous attempt's copy would become the head of this
+#: attempt's log -- and did: a postprocess whose conversion failed showed, as its account,
+#: the image-pull failure of the attempt before it. It is also the file the Job's log is
+#: published to while it runs, so staging it back would fold this attempt's own head into
+#: itself.
+NOT_STAGED_LOG = "_execution/postprocessing.log"
+
+
 def build_include(skip_bags: bool):
     """Return the ``download_prefix`` predicate deciding what a pod is given.
 
@@ -121,6 +131,8 @@ def build_include(skip_bags: bool):
     def include(rel: str) -> bool:
         parts = rel.split("/")
         if parts[0] == PROBE_DIR:
+            return False
+        if rel == NOT_STAGED_LOG:
             return False
         if skip_bags and any(p in BAG_DIR_NAMES for p in parts[:-1]):
             return False

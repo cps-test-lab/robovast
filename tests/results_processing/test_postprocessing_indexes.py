@@ -107,3 +107,43 @@ def test_a_successful_postprocess_leaves_the_campaign_queryable(tmp_path, monkey
 
     with psycopg.connect(DSN, autocommit=True) as teardown:
         teardown.execute("DROP SCHEMA IF EXISTS pp_test CASCADE")
+
+
+def test_a_campaign_with_no_provenance_record_is_a_failure(tmp_path, monkeypatch):
+    """What goes unwritten is the campaign's FAIR provenance record -- what an archive's
+    recipient reads to know what produced the data.
+
+    Reported as a warning, the campaign read as unqualified success while missing it, so it
+    would export and be shared as complete. The message names what is missing, and says the
+    derived data is intact so a reader knows a re-run is cheap rather than a re-derivation.
+    """
+    root = _campaign_tree(tmp_path)
+    monkeypatch.setattr(postprocessing, "generate_campaign_metadata",
+                        lambda *a, **kw: (False, "execution.yaml not found in " + str(root)))
+
+    ok, message = postprocessing.run_postprocessing(str(tmp_path), campaign=root.name,
+                                                    skip_db=True)
+
+    assert ok is False
+    assert "no FAIR provenance record" in message
+    assert "execution.yaml not found" in message, "the underlying reason has to survive"
+    assert "re-running postprocessing" in message, "and what it costs to fix"
+
+
+def test_the_derived_data_is_still_recorded_when_the_record_is_not(tmp_path, monkeypatch):
+    """The provenance MARKER says what was derived, and that stays true when the metadata
+    step fails. Withholding it to express the failure would tell every reader the CSVs and
+    index rows are absent when they are there -- one wrong signal traded for another. The
+    failure travels in the return value instead.
+    """
+    from robovast.common.campaign_data import POSTPROCESSING_RECORD
+
+    root = _campaign_tree(tmp_path)
+    monkeypatch.setattr(postprocessing, "generate_campaign_metadata",
+                        lambda *a, **kw: (False, "no execution.yaml"))
+
+    ok, _message = postprocessing.run_postprocessing(str(tmp_path), campaign=root.name,
+                                                     skip_db=True)
+
+    assert ok is False
+    assert (root / POSTPROCESSING_RECORD).is_file()
