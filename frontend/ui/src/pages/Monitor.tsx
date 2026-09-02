@@ -1020,8 +1020,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
           Nothing about an action lives on this card: an Alert here had nothing that cleared it,
           so it outlived what it was about by as long as the tab stayed open. */}
 
-      {/* Collapsed, the phase chip's issue marker already says postprocessing failed; a full
-          failure panel on a folded card defeats the fold. */}
+      {/* Collapsed, the phase chip's issue marker already names the failed step; a full
+          failure panel on a folded card defeats the fold. Both panels below are guarded on
+          it for that reason. */}
       {!collapsed && !running && postprocError ? (
         <StepFailure
           headline={
@@ -1033,7 +1034,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
         />
       ) : null}
 
-      {!running && shareError ? (
+      {!collapsed && !running && shareError ? (
         <StepFailure
           headline="Upload-to-share failed — retrigger it from the actions menu."
           error={shareError}

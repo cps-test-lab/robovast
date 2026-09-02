@@ -205,7 +205,7 @@ def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch):
         calls.append('sync')
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, _fake_sync, lambda root: 'img'))
+                        lambda: (_fake_job, _fake_sync, lambda root: 'img', lambda m, _p: m))
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
@@ -228,7 +228,7 @@ def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
         ctrl, '_conversion_job_runner',
         lambda: (lambda *a, **kw: (calls.append('job') or (False, 'boom')),
                  lambda *a, **kw: calls.append('sync'),
-                 lambda root: 'img'))
+                 lambda root: 'img', lambda m, _p: m))
 
     class _Backend:
         cluster_config = object()
@@ -264,7 +264,7 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch):
         return True, 'rosbag conversion complete'
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, lambda *a, **kw: None, lambda root: 'img'))
+                        lambda: (_fake_job, lambda *a, **kw: None, lambda root: 'img', lambda m, _p: m))
 
     class _Backend:
         cluster_config = object()
@@ -347,7 +347,7 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
     monkeypatch.setattr(
         ctrl, '_conversion_job_runner',
         lambda: (lambda *a, **kw: (False, 'conversion exited 1'),
-                 lambda *a, **kw: None, lambda root: 'img'))
+                 lambda *a, **kw: None, lambda root: 'img', lambda m, _p: m))
 
     class _Backend:
         cluster_config = object()
