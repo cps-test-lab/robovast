@@ -190,6 +190,40 @@ def campaign_execution_image(campaign_dir) -> str:
     return str(image)
 
 
+def publish_execution_dir(cluster_config, campaign_id: str, campaign_root) -> None:
+    """Upload a campaign's ``_execution/`` to the store. Raises if the store refuses.
+
+    The POSTPROCESSING section of the campaign log IS ``_execution/postprocessing.log`` in
+    the store: `get_campaign_logs` reads the tracked scratch dir first and the store second,
+    and a postprocess runs against its own fetched root, which is neither. So the account
+    exists nowhere a reader can see it until this has run.
+
+    Callable from here rather than only from the service's tail, because "at the end" is
+    too late twice over: a long postprocess shows no section at all while it runs, and a
+    failure whose tail cannot reach the store leaves no account anywhere, permanently.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from . import in_pod_storage  # noqa: PLC0415
+    bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
+    storage = in_pod_storage.storage_client_for(cluster_config)
+    storage.upload_dir(str(Path(campaign_root) / "_execution"), bucket, f"{prefix}_execution")
+
+
+def publish_execution_dir_quietly(cluster_config, campaign_id: str, campaign_root) -> None:
+    """:func:`publish_execution_dir`, for the paths where it is an improvement not a duty.
+
+    Mid-run publishes make the section readable early; failing one must not fail the
+    postprocess that is otherwise fine. The tail publish, which is the one that has to
+    land, is the caller's and is not this.
+    """
+    try:
+        publish_execution_dir(cluster_config, campaign_id, campaign_root)
+    except Exception as e:  # noqa: BLE001 - an early read is not worth a failed postprocess
+        logger.warning("Could not publish the postprocessing account for %s yet: %s",
+                       campaign_id, e)
+
+
 def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
                  force: bool = False) -> int:
     """Pull the Job's outputs into *campaign_root*; return the count.
@@ -429,6 +463,10 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
         # force rides along: it made the Job bypass its caches and REPLACE the CSVs, and
         # the fetch skips same-size files unless told not to.
         sync_outputs(cluster_config, campaign_id, campaign_root, force=force)
+        # The conversion's log is now local; get it readable before the host stage, which
+        # is the long half. Waiting for the caller's tail is what made a running
+        # postprocess show an empty POSTPROCESSING section.
+        publish_execution_dir_quietly(cluster_config, campaign_id, campaign_root)
         if not ok:
             # Echo the conversion error to the service console too. The web UI already
             # has it via the synced postprocessing.log (POSTPROCESSING section); no
@@ -448,6 +486,10 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
             else:
                 _write_failure_log(cluster_config, campaign_id, campaign_root,
                                    log_path, message)
+            # Written and published together: this is the whole account of a failure whose
+            # Job is reaped 300 s later, so the window in which it can still be published
+            # is the one it was written in.
+            publish_execution_dir_quietly(cluster_config, campaign_id, campaign_root)
             return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
