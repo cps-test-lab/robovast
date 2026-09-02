@@ -36,7 +36,6 @@ campaigns it searched and which it skipped — a partial answer that looked comp
 worst outcome here.
 """
 
-import fnmatch
 import logging
 import re
 
@@ -118,6 +117,41 @@ def _shutdown_term() -> str:
             "AND l.wall_ts > s.wall_ts)")
 
 
+def _glob_to_regex(pattern: str) -> str:
+    """One glob, as a POSIX regex, anchored at both ends.
+
+    Postgres runs this pattern, so it may use only what Postgres parses. That rules out
+    ``fnmatch.translate``, whose output carries a scoped inline flag group (``(?s:...)``) and,
+    on newer Pythons, atomic groups: Postgres rejects them, and a rejected pattern is a query
+    that errors rather than one that returns the wrong rows.
+
+    Anchored at BOTH ends because REGEXP searches rather than matches: unanchored, ``*-1`` also
+    selects ``config-11`` and reports another configuration's runs as this one's.
+    """
+    out = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            out.append(".*")
+        elif ch == "?":
+            out.append(".")
+        elif ch == "[":
+            close = pattern.find("]", i + 1)
+            if close < 0:                      # an unclosed '[' is a literal, as in fnmatch
+                out.append(re.escape(ch))
+            else:
+                body = pattern[i + 1:close]
+                if body.startswith("!"):       # fnmatch spells negation '!', regex spells it '^'
+                    body = "^" + body[1:]
+                out.append("[" + body + "]")
+                i = close
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    return r"\A" + "".join(out) + r"\Z"
+
+
 def _campaign_term(campaign_id: str) -> str:
     """Scope to one campaign. The index holds every campaign's rows in one table, so an
     unscoped query does not read one campaign's log -- it reads the corpus."""
@@ -129,8 +163,10 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
     """The WHERE terms, as SQL. ``grep`` uses ``REGEXP``, which every data query registers."""
     terms = []
     if grep:
-        # Validated here rather than by SQLite so an invalid pattern is a message about the
-        # pattern, not a failed query. Python's engine is the one REGEXP() uses.
+        # Pre-checked so an obviously malformed pattern is a message about the pattern rather
+        # than a failed query. It is a courtesy, not a guarantee: REGEXP() is `value ~ pattern`
+        # in Postgres, whose dialect is not Python's, so a pattern accepted here can still be
+        # rejected there.
         try:
             re.compile(grep)
         except re.error as e:
@@ -142,13 +178,9 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
                 if log_summary.severity_rank(s) >= floor]
         terms.append(f"l.severity IN ({', '.join(_quote(s) for s in keep)})")
     if config_filter:
-        # The same glob vocabulary the campaign tools use, carried by REGEXP rather than by
-        # a wildcard operator: the campaign index answers in Postgres, which has no GLOB at
-        # all, so the filter has to go through the one matcher both dialects register.
-        # `\A` because REGEXP searches rather than matches, and fnmatch supplies only `\Z` --
-        # anchored at one end, `*-1` would also select `config-11`.
-        anchored = r"\A" + fnmatch.translate(config_filter)
-        terms.append(f"REGEXP({_quote(anchored)}, l.config_name)")
+        # The same glob vocabulary the campaign tools use, carried by REGEXP: Postgres has no
+        # GLOB operator, so a glob has to reach it as a regex.
+        terms.append(f"REGEXP({_quote(_glob_to_regex(config_filter))}, l.config_name)")
     if run_id is not None:
         terms.append(f"l.run_id = {int(run_id)}")
     if container:
@@ -185,7 +217,9 @@ def _rollup_sql(terms: list, limit: int) -> str:
         f"FROM run_log l LEFT JOIN runs r "
         f"ON r.campaign_id = l.campaign_id "
         f"AND r.config_name = l.config_name AND r.run_id = l.run_id"
-        f"{where} GROUP BY l.config_name, l.run_id "
+        # The run's own columns are grouped, not aggregated: Postgres requires every selected
+        # column to be one or the other, and they are constant per (config_name, run_id) anyway.
+        f"{where} GROUP BY l.config_name, l.run_id, r.passed, r.status, r.clock_map_source "
         f"ORDER BY hits DESC, l.config_name, l.run_id LIMIT {int(limit)}"
     )
 
@@ -360,7 +394,7 @@ async def search_run_logs(
     notes = [skip_note.lstrip("; ")] if skip_note else []
     if hide_shutdown:
         # Said on every call, not only when it excluded something: unlike the stream
-        # tools this cannot count what it dropped (the rows never left SQLite), so a
+        # tools this cannot count what it dropped (the rows never leave the database), so a
         # silent term would make a trimmed search read as a complete one.
         notes.append("only lines before each run's scenario verdict were searched "
                      "(the shutdown phase is excluded); pass hide_shutdown=false to "
