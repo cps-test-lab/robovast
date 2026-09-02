@@ -3206,6 +3206,10 @@ class LocalTransport(RobovastInterface):
         from robovast.service.interface import JobState
 
         job = self._require_running_job(campaign_id, job_name)
+        # `unavailable` is a pydantic list field; the linter reads the class attribute as
+        # the FieldInfo descriptor rather than the instance's list and calls every append
+        # below an error. Scoped to this function, which is the only place it appears.
+        # pylint: disable=no-member
         state = JobState(job_name=job_name, status=job.status)
         try:
             target, run_dir = self._job_state_target(campaign_id, job_name, SCENARIO_CONTAINER)
