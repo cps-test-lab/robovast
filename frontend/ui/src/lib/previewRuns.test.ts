@@ -115,6 +115,14 @@ describe('previewRunRows', () => {
     expect(rows.every((r) => r.passed === null)).toBe(true)
   })
 
+  it('says the verdict is unknowable, not merely absent', () => {
+    // `unknown` means a verdict was looked for and not found; a run of a campaign that has not
+    // been postprocessed has none to look for. The tree draws no verdict marker on the second,
+    // because a neutral dot on every run of every configuration is a statement about nothing
+    // that reads as a statement about each of them.
+    expect(rows.every((r) => r.preview === true)).toBe(true)
+  })
+
   it('carries no batch: rounds are recorded in the index, not on disk', () => {
     expect(rows.every((r) => r.batch === null)).toBe(true)
   })
@@ -215,5 +223,24 @@ describe('declaresScene3d', () => {
     // Guessing true offers a campaign that then shows nothing; guessing false hides one that
     // appears a moment later. Both are visible to somebody, so the caller waits instead.
     expect(declaresScene3d(undefined)).toBeUndefined()
+  })
+})
+
+describe('a preview node draws no verdict marker', () => {
+  it('marks every run and configuration as having no knowable verdict', () => {
+    const [config] = buildCampaignChildren('camp-1', previewRunRows(new Map([['nav', [0, 1]]])))
+    expect(config.noVerdict).toBe(true)
+    expect((config.children ?? []).map((r) => r.noVerdict)).toEqual([true, true])
+  })
+
+  it('leaves an indexed campaign node alone', () => {
+    const rows = [
+      { config_name: 'nav', run_id: 0, status: 'passed' },
+      { config_name: 'nav', run_id: 1, status: 'unknown' },
+    ]
+    const [config] = buildCampaignChildren('camp-1', rows)
+    expect(config.noVerdict).toBeUndefined()
+    // `unknown` here is a verdict that was looked for and not found — it keeps its marker.
+    expect((config.children ?? []).map((r) => r.noVerdict)).toEqual([undefined, undefined])
   })
 })

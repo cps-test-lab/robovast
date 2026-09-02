@@ -72,6 +72,12 @@ export interface ResultsTreeItem {
   objective?: number | null
   /** e.g. "5/5" (passed/total) shown as a trailing chip; omitted for leaves/placeholders. */
   count?: string
+  /** No verdict is knowable for this node — it belongs to a campaign being previewed, whose
+   *  pass/fail is not readable until it is postprocessed. Distinct from `status: 'unknown'`,
+   *  which means a verdict was looked for and not found: the renderer draws no verdict marker
+   *  at all here, because a row of neutral dots on every run of every configuration is a
+   *  statement about nothing, read as a statement about each of them. */
+  noVerdict?: boolean
   disabled?: boolean
   children?: ResultsTreeItem[]
 }
@@ -424,6 +430,7 @@ function configNodes(
       configName,
       ...(batch == null ? {} : { batch }),
       objective,
+      ...(configRows.every((r) => r.preview) ? { noVerdict: true } : {}),
       status,
       // "0/0 passed" would be a misleading verdict on something that never ran, and so would
       // "0/3" on runs whose verdicts are simply not readable yet: that is what a *failed* config
@@ -471,6 +478,7 @@ function runNode(
     configName,
     runId,
     ...(batch == null ? {} : { batch }),
+    ...(row.preview ? { noVerdict: true } : {}),
     status,
   }
 }
