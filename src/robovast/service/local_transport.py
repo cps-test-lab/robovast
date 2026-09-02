@@ -1036,20 +1036,70 @@ class LocalTransport(RobovastInterface):
     def _staging_dir(self) -> Path:
         return self._campaigns_root() / self._STAGING_DIRNAME
 
+    def campaign_is_live(self, campaign_id: str) -> bool:
+        """Whether work is still happening on *campaign_id* as far as this service knows.
+
+        The registry, plus the lanes a multi-lane service does not itself drive. A campaign
+        it has never heard of is not live: what a download of it produces is whatever is on
+        disk, which for a finished campaign of a previous service life is all of it.
+        """
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None:
+            return not self._is_done(entry)
+        return campaign_id in self._extra_live_ids()
+
+    def _snapshot_facts(self, campaign_id: str) -> dict:
+        """What the snapshot marker says about the moment a live campaign was archived.
+
+        Best-effort by construction: this runs to describe a campaign that is moving, so a
+        status read that fails describes it no worse than one that succeeds and is stale by
+        the time it lands. The marker's value is that it EXISTS; the tallies are a courtesy.
+        """
+        try:
+            snap = self.get_status(campaign_id)
+        except Exception:  # noqa: BLE001 - a marker is not worth failing a download over
+            return {}
+        return {"phase": str(snap.phase),
+                "runs_completed": snap.runs.completed, "runs_total": snap.runs.total}
+
+    def campaign_archive_name(self, campaign_id: str) -> str:
+        """The file name this campaign's archive is offered under.
+
+        A campaign still running is named ``<id>.incomplete.tar.gz``, and that is the whole
+        reason the name is computed rather than composed by each caller: a snapshot has the
+        shape of a finished campaign, so once it is sitting in a downloads directory next to
+        real ones its name is all that distinguishes it. The browser, the CLI and anyone who
+        forwards the file get the same warning without opening it.
+        """
+        from robovast.execution.share_providers.naming import \
+            INCOMPLETE, archive_name  # pylint: disable=import-outside-toplevel
+        if self.campaign_is_live(campaign_id):
+            return archive_name(campaign_id, INCOMPLETE)
+        return f"{campaign_id}.tar.gz"
+
     def campaign_tar_stream(self, campaign_id: str):
         """Tar this host's campaign directory straight into the response.
 
         The local counterpart of the cluster's object-store tar: same exclusions, same
         streaming, so a caller cannot tell which lane answered. ``_postproc/`` is left
         out with ``.cache`` -- it is postprocessing's staging, not part of the campaign.
+
+        A campaign that is still running is tarred *tolerantly* and carries a snapshot
+        marker (see ``campaign_archive.iter_campaign_tar``): the directory is being written
+        to under the walk, so a file that vanishes mid-archive must cost one member rather
+        than the download -- past the first byte the status line is already 200 and a
+        failure reaches the caller as a truncated body.
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         campaign_dir = self._campaign_dir(campaign_id)
         if not campaign_dir.is_dir():
             raise KeyError(f"no campaign {campaign_id!r} on this service")
+        live = self.campaign_is_live(campaign_id)
         return campaign_archive.iter_campaign_tar(
             str(campaign_dir),
-            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"})
+            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
+            snapshot=self._snapshot_facts(campaign_id) if live else None)
 
     def create_archive_upload(self) -> UploadGrant:
         token = secrets.token_urlsafe(32)

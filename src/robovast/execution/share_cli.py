@@ -62,7 +62,7 @@ from robovast.common import fmt_size as _fmt_size
 from robovast.common import make_transfer_progress_callback
 from robovast.execution.share_providers import (load_share_provider_plugins,
                                                 unavailable_share_type_message)
-from robovast.execution.share_providers.naming import (VARIANTS, archive_name,
+from robovast.execution.share_providers.naming import (SHARE_VARIANTS, archive_name,
                                                        parse_archive_name)
 
 
@@ -453,7 +453,7 @@ def _read_archive_identity(tarfile_mod, path):
 @click.option('--campaign', '-i', 'campaigns', multiple=True, required=True,
               help='Campaign to remove (globs such as "nav-2026-03-09-*" are allowed). '
                    'Repeatable.')
-@click.option('--variant', type=click.Choice(list(VARIANTS)), default=None,
+@click.option('--variant', type=click.Choice(list(SHARE_VARIANTS)), default=None,
               help='Remove only this variant. Without it, every variant of the named '
                    'campaign goes.')
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt')

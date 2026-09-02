@@ -426,3 +426,46 @@ def test_the_executable_bit_survives_the_round_trip(tmp_path):
     target = tmp_path / "pulled"
     pull_workspace_to_directory(client, workspace.workspace_id, target)
     assert os.access(target / "run.sh", os.X_OK)
+
+
+def test_a_download_lands_under_the_name_the_service_served(tmp_path):
+    """The service names the archive, because only it knows the campaign is still running.
+
+    A snapshot comes back as ``<id>.incomplete.tar.gz``. Composing that name on the client
+    would mean asking a second question whose answer can change between the two calls, and
+    the name is the only warning the file carries into a downloads directory.
+    """
+    from robovast.service.project_push import download_campaign_archive
+
+    class _Resp:
+        headers = {"Content-Disposition":
+                   'attachment; filename="camp-2026-01-01-000000.incomplete.tar.gz"'}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        @staticmethod
+        def iter_content(chunk_size=0):
+            yield b"gz"
+
+    client = SimpleNamespace(
+        base_url="http://service.example.com",
+        session=SimpleNamespace(get=lambda *a, **k: _Resp()),
+        raise_for_status=lambda resp: None)
+
+    landed = download_campaign_archive(
+        client, "camp-2026-01-01-000000", str(tmp_path / "camp-2026-01-01-000000.tar.gz"))
+
+    assert landed == str(tmp_path / "camp-2026-01-01-000000.incomplete.tar.gz")
+    assert (tmp_path / "camp-2026-01-01-000000.incomplete.tar.gz").read_bytes() == b"gz"
+
+
+def test_a_served_name_that_is_a_path_is_ignored(tmp_path):
+    """A header is remote input and this value becomes a path on the caller's disk."""
+    from robovast.service.project_push import _served_filename
+
+    assert _served_filename('attachment; filename="../../etc/passwd"') == ""
+    assert _served_filename('attachment; filename="a/b.tar.gz"') == ""

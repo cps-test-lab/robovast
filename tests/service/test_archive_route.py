@@ -116,3 +116,42 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
         resp = client.get(f"/campaigns/{_CAMPAIGN}/archive")
     assert resp.status_code == 200, resp.text
     assert _CAMPAIGN in resp.headers["content-disposition"]
+
+
+def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkeypatch):
+    """A campaign still being written to is served, and says so in its own name.
+
+    Two things have to hold at once for that to be safe, and they are what this covers: the
+    name a browser saves the file under carries ``incomplete``, and the archive carries the
+    marker ``ingest`` reads -- because a snapshot has the shape of a finished campaign in
+    every other respect, and neither a directory listing nor an import can see what is
+    simply absent from it.
+    """
+    from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
+
+    transport = _local_transport(tmp_path)
+    root = tmp_path / "results" / _CAMPAIGN / "_config"
+    root.mkdir(parents=True)
+    (root / "campaign.vast").write_text("configuration:\n  name: x\n", encoding="utf-8")
+    monkeypatch.setattr(type(transport), "campaign_is_live", lambda self, cid: True)
+
+    with TestClient(build_app(transport)) as client:
+        resp = client.get(f"/campaigns/{_CAMPAIGN}/archive")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-disposition"] == \
+        f'attachment; filename="{_CAMPAIGN}.incomplete.tar.gz"'
+    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" in _members(resp.content)
+
+
+def test_a_finished_campaign_is_not_marked_incomplete(env):
+    """The marker is a claim about this campaign, so it must not ride along on every one.
+
+    A snapshot marker on a finished campaign would degrade every import of it forever, and
+    the archive carries no way to take it back.
+    """
+    from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
+
+    resp = env.get(f"/campaigns/{_CAMPAIGN}/archive")
+    assert resp.headers["content-disposition"] == f'attachment; filename="{_CAMPAIGN}.tar.gz"'
+    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" not in _members(resp.content)

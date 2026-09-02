@@ -1196,6 +1196,21 @@ class ClusterService(LocalTransport):
                 return indexed
         return super()._finished_at_for(cid)
 
+    def campaign_is_live(self, campaign_id: str) -> bool:
+        """This pod's registry first, then the object store's finish marker.
+
+        A stateless service outlives the drivers it started and shares the store with its
+        siblings, so "not in my registry" cannot mean "over" here: after a restart that is
+        every campaign, and the download of one still running would then be offered under a
+        name promising a complete campaign. A campaign the index knows and has no finish
+        marker for is treated as live -- the direction that errs towards warning about an
+        archive that turns out to be whole, rather than the reverse.
+        """
+        if super().campaign_is_live(campaign_id):
+            return True
+        indexed, finished = self._campaign_index()
+        return campaign_id in indexed and campaign_id not in finished
+
     def _on_campaign_finished(self, campaign_id: str, state) -> None:
         """Publish the campaign's finish marker, so a listing can order by it.
 
@@ -3828,8 +3843,20 @@ class ClusterService(LocalTransport):
         Asking the filesystem would report "no" for every campaign this pod has not
         happened to fetch, so an import would sail past the collision check and then
         overwrite a campaign in the durable home that nobody was warned about.
+
+        The live registry counts too, and must: the index marker is written best-effort at
+        the head of the driver, so a campaign this service is driving right now can be
+        listed (``list_campaigns`` unions the registry in) while its marker is missing. A
+        predicate narrower than the listing makes such a campaign refuse the very download
+        its card offers — and a download is the one operation that has to be available for
+        every campaign that exists here, postprocessed or raw, finished or still running.
         """
-        return campaign_id in self._durable_campaign_ids()
+        if campaign_id in self._durable_campaign_ids():
+            return True
+        with self._lock:
+            if campaign_id in self._campaigns:
+                return True
+        return campaign_id in self._extra_live_ids()
 
     def _release_durable_campaign(self, campaign_id: str) -> None:
         """Under ``force``: delete the object-store copy being replaced, and its marker.
@@ -3944,7 +3971,11 @@ class ClusterService(LocalTransport):
         shutil.rmtree(target, ignore_errors=True)
 
     def campaign_tar_stream(self, campaign_id: str):
-        """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.
+        """Yield a ``tar.gz`` of the campaign as the store holds it, streamed from it.
+
+        Postprocessed or raw, finished or still running: what is in the store is what
+        comes out. Nothing here waits on postprocessing, and nothing may — derived data is
+        an addition to a campaign, never the condition for reading one.
 
         Backs ``GET /campaigns/{id}/archive``. Objects are fetched and tarred on the
         fly (:func:`campaign_archive.iter_tar`), so **no scratch is used on the service
@@ -3956,15 +3987,24 @@ class ClusterService(LocalTransport):
         # Eagerly, before a generator is handed to the response: once streaming has begun
         # the status line is already 200, so a campaign that does not exist arrives as a
         # truncated body -- "Response ended prematurely" on the client, which names neither
-        # the campaign nor the problem. The predicate is the one `list_campaigns` answers
-        # with, so the archive route and the listing cannot disagree about what is here.
+        # the campaign nor the problem. The predicate covers everything the listing shows,
+        # so a campaign with a card can never be refused the download that card offers.
         if not self._campaign_is_here(campaign_id):
             raise KeyError(f"no campaign {campaign_id!r} on this service")
 
         cfg = self._cluster_config()
-        return campaign_archive.iter_tar(
-            lambda tar: cfg.add_campaign_members(
-                tar, campaign_id, exclude_prefixes={"_postproc"}))
+        # No tolerant reader here, unlike the local lane: an object is written once and
+        # whole, so a campaign in flight is a set of complete files that happens to be
+        # short a few -- which is exactly what the marker announces.
+        live = self.campaign_is_live(campaign_id)
+        facts = self._snapshot_facts(campaign_id) if live else {}
+
+        def _add(tar):
+            cfg.add_campaign_members(tar, campaign_id, exclude_prefixes={"_postproc"})
+            if live:
+                campaign_archive.add_snapshot_marker(tar, campaign_id, **facts)
+
+        return campaign_archive.iter_tar(_add)
 
     def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None, include=None):
         """Pull a campaign from the object store to a local dir; return it.

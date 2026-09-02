@@ -154,7 +154,8 @@ class BaseConfig(object):
                              on_member=None) -> None:
         """Stream this campaign's stored objects into the open *tar* (no local copy).
 
-        Powers the postprocessed-download stream (``/campaigns/{id}/archive``): each
+        Powers the download stream (``/campaigns/{id}/archive``), for a postprocessed
+        campaign and a raw one alike -- whatever objects the campaign has, tarred: each
         object is fetched from storage and added to the streaming tar on the fly, so
         **no scratch is used on the service during or after the download**.
         *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive

@@ -9,6 +9,8 @@ import pytest
 
 import robovast.execution.cluster_execution.postprocess_job as pj
 from robovast.common.index_db import DSN_ENV
+from robovast.common.quantity import to_bytes, to_cores
+from robovast.results_processing.postprocessing import POSTPROCESS_CONVERT_DEFAULTS
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +35,7 @@ def _patch_failed_conversion(monkeypatch, synced):
     # neither a campaign tree nor a store.
     monkeypatch.setattr(pj, "_submit_inputs",
                         lambda cfg, cid, cr, skip=None, skip_rosout=False:
-                        ([{"plugins": []}], "img", ()))
+                        ([{"plugins": []}], "img", (), None))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "boom"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: synced.append(cr) or 1)
@@ -177,7 +179,7 @@ def test_a_forced_repostprocess_forces_the_download(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(pj, "_submit_inputs",
                         lambda cfg, cid, cr, skip=None, skip_rosout=False:
-                        ([{"plugins": []}], "img", ()))
+                        ([{"plugins": []}], "img", (), None))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
@@ -194,7 +196,7 @@ def test_an_ordinary_postprocess_leaves_the_skip_in_place(monkeypatch, tmp_path)
     seen = {}
     monkeypatch.setattr(pj, "_submit_inputs",
                         lambda cfg, cid, cr, skip=None, skip_rosout=False:
-                        ([{"plugins": []}], "img", ()))
+                        ([{"plugins": []}], "img", (), None))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
@@ -615,17 +617,19 @@ def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
     object and a *small* limit is the correct one: sizing it for the largest campaign
     anyone might postprocess would only hide a regression in that streaming.
 
-    Pinned against the conversion's, because that is the number it used to have to match.
+    Pinned against the conversion's default, because that is the number it must stay under.
     """
     def _mem_mib(spec):
         value = spec["limits"]["memory"]
         assert value.endswith(("Gi", "Mi")), value
         return int(value[:-2]) * (1024 if value.endswith("Gi") else 1)
 
-    assert _mem_mib(pj.POSTPROCESS_INIT_RESOURCES) < _mem_mib(pj.POSTPROCESS_RESOURCES)
+    convert = pj.step_resources(**{k: POSTPROCESS_CONVERT_DEFAULTS[k]
+                                   for k in ("cpu", "memory")})
+    assert _mem_mib(pj.POSTPROCESS_STAGE_RESOURCES) < _mem_mib(convert)
     # The disk request, by contrast, is the campaign's and stays: it is what reserves the
     # shared emptyDir the campaign lands in.
-    assert pj.POSTPROCESS_INIT_RESOURCES["requests"]["ephemeral-storage"]
+    assert pj.POSTPROCESS_STAGE_RESOURCES["requests"]["ephemeral-storage"]
 
 
 def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, monkeypatch):
@@ -661,7 +665,8 @@ def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, mon
                         lambda cfg, cid: ("b", "p/"))
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
 
-    rosbag_cmds, image, _tolerate = pj._submit_inputs(object(), "camp", str(tmp_path))
+    rosbag_cmds, image, _tolerate, _sized = pj._submit_inputs(
+        object(), "camp", str(tmp_path))
 
     # The local .vast was used, and only what was actually missing came from the store.
     assert rosbag_cmds and image == "img:1"
@@ -708,7 +713,8 @@ def test_a_root_without_the_ledger_does_not_read_as_no_interventions(tmp_path, m
                         lambda cfg, cid: ("b", "p/"))
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _Store())
 
-    _cmds, _image, tolerate = pj._submit_inputs(object(), "camp", str(tmp_path))
+    _cmds, _image, tolerate, _sized = pj._submit_inputs(
+        object(), "camp", str(tmp_path))
 
     assert "_jobs/batch-1/job-27" in tolerate
 
@@ -897,3 +903,176 @@ def test_execution_image_still_refuses_when_nothing_is_recorded(tmp_path):
 
     with pytest.raises(ValueError, match="no execution image recorded"):
         pj.campaign_execution_image(root)
+
+
+def _pod_charge(manifest, resource):
+    """What Kubernetes charges the pod for *resource*.
+
+    ``max(max(initContainer requests), sum(container requests))`` -- the rule the scheduler
+    applies, spelled out here because the whole reason only one step is settable is that it
+    is a maximum rather than a sum.
+    """
+    spec = manifest["spec"]["template"]["spec"]
+
+    def _value(container):
+        raw = container["resources"]["requests"][resource]
+        return to_cores(raw) if resource == "cpu" else to_bytes(raw)
+
+    inits = [_value(c) for c in spec.get("initContainers", [])]
+    mains = [_value(c) for c in spec.get("containers", [])]
+    return max([*inits, sum(mains)])
+
+
+def _manifest(**kwargs):
+    return pj.build_manifest("camp", "img:1", [{"plugins": [{"type": "to_csv"}]}],
+                             ("ep", "ak", "sk", "bucket", "camp/"), "ns", **kwargs)
+
+
+def _containers(manifest):
+    spec = manifest["spec"]["template"]["spec"]
+    return {c["name"]: c for c in
+            list(spec.get("initContainers", [])) + list(spec.get("containers", []))}
+
+
+def test_every_step_is_held_to_what_it_reserved():
+    """No step of this pod may use more cpu or memory than it reserved.
+
+    The pod runs on the nodes that run trials. A step allowed past its reservation takes
+    cores from a run whose own request was honest, and that run's timing then depends on
+    which campaign happened to be postprocessing beside it -- a hidden variable in the
+    measurement that no artifact of the affected run records. Nothing in this pod is under
+    test, so the throughput given up costs nothing that matters.
+    """
+    for name, container in _containers(_manifest()).items():
+        resources = container["resources"]
+        for resource in ("cpu", "memory"):
+            assert resources["requests"][resource] == resources["limits"][resource], name
+
+
+def test_disk_is_the_one_resource_that_still_bursts():
+    """Ephemeral storage keeps a limit above its request, unlike cpu and memory.
+
+    Disk is reclaimed as the conversion writes its outputs and the staged bags are dropped,
+    so the peak is transient and far above the mean. Equalising the two would either price
+    every postprocessing pod at a disk figure almost none of them reach, or fail a large
+    campaign at a ceiling near the reservation.
+    """
+    for name, container in _containers(_manifest()).items():
+        resources = container["resources"]
+        assert (to_bytes(resources["limits"]["ephemeral-storage"])
+                > to_bytes(resources["requests"]["ephemeral-storage"])), name
+
+
+def test_the_fixed_steps_are_a_floor_under_the_pod_and_not_only_a_default():
+    """A conversion sized BELOW the built-in steps does not shrink the pod any further.
+
+    Pinned because the obvious "fix" -- scaling the fixed steps down with the declared
+    figure -- trades a slow step for an OOM kill of the one that publishes the results. The
+    index ingest's footprint is not the campaign's to declare, and a ``.vast`` asking for
+    512Mi has said nothing about whether the ingest still fits in it.
+
+    The declaration is not ignored: the conversion container is still held to it, and the
+    fan-out still follows it. It is the pod's *reservation* that stops falling.
+    """
+    small = _manifest(convert_resources={"cpu": 1, "memory": "512Mi"})
+    convert = _containers(small)["convert"]["resources"]["requests"]
+    assert (convert["cpu"], convert["memory"]) == ("1", "512Mi")
+
+    floor_cpu = to_cores(pj.POSTPROCESS_HOST_FLOOR["cpu"])
+    assert _pod_charge(small, "cpu") == floor_cpu > 1
+
+
+def test_raising_the_block_does_raise_what_the_pod_reserves():
+    """The direction that matters, and the reason the knob exists: a conversion that needs
+    more gets a pod that reserved more, rather than one that is merely allowed more."""
+    big = _manifest(convert_resources={"cpu": 6, "memory": "12Gi"})
+    assert _pod_charge(big, "cpu") == 6
+    assert _pod_charge(big, "memory") == to_bytes("12Gi")
+
+
+def test_a_search_batch_is_sized_by_the_same_block(monkeypatch):
+    """The conversion-only Job a search submits per batch takes the same figure.
+
+    Its shape differs -- with no host step the conversion is the pod's MAIN container
+    rather than an initContainer -- so the charge is computed over a different arrangement
+    of the same steps, and the figure has to survive that. This is also the Job a campaign
+    gets most of: one per batch, for the length of the search.
+    """
+    batch = _manifest(host_stage=False, convert_resources={"cpu": 6, "memory": "12Gi"})
+    containers = _containers(batch)
+    assert [c["name"] for c in batch["spec"]["template"]["spec"]["containers"]] == ["convert"]
+    assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
+    assert _pod_charge(batch, "cpu") == 6
+    # And the same floor applies in this shape, for the same reason.
+    small = _manifest(host_stage=False, convert_resources={"cpu": 1, "memory": "512Mi"})
+    assert _pod_charge(small, "cpu") == to_cores(pj.POSTPROCESS_HOST_FLOOR["cpu"])
+
+
+def test_a_campaign_that_says_nothing_gets_the_shared_default():
+    convert = _containers(_manifest())["convert"]["resources"]
+    assert convert["requests"]["cpu"] == str(POSTPROCESS_CONVERT_DEFAULTS["cpu"])
+    assert convert["requests"]["memory"] == str(POSTPROCESS_CONVERT_DEFAULTS["memory"])
+
+
+def test_staging_is_never_raised_by_what_a_campaign_asks_for():
+    """Staging keeps its figure whatever the ``.vast`` says.
+
+    Its footprint is set by how it is written -- it streams one object at a time -- so the
+    small memory bound is a guard, not a reservation: a regression in that streaming shows
+    up as this step failing, and a limit that grew with the campaign's request is exactly
+    the one that would absorb it in silence. It also runs only our own code, so there is
+    nothing here a ``.vast`` would know better.
+    """
+    containers = _containers(_manifest(convert_resources={"cpu": 6, "memory": "12Gi"}))
+    assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
+    assert containers["stage"]["resources"] == pj.POSTPROCESS_STAGE_RESOURCES
+
+
+def test_one_step_cannot_edit_another_steps_resources():
+    """The stamped blocks are copies, not the module's own dicts.
+
+    They were shared objects, so anything mutating a container's resources in place -- a
+    GPU request, a cluster-specific override, a test -- rewrote the default for every
+    later pod in the process. A service builds many of these.
+    """
+    first = _manifest()
+    _containers(first)["stage"]["resources"]["limits"]["cpu"] = "99"
+    assert _containers(_manifest())["stage"]["resources"]["limits"]["cpu"] != "99"
+
+
+def test_the_host_step_is_raised_because_the_campaigns_own_code_runs_there():
+    """The figure has to reach the host step, not only the conversion.
+
+    ``run_host_postprocessing`` runs the ordinary pipeline with *only* the rosbag steps
+    skipped, so everything else a campaign declared happens there: its own metric plugins,
+    metadata, publication, the health checks. Those are precisely the steps whose appetite
+    RoboVAST cannot know. A knob that sized only the conversion would leave them pinned at a
+    figure the campaign could not change, and the symptom would be an OOM kill of a step
+    whose declared allocation said it had room.
+    """
+    host = _containers(_manifest(convert_resources={"cpu": 8, "memory": "16Gi"}))["host"]
+    requests = host["resources"]["requests"]
+    assert (requests["cpu"], requests["memory"]) == ("8", "16Gi")
+    assert host["resources"]["limits"]["memory"] == "16Gi"
+
+
+def test_the_host_step_keeps_its_floor_when_a_campaign_asks_for_less():
+    """Raise-only. A campaign knows when its analysis needs more; it cannot know that the
+    index ingest still fits in less, and being wrong that way kills the step that publishes
+    the results rather than slowing it."""
+    host = _containers(_manifest(convert_resources={"cpu": 1, "memory": "512Mi"}))["host"]
+    requests = host["resources"]["requests"]
+    assert (requests["cpu"], requests["memory"]) == (str(pj.POSTPROCESS_HOST_FLOOR["cpu"]),
+                                                     pj.POSTPROCESS_HOST_FLOOR["memory"])
+
+
+def test_raised_to_compares_quantities_rather_than_strings():
+    """``"512Mi"`` is not less than ``"4Gi"`` by string order, and ``"8"`` is not more than
+    ``"10"``. Both comparisons decide whether a step is raised or floored."""
+    assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": 10, "memory": "512Mi"}) == {
+        "cpu": 10, "memory": "4Gi"}
+    assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "500m", "memory": "8Gi"}) == {
+        "cpu": 2, "memory": "8Gi"}
+    # An unparseable quantity keeps the floor rather than raising to nonsense.
+    assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "lots"})["cpu"] == 2
+

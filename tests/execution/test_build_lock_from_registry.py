@@ -179,3 +179,54 @@ def test_both_registry_callers_share_one_credential_reader():
     import inspect
     body = inspect.getsource(kb.BatchJobRunner._registry_dockerconfig)
     assert "registry_dockerconfig(" in body and "b64decode" not in body
+
+
+def _backend():
+    """A real KubernetesBackend, not a stub. The point of these tests."""
+    from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
+    return KubernetesBackend(cluster_config=object(), namespace="default")
+
+
+def test_the_backend_reads_the_lock_without_a_kubernetes_client():
+    """The bug a stubbed test cannot see: the previous implementation resolved the pull Secret
+    itself, through a client this class does not have. Every call raised, the broad `except`
+    turned it into ``{}``, and ``{}`` is exactly "this image carries no lock" -- so the fix was
+    indistinguishable from the absence it was written to remove.
+
+    Asserted on a real instance, and on the attribute rather than the outcome, because a
+    mocked client would hide precisely this.
+    """
+    backend = _backend()
+
+    assert not hasattr(backend, "k8s_client"), (
+        "read_build_lock must not depend on a client this class does not have")
+    # Answers from the cache a runner fills, so it works with no cluster at all.
+    assert backend.read_build_lock("reg.example.com/o/sut@sha256:a") == {}
+    backend._build_lock_cache["reg.example.com/o/sut@sha256:a"] = {"apt": {"tree": "2.2.1-1"}}
+    assert backend.read_build_lock(
+        "reg.example.com/o/sut@sha256:a")["apt"]["tree"] == "2.2.1-1"
+
+
+def test_the_cache_is_shared_with_every_runner_of_the_campaign():
+    """One registry read per image per campaign, and -- more importantly -- a lock a runner
+    read during the batch is still there when the controller asks after it."""
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+    import inspect
+
+    backend = _backend()
+    assert isinstance(backend._build_lock_cache, dict)
+    # The batch runner accepts it, and run_batch hands it over.
+    assert "build_lock_cache" in inspect.signature(kb.BatchJobRunner.for_batch).parameters
+    assert "build_lock_cache=self._build_lock_cache" in inspect.getsource(kb.KubernetesBackend.run_batch)
+
+
+def test_a_returned_lock_cannot_be_mutated_through_the_cache():
+    """The caller writes what it gets into the campaign's record; handing out the cached dict
+    would let one role's bookkeeping edit another's."""
+    backend = _backend()
+    backend._build_lock_cache["img"] = {"apt": {"tree": "1.0"}}
+
+    got = backend.read_build_lock("img")
+    got["apt"] = {}
+
+    assert backend.read_build_lock("img")["apt"] == {"tree": "1.0"}

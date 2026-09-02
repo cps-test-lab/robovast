@@ -35,11 +35,14 @@ navigable without duplicating ``_jobs/`` under every run.
 """
 
 import contextlib
+import io
+import json
 import logging
 import os
 import subprocess  # nosec B404 - fixed 'pigz' binary, no shell
 import tarfile
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,43 @@ DEFAULT_EXCLUDE = frozenset({".cache"})
 
 #: Read size for the download generator.
 _CHUNK = 1024 * 1024
+
+#: Campaign-relative member marking an archive taken while the campaign was still
+#: running. Its presence is the whole signal: a snapshot has the shape of a finished
+#: campaign and nothing else in it says otherwise, so an importer that did not find this
+#: file would register half a campaign as a whole one. Written into ``_execution/``
+#: because that is where a campaign keeps what happened to it, and read by
+#: :mod:`robovast.service.ingest`.
+SNAPSHOT_MEMBER = "_execution/snapshot.json"
+
+
+def snapshot_marker(campaign_id: str, **facts) -> bytes:
+    """The bytes of :data:`SNAPSHOT_MEMBER` for *campaign_id*.
+
+    *facts* are whatever the caller knows about the moment of capture (run tallies, the
+    phase). Kept open rather than typed: this file is read by a human deciding whether to
+    trust the archive at least as often as by :mod:`~robovast.service.ingest`, and the
+    fields worth having differ per lane.
+    """
+    from datetime import datetime, timezone
+    return json.dumps({
+        "campaign_id": campaign_id,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "complete": False,
+        "note": ("Taken while the campaign was still running: runs that had not finished "
+                 "are missing, and derived data has not been computed. Importing this "
+                 "registers an incomplete campaign."),
+        **facts,
+    }, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def add_snapshot_marker(tar: tarfile.TarFile, campaign_id: str, **facts) -> None:
+    """Add :data:`SNAPSHOT_MEMBER` for *campaign_id* under its campaign directory."""
+    payload = snapshot_marker(campaign_id, **facts)
+    info = tarfile.TarInfo(name=f"{campaign_id}/{SNAPSHOT_MEMBER}")
+    info.size = len(payload)
+    info.mtime = int(time.time())
+    tar.addfile(info, io.BytesIO(payload))
 
 
 def _make_filter(exclude, on_member=None):
@@ -133,6 +173,94 @@ def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude,
     """
     arcname = os.path.basename(os.path.normpath(campaign_root))
     tar.add(campaign_root, arcname=arcname, filter=_make_filter(exclude, on_member))
+
+
+class _LiveFile(io.RawIOBase):
+    """A file being written, read as exactly the *size* bytes its header promised.
+
+    ``tarfile`` writes a member's header first and then copies exactly ``size`` bytes; a
+    file that shrinks or is truncated under the copy makes it raise ``unexpected end of
+    data`` — and by then the response's status line is long since 200, so the caller gets
+    a truncated body rather than an error it can read. A campaign directory is written to
+    continuously while it runs, so that is not a rare race there but the normal case.
+
+    Padding the short tail with zeros keeps the archive structurally valid: one member of
+    a snapshot has a garbled tail, and the other hundred thousand arrive intact. A file
+    that *grew* needs nothing — the header's size is the truncation.
+    """
+
+    def __init__(self, raw, size: int):
+        super().__init__()
+        self._raw = raw
+        self._left = size
+
+    def read(self, size=-1):  # noqa: D102 - RawIOBase's contract
+        if self._left <= 0:
+            return b""
+        want = self._left if size is None or size < 0 else min(size, self._left)
+        try:
+            chunk = self._raw.read(want)
+        except OSError:
+            chunk = b""
+        if len(chunk) < want:
+            chunk += b"\0" * (want - len(chunk))
+        self._left -= len(chunk)
+        return chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        finally:
+            super().close()
+
+
+def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
+    """Add a campaign that is **still being written** into *tar*, member by member.
+
+    ``TarFile.add`` walks the tree itself and lets an ``OSError`` from any single file
+    abort the whole archive. Here every member is added on its own and a file that has
+    vanished since the directory was read is skipped *before* its header is written — the
+    only point at which skipping is still free, because a member whose header is out
+    cannot be taken back out of a stream.
+
+    Sizes are taken from the open descriptor rather than from the directory entry, so the
+    header cannot describe a different moment than the payload; :class:`_LiveFile` covers
+    what changes after that.
+    """
+    exclude = frozenset(exclude or ())
+    root = os.path.normpath(str(campaign_root))
+    base = os.path.basename(root)
+    tar.add(root, arcname=base, recursive=False)
+    stack = [(root, base)]
+    while stack:
+        path, arc = stack.pop()
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name in exclude:
+                continue
+            child = f"{arc}/{entry.name}"
+            try:
+                if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
+                    # Both are payload-free members: a symlink is stored as a link (the
+                    # ``<config>/<run>/job`` links) and a directory as an entry, so neither
+                    # can fail half-written.
+                    tar.addfile(tar.gettarinfo(entry.path, arcname=child))
+                    if not entry.is_symlink():
+                        stack.append((entry.path, child))
+                    continue
+                with open(entry.path, "rb") as raw:
+                    info = tar.gettarinfo(arcname=child, fileobj=raw)
+                    tar.addfile(info, _LiveFile(raw, info.size))
+            except OSError:
+                logger.debug("Skipping %s: it changed while the snapshot was taken",
+                             entry.path)
+                continue
 
 
 def make_campaign_tarball(campaign_root: str, archive_dir: str,
@@ -249,7 +377,22 @@ def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=N
     return tar_stream(lambda tar: _add_campaign_tree(tar, campaign_root, exclude, on_member))
 
 
-def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK):
-    """Generator yielding gzip-archive bytes of the local directory *campaign_root*."""
-    return iter_tar(
-        lambda tar: _add_campaign_tree(tar, campaign_root, exclude), chunk_size)
+def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK,
+                      snapshot: "dict | None" = None):
+    """Generator yielding gzip-archive bytes of the local directory *campaign_root*.
+
+    *snapshot* — a dict of facts, possibly empty — says the campaign is **still running**:
+    the tree is then read tolerantly (:func:`_add_live_tree`) and :data:`SNAPSHOT_MEMBER`
+    is added carrying those facts, so what lands can never be mistaken for a finished
+    campaign. ``None`` is the finished campaign, added the strict way.
+    """
+    campaign_id = os.path.basename(os.path.normpath(str(campaign_root)))
+
+    def _add(tar):
+        if snapshot is None:
+            _add_campaign_tree(tar, campaign_root, exclude)
+            return
+        _add_live_tree(tar, campaign_root, exclude)
+        add_snapshot_marker(tar, campaign_id, **snapshot)
+
+    return iter_tar(_add, chunk_size)

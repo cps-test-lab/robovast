@@ -241,6 +241,125 @@ class ResourcesConfig(BaseModel):
         return self
 
 
+class PostprocessResourcesConfig(BaseModel):
+    """What the postprocessing pod's conversion step may have.
+
+    Sizes the step that deserializes a campaign's rosbags -- the only expensive one -- and,
+    from the same figure, how many bags it converts at once::
+
+        results_processing:
+          resources:
+            cpu: 8
+            memory: 16Gi
+
+    Per-cluster lists work as they do in :class:`ResourcesConfig` (``cpu: [{ctx: 4}, …]``).
+
+    **The reservation is the ceiling: there is no ``cpu_limit``/``memory_limit`` here.** The
+    reason is not efficiency but comparability. This pod runs on the nodes that run trials,
+    so a conversion allowed past its reservation takes cores from a run whose own request was
+    honest -- and that run's timing then depends on which campaign happened to be
+    postprocessing beside it, which is exactly the hidden variable the CPU governor exists to
+    remove. Equality costs density, because admission packs by requests, and buys a
+    postprocessing step that cannot perturb a measurement.
+
+    **What it sizes is the pod, not one step.** A campaign's ``results_processing`` block is
+    mostly not rosbag conversion -- its own metric plugins, ``metadata_processing``,
+    ``publication``, ``health_checks`` -- and all of that runs in the pod's host step, beside
+    the index ingest. Those are the steps whose appetite RoboVAST cannot know, so this figure
+    raises them too. Sizing only the conversion would leave a campaign's own analysis code
+    pinned at a figure it could not change, and the symptom would be an OOM kill of a step
+    whose declared allocation said it had room.
+
+    Kubernetes charges a pod the *maximum* over its steps rather than their sum here (staging
+    and conversion are initContainers), so one figure serving several steps costs nothing.
+
+    **It raises; it does not lower.** The steps that run our own code keep their floors
+    whatever a ``.vast`` says. A campaign knows when its analysis needs more than the
+    default; it cannot know that the index ingest still fits in less, and being wrong in that
+    direction is an OOM kill of the step that publishes the results rather than a slow step.
+    So ``cpu: 1`` still yields a pod reserving the floor -- the conversion container itself is
+    held to the smaller figure, and its fan-out follows it, but the pod's reservation does not
+    fall below what the fixed steps need.
+
+    Staging is the one step this does not touch at all. Its footprint is set by how it is
+    written -- one object at a time -- so its small memory bound is a guard rather than a
+    reservation, and a limit that grew with whatever a campaign asked for is exactly the one
+    that would absorb a regression in that streaming instead of failing on it.
+
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_split_limits(cls, data):
+        """Name the reason when a ``.vast`` tries to split request from limit.
+
+        ``extra='forbid'`` already refuses these keys, but its message ("extra inputs are not
+        permitted") reads as though the field were misspelled -- and someone writing
+        ``cpu_limit`` here has copied a block that is correct one section up, where splitting
+        is deliberate. Runs ``before`` because the forbid check would otherwise raise first.
+        """
+        if not isinstance(data, dict):
+            return data
+        split = sorted(k for k in ("cpu_limit", "memory_limit") if k in data)
+        if split:
+            raise ValueError(
+                f"{', '.join(split)} cannot be set for postprocessing: here the reservation "
+                "is the ceiling. This pod shares nodes with trials, so a conversion allowed "
+                "past its request perturbs a run that reserved honestly. Set cpu/memory to "
+                "the figure you want the step held to.")
+        return data
+
+    #: Cores for the conversion, as request and as limit. Also the worker count: the step
+    #: converts one bag per process, and it is this figure -- not what the node happens to
+    #: have -- that decides how many run at once.
+    cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
+    #: Memory for the conversion, as request and as limit.
+    memory: Optional[Union[str, list[dict[str, str]]]] = None
+
+    @field_validator('cpu')
+    @classmethod
+    def validate_cpu_quantity(cls, v):
+        """Reject a cpu value that is not a CPU quantity -- see
+        :meth:`ResourcesConfig.validate_cpu_quantity`, which this mirrors for the same
+        reason: a bad quantity here surfaces as a pod that never schedules."""
+        def check(value):
+            if to_cores(value) is None:
+                raise ValueError(
+                    f'cpu {value!r} is not a CPU quantity: use cores (4, 0.5) '
+                    'or millicores ("500m")')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
+    @field_validator('memory')
+    @classmethod
+    def validate_memory_quantity(cls, v):
+        """Reject a memory value that is not a memory quantity."""
+        def check(value):
+            if to_bytes(value) is None:
+                raise ValueError(
+                    f'memory {value!r} is not a memory quantity: use a Kubernetes '
+                    'quantity ("4Gi", "512Mi")')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
+
 #: The container that runs scenario-execution. Always present; when a simulator backend
 #: is declared it may be supplied by the backend rather than named by the campaign.
 SCENARIO_CONTAINER = 'scenario'
@@ -981,6 +1100,11 @@ def job_deadline_seconds(execution_params: dict) -> int:
 
 
 class ResultsConfig(BaseModel):
+    #: What the postprocessing pod's conversion step may have, and how many bags it converts
+    #: at once. Omitted, the step takes its built-in reservation -- see
+    #: :class:`PostprocessResourcesConfig`, which documents why only this one step is
+    #: settable and why the figure is a reservation rather than a ceiling.
+    resources: Optional[PostprocessResourcesConfig] = None
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
     publication: Optional[list[str | dict[str, Any]]] = None

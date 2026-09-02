@@ -65,15 +65,18 @@ spec:
       name: minio-storage
     resources:
       # A floor, not an estimate: every milli-core requested here is capacity campaign jobs
-      # cannot be admitted against. MinIO streams objects rather than buffering them, so
-      # the request covers an idle server and the limit leaves room for concurrent
-      # multi-part transfers. No CPU limit -- throttling the store slows every upload and
-      # download with no visible cause.
+      # cannot be admitted against, so the request covers an idle server. The LIMIT is a
+      # different quantity and has to be sized against the peak: MinIO streams objects, but
+      # a batch mirrors dozens of multi-part transfers at once, and each carries buffers the
+      # request knows nothing about. Sized well above idle on purpose -- a store that is
+      # OOM-killed mid-batch takes that batch's bag conversion with it, and the campaign then
+      # fails in postprocessing with no conversion log to explain it. No CPU limit --
+      # throttling the store slows every upload and download with no visible cause.
       requests:
         cpu: "50m"
         memory: "256Mi"
       limits:
-        memory: "1Gi"
+        memory: "4Gi"
     readinessProbe:
       httpGet:
         path: /minio/health/ready

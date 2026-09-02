@@ -184,7 +184,7 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
     Response ended prematurely``, which names neither the campaign nor the problem, and
     left a ``.part`` file behind. Raised eagerly it is a 404 with a sentence in it.
 
-    The predicate is the one ``list_campaigns`` answers with, so the archive route and the
+    The predicate covers everything ``list_campaigns`` shows, so the archive route and the
     listing cannot disagree about what this service has.
     """
 
@@ -196,6 +196,40 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
 
     with pytest.raises(KeyError, match="camp-2026-01-01-000000"):
         cs.campaign_tar_stream("camp-2026-01-01-000000")
+
+
+@pytest.mark.parametrize("live_by", ["driven_here", "driven_elsewhere"])
+def test_campaign_tar_stream_serves_a_campaign_the_index_has_not_caught_up_with(
+        cs, monkeypatch, live_by):
+    """A live campaign downloads even with no index marker, wherever it is driven.
+
+    The marker is written best-effort at the head of the driver, so it can be missing
+    while the campaign is listed all the same (the listing unions the live registry in).
+    Refusing the download there hides it behind an object nobody can see, on the campaign
+    a reader is most likely to be watching -- so the predicate has to cover both halves of
+    that union, this pod's own campaigns and the ones another pod is driving.
+    """
+    campaign_id = "camp-2026-01-01-000000"
+    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: set())
+    if live_by == "driven_here":
+        monkeypatch.setattr(cs, "_extra_live_ids", lambda: set())
+        cs._campaigns[campaign_id] = types.SimpleNamespace(
+            campaign_id=campaign_id, thread=None,
+            state=types.SimpleNamespace(
+                snapshot=lambda: types.SimpleNamespace(phase="running")))
+    else:
+        monkeypatch.setattr(cs, "_extra_live_ids", lambda: {campaign_id})
+
+    tarred = []
+    monkeypatch.setattr(
+        cs, "_cluster_config",
+        lambda: types.SimpleNamespace(
+            add_campaign_members=lambda tar, cid, exclude_prefixes=(): tarred.append(
+                (cid, tuple(exclude_prefixes)))))
+
+    b"".join(cs.campaign_tar_stream(campaign_id))
+
+    assert tarred == [(campaign_id, ("_postproc",))]
 
 
 def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):

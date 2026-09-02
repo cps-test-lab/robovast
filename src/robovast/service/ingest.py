@@ -49,6 +49,7 @@ an archive is decided to be untrusted input, and every client reaches them throu
 re-implementing the sequence.
 """
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -215,6 +216,7 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
         "layout": _check_layout(campaign_dir),
         "config": _check_config(campaign_dir),
     }
+    stages["completeness"] = _check_completeness(campaign_dir)
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
     stages["index"] = _ingest_index(campaign_dir)
     stages["analysis_db"] = _check_analysis_db(campaign_dir)
@@ -303,6 +305,37 @@ def _check_layout(campaign_dir: Path) -> dict:
                       f"its provenance -- which robovast, which image -- is unknown, so it "
                       f"cannot be verified or re-run.")
     return _stage(STAGE_OK, "_config/ and _execution/ present")
+
+
+def _check_completeness(campaign_dir: Path) -> dict:
+    """Was this campaign archived while it was still running?
+
+    Degraded, never blocking: a snapshot is a real campaign with runs missing, and refusing
+    it would throw away the only copy somebody may have of a run that has since been lost.
+    What it must not do is arrive silently — every other stage would pass on it, because a
+    snapshot differs from a finished campaign only in what is *absent*, and absence is what
+    no check can see. The marker is the campaign saying so itself.
+    """
+    from robovast.execution.campaign_archive import \
+        SNAPSHOT_MEMBER  # pylint: disable=import-outside-toplevel
+
+    marker = campaign_dir / SNAPSHOT_MEMBER
+    if not marker.is_file():
+        return _stage(STAGE_OK, "the campaign was archived after it ended")
+    try:
+        facts = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        facts = {}
+    tally = ""
+    if facts.get("runs_total"):
+        tally = f" ({facts.get('runs_completed', '?')}/{facts['runs_total']} runs had finished)"
+    captured = facts.get("captured_at")
+    return _stage(STAGE_DEGRADED,
+                  f"archived while the campaign was still running"
+                  f"{f' at {captured}' if captured else ''}{tally}. Runs that had not "
+                  f"finished are absent and derived data was not computed, so this campaign "
+                  f"is a snapshot: it lists and displays, and its totals are not the "
+                  f"campaign's. Re-download it from the service that ran it once it ends.")
 
 
 def _check_config(campaign_dir: Path) -> dict:
