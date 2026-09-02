@@ -109,6 +109,33 @@ RUN apt-get update \
  && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc
 
+# The docker CLI, for the LOCAL lane only. In a pod there is no daemon to talk to and this
+# is dead weight; on a host it is the whole mechanism, because the local lane shells out to
+# `docker compose` and `docker buildx` rather than using a Python SDK (see
+# common/cli/checks.py, and note `docker` is absent from poetry.lock entirely).
+#
+# Client only -- no daemon, no containerd. The service is a *sibling* of the containers it
+# starts, sharing the host's daemon through a mounted socket; it never runs one of its own.
+#
+# compose v2 as a CLI plugin, not the old `docker-compose` script: the generated run.sh
+# invokes `docker compose`, and the two are not interchangeable.
+#
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gnupg \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+ && chmod a+r /etc/apt/keyrings/docker.gpg \
+ && echo "deb [arch=${TARGETARCH} signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      docker-ce-cli docker-compose-plugin docker-buildx-plugin \
+ && apt-get purge -y gnupg \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /opt/robovast
 
 # Project metadata + source, then install robovast with its dependencies, the

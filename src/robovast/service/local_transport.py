@@ -548,6 +548,12 @@ def _throttled_transfer_log(log, every: float = 0.10):
     return _cb
 
 
+#: How long a restart waits before tearing the process down, so the HTTP response for the
+#: request that asked for it is on the wire first. Generous: this runs once, by hand, and a
+#: restart reported as a failure is worse than one that takes a moment.
+_RESTART_GRACE_S = 1.0
+
+
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
 
@@ -1631,30 +1637,96 @@ class LocalTransport(RobovastInterface):
             "query_containers": self._query_container_states()})
 
     def upgrade_info(self) -> UpgradeInfo:
-        """The live campaigns, and a refusal: there is no Deployment here to roll.
+        """The live campaigns, and whether this deployment has anything to roll.
 
         Split from the cluster answer the way :meth:`version` is -- the campaign list is
-        lane-neutral and belongs here, and the lane below fills in what only it knows. The
-        refusal names how this deployment *is* updated rather than reporting a capability
-        it does not have: a local service is however it was installed and started.
+        lane-neutral and belongs here, and the lane below fills in what only it knows.
+
+        The answer depends on *how this service was started*, not on which lane it drives.
+        A service in a container can be restarted -- it exits and its restart policy brings
+        it back; a service in a venv is "however it was installed and started" and there is
+        nothing watching for its exit. So the refusal, when there is one, names the way this
+        deployment actually is updated rather than reporting a capability it does not have.
+
+        **Restart, not upgrade, on this lane.** Docker's restart policy re-runs the
+        container it was given, which is pinned to the image *id* it was created from: it
+        never re-resolves the tag. So this reports what a local container can do -- come
+        back -- and :meth:`upgrade_service` says plainly that it comes back on the same
+        bytes. Moving onto newer ones is a recreate (``docker compose up -d --pull
+        always``) and belongs to whoever runs the compose file, not to the process being
+        replaced.
         """
+        from robovast.service.sibling_paths import in_sibling_container
+
         listed = self.list_campaigns(ListCampaignsRequest(limit=100, offset=0)).campaigns
+        active = [c for c in listed if not is_terminal(c.phase)]
+        if in_sibling_container():
+            # The thing that started it is watching for its exit, which is what makes
+            # "stop" a restart. The digest fields stay empty on purpose: they describe a
+            # roll between two images, and there is no second image here.
+            return UpgradeInfo(supported=True, active_campaigns=active)
         return UpgradeInfo(
             supported=False,
             unsupported_reason=(
-                "this service is not a Kubernetes Deployment, so it has nothing to roll. "
-                "Update it the way it was installed and restart it."),
-            active_campaigns=[c for c in listed if not is_terminal(c.phase)])
+                "this service runs from a venv rather than a container image, so it has "
+                "nothing to roll. Update it the way it was installed and restart it."),
+            active_campaigns=active)
 
     def upgrade_service(self, force: bool = False) -> ActionResult:
-        """Refuse: see :meth:`upgrade_info`.
+        """Restart a containerised service, or refuse for a venv one.
 
-        ``ValueError`` -> 400. Not the 409 the live-campaign refusal uses: that one is a
-        conflict the caller can resolve and retry, this one is a request that does not
-        apply to this deployment at all.
+        The restart is an *exit*: the process ends and the restart policy that is watching
+        for it starts the container again. On the **same image** -- Docker re-runs the
+        container it was given, and a container is pinned to the image id it was created
+        from, so no restart re-resolves the tag. This is therefore the local answer to "the
+        service is wedged, bring it back", not to "run the newer build"; the second is a
+        recreate on the host, which is a thing only the operator of the compose file can do.
+
+        Two refusals, two kinds. ``ValueError`` -> 400 for the venv one: a request that does
+        not apply to this deployment at all. ``RuntimeError`` -> 409 for the live-campaign
+        one: a conflict the caller can resolve and retry, which is the same shape the cluster
+        gives it.
         """
-        del force  # a refusal about the lane; forcing does not make a lane something else
-        raise ValueError(self.upgrade_info().unsupported_reason)
+        info = self.upgrade_info()
+        if not info.supported:
+            del force  # forcing does not make a venv into an image
+            raise ValueError(info.unsupported_reason)
+        if info.active_campaigns and not force:
+            raise RuntimeError(
+                f"{len(info.active_campaigns)} campaign(s) are still running "
+                f"({', '.join(c.campaign_id for c in info.active_campaigns)}); rolling now "
+                "would kill them. Wait, stop them, or pass --yes.")
+        self._exit_after_reply()
+        return ActionResult(
+            ok=True,
+            message="restarting: the service will exit and its restart policy brings the "
+                    "container back, on the SAME image -- a restart never re-resolves the "
+                    "tag. To run newer bytes, recreate it on the host: "
+                    "'docker compose up -d --pull always'.")
+
+    def _exit_after_reply(self) -> None:
+        """Tear the service down shortly, so this call's HTTP response gets out first.
+
+        The cluster does not need this: there, ``upgrade_service`` stamps an annotation and
+        *Kubernetes* replaces the pod, so the handler returns normally and something else
+        does the killing. A container has no such third party -- the process being replaced
+        is the one answering -- so exiting inline would drop the connection and report a
+        failure for a restart that worked.
+
+        A daemon thread, and ``os._exit`` after the cooperative stop: campaigns run on
+        daemon workers whose container-teardown traps must complete (see :meth:`shutdown`),
+        but once they have, a clean interpreter exit would still wait on uvicorn's
+        connection drain, which an open SSE stream can hold indefinitely.
+        """
+        def _tear_down():
+            time.sleep(_RESTART_GRACE_S)
+            try:
+                self.shutdown()
+            finally:
+                os._exit(0)  # pylint: disable=protected-access
+
+        threading.Thread(target=_tear_down, name="robovast-restart",
+                         daemon=True).start()
 
     def _exec_container_state(self):
         """The held exec container, or ``None`` — without creating a manager.

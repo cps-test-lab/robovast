@@ -62,6 +62,60 @@ The three modes
 
        vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
 
+    It can run **from a venv or from its container image**, and that choice — not the lane
+    it drives — decides whether ``vast service restart`` can do anything. A venv service is
+    "however it was installed and started", with nothing watching for its exit, so the verb
+    refuses and names that. A containerised one has a restart policy, so it can:
+
+    .. code-block:: bash
+
+       export ROBOVAST_ROOT=$PWD/robovast-data
+       mkdir -p "$ROBOVAST_ROOT"/{results,workspaces,tmp}
+       export ROBOVAST_UID=$(id -u) ROBOVAST_GID=$(id -g)
+       export DOCKER_GID=$(getent group docker | cut -d: -f3)
+       export ROBOVAST_AUTH_TOKEN=$(openssl rand -hex 16)
+       docker compose -f container/service/docker-compose.yml up -d
+
+    ``DOCKER_GID`` is not optional and not guessable: the socket is ``root:docker`` mode
+    0660, and the uid the service runs as is not in that group *inside* the container
+    however many groups it has outside. Without it the service starts, serves, accepts a
+    campaign and only then fails on "permission denied while trying to connect to the
+    docker API". ``ROBOVAST_UID`` is spelled that way because bash makes ``UID`` readonly,
+    so a compose file reading ``${UID}`` cannot be told anything but its default.
+
+    That is the **same image** the cluster Deployment runs, so a local campaign executes
+    pinned, digest-identified bytes exactly as a cluster one does — the one image in the
+    pipeline whose provenance a local run could not previously state.
+
+    **A restart here is not an upgrade.** On the cluster, ``vast service restart`` stamps
+    the Deployment and a floating tag moves onto new bytes. Docker's restart policy does
+    not: it re-runs the container it was given, and a container is pinned to the image *id*
+    it was created from, so the service comes back on exactly the bytes it left. The verb is
+    therefore the local answer to "the service is wedged" and reachable without a shell on
+    the host. Running a newer build is a recreate, by whoever runs the compose file:
+
+    .. code-block:: bash
+
+       docker compose -f container/service/docker-compose.yml up -d --pull always
+
+    .. _deployment-sibling-paths:
+
+    **Every bind path must be identity-mapped.** The service is a *sibling* of the
+    containers it starts, sharing the host's daemon through a mounted socket rather than
+    running one of its own. So every path it hands that daemon is resolved on the **host**,
+    while the same path is also traversed by the service itself and by the ``run.sh`` it
+    generates. Both readings agree only when the path means one thing on both sides — which
+    is what mounting it at the same absolute path (``-v /data:/data``) buys.
+
+    Getting it wrong does not raise. The daemon creates an empty directory at the path it
+    cannot find, mounts *that*, and the campaign runs and produces nothing. So the service is
+    told which paths are identity-mapped (``ROBOVAST_IDENTITY_MOUNTS``) and refuses at
+    startup — naming the path and the mount to add — rather than leaving you to find the
+    empty directory hours later. ``TMPDIR`` belongs inside the mapped root too: every staging
+    directory the lane binds is a ``mkdtemp()``, so one setting covers them all, and so does
+    the workspaces store (``ROBOVAST_WORKSPACES_ROOT``), which otherwise defaults under
+    ``HOME`` — a path inside the container, unwritable and lost on every recreate.
+
 **Mode 2 — cluster service** (in-cluster Deployment)
     ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
     ClusterIP Service. It **drives each campaign in-process** (one worker thread
@@ -70,8 +124,10 @@ The three modes
     pod. In-pod, ``vast serve`` auto-detects the cluster backend
     (``--backend auto`` → ``cluster`` when ``KUBERNETES_SERVICE_HOST`` is set).
 
-Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2
-for scaled, parallel execution.
+Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2 for
+scaled, parallel execution. Within mode 1, the container form when you want the provenance
+and the remote restart, the venv form for an editable checkout you are changing between
+runs.
 
 There is no serviceless mode -- no third, in-process one where the CLI calls the interface
 directly, with no service, no workspace and no ``CampaignOrigin``. A campaign runs a

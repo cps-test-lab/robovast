@@ -202,6 +202,46 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
         lane = resolve_backend(backend)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # Checked once, here, rather than when a campaign first tries to bind: a path the host
+    # daemon resolves elsewhere does not fail, it produces an empty results directory hours
+    # later. Only the local lane binds host paths at all -- the cluster lane creates
+    # Kubernetes Jobs -- so this is asked of that lane's inputs only.
+    if backend == 'local':
+        import tempfile
+
+        from robovast.service.sibling_paths import require_identity_mapped
+        try:
+            # The EFFECTIVE root, not just the flag: omitted, it is derived from the
+            # workspaces store, so it can be wrong while every flag was right. Every bind
+            # source the generated compose emits is under it.
+            from robovast.common.results_root import local_results_root
+            effective_results = (os.path.abspath(results_dir) if results_dir
+                                 else local_results_root())
+            require_identity_mapped(
+                effective_results,
+                what=("the results directory (--results-dir)" if results_dir
+                      else "the default campaign results root"))
+            if workspace_dir:
+                require_identity_mapped(os.path.abspath(workspace_dir),
+                                        what="the pinned workspace (--workspace-dir)")
+            # The uploaded-workspace store, for the same reason and one the flags do not
+            # reach: it defaults under ``Path.home()``, which in a container is whatever
+            # HOME resolves to for the uid the operator ran it as -- a path inside the
+            # container, unwritable and invisible to the host. Unchecked, startup succeeds
+            # and the FIRST upload 500s on a mkdir, which names the symptom and not the
+            # cause.
+            from robovast.service.workspaces import default_workspaces_root
+            require_identity_mapped(
+                default_workspaces_root(),
+                what="the workspaces store (ROBOVAST_WORKSPACES_ROOT)")
+            # Every staging directory the lane binds is a `tempfile.mkdtemp()` -- the
+            # container-exec config tree, the aux-plugin workspace -- so checking TMPDIR
+            # covers all of them at once, and any future one, instead of each call site.
+            require_identity_mapped(tempfile.gettempdir(),
+                                    what="the temporary directory (TMPDIR)")
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
     store = None
     if backend == 'cluster':
         from robovast.service.workspaces import WorkspaceStore

@@ -1,0 +1,90 @@
+# A robovast-service on the local Docker lane, running in the image it is shipped as.
+#
+#   export ROBOVAST_ROOT=$PWD/robovast-data
+#   mkdir -p "$ROBOVAST_ROOT"/{results,workspaces,tmp}
+#   export ROBOVAST_UID=$(id -u) ROBOVAST_GID=$(id -g)
+#   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+#   export ROBOVAST_AUTH_TOKEN=$(openssl rand -hex 16)
+#   docker compose -f container/service/docker-compose.yml up -d
+#
+# The directories are made first on purpose. The daemon would create the identity mount
+# itself, but only its top level, and a TMPDIR that does not exist is not an error to
+# Python -- tempfile falls back to /tmp, which the startup check then refuses while naming
+# /tmp rather than the directory nobody made.
+#
+# The point is parity: this is the same image the in-cluster Deployment runs, so a local
+# campaign executes pinned, digest-identified bytes exactly as a cluster one does, and
+# `vast service restart` works on both -- as a restart here and as a roll there, which is
+# the one place the two deployments genuinely differ (see the restart policy below).
+#
+# EVERY bind path here is identity-mapped -- mounted at the same absolute path inside the
+# container as on the host. That is not tidiness. The service is a *sibling* of the
+# containers it starts, sharing the host's daemon through the socket below, so every path it
+# hands that daemon is resolved on the HOST while the same path is also traversed by this
+# process and by the run.sh it generates. Both readings agree only when the path means one
+# thing. Get it wrong and nothing raises: the daemon creates an empty directory at the path
+# it cannot find, mounts that, and the campaign runs and produces nothing.
+#
+# ROBOVAST_IDENTITY_MOUNTS is how the service is told which paths those are, so it can refuse
+# at startup instead of leaving you to find the empty directory hours later.
+
+services:
+  robovast-service:
+    image: ${ROBOVAST_IMAGE:-ghcr.io/cps-test-lab/robovast-controller:latest}
+    # Exiting is how `vast service restart` works: the process ends and this policy starts
+    # the container again. Without it the verb would report success and leave nothing
+    # running. It brings back the SAME image -- Docker re-runs the container it was given,
+    # and a container is pinned to the image id it was created from, so no restart
+    # re-resolves this tag. Newer bytes are a recreate, from the host:
+    #   docker compose -f container/service/docker-compose.yml up -d --pull always
+    restart: unless-stopped
+    command:
+      - vast
+      - serve
+      - --backend=local
+      - --host=0.0.0.0
+      - --results-dir=${ROBOVAST_ROOT:?set ROBOVAST_ROOT to an absolute host path}/results
+    ports:
+      - "127.0.0.1:8800:8800"
+    environment:
+      # Presence, not value: whether the daemon this process talks to shares a filesystem
+      # with it is the one thing the service cannot infer. `/.dockerenv` answers a different
+      # question -- an in-pod cluster service is in a container too and binds nothing.
+      ROBOVAST_IN_CONTAINER: "1"
+      ROBOVAST_IDENTITY_MOUNTS: "${ROBOVAST_ROOT}"
+      # Every staging directory the lane binds is a tempfile.mkdtemp(): the container-exec
+      # config tree, the aux-plugin workspace. Pointing TMPDIR inside the identity mount
+      # covers all of them at once, and any future one -- as against identity-mapping the
+      # whole of /tmp, which would share far more than intended.
+      TMPDIR: "${ROBOVAST_ROOT}/tmp"
+      # The uploaded-workspace store. Left at its default it lands under HOME, which for
+      # the uid below is a path inside the container: unwritable, lost on every recreate,
+      # and one the host daemon could not resolve. Named here so it is neither.
+      ROBOVAST_WORKSPACES_ROOT: "${ROBOVAST_ROOT}/workspaces"
+      ROBOVAST_AUTH_TOKEN: "${ROBOVAST_AUTH_TOKEN:?generate one; there is no unauthenticated mode}"
+      # Passed through for --show-gui. The *simulator* container gets the host's X socket
+      # directly from the host daemon, so this image needs no X libraries of its own -- it
+      # deliberately carries none (see container/controller/Dockerfile).
+      DISPLAY: "${DISPLAY:-}"
+    volumes:
+      # The daemon. This is what makes the service a sibling rather than a nested Docker.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Identity-mapped, for the reason at the top of this file.
+      - ${ROBOVAST_ROOT}:${ROBOVAST_ROOT}
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    # The host uid, so the results tree is owned by the person reading it. The lane bakes
+    # os.getuid() of THIS process into the scenario containers it starts, so a service
+    # running as root would write a results tree its operator cannot delete.
+    #
+    # Named ROBOVAST_UID rather than UID because bash makes UID readonly: neither `export
+    # UID=$(id -u)` nor `UID=$(id -u) docker compose up` can set it, so a `${UID:-1000}`
+    # here is not a default, it is a constant -- and one that is silently wrong for
+    # everyone whose uid is not 1000.
+    user: "${ROBOVAST_UID:?set it to your uid, from 'id -u'}:${ROBOVAST_GID:?set it to your gid, from 'id -g'}"
+    # The socket above is root:docker 0660, and the uid is not in that group *inside* this
+    # container however many groups it has on the host -- so without this the service comes
+    # up, serves, accepts a campaign, and only then fails on "permission denied while trying
+    # to connect to the docker API". Required rather than defaulted: the group id is a
+    # property of the host, and a guessed one fails exactly the same way.
+    group_add:
+      - "${DOCKER_GID:?the host's docker group id, from 'getent group docker'}"
