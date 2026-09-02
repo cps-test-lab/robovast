@@ -202,6 +202,19 @@ class ExecutionBackend(ABC):
         storage, so the bucket holds a complete, local-equivalent campaign.
         """
 
+    def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - lane-specific
+        """The build lock inside *image*, for a lane that can read one without a runtime.
+
+        ``{}`` by default, which every lane may answer: the lock is normally read out of a
+        local copy of the image, and a lane whose driver holds one needs nothing here. The
+        cluster lane overrides it because its controller has no container runtime, so the
+        only way to reach the lock is the registry.
+
+        ``{}`` means "could not be read here", never "the image installed nothing" -- see
+        ``read_build_manifests``.
+        """
+        return {}
+
     def ensure_campaign_root_complete(self, campaign_root: str) -> None:
         """Hook called before anything needs the campaign's *whole* directory on disk.
 
