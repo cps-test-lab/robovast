@@ -4,14 +4,35 @@
 
 import logging
 
+import pytest
+
 import robovast.execution.cluster_execution.postprocess_job as pj
+from robovast.common.index_db import DSN_ENV
+
+
+@pytest.fixture(autouse=True)
+def _the_index_is_configured(monkeypatch):
+    """Every manifest in this file needs an index DSN in the submitting process.
+
+    The Job's host container IS the index ingest, so ``build_manifest`` refuses to build
+    one without a DSN rather than staging a campaign's worth of data onto a node before
+    failing on config the submitter could already see. A test that is about job names or
+    pull secrets would otherwise fail on that refusal instead of on what it is named for.
+
+    An out-of-cluster DSN deliberately: it is passed through as it stands, so no Secret
+    reference has to exist for these tests.
+    """
+    monkeypatch.setenv(DSN_ENV, "host=index.example.com dbname=robovast user=robovast")
 
 
 def _patch_failed_conversion(monkeypatch, synced):
-    monkeypatch.setattr(pj, "campaign_vast", lambda cr: "/x.vast")
-    monkeypatch.setattr(pj, "rosbag_commands_for",
-                        lambda vast, skip=None, skip_rosout=False: [{"plugins": []}])
-    monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
+    # `postprocess_campaign` reads the three facts the manifest needs through
+    # `_submit_inputs`, which fetches them from the store when the root does not hold the
+    # campaign -- the pod is what stages it. Patched at that seam so these tests need
+    # neither a campaign tree nor a store.
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", ()))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "boom"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: synced.append(cr) or 1)
@@ -59,7 +80,7 @@ _S3 = ("http://s3:9000", "ak", "sk", "bucket", "camp/")
 
 
 def test_the_conversion_pod_can_pull_its_own_images():
-    """The Job runs the campaign's execution image and mirrors bags with the sidecar, both of
+    """The Job runs the controller image and the campaign's execution image, either of
     which may sit in a registry the kubelet has no credential for. Without this the pod stays
     ImagePullBackOff while the Job stays `active`, so the waiter reported a timeout and named
     neither image nor registry -- the same omission, in the same direction, that the build Job
@@ -93,7 +114,7 @@ def test_a_failed_job_is_reported_without_a_cluster_command():
 def test_the_log_pointer_is_only_promised_when_the_log_is_there(tmp_path):
     """The message may not send a reader to a POSTPROCESSING section that does not exist.
 
-    A Job that dies before its first ``tee`` mirrors no log, so the section is never
+    A Job that dies before its first ``tee`` uploads no log, so the section is never
     written; promising one anyway costs the reader a hunt through an empty panel and hides
     the real fault, which is that the conversion never started.
     """
@@ -153,10 +174,9 @@ def test_a_forced_repostprocess_forces_the_download(monkeypatch, tmp_path):
     take. `download_prefix`'s own docstring names this case as what `force=True` is for.
     """
     seen = {}
-    monkeypatch.setattr(pj, "campaign_vast", lambda cr: "/x.vast")
-    monkeypatch.setattr(pj, "rosbag_commands_for",
-                        lambda vast, skip=None, skip_rosout=False: [{"plugins": []}])
-    monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", ()))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
@@ -171,10 +191,9 @@ def test_an_ordinary_postprocess_leaves_the_skip_in_place(monkeypatch, tmp_path)
     earlier batch's CSVs each time would add latency to a loop already bounded by a
     no-progress deadline."""
     seen = {}
-    monkeypatch.setattr(pj, "campaign_vast", lambda cr: "/x.vast")
-    monkeypatch.setattr(pj, "rosbag_commands_for",
-                        lambda vast, skip=None, skip_rosout=False: [{"plugins": []}])
-    monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", ()))
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
     monkeypatch.setattr(pj, "sync_outputs",
                         lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
@@ -206,7 +225,14 @@ class _FakeStore:
             f.write(self._objects[key])
         return True
 
-    def download_prefix(self, bucket, prefix, local_dir, force=False):
+    def download_prefix(self, bucket, prefix, local_dir, force=False, **_kw):
+        # Per prefix, because `sync_outputs` makes two different calls: `_execution/`
+        # unconditionally and first, then the legacy staging prefix only where no
+        # manifest exists. One shared number could not tell a test which it saw.
+        self.calls.setdefault('prefixes', []).append((prefix, force))
+        if prefix.endswith('_execution'):
+            self.calls['execution'] = (prefix, force)
+            return 1
         self.calls['prefix'] = (prefix, force)
         return 3
 
@@ -234,8 +260,10 @@ def test_a_campaign_without_a_manifest_falls_back_to_the_staging_prefix(monkeypa
     store = _FakeStore(manifest=None)
     _patch_store(monkeypatch, store)
 
-    assert pj.sync_outputs(object(), 'camp', str(tmp_path), force=True) == 3
+    # 3 from the legacy prefix plus the `_execution/` fetch every sync makes.
+    assert pj.sync_outputs(object(), 'camp', str(tmp_path), force=True) == 4
     assert store.calls['prefix'] == ('p/_postproc', True)
+    assert store.calls['execution'] == ('p/_execution', True)
 
 
 def test_the_manifest_fetches_exactly_what_it_names(monkeypatch, tmp_path):
@@ -249,7 +277,8 @@ def test_the_manifest_fetches_exactly_what_it_names(monkeypatch, tmp_path):
         objects={'p/c1/r1/out.csv': b'x,y\n', 'p/_execution/postprocessing.log': b'ok\n'})
     _patch_store(monkeypatch, store)
 
-    assert pj.sync_outputs(object(), 'camp', str(tmp_path)) == 2
+    # The two the manifest names, plus the `_execution/` fetch.
+    assert pj.sync_outputs(object(), 'camp', str(tmp_path)) == 3
     assert store.calls['fetched'] == ['p/c1/r1/out.csv', 'p/_execution/postprocessing.log']
     assert (tmp_path / 'c1' / 'r1' / 'out.csv').read_bytes() == b'x,y\n'
 
@@ -281,7 +310,8 @@ def test_nothing_is_cleared_when_nothing_was_synced(monkeypatch, tmp_path):
     store = _FakeStore(manifest=b'')
     _patch_store(monkeypatch, store)
 
-    assert pj.sync_outputs(object(), 'camp', str(tmp_path)) == 0
+    # Only the unconditional `_execution/` fetch; the manifest named nothing.
+    assert pj.sync_outputs(object(), 'camp', str(tmp_path)) == 1
     assert 'deleted' not in store.calls
 
 
@@ -354,44 +384,53 @@ def test_the_scripts_configmap_is_discriminated_too(monkeypatch):
 
 def test_the_staging_container_files_its_own_failure():
     """Its own channel, because its failure means the conversion container never starts:
-    nothing tees a line and the end-of-run mirror that would carry one never runs. Staging
-    also pulls every bag onto the node, so it is the step that meets a full disk first --
-    the failure most in need of an explanation had none.
+    nothing tees a line, and a log it would have to upload needs the very store whose
+    absence it may be reporting. Staging also pulls the campaign onto the node, so it is
+    the step that meets a full disk first -- the failure most in need of an explanation
+    had none.
+
+    The channel is now the exit code the ``stage`` container leaves in the pod status, so
+    what this pins is that the container in the manifest is the one whose vocabulary
+    :func:`pod_failure_reason` reads.
     """
-    script = pj._staging_script()
+    from robovast.execution.cluster_execution import postprocess_stage
 
-    assert pj.STAGING_LOG in script
-    # The push is best-effort and must not become the reported status: if the store is what
-    # is unreachable, the upload cannot work either.
-    assert '|| true' in script
-    assert 'exit "$rc"' in script
+    m = pj.build_manifest("c1", "img:1", _CMDS, _S3, "ns")
+    stage = m["spec"]["template"]["spec"]["initContainers"][0]
 
-
-def test_the_conversion_mirrors_to_the_canonical_prefix_with_a_manifest():
-    """Outputs go to the paths they are read from, and the mirror carries the index of
-    them, so a staging copy is no longer the price of a cheap fetch."""
-    script = pj._conversion_script([{"plugins": []}], force=False)
-
-    assert '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX"' in script
-    assert pj.POSTPROC_PREFIX not in script
-    # In the trap with the mirror: an index that is not written whenever the outputs are
-    # would leave the service unable to find what did get uploaded.
-    assert pj.OUTPUT_MANIFEST in script
-    trap = next(line for line in script.splitlines() if line.startswith("trap "))
-    assert pj.OUTPUT_MANIFEST in trap and "mc mirror" in trap
+    assert stage["name"] == pj.STAGE_CONTAINER
+    assert stage["command"] == ["python3", "-m",
+                                "robovast.execution.cluster_execution.postprocess_stage"]
+    # Every code the entry point can return is one the reader gets in words.
+    assert set(postprocess_stage.STAGE_EXIT_REASONS)
 
 
-def test_a_failed_conversion_still_writes_a_postprocessing_section(monkeypatch, tmp_path):
+def test_the_conversion_writes_the_campaign_tree_and_uploads_nothing():
+    """Outputs go to the paths they are read from -- so a staging copy is not the price of
+    a cheap fetch, and no mapping step stands between an output and its canonical key.
+
+    The conversion reaches the store not at all: it reads and writes the one shared mount,
+    and the host container that follows it is what uploads. That is what lets this
+    container be an arbitrary user image, and it is why ``--output-root`` is the campaign
+    tree itself rather than a separate output volume.
+    """
+    script = pj._conversion_script([{"plugins": []}], force=False, campaign_id="c1")
+
+    assert f"--output-root {pj.CAMPAIGN_MOUNT}/c1" in script
+    assert script.rstrip().endswith("exit $rc")
+    # No store, in any form: no client, no credentials, no staging prefix. These are the
+    # NAMES of the variables that must not appear, which is why the secret scanner has to
+    # be told there is no secret here.
+    for absent in ("mc ", "S3_BUCKET", "S3_ACCESS_KEY",  # gitleaks:allow
+                   "S3_CAMPAIGN_PREFIX", pj.POSTPROC_PREFIX, pj.OUTPUT_MANIFEST):
+        assert absent not in script, absent
+
+
+def test_a_failed_conversion_still_writes_a_postprocessing_section(tmp_path):
     """The phase file IS the section: every surface assembles the campaign log from the
     files that exist, so a conversion that wrote nothing left the phases stopping after RUN
     with the failure reported only in a status field elsewhere.
     """
-    from robovast.execution.cluster_execution import in_pod_storage
-    monkeypatch.setattr(in_pod_storage, 'campaign_storage_location',
-                        lambda cfg, cid: ('b', 'p/'))
-    monkeypatch.setattr(in_pod_storage, 'storage_client_for',
-                        lambda cfg: type('S', (), {'read_object': lambda *a: None})())
-
     log = tmp_path / '_execution' / 'postprocessing.log'
     pj._write_failure_log(object(), 'camp', str(tmp_path), str(log),
                           pj.job_failed_message('job-x'))
@@ -401,29 +440,13 @@ def test_a_failed_conversion_still_writes_a_postprocessing_section(monkeypatch, 
     # The slot is decided by whether this file exists, so inside it there is nothing for it
     # to say -- and it must never reach a reader.
     assert pj.POINTER_SLOT not in text
-    # A missing staging log is NOT presented as the answer. It is uploaded, so an
-    # unreachable store and an outright kill both suppress it, and reading a cause into
-    # its absence is how a wrong diagnosis gets stated with confidence. The exit status is
-    # what carries the stage, and the text says to read that instead.
-    assert 'exit status' in text
-
-
-def test_the_staging_log_is_carried_into_the_section_when_there_is_one(monkeypatch, tmp_path):
-    """When staging did survive to report, its account is what the reader came for."""
-    from robovast.execution.cluster_execution import in_pod_storage
-    monkeypatch.setattr(in_pod_storage, 'campaign_storage_location',
-                        lambda cfg, cid: ('b', 'p/'))
-    monkeypatch.setattr(
-        in_pod_storage, 'storage_client_for',
-        lambda cfg: type('S', (), {
-            'read_object': lambda *a: b'mc: <ERROR> no space left on device\n'})())
-
-    log = tmp_path / '_execution' / 'postprocessing.log'
-    pj._write_failure_log(object(), 'camp', str(tmp_path), str(log),
-                          pj.job_failed_message('job-x'))
-
-    assert 'no space left on device' in log.read_text()
-    assert 'no space left on device' in (tmp_path / pj.STAGING_LOG).read_text()
+    # No cause is read into the missing log. Anything the pod would have to upload is
+    # suppressed by an unreachable store and by an outright kill, and reading a diagnosis
+    # into that absence is how a wrong one gets stated with confidence. The per-stage exit
+    # code is what survives both, and the text says to read that instead.
+    assert 'exits with a code of its own' in text and "pod's status" in text
+    # And it names the two candidates, because initContainers are what can fail this early.
+    assert 'stages the campaign' in text and 'converts its rosbags' in text
 
 
 def test_the_message_points_at_the_section_once_it_has_been_written(tmp_path):
@@ -479,10 +502,11 @@ def test_the_staging_container_is_read_before_the_conversion():
     """Init containers run first, so when staging is what failed the conversion container's
     status says nothing at all -- and reading only the regular containers saw exactly that.
     """
-    core = _core([_pod(init=[_CS('s3-init', exit_code=1)],
-                       main=[_CS('convert')])])
+    core = _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=1)],
+                       main=[_CS(pj.HOST_CONTAINER)])])
 
-    assert pj.pod_failure_reason(core, 'ns', 'job-x') == 'container s3-init exited 1'
+    assert pj.pod_failure_reason(core, 'ns', 'job-x') == (
+        f'container {pj.STAGE_CONTAINER} exited 1')
 
 
 def test_an_unreadable_pod_list_never_becomes_the_failure():
@@ -496,38 +520,45 @@ def test_an_unreadable_pod_list_never_becomes_the_failure():
     assert 'job-x' in pj.job_failed_message('job-x', pod_reason='')
 
 
-def test_each_staging_stage_exits_with_its_own_code():
+def test_each_staging_failure_exits_with_its_own_code(monkeypatch):
     """An exit code is the one channel that always survives -- it is in the pod status with
     no store to reach and no file to write. A stage that fails *because* the object store
     is unreachable can still say so; an uploaded log cannot, since the upload needs the
     very thing whose absence it would report.
     """
-    script = pj._staging_script()
+    from robovast.execution.cluster_execution import postprocess_stage
 
-    for code in pj.STAGING_EXIT_REASONS:
-        assert f'exit {code}' in script, code
     # Not 1: a bare "exited 1" is every failure at once and names none of them.
-    assert 1 not in pj.STAGING_EXIT_REASONS
-    # A SUBSHELL, or `exit` would end the script and skip the echo and the upload.
-    assert '\n(\n' in script and ') > "$log"' in script
+    assert 1 not in postprocess_stage.STAGE_EXIT_REASONS
+    # Every code the entry point can return has words, so nothing arrives as a bare number.
+    assert set(postprocess_stage.STAGE_EXIT_REASONS) == {41, 42, 43}
+
+    # An unusable environment is the one of the three a test can drive end to end, and it
+    # is the code the other two exist to be distinguished FROM.
+    monkeypatch.delenv(postprocess_stage.ENV_CAMPAIGN_ID, raising=False)
+    monkeypatch.delenv(postprocess_stage.ENV_STAGE_DEST, raising=False)
+    assert postprocess_stage.main() == 41
 
 
 def test_a_staging_exit_code_is_reported_in_words():
     """`exited 42` is a code chosen in order to be read; the reader should not have to."""
-    core = _core([_pod(init=[_CS(pj.STAGING_CONTAINER, exit_code=42)])])
+    from robovast.execution.cluster_execution import postprocess_stage
+
+    core = _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=42)])])
 
     reason = pj.pod_failure_reason(core, 'ns', 'job-x')
 
-    assert reason == f'container {pj.STAGING_CONTAINER} {pj.STAGING_EXIT_REASONS[42]}'
+    assert reason == (f'container {pj.STAGE_CONTAINER} '
+                      f'{postprocess_stage.STAGE_EXIT_REASONS[42]}')
     assert 'object store' in reason
 
 
 def test_an_unknown_exit_code_still_reports_the_number():
     """The translation is a courtesy on top of the code, never a filter in front of it."""
-    core = _core([_pod(init=[_CS(pj.STAGING_CONTAINER, exit_code=7, reason='Error')])])
+    core = _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=7, reason='Error')])])
 
     assert pj.pod_failure_reason(core, 'ns', 'job-x') == (
-        f'container {pj.STAGING_CONTAINER} exited 7 (Error)')
+        f'container {pj.STAGE_CONTAINER} exited 7 (Error)')
 
 
 class _FakeBatch:
@@ -571,18 +602,24 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     assert batch.calls.index('delete') < batch.calls.index('create')
 
 
-def test_staging_is_not_allowed_less_memory_than_the_step_that_reads_the_data():
-    """Both containers are handed the same campaign, and the mirror's footprint grows with
-    the number of objects it moves -- so a limit well under the conversion's made the
-    FETCH the first thing to die on a large campaign, killed rather than failing, with no
-    chance to report it.
+def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
+    """Staging must not need a limit that grows with the campaign it stages.
 
-    Headroom, not a bound: a campaign large enough still exceeds any fixed number, and the
-    fix for that is staging in chunks.
+    A whole-prefix mirror's footprint grows with the number of objects it moves, so it had
+    to be given headroom -- and headroom is a number that a large enough campaign still
+    exceeds, killed rather than failing, with no chance to report it. Staging streams one
+    object at a time into a bounded buffer, so its footprint is set by the largest single
+    object and a *small* limit is the correct one: sizing it for the largest campaign
+    anyone might postprocess would only hide a regression in that streaming.
+
+    Pinned against the conversion's, because that is the number it used to have to match.
     """
-    def _mem(spec):
+    def _mem_mib(spec):
         value = spec["limits"]["memory"]
-        assert value.endswith("Gi"), value
-        return int(value[:-2])
+        assert value.endswith(("Gi", "Mi")), value
+        return int(value[:-2]) * (1024 if value.endswith("Gi") else 1)
 
-    assert _mem(pj.POSTPROCESS_INIT_RESOURCES) >= _mem(pj.POSTPROCESS_RESOURCES)
+    assert _mem_mib(pj.POSTPROCESS_INIT_RESOURCES) < _mem_mib(pj.POSTPROCESS_RESOURCES)
+    # The disk request, by contrast, is the campaign's and stays: it is what reserves the
+    # shared emptyDir the campaign lands in.
+    assert pj.POSTPROCESS_INIT_RESOURCES["requests"]["ephemeral-storage"]

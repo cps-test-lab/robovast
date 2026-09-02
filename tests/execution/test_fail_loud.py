@@ -112,6 +112,7 @@ def test_unreachable_cluster_only_ends_postprocessing():
     of the conversion step."""
     import urllib3.exceptions
 
+    from robovast.common.index_db import DSN_ENV
     from robovast.execution.cluster_execution import postprocess_job
 
     cluster_config = mock.Mock()
@@ -122,7 +123,12 @@ def test_unreachable_cluster_only_ends_postprocessing():
     core = mock.Mock()
     core.create_namespaced_config_map.side_effect = boom
 
-    with mock.patch("robovast.execution.cluster_execution.in_pod_storage."
+    # The Job's host container is the index ingest, so the manifest is not built at all
+    # without a DSN in the submitting process -- and this test is about the transport to
+    # the API server, not about that refusal.
+    with mock.patch.dict("os.environ",
+                         {DSN_ENV: "host=index.example.com dbname=robovast"}), \
+         mock.patch("robovast.execution.cluster_execution.in_pod_storage."
                     "campaign_storage_location", return_value=("bucket", "prefix/")), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch("kubernetes.client.CoreV1Api", return_value=core), \

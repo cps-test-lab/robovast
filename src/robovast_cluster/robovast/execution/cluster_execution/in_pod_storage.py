@@ -209,7 +209,7 @@ class StorageClient:
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         """Download every object under *prefix* into *local_dir*.
 
         Objects in the durable home are immutable, so by default a file that
@@ -230,14 +230,24 @@ class StorageClient:
         is an extra listing: a caller that only wants a running count in a log should not
         pay for a denominator nobody displays.
 
-        *include*, if given, is called with each object's key **relative to the prefix** and
-        selects what is fetched; ``None`` fetches everything, which is what every caller but
-        one wants. It exists for campaign resume, which needs a campaign's control plane
-        (records, config, verdicts) to re-enter it but not the run artifacts, and which runs
-        before the service binds its port -- so the difference is between a restart that takes
-        seconds and one the liveness probe kills. Pass the same predicate to
-        :meth:`count_pending` or the progress denominator describes a different transfer from
-        the one running.
+        *include*, if given, is called with each object's key **relative to the prefix**,
+        POSIX-separated and with no leading slash -- never the full key. Every backend
+        guarantees that form, so a predicate can be written against the campaign-relative
+        layout (``_calibration/...``, ``_jobs/<batch>/...``) and stays correct wherever the
+        campaign lives, per-campaign bucket or shared bucket with a prefix. It selects what
+        is fetched; ``None`` fetches everything. It serves callers that need only part of a
+        campaign: resume needs the control plane (records, config, verdicts) and not the run
+        artifacts, and in-cluster postprocessing needs the run data without the probe bags.
+        Pass the same predicate to :meth:`count_pending` or the progress denominator
+        describes a different transfer from the one running.
+
+        *executable_bits* controls whether the executable flag :meth:`upload_dir` records in
+        object metadata is restored on each fetched file. Reading that flag is a separate
+        metadata round-trip per fetched file, so on a campaign holding tens of thousands of
+        them it dominates the transfer. Pass ``False`` when the fetched tree is data the
+        caller only reads -- staged campaign run data carries no executable bit worth
+        preserving -- and the round-trips are skipped. The default preserves the bit, so a
+        caller fetching something that has to stay runnable needs to do nothing.
         """
         raise NotImplementedError
 
@@ -577,7 +587,7 @@ class _S3StorageClient(StorageClient):
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         clean = prefix.rstrip("/")
         key_prefix = f"{clean}/" if clean else ""
         # Outside ``op``: the denominator describes the whole transfer, so a reconnect retry
@@ -602,11 +612,15 @@ class _S3StorageClient(StorageClient):
                         continue
                     _download_atomic(
                         dst, lambda p, k=key: self._s3.download_file(bucket, k, p))
-                    # ``head_object`` (an extra round-trip) only to read the
-                    # executable flag — done only for files we actually fetched.
-                    head = self._s3.head_object(Bucket=bucket, Key=key)
-                    if (head.get("Metadata") or {}).get("executable") == "yes":
-                        os.chmod(dst, os.stat(dst).st_mode | 0o111)
+                    if executable_bits:
+                        # ``head_object`` is a round-trip of its own, spent only to read
+                        # the executable flag, and only for files actually fetched. It is
+                        # still one per file, which is why a caller fetching a campaign's
+                        # run data turns it off: see ``executable_bits`` on
+                        # ``StorageClient.download_prefix``.
+                        head = self._s3.head_object(Bucket=bucket, Key=key)
+                        if (head.get("Metadata") or {}).get("executable") == "yes":
+                            os.chmod(dst, os.stat(dst).st_mode | 0o111)
                     count += 1
                     fetched_bytes += int(obj.get("Size") or 0)
                     if on_file is not None:
@@ -761,7 +775,7 @@ class _GcsStorageClient(StorageClient):
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None, on_progress=None,
-                        include=None) -> int:
+                        include=None, executable_bits: bool = True) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
@@ -779,7 +793,10 @@ class _GcsStorageClient(StorageClient):
             if not force and _same_size(dst, blob.size):
                 continue
             _download_atomic(dst, blob.download_to_filename)
-            if (blob.metadata or {}).get("executable") == "yes":
+            # ``executable_bits=False`` is honoured for interface parity, but costs nothing
+            # here either way: the listing already carries each blob's metadata, so there is
+            # no per-file round-trip to skip. The S3 backend is where the saving is.
+            if executable_bits and (blob.metadata or {}).get("executable") == "yes":
                 os.chmod(dst, os.stat(dst).st_mode | 0o111)
             count += 1
             fetched_bytes += int(blob.size or 0)

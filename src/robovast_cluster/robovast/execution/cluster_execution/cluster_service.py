@@ -3562,11 +3562,13 @@ class ClusterService(LocalTransport):
         """(Re)run analysis postprocessing for a cluster campaign, as a monitored
         background operation (returns immediately; watch it in the campaign view).
 
-        The rosbag→CSV step runs as a Job in the campaign's own execution image and the
-        host step — metrics, provenance, the index ingest — runs here (pure Python), the
-        same two stages the campaign loop chains. Both write the scratch
-        ``postprocessing.log``, which is published to the object store so the Monitor and a
-        later restart see it.
+        Both stages run in the postprocessing pod: it stages the campaign once into a
+        shared volume, converts the rosbags there in the campaign's own execution image,
+        and runs the host stage — metrics, provenance, the index ingest — against the same
+        volume. This process only submits the Job and records its outcome, so the campaign
+        is transferred once rather than into the pod *and* into this pod's scratch. Both
+        stages write ``postprocessing.log``, which is published to the object store so the
+        Monitor and a later restart see it.
 
         No campaign log handler is attached around this, unlike the local lane: on this lane
         that same file is written by the conversion Job and pulled down by ``sync_outputs``,
@@ -3580,19 +3582,29 @@ class ClusterService(LocalTransport):
         from .postprocess_job import postprocess_campaign
 
         def work(state):
-            # A real whole-campaign need, unlike a query: the host stage reads the run
-            # tree it postprocesses -- the frozen ``_config``, ``campaign.db``, every
-            # ``test.xml`` and the converted CSVs. Not ``force=True`` any more: that was
-            # there for the one mutable object in the prefix, the per-campaign ``data.db``
-            # this stage used to rewrite. It is gone (the rows go to the index), and the
-            # conversion's own outputs are refreshed by ``sync_outputs``, which carries
-            # ``force`` itself -- so forcing here only re-downloaded every rosbag.
-            campaign_root = self.fetch_campaign(request.campaign_id)
+            # **No whole-campaign fetch.** Both stages read the run tree inside the
+            # postprocessing pod, which stages the campaign into its own volume once; a
+            # copy here would be a second full transfer of the same objects into scratch
+            # this service has no room for, and on a large campaign it is tens of GB and
+            # minutes before the Job is even submitted. What is left for this process is
+            # the handful of small status objects it has to edit and publish back, which
+            # is the fetch ``_materialize`` exists for -- one object per named path,
+            # written into the same cache dir.
+            campaign_root = self._materialize(
+                request.campaign_id, self._SHARE_STATUS_OBJECTS,
+                "the campaign's postprocessing status")
             cfg = self._cluster_config()
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
                 kube_context=self.kube_context, state=state)
+            # Re-materialised after the pod has run, because the pod is what wrote the
+            # provenance marker and the run rows this reconstruction reads: without this,
+            # the Status is rebuilt from the copies pulled *before* the postprocess and a
+            # campaign that was just postprocessed is recorded as carrying no derived data.
+            campaign_root = self._materialize(
+                request.campaign_id, self._SHARE_STATUS_OBJECTS,
+                "the campaign's postprocessing status")
             status = record_step_outcome(campaign_root, postprocessing=(ok, message))
             # Publish _execution (outcome + the conversion's postprocessing.log, even on
             # failure) so the result survives a restart and the Monitor can read it.
