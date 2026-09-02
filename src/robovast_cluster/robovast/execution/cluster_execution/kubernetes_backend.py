@@ -2236,16 +2236,24 @@ class BatchJobRunner:
         labels". Anything raised on the way is `None` too -- it is another way of not having
         asked.
         """
-        from .registry_client import manifest_labels  # noqa: PLC0415 - optional path
+        from .registry_client import (LAUNCH_PATIENCE,  # noqa: PLC0415 - optional path
+                                      manifest_labels)
         if ref in self._image_label_cache:
             return self._image_label_cache[ref]
         labels = None
         try:
             registry = self.cluster_config.get_registry_config()
+            # The patient budget, because this read decides whether a campaign launches:
+            # unread means refused, and the outage that makes it unread -- concurrent
+            # multi-gigabyte pulls after a service upgrade starving a small request of
+            # egress -- lasts minutes. Every other caller of this reader keeps the short
+            # default, since a status read that stalls for minutes is worse than one that
+            # says it does not know.
             labels = manifest_labels(
                 ref, dockerconfigjson=self._registry_dockerconfig(registry),
                 insecure=getattr(registry, "insecure", False),
-                ca_path=self._registry_ca_path(registry))
+                ca_path=self._registry_ca_path(registry),
+                patience_s=LAUNCH_PATIENCE)
         except Exception:  # noqa: BLE001 - "could not ask" is an answer; the caller decides
             # Warning, not debug. This path makes the compat check refuse the campaign, and a
             # refusal whose cause is only visible at debug level is one nobody can act on: the
@@ -3171,6 +3179,10 @@ class KubernetesBackend(ExecutionBackend):
         rather than ending the run.
         """
         try:
+            # Both members are set by the mixin this class is composed with, which the
+            # linter does not follow. Scoped to this block, so a real typo elsewhere in the
+            # method is still an error.
+            # pylint: disable=no-member
             self._init_k8s_clients()
             v1 = client.CoreV1Api(self.k8s_api_client)
             nodes = (v1.list_node().items or [])

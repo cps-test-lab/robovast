@@ -253,9 +253,14 @@ class _FlakySession(_Session):
 
 @pytest.fixture
 def _flaky(monkeypatch):
-    """Real `_registry_request` against a transport that fails a set number of times."""
+    """Real `_registry_request` against a transport that fails a set number of times.
+
+    The backoff is shortened rather than zeroed: the give-up rule compares elapsed time
+    against the budget, so a zero wait spins instead of expiring and the test would measure
+    nothing.
+    """
     monkeypatch.setattr(registry_client, "_TOKENS", {})
-    monkeypatch.setattr(registry_client, "_RETRY_WAIT", 0)
+    monkeypatch.setattr(registry_client, "_RETRY_BACKOFF", (0.01,))
     budget = [0]
     made: list = []
 
@@ -283,23 +288,25 @@ def test_a_registry_that_did_not_answer_is_asked_again(_flaky):
     budget[0] = 1
 
     resp = registry_client._registry_request("repo.example.com", "x/manifests/latest",
-                                             method="GET", dockerconfigjson=_cfg())
+                                             method="GET", dockerconfigjson=_cfg(),
+                                             patience_s=1.0)
 
     assert resp is not None and resp.status_code == 200
     assert len(made) == 2, "the failed attempt and the one that answered"
 
 
-def test_a_registry_that_never_answers_gives_up(_flaky):
-    """Short and finite: the alternative to an answer is a refusal with a reason, and a
-    caller made to wait for one is worse served than a caller refused promptly."""
+def test_asking_stops_when_the_budget_is_spent(_flaky):
+    """Bounded by elapsed time rather than by a number of goes: each attempt can itself
+    burn the request timeout, so a count bounds the tries and not the wait."""
     budget, made = _flaky
-    budget[0] = 99
+    budget[0] = 999
 
     resp = registry_client._registry_request("repo.example.com", "x/manifests/latest",
-                                             method="GET", dockerconfigjson=_cfg())
+                                             method="GET", dockerconfigjson=_cfg(),
+                                             patience_s=0.05)
 
     assert resp is None
-    assert len(made) == registry_client._ATTEMPTS
+    assert 1 < len(made) < 999, "it kept asking, and it stopped"
 
 
 def test_an_answer_is_never_retried(_sessions):
@@ -312,3 +319,18 @@ def test_an_answer_is_never_retried(_sessions):
                                       method="GET", dockerconfigjson=_cfg())
 
     assert len(made) == 1
+
+
+def test_only_the_launch_check_gets_the_patient_budget():
+    """The same helper backs the image-state probes behind build decisions and status
+    reads, where a path that stalls for minutes to answer "is this image published" is
+    worse served than one that says it does not know. Only the compatibility check has the
+    other trade: unread means the campaign is refused, and a campaign runs for minutes to
+    days -- so its budget is sized against the outage (pulls lasting minutes), not against
+    a person's patience.
+    """
+    assert registry_client.DEFAULT_PATIENCE <= 5
+    assert registry_client.LAUNCH_PATIENCE >= 120
+    # Widening, so a registry that is rate-limiting is owed a growing gap rather than a drum.
+    assert list(registry_client._RETRY_BACKOFF) == sorted(registry_client._RETRY_BACKOFF)
+    assert registry_client._RETRY_BACKOFF[0] < registry_client._RETRY_BACKOFF[-1]
