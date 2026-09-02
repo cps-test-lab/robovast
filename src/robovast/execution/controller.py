@@ -1100,7 +1100,7 @@ class CampaignController:
                 config_dir=self.vast_dir, output=logger.info)
             return
         try:
-            run_job, sync, image_for = _conversion_job_runner()
+            run_job, sync, image_for, complete_message = _conversion_job_runner()
             ok, message = run_job(
                 cluster_config, self.campaign_id,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -1109,6 +1109,11 @@ class CampaignController:
                 kube_context=getattr(self.backend, "kube_context", None),
                 discriminator=tag)
             sync(cluster_config, self.campaign_id, self.campaign_root)
+            # Only now can the message say where the conversion error is: the sync is what
+            # decides whether a POSTPROCESSING section exists to point at.
+            message = complete_message(
+                message,
+                os.path.join(self.campaign_root, "_execution", "postprocessing.log"))
             logger.info("Batch bag conversion: %s", message)
             if not ok:
                 logger.warning("Batch bag conversion failed; this batch's metrics will be "
@@ -1190,16 +1195,20 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
 
 
 def _conversion_job_runner():
-    """The three cluster helpers a batch conversion needs, resolved in one place.
+    """The four cluster helpers a batch conversion needs, resolved in one place.
 
-    A seam rather than three imports at the call site: it keeps the cluster package out of
-    the import path on a local run, and lets a test substitute the whole trio -- which is
+    A seam rather than four imports at the call site: it keeps the cluster package out of
+    the import path on a local run, and lets a test substitute the whole set -- which is
     the only way to check that the Job and the SYNC both happen, and in that order, without
     a cluster to run them against.
+
+    ``with_log_pointer`` rides along because a failed Job's message is only half-written
+    until the sync has run: it says where to read the conversion error, and whether that
+    place exists is not known until then.
     """
     from robovast.execution.cluster_execution.postprocess_job import (
-        campaign_execution_image, run_conversion_job, sync_outputs)
-    return run_conversion_job, sync_outputs, campaign_execution_image
+        campaign_execution_image, run_conversion_job, sync_outputs, with_log_pointer)
+    return run_conversion_job, sync_outputs, campaign_execution_image, with_log_pointer
 
 
 def unwrap_conversion_commands(commands) -> list:

@@ -86,9 +86,36 @@ def test_a_failed_job_is_reported_without_a_cluster_command():
     msg = pj.job_failed_message("robovast-postproc-c1")
 
     assert "robovast-postproc-c1" in msg
-    assert "POSTPROCESSING section of the campaign log" in msg
     # No cluster command, in any form: no tool name, no shell.
     assert "kubectl" not in msg and "`" not in msg and "$" not in msg
+
+
+def test_the_log_pointer_is_only_promised_when_the_log_is_there(tmp_path):
+    """The message may not send a reader to a POSTPROCESSING section that does not exist.
+
+    A Job that dies before its first ``tee`` mirrors no log, so the section is never
+    written; promising one anyway costs the reader a hunt through an empty panel and hides
+    the real fault, which is that the conversion never started.
+    """
+    raw = pj.job_failed_message("robovast-postproc-c1")
+    log = tmp_path / "postprocessing.log"
+
+    missing = pj.with_log_pointer(raw, log)
+    assert "POSTPROCESSING section" in missing and "no POSTPROCESSING section" in missing
+    assert pj.POINTER_SLOT not in missing
+
+    log.write_text("conversion error")
+    present = pj.with_log_pointer(raw, log)
+    assert "see the POSTPROCESSING section" in present
+    assert pj.POINTER_SLOT not in present
+
+
+def test_a_message_that_promises_no_log_is_left_alone(tmp_path):
+    """A blocked pod and a timeout carry their own complete explanation and never ran a
+    conversion, so neither may acquire a pointer to a log that was never in question."""
+    for message in ("postprocessing job j cannot start: ImagePullBackOff",
+                    "postprocessing job j timed out after 30s"):
+        assert pj.with_log_pointer(message, tmp_path / "nope.log") == message
 
 
 def test_a_blocked_pod_is_reported_by_its_reason(monkeypatch):

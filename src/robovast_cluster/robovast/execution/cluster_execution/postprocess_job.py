@@ -245,13 +245,22 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
             # has it via the synced postprocessing.log (POSTPROCESSING section); no
             # campaign log handler is attached at this point, so this reaches the
             # ``vast serve`` stdout only — not duplicated into the campaign log.
+            #
+            # The sync above is also what settles WHERE the message may send the reader:
+            # a Job that died before its first ``tee`` mirrored no log, so the section it
+            # would name does not exist. Deciding here is the whole point — this is the
+            # first place that can tell the two apart.
             import os  # noqa: PLC0415
             log_path = os.path.join(campaign_root, "_execution", "postprocessing.log")
             if os.path.isfile(log_path):
                 with open(log_path, encoding="utf-8") as f:
                     logger.warning("Postprocessing conversion failed:\n%s",
                                    f.read().rstrip())
-            return False, message
+            else:
+                logger.warning("Postprocessing job for %s failed before it wrote a "
+                               "conversion log; there is no POSTPROCESSING section",
+                               campaign_id)
+            return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
                     campaign_id)
@@ -349,12 +358,13 @@ def _mirror_excludes() -> str:
 def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str:
     """The main container's shell: convert each batch, then mirror /out up.
 
-    All conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes the
-    POSTPROCESSING section of the campaign's unified log. ``pipefail`` preserves the
-    conversion's exit status through the ``tee`` pipe, and the ``/out`` mirror runs
-    unconditionally so the log (with any error) is uploaded even on failure.
+    All setup and conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes
+    the POSTPROCESSING section of the campaign's unified log. ``pipefail`` preserves the
+    conversion's exit status through the ``tee`` pipe, and the ``/out`` mirror is an EXIT
+    trap so the log (with any error) is uploaded however the script ends -- including the
+    setup failures that abort it before the conversion runs at all.
     """
-    convert = ["set -e"]
+    convert = []
     for params in rosbag_cmds:
         args = [
             "/scripts/ros2_exec.sh", "/scripts/rosbags_process.py",
@@ -381,17 +391,30 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str
         args.append("/bags")
         convert.append(" ".join(args))
 
+    mirror = ('/tools/mc mirror --overwrite /out/ '
+              f'"mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{POSTPROC_PREFIX}/"')
     lines = [
         "set -eo pipefail",
-        f"mkdir -p $(dirname {_POSTPROC_LOG})",
-        '/tools/mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
+        # The log is created and the setup runs INSIDE it, and the mirror is a trap, so
+        # that every way this script can end still leaves an account behind. Setup under
+        # `set -e` is exactly where the silent failures live: an unwritable /out or an
+        # unreachable object store aborts before the conversion's own `tee`, and a plain
+        # trailing mirror is then never reached. The campaign is left pointed at a
+        # POSTPROCESSING section that does not exist and cannot be made to exist.
+        f"mkdir -p $(dirname {_POSTPROC_LOG}) || exit 1",
+        # `|| true`: a failed mirror must not overwrite the conversion's own exit status
+        # with its own, and there is nowhere left to report it to anyway.
+        f"trap '{mirror} || true' EXIT",
         "rc=0",
-        # Run the conversions in a subshell, teeing their combined output to the log.
-        "( " + "\n".join(convert) + f'\n ) 2>&1 | tee -a "{_POSTPROC_LOG}" || rc=$?',
-        # Wholesale upload of the output tree — no diffing needed (inputs live in
-        # /bags). Unconditional so the log rides up even when a conversion failed.
-        '/tools/mc mirror --overwrite /out/ '
-        f'"mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{POSTPROC_PREFIX}/"',
+        "(",
+        # `set -e` ahead of the alias, so a store this Job cannot reach stops it here and
+        # says so in the log, rather than letting every conversion run on and fail with an
+        # error about bags.
+        "  set -e",
+        '  /tools/mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
+        # Run the conversions in the same subshell, teeing all of it to the log.
+        "\n".join("  " + c for c in convert),
+        f') 2>&1 | tee -a "{_POSTPROC_LOG}" || rc=$?',
         "exit $rc",
     ]
     return "\n".join(lines)
@@ -478,8 +501,31 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     }
 
 
+#: The slot :func:`job_failed_message` leaves for the pointer, filled by
+#: :func:`with_log_pointer`. A literal marker rather than string surgery on the message,
+#: so that only the ONE message which promises a log gets a pointer: a blocked pod and a
+#: timeout carry their own complete explanation and must come through untouched.
+POINTER_SLOT = "<<log>>"
+
+#: Appended to a failed Job's message once the conversion log has actually been synced
+#: down. Kept apart from :func:`job_failed_message` because only the caller that has run
+#: :func:`sync_outputs` knows whether the section it names exists.
+LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
+               "conversion error")
+
+#: The same slot when no log arrived. A Job can fail before the conversion writes a line
+#: -- an unwritable ``/out``, or an object store it cannot reach, either of which aborts
+#: the script under ``set -e`` ahead of the first ``tee`` -- and then there is no
+#: POSTPROCESSING section and never will be. Pointing at one regardless sends the reader
+#: to an empty panel and reads as a second fault on top of the first.
+NO_LOG_POINTER = ("— before it produced any conversion output, so the campaign "
+                  "log has no POSTPROCESSING section. The conversion itself never ran: the "
+                  "Job could not write its output directory or could not reach the object "
+                  "store. Re-run postprocessing once that is addressed.")
+
+
 def job_failed_message(job_name: str) -> str:
-    """What a failed conversion Job reports to the user.
+    """What a failed conversion Job reports to the user, before the log is accounted for.
 
     Named so the string has one definition and a test can hold it to its contract: it
     carries **no cluster command**. It lands on ``postprocessing_error``, which the web UI
@@ -489,9 +535,25 @@ def job_failed_message(job_name: str) -> str:
     ``ttlSecondsAfterFinished`` reaps 300 s after it fails -- so by the time most people
     read it, it names nothing that still exists. The conversion output is in the campaign
     log, which every surface already shows.
+
+    Where to look is NOT decided here: this runs before the Job's outputs are synced, so
+    it cannot know whether a POSTPROCESSING section exists. The caller appends
+    :data:`LOG_POINTER` or :data:`NO_LOG_POINTER` once it does.
     """
-    return (f"postprocessing job {job_name} failed — see the POSTPROCESSING section of "
-            f"the campaign log for the conversion error")
+    return f"postprocessing job {job_name} failed {POINTER_SLOT}"
+
+
+def with_log_pointer(message: str, log_path) -> str:
+    """Fill :data:`POINTER_SLOT` according to whether the conversion log actually arrived.
+
+    A message without the slot is returned unchanged, which is what keeps a blocked pod's
+    or a timeout's own explanation intact.
+    """
+    import os  # noqa: PLC0415
+    if POINTER_SLOT not in message:
+        return message
+    pointer = LOG_POINTER if os.path.isfile(log_path) else NO_LOG_POINTER
+    return message.replace(POINTER_SLOT, pointer)
 
 
 def _blocked_reason(core, namespace: str, job_name: str) -> str:
