@@ -451,45 +451,67 @@ def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
                    skip=None, skip_rosout: bool = False) -> tuple:
     """:func:`_read_submit_inputs`, against a campaign the submitter may not hold.
 
-    The campaign lives in the object store and the pod is what stages it, so the
-    submitting process cannot assume a populated root -- but the manifest depends on three
-    facts about the campaign, so it cannot be built without reading them either. All three
-    are single small files, so this fetches exactly those rather than a campaign in order
-    to answer three questions about it. ``_config/`` needs one listing because the
-    ``.vast``'s name is the campaign's own; the other two are at fixed paths.
+    The campaign lives in the object store and the pod is what stages it, so the submitting
+    process cannot assume a populated root -- but the manifest depends on three facts about
+    the campaign, so it cannot be built without reading them either. All three are single
+    small files, so this assembles exactly those rather than a campaign in order to answer
+    three questions about it.
 
-    A root that already holds the campaign -- the controller built it there, or a raw
-    archive was imported into it -- is read in place. Fetching over it could only replace
-    what is there with the store's copy of the same thing.
+    **Assembled per file, never chosen wholesale.** A local copy is preferred where there is
+    one -- the controller built the root, or a raw archive was imported into it, and fetching
+    over that could only replace a file with the store's copy of itself. But "is this root
+    local?" has no single answer: the service's cache dir holds whatever earlier calls put
+    there, so a root can carry the ``.vast`` and not ``execution.yaml``. Deciding from one
+    file that the rest are present is how that partial state turns into "no such file" on
+    the next read, at submit time, on a campaign whose results are fine.
+
+    ``_config/`` needs a listing because the ``.vast``'s name is the campaign's own; the
+    other two are at fixed paths.
     """
     import glob  # noqa: PLC0415
     import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
+    from . import in_pod_storage  # noqa: PLC0415
+
     root = str(campaign_root)
-    if glob.glob(os.path.join(root, "_config", "*.vast")):
+    local_vast = sorted(glob.glob(os.path.join(root, "_config", "*.vast")))
+    wanted = ["_execution/execution.yaml", "_execution/interventions.json"]
+    if local_vast and all(os.path.isfile(os.path.join(root, *w.split("/")))
+                          for w in wanted[:1]):
+        # Everything the read below needs is here. The ledger is not in that test: it exists
+        # only for a campaign somebody intervened in, and its reader treats absence as "no
+        # intervention", which is the right answer rather than a missing input.
         return _read_submit_inputs(root, skip=skip, skip_rosout=skip_rosout)
 
-    from . import in_pod_storage  # noqa: PLC0415
     bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
-    vast_keys = sorted(k for k in storage.list_keys(bucket, f"{prefix}_config/")
-                       if k.endswith(".vast"))
-    if not vast_keys:
-        raise ValueError(
-            f"campaign {campaign_id} has no .vast under its _config/ in the object store; "
-            "postprocessing cannot tell what it configures")
     with tempfile.TemporaryDirectory(prefix="robovast-postproc-") as tmp:
-        # Sorted and first: a campaign has one .vast, and a deterministic choice is what
-        # keeps two submissions of the same campaign from disagreeing if it ever has two.
-        keys = [vast_keys[0], f"{prefix}_execution/execution.yaml",
-                f"{prefix}_execution/interventions.json"]
-        for key in keys:
-            dst = os.path.join(tmp, key[len(prefix):])
+        if local_vast:
+            rel = os.path.join("_config", os.path.basename(local_vast[0]))
+            os.makedirs(os.path.join(tmp, "_config"), exist_ok=True)
+            shutil.copyfile(local_vast[0], os.path.join(tmp, rel))
+        else:
+            # Sorted and first: a campaign has one .vast, and a deterministic choice keeps
+            # two submissions of the same campaign from disagreeing if it ever has two.
+            keys = sorted(k for k in storage.list_keys(bucket, f"{prefix}_config/")
+                          if k.endswith(".vast"))
+            if not keys:
+                raise ValueError(
+                    f"campaign {campaign_id} has no .vast under its _config/, locally or in "
+                    "the object store; postprocessing cannot tell what it configures")
+            wanted.insert(0, keys[0][len(prefix):])
+        for rel in wanted:
+            dst = os.path.join(tmp, *rel.split("/"))
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            # Not checked: the ledger exists only for a campaign somebody intervened in,
-            # and the readers below report a missing file better than a check here could.
-            storage.download_object(bucket, key, dst)
+            src = os.path.join(root, *rel.split("/"))
+            if os.path.isfile(src):
+                shutil.copyfile(src, dst)
+            else:
+                # Unchecked: the readers below name a genuinely missing input better than a
+                # check here could, and the ledger is allowed to be absent.
+                storage.download_object(bucket, f"{prefix}{rel}", dst)
         return _read_submit_inputs(tmp, skip=skip, skip_rosout=skip_rosout)
 
 
