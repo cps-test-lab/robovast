@@ -182,6 +182,22 @@ def main() -> int:
 
     logger.info("Staged %d file(s) of campaign %s into %s", count, campaign_id,
                 campaign_root)
+
+    # A campaign has every file in the store and none of its links: a symlink is not an
+    # object, so `<config>/<run>/job` -- the user-facing way into a run's job artifacts --
+    # cannot survive the round trip. The link manifest can, and this is what it is for, so
+    # the tree is completed rather than each reader taught to cope: metadata generation
+    # reads sysinfo.yaml through that link and failed with "sysinfo.yaml not found" on a
+    # campaign whose sysinfo.yaml had been staged the whole time.
+    try:
+        from robovast.common.execution import create_job_links  # noqa: PLC0415
+        links = create_job_links(campaign_root)
+    except OSError as e:
+        # Not fatal and not silent: a reader that goes through the manifest is unaffected,
+        # and one that goes through the link says which file it could not find.
+        logger.warning("Could not restore the job links of %s: %s", campaign_id, e)
+    else:
+        logger.info("Restored %d job link(s) of campaign %s", links, campaign_id)
     return 0
 
 
