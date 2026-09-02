@@ -58,6 +58,20 @@ export function PhaseChip({
   )
 }
 
+/** The "this is still going" animation, defined once so every live marker breathes at the same
+ *  rate. Two dots pulsing a little differently on one screen reads as a rendering fault rather than
+ *  as one idiom, and they do appear together: the monitor's phase dot and the run picker's campaign
+ *  dot are the same statement about the same campaign.
+ *
+ *  Spread into an `sx`. The keyframes ride along with it, so a user has nothing to declare but this. */
+export const livePulseSx = {
+  animation: 'phaseDotPulse 1.4s ease-in-out infinite',
+  '@keyframes phaseDotPulse': {
+    '0%, 100%': { opacity: 1 },
+    '50%': { opacity: 0.3 },
+  },
+} as const
+
 // The compact form of PhaseChip: a phase-colored bullet pill with the phase name
 // inside, sitting in front of a campaign name. The leading dot pulses while the
 // campaign is live so a running campaign is obvious at a glance.
@@ -93,11 +107,7 @@ export function PhaseDot({ phase, issue }: { phase: string; issue?: string | nul
           borderRadius: '50%',
           flexShrink: 0,
           bgcolor: color,
-          animation: live ? 'phaseDotPulse 1.4s ease-in-out infinite' : 'none',
-          '@keyframes phaseDotPulse': {
-            '0%, 100%': { opacity: 1 },
-            '50%': { opacity: 0.3 },
-          },
+          ...(live ? livePulseSx : {}),
         }}
       />
       {/* `nowrap`: with an `issue` the label is a sentence fragment ("finished · postprocessing

@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ancestorIds,
   buildCampaignChildren,
+  campaignStatus,
   firstRunSelection,
   objectiveDirection,
   resolveSelection,
@@ -18,6 +19,7 @@ import {
   selectionOf,
 } from './resultsTree'
 import { CAMPAIGN_SEL, type ResultsSel } from './hashNav'
+import type { CampaignSummary } from './robovastClient'
 
 const CID = 'nav-2026-08-12'
 
@@ -330,5 +332,31 @@ describe('firstRunSelection', () => {
   it('has no answer when nothing ran', () => {
     expect(firstRunSelection([])).toBeNull()
     expect(firstRunSelection([row('nope', null, 'composition_failed')])).toBeNull()
+  })
+})
+
+describe('the `running` status', () => {
+  // The picker's dot PULSES on `running`, which is how a reader sees that a campaign is still
+  // producing runs. That is only legible while exactly one kind of node can carry it: a tree of
+  // twitching run leaves would say nothing. `runStatus` has no branch producing it — a run's
+  // verdict is read from what it wrote, so it is `unknown` until it has written one — and the
+  // rollups only ever narrow. Pinned here because the animation lives in a component that cannot
+  // assert it.
+  it('is never carried by a config or a run node, whatever the rows say', () => {
+    const rows = [
+      { config_name: 'nav', run_id: 0, status: 'running' },
+      { config_name: 'nav', run_id: 1, status: 'passed' },
+      { config_name: 'other', run_id: 0, status: 'unknown' },
+    ]
+    const configs = buildCampaignChildren('camp-1', rows)
+    const statuses = configs.flatMap((c) => [c.status, ...(c.children ?? []).map((r) => r.status)])
+    expect(statuses).not.toContain('running')
+  })
+
+  it('is what a live campaign node carries', () => {
+    const c = (s: Partial<CampaignSummary>) => campaignStatus(s as CampaignSummary)
+    expect(c({ phase: 'running' })).toBe('running')
+    expect(c({ phase: 'finished', postprocessed: true, num_passed: 1, num_failed: 0 }))
+      .not.toBe('running')
   })
 })
