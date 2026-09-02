@@ -1506,6 +1506,65 @@ Results Processing Section
 
 The ``results_processing`` section defines how run results should be processed after execution.
 
+resources
+^^^^^^^^^
+
+**Type:** Mapping with ``cpu`` and ``memory``
+
+**Required:** No
+
+How much of a machine this campaign's postprocessing may use. Omitted, it takes a shared
+default sized for an ordinary campaign; a campaign that converts unusually many or unusually
+large rosbags, or whose own analysis plugins are hungry, raises it here.
+
+.. code-block:: yaml
+
+   results_processing:
+     resources:
+       cpu: 8
+       memory: 16Gi
+     postprocessing:
+       - rosbags_to_csv:
+           topics: [/cmd_vel, /odom]
+
+``cpu`` takes cores (``8``, ``0.5``) or millicores (``"500m"``); ``memory`` takes a Kubernetes
+quantity (``16Gi``, ``512Mi``). Either may instead be a per-cluster list, exactly as in
+:ref:`execution resources <config-resources>`::
+
+   resources:
+     cpu:
+       - my-big-cluster: 8
+       - my-laptop: 2
+
+**``cpu`` also decides how many rosbags are converted at once.** The conversion runs one
+process per bag and reads the CPU it is actually allowed rather than the machine's core count,
+so this is the single knob that makes conversion faster — there is no separate worker setting
+to keep in step with it. (``rosbags_process`` accepts a ``workers`` parameter to override just
+the fan-out, for bags large enough that fewer, fatter workers win.)
+
+**It applies to the whole campaign, including a search's per-batch conversions.** A search
+converts inside its loop, once per batch (see :ref:`the search section <search>`),
+and those conversions take this figure too — there is no separate key under ``search``.
+
+.. note::
+
+   **The reservation is also the ceiling, and there is no ``cpu_limit``/``memory_limit`` here**
+   — unlike :ref:`execution resources <config-resources>`, where splitting the two
+   deliberately buys density. Postprocessing runs on the same machines as trials, so a
+   postprocessing step allowed past its reservation takes cores from a run that reserved
+   honestly, and that run's timing then depends on which campaign happened to be
+   postprocessing beside it. Nothing in a run's results records that, so it would be a
+   hidden variable in the measurement rather than a visible cost.
+
+.. note::
+
+   **This raises what postprocessing reserves; it does not lower it below what the fixed steps
+   need.** Postprocessing also stages the campaign and ingests its results, and those steps
+   have figures of their own that a campaign cannot know better than the deployment does —
+   asking for less than they need would trade a slow step for a step killed for running out of
+   memory. So a figure below them still holds the *conversion* (and its fan-out) to what was
+   asked, while what the whole postprocessing step reserves stops at that floor.
+
 postprocessing
 ^^^^^^^^^^^^^^
 
