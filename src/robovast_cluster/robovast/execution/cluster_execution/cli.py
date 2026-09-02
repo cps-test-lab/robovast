@@ -619,6 +619,23 @@ def _node_labels(pairs, flag):
                    'machine. It does NOT place a campaign job\'s scratch: that is an '
                    'emptyDir under the kubelet root, which is the node\'s configuration '
                    'rather than this deployment\'s.')
+@click.option('--store-path', default='', metavar='PATH',
+              envvar='ROBOVAST_STORE_PATH',
+              help='Host directory holding the object store, which is where finished '
+                   f'campaigns live (default: {data_paths.DEFAULT_STORE_HOST_PATH}). The '
+                   'campaign index is placed beside it and needs no flag of its own. Only '
+                   'for providers that mount the store from a volume; one backed by a bucket '
+                   'refuses it.')
+@click.option('--store-class', default='', metavar='NAME',
+              envvar='ROBOVAST_STORE_CLASS',
+              help='Back the object store and the campaign index with PVCs from this '
+                   'StorageClass instead of hostPaths. Preferred where the cluster can '
+                   'provision volumes; stock RKE2 cannot, which is why hostPath is the '
+                   'default.')
+@click.option('--store-size', default='', metavar='SIZE',
+              envvar='ROBOVAST_STORE_SIZE',
+              help='Size of the object store PVC (default: 500Gi). Needs --store-class: '
+                   'without one the store is a directory on the node, bounded by that disk.')
 @click.option('--workspaces-path', default='', metavar='PATH',
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
@@ -714,7 +731,8 @@ def _node_labels(pairs, flag):
                    '--context is unset. Omitted, no node labels are applied.')
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
-          data_root, workspaces_path, workspaces_class,
+          data_root, store_path, store_class, store_size,
+          workspaces_path, workspaces_class,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
@@ -785,13 +803,15 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     # cannot reach three of them and miss the fourth. Refused before anything is applied:
     # an argument error must not leave a half-set-up cluster behind it.
     stated = {
+        'store_path': store_path, 'store_class': store_class,
         'workspaces_path': workspaces_path, 'workspaces_class': workspaces_class,
         'registry_path': registry_storage_path, 'registry_class': registry_storage_class,
         'buildkit_path': buildkit_storage_path, 'buildkit_class': buildkit_storage_class,
     }
     try:
         data_paths.refuse_conflicts(stated, data_root=data_root,
-                                    sizes={'buildkit': buildkit_storage_size})
+                                    sizes={'buildkit': buildkit_storage_size,
+                                           'store': store_size})
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -805,6 +825,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'registry_storage_path': placements['registry'].path,
         'workspaces_storage_class': placements['workspaces'].storage_class,
         'workspaces_storage_path': placements['workspaces'].path,
+        # Popped by setup_server and handed to the provider: the store is in its pod, not
+        # in the service Deployment.
+        'store_storage_class': placements['store'].storage_class,
+        'store_storage_path': placements['store'].path,
+        'store_storage_size': store_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
@@ -1276,6 +1301,13 @@ def cluster_token(namespace, kube_context, quiet):
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
+@click.option('--delete-data', is_flag=True,
+              help="Also empty this deployment's data directories on the node: the object "
+                   'store, the campaign index, the workspaces, the results and the registry. '
+                   'Cleanup keeps them by default, because the store holds every finished '
+                   'campaign and a teardown is a very expensive way to discover that. '
+                   'Irreversible, and no archive is taken first -- use vast share or vast '
+                   'campaign download for anything worth keeping.')
 @click.option('--forget-placement', is_flag=True,
               help='Also remove the node labels recording where this deployment kept its '
                    'data. Without this the labels stay, so a later setup lands on the same '
@@ -1287,7 +1319,8 @@ def cluster_token(namespace, kube_context, quiet):
                    'refuse when it declares per-cluster resource lists for several '
                    'contexts and --context was not given -- which would otherwise pick '
                    'a cluster by accident. Optional, and read only for that check.')
-def cleanup(config_name, namespace, options, kube_context, forget_placement, vast):
+def cleanup(config_name, namespace, options, kube_context, forget_placement,
+            delete_data, vast):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
@@ -1320,7 +1353,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement, vas
             key, value = option.split('=', 1)
             cluster_kwargs[key] = value
         removed = delete_server(config_name=config_name, forget_placement=forget_placement,
-                                **cluster_kwargs) or {}
+                                delete_data=delete_data, **cluster_kwargs) or {}
         click.echo("✓ Cluster cleanup completed successfully!")
         governor = removed.get("cpu_governor")
         if governor == "removed":
@@ -1332,6 +1365,16 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement, vas
         elif governor == "failed":
             click.echo("  could not remove the CPU governor DaemonSet — its pods are still "
                        "running on every node; see the warning above", err=True)
+        # Said out loud either way. Bytes nothing names any more are bytes nobody finds:
+        # after this the deployment is gone, and these directories are the only trace.
+        for path in removed.get("data_removed") or []:
+            click.echo(f"  emptied {path} on the data node")
+        kept = removed.get("data_kept") or []
+        if kept:
+            click.echo("  kept on the data node (the store holds finished campaigns): "
+                       + ", ".join(kept))
+            click.echo("  a later setup on this node finds them again; "
+                       "--delete-data empties them instead")
         if forget_placement:
             click.echo("  placement labels removed; the next setup picks a node again")
             click.echo("  the data under the hostPaths is NOT removed by this")

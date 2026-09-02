@@ -221,13 +221,12 @@ def results_volume(storage_path="", storage_class=""):
     one it already tests, results cannot become node-local behind its back and be abandoned by
     a pod that was free to move.
 
-    And it commits no public API to an arrangement that may not last. The driver mirrors a
-    campaign whose durable home is the object store -- it downloads Job output it did not
-    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what keeps
-    that necessary is only that per-run extraction runs driver-side against a local path
+    And it commits no public API to an arrangement that may not last. This is the driver's
+    mirror of a campaign whose home is the object store -- it downloads Job output it did not
+    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what
+    keeps that necessary is only that per-run extraction runs driver-side against a local path
     (``search.extractor.Extractor.extract``). Move extraction into a Job, as rosbag conversion
-    already is, and this volume stops being needed. Give it its own ``--results-storage-*``
-    flags when someone actually needs to split it from the workspaces store, not before.
+    already is, and this volume stops being needed.
     """
     if storage_class:
         return {"name": RESULTS_VOLUME_NAME,

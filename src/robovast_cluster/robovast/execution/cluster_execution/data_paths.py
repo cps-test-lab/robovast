@@ -37,6 +37,8 @@ from typing import NamedTuple
 #: Default host paths, one per tenant. These are what a deployment given no placement flags
 #: has always used, and they must stay that way: a cluster re-run with a changed default
 #: would point at a fresh empty directory beside its data and report success.
+DEFAULT_STORE_HOST_PATH = "/var/lib/robovast-store"
+DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
 DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
 DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
 DEFAULT_REGISTRY_HOST_PATH = "/var/lib/robovast-registry"
@@ -60,11 +62,14 @@ class Tenant(NamedTuple):
         return bool(self.derived_from)
 
 
-#: Every tenant, in the order an operator meets them. ``results`` follows ``workspaces``
-#: because the service pod holds both and mirrors a campaign between them; the store and its
-#: index join this table when the store stops being an ``emptyDir``, one row each, needing no
-#: change to the rules below.
+#: Every tenant, in the order an operator meets them. Two are derived, and in both cases for
+#: the same reason: one pod holds the pair, and separating them would leave derived data
+#: without the source it was derived from. ``results`` follows ``workspaces`` because the
+#: service pod mirrors a campaign between them; ``index`` follows ``store`` because every row
+#: in the index was ingested from a campaign in the store.
 TENANTS = (
+    Tenant("store", DEFAULT_STORE_HOST_PATH),
+    Tenant("index", DEFAULT_INDEX_HOST_PATH, derived_from="store"),
     Tenant("workspaces", DEFAULT_WORKSPACES_HOST_PATH),
     Tenant("results", DEFAULT_RESULTS_HOST_PATH, derived_from="workspaces"),
     Tenant("registry", DEFAULT_REGISTRY_HOST_PATH),

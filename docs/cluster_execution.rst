@@ -235,9 +235,9 @@ Where this deployment's own data lives
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The selectors above place job and control pods. This places the deployment's **own** state,
-which is node-local by default: a stock cluster ships no StorageClass, so ``hostPath`` is
-what the registry, the workspaces and the build cache fall back to, and on ``rke2`` /
-``minikube`` the results store is an ``emptyDir``.
+which is node-local by default: a stock cluster ships no StorageClass, so ``hostPath`` is what
+the object store, the campaign index, the workspaces, the results, the registry and the build
+cache all fall back to.
 
 **Where it goes** is one flag, ``--data-root``; **which node** it goes on needs no flag at
 all. The two are separate questions and are answered separately below.
@@ -330,6 +330,8 @@ That places every node-local directory this deployment keeps:
 
 .. code-block:: text
 
+   /media/data/store           the object store, where finished campaigns live
+   /media/data/index           the campaign index, placed beside it
    /media/data/workspaces      the service's workspaces
    /media/data/results         the campaign results root, placed beside them
    /media/data/registry        the built experiment images
@@ -341,6 +343,9 @@ Each tenant can also be named on its own, and overrides the root for itself:
 Flag                          Environment                     Default
 ============================  ==============================  =================================
 ``--data-root``               ``ROBOVAST_DATA_ROOT``          *(unset)*
+``--store-path``              ``ROBOVAST_STORE_PATH``         ``/var/lib/robovast-store``
+``--store-class``             ``ROBOVAST_STORE_CLASS``        *(unset — a hostPath)*
+``--store-size``              ``ROBOVAST_STORE_SIZE``         ``500Gi`` (needs a class)
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
@@ -354,10 +359,13 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**The campaign results take no flag.** They are placed beside the workspaces and share their
-backing: ``/media/data/workspaces`` puts them at ``/media/data/results``, and
-``--workspaces-class`` makes both a claim. The service pod mirrors a campaign between the two,
-so a flag able to separate them could only ever be ignored or refused.
+**Two tenants take no flag**, and for the same reason: one pod holds each pair, and derived
+data must not be separated from its source. The campaign results sit beside the workspaces and
+share their backing, because the service pod mirrors a campaign between them. The campaign
+index sits beside the object store and shares *its* backing, because every row in the index was
+ingested from a campaign in the store -- an index that outlived its sources would answer
+questions about campaigns nobody can reproduce or check, confidently. A flag able to separate
+either pair could only ever be ignored or refused.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -882,19 +890,22 @@ store, and are pinned to the data node with the campaign store. Losing them is
 deliberate and cheap: images are rebuilt on demand, and the index is re-ingested from the
 campaign data.
 
-**The index's volume is an ``emptyDir``, and it matches the store's.** The index is derived
-data — every row in it was ingested from a campaign in the object store — so it must never
-outlive its sources. Sharing this pod with the store, on a volume of the same kind, is what
-makes that structural rather than something cleanup has to remember: the two are destroyed
-by the same event, and no sequence of restarts, evictions or operator mistakes can separate
-them. An index that outlives its sources is worse than no index, because it answers
-questions about campaigns nobody can reproduce or check, and it answers them confidently.
+**The index's volume matches the store's, and its path is derived from it.** The index is
+derived data — every row in it was ingested from a campaign in the object store — so it must
+never outlive its sources. Sharing this pod with the store, taking its backing and sitting at
+``<store>/../index``, is what makes that structural rather than something cleanup has to
+remember: the two are placed, moved and removed as one thing, and no sequence of restarts,
+evictions or operator mistakes separates them. An index that outlived its sources would answer
+questions about campaigns nobody can reproduce or check, and answer them confidently.
 
-Note what this makes of the object store on these providers. It **is** the durable home for
-results — a campaign's full directory is published into it, and downloads, re-postprocessing
-and the index all read from there — but it sits on a volume that a restart destroys. So a
-finished campaign is safe only until the store pod is restarted or rescheduled, and anything
-that must outlive that belongs in an archive (``vast share``), not in the store.
+Losing the index costs a re-ingest from the campaigns beside it — hours for a large corpus,
+and nothing that cannot be rebuilt. That is why it is one replica, with no standby and no
+backup.
+
+The object store is where a finished campaign lives: its whole directory is published there,
+and downloads, re-postprocessing and the index all read from it. It is **not** a backup. A
+node's disk is one disk, so anything that must survive the machine belongs in an archive
+(``vast share``), not in the store.
 
 All four ports (``s3``, ``console``, ``registry``, ``index``) are on the pod's single
 ClusterIP Service. It already selects exactly this pod, so extra Service objects would
@@ -1882,9 +1893,9 @@ RKE2
 **Config name:** ``rke2``
 
 Targets on-premise clusters managed by
-`Rancher RKE2 <https://docs.rke2.io/>`_.  Uses MinIO with an ``emptyDir``
-volume.  That store is where finished campaigns live, and it persists only as long
-as the pod does.
+`Rancher RKE2 <https://docs.rke2.io/>`_.  Uses MinIO backed by a directory on the
+data node, which is where finished campaigns live; it survives the pod, and
+``vast cluster cleanup`` leaves it alone.
 
 **Prerequisites:**
 
@@ -1899,9 +1910,10 @@ as the pod does.
 
 **Notes:**
 
-* ``emptyDir`` is ephemeral: if the ``robovast`` pod is restarted, all data is
-  lost.  Download results with ``vast campaign download`` (or launch with *Upload
-  to share when done*) before modifying or restarting the pod.
+* The store survives a pod restart and a ``vast cluster cleanup``, but it is one
+  directory on one node and no more: archive anything that must outlive the machine
+  with ``vast share``, or launch with *Upload to share when done*.
+* ``vast cluster cleanup --delete-data`` is what empties it, and nothing else does.
 
 .. _cluster-config-minikube:
 
@@ -1911,8 +1923,8 @@ Minikube
 **Config name:** ``minikube``
 
 Targets a local `minikube <https://minikube.sigs.k8s.io/>`_ cluster.
-Uses MinIO with ephemeral ``emptyDir`` storage.  Intended for development
-and local integration tests.
+Uses MinIO backed by a directory on the node.  Intended for development and local
+integration tests.
 
 **Prerequisites:**
 
@@ -1933,7 +1945,7 @@ and local integration tests.
 * No archiver sidecar — it is not included in the minikube manifest.  Use
   ``vast cluster store-cleanup`` to remove S3 buckets after
   processing results via ``kubectl port-forward``.
-* ``emptyDir`` storage means all data is lost if the pod restarts.
+* The store outlives the pod; ``vast cluster cleanup --delete-data`` empties it.
 
 
 .. _cluster-sharing:

@@ -647,13 +647,21 @@ class ClusterService(LocalTransport):
                     fields["unavailable"] = self._summary_read_reason(e)
             # Stop as soon as the provider can answer: its store lives on one node, and
             # walking the rest buys nothing but latency against the budget.
-            store_used, store_capacity = self._store_usage(summaries)
+            store_used, store_capacity, store_reason = self._store_usage(summaries)
             if store_used is not None and store_capacity is not None and store_capacity > 0:
                 fields["store"] = DiskSpace(capacity_bytes=store_capacity,
                                             used_bytes=store_used)
                 # The node whose Summary finally answered. The walk stops here, so this is
                 # the one that carries the store -- which is not necessarily the service's.
                 fields["store_node"] = name
+                break
+            if store_reason:
+                # The provider found its store and cannot measure it, which no further node
+                # will change. Walking the rest would spend the budget re-learning that, so
+                # the reason ends the walk. Logged rather than returned: publishing it means
+                # a schema field and a UI that reads it, and an unexplained absent meter is
+                # what the Store row already shows for a bucket-backed provider.
+                logger.debug("no store meter: %s", store_reason)
                 break
         if "disk" not in fields and "unavailable" not in fields:
             fields["unavailable"] = (
@@ -682,18 +690,20 @@ class ClusterService(LocalTransport):
         return f"the kubelet Summary API did not answer: {prefix}{detail}"
 
     def _store_usage(self, summaries):
-        """The provider's results-store reading, or ``(None, None)``.
+        """The provider's results-store reading, as ``(used, capacity, reason)``.
 
         Delegated because the answer is provider-specific: a cluster hosting its own object
         store can measure the volume behind it, while one backed by a cloud bucket has no
-        capacity to fill and so no meter to draw. Never fatal — a provider that raises must
-        not take the disk meter down with it.
+        capacity to fill and so no meter to draw. A non-empty reason means there will be no
+        figure and says why, which is the difference between a store nobody has looked at yet
+        and one that cannot be measured at all. Never fatal — a provider that raises must not
+        take the disk meter down with it.
         """
         try:
             return self._cluster_config().get_store_usage(summaries)
         except Exception as e:  # noqa: BLE001 - the disk meter must still be answerable
             logger.debug("could not read the results store usage: %s", e)
-            return None, None
+            return None, None, ""
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` over every scenario-run Job in this namespace.

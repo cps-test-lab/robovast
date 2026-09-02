@@ -30,6 +30,8 @@ def test_the_defaults_are_the_paths_a_deployment_already_uses():
     """
     defaults = {t.name: t.default_path for t in data_paths.TENANTS}
     assert defaults == {
+        "store": "/var/lib/robovast-store",
+        "index": "/var/lib/robovast-index",
         "workspaces": "/var/lib/robovast-workspaces",
         "results": "/var/lib/robovast-results",
         "registry": "/var/lib/robovast-registry",
@@ -127,4 +129,25 @@ def test_a_relative_root_is_refused_because_the_kubelet_resolves_it():
 def test_only_placeable_tenants_take_flags():
     """A flag for a derived tenant could only agree with its parent or be refused."""
     assert "results" not in data_paths.PLACEABLE
-    assert set(data_paths.PLACEABLE) == {"workspaces", "registry", "buildkit"}
+    assert "index" not in data_paths.PLACEABLE
+    assert set(data_paths.PLACEABLE) == {"store", "workspaces", "registry", "buildkit"}
+
+
+@pytest.mark.parametrize("store, expected", [
+    ("/var/lib/robovast-store", "/var/lib/robovast-index"),
+    ("/media/data/store", "/media/data/index"),
+    ("/mnt/minio", "/mnt/minio-index"),
+])
+def test_the_index_sits_beside_the_store_it_was_ingested_from(store, expected):
+    """The index is derived data, so it must never outlive its sources.
+
+    One directory holds both, so they are one thing to place, one disk to size and one thing
+    to delete -- rather than an invariant somebody has to remember at cleanup time.
+    """
+    resolved = data_paths.resolve({"store_path": store})
+    assert resolved["index"].path == expected
+
+
+def test_the_index_takes_the_stores_backing():
+    resolved = data_paths.resolve({"store_class": "local-path"})
+    assert resolved["index"].storage_class == "local-path"
