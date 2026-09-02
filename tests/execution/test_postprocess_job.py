@@ -569,3 +569,20 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
 
     assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
     assert batch.calls.index('delete') < batch.calls.index('create')
+
+
+def test_staging_is_not_allowed_less_memory_than_the_step_that_reads_the_data():
+    """Both containers are handed the same campaign, and the mirror's footprint grows with
+    the number of objects it moves -- so a limit well under the conversion's made the
+    FETCH the first thing to die on a large campaign, killed rather than failing, with no
+    chance to report it.
+
+    Headroom, not a bound: a campaign large enough still exceeds any fixed number, and the
+    fix for that is staging in chunks.
+    """
+    def _mem(spec):
+        value = spec["limits"]["memory"]
+        assert value.endswith("Gi"), value
+        return int(value[:-2])
+
+    assert _mem(pj.POSTPROCESS_INIT_RESOURCES) >= _mem(pj.POSTPROCESS_RESOURCES)

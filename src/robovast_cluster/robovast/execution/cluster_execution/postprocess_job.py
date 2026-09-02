@@ -105,14 +105,25 @@ POSTPROCESS_RESOURCES = {
     "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
 }
 
-#: The mirror step's own reservation. It is I/O rather than CPU, but it is what writes the
-#: bags into the pod's ``emptyDir`` -- so the ephemeral-storage request is the load-bearing
-#: half. Without one, a campaign's worth of bags lands on whichever node the scheduler picked
-#: with nothing having reserved the disk for it, and the node hits disk pressure and evicts
-#: the campaign pods running beside it.
+#: The mirror step's own reservation. It is I/O rather than CPU, and it is what writes the
+#: campaign's run data into the pod's ``emptyDir`` -- so the ephemeral-storage request
+#: matters as much as the CPU one. Without it, a campaign's worth of data lands on whichever
+#: node the scheduler picked with nothing having reserved the disk for it, and the node hits
+#: disk pressure and evicts the campaign pods running beside it.
+#:
+#: **Memory is headroom here, not a bound.** The mirror's footprint grows with the number of
+#: objects it moves, so no fixed limit is right for every campaign: this one matches the
+#: conversion container's, because both are handed the same campaign and there is no reason
+#: for the half that fetches the data to be allowed less than the half that reads it. A
+#: campaign large enough will still exceed it, and the fix for that is to stage in chunks --
+#: peak memory tracking the largest chunk rather than the whole campaign -- not a larger
+#: number here.
+#:
+#: The request stays small against that limit for the reason the conversion's does: the work
+#: is bursty, nothing is under test in this pod, and the split is what buys the density.
 POSTPROCESS_INIT_RESOURCES = {
     "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "20Gi"},
-    "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "200Gi"},
+    "limits": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "200Gi"},
 }
 
 
