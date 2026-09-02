@@ -496,10 +496,12 @@ def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
     local_vast = sorted(glob.glob(os.path.join(root, "_config", "*.vast")))
     wanted = ["_execution/execution.yaml", "_execution/interventions.json"]
     if local_vast and all(os.path.isfile(os.path.join(root, *w.split("/")))
-                          for w in wanted[:1]):
-        # Everything the read below needs is here. The ledger is not in that test: it exists
-        # only for a campaign somebody intervened in, and its reader treats absence as "no
-        # intervention", which is the right answer rather than a missing input.
+                          for w in wanted):
+        # EVERY file the read needs, the intervention ledger included. Absence of that file
+        # is not absence of interventions: its reader answers "nobody intervened" either
+        # way, so a root that happens not to hold it silently drops every bag the
+        # conversion was supposed to tolerate -- and the bags in that ledger are the ones
+        # that cannot be opened at all, so dropping them fails the whole conversion.
         return _read_submit_inputs(root, skip=skip, skip_rosout=skip_rosout)
 
     bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
