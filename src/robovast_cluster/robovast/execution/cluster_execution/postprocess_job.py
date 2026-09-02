@@ -935,8 +935,42 @@ def with_log_pointer(message: str, log_path) -> str:
     return message.replace(POINTER_SLOT, pointer)
 
 
-def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
-    """Keep a still-running Job; delete and re-create a finished one. False if neither held.
+#: :func:`_adopt_or_replace` kept a live Job and the caller is now a waiter on someone
+#: else's Job. It decides ownership, not just control flow: everything that Job mounts --
+#: the scripts ConfigMap above all -- belongs to the attempt that created it, and a waiter
+#: must write none of it and delete none of it.
+_JOB_ADOPTED = "adopted"
+
+#: The Job answering to this name was finished and has been deleted and re-created, so the
+#: caller owns this one and the resources it mounts.
+_JOB_RECREATED = "recreated"
+
+
+def _live_job(batch, namespace: str, name: str) -> bool:
+    """Is a Job of this name present AND still active?
+
+    Separate from :func:`_adopt_or_replace` because the answer is needed *before* anything
+    is written: a live Job's mounted resources are not ours to touch, and that has to be
+    known before the first write rather than discovered from a 409 after it.
+
+    A Job that cannot be read -- absent, or an API error -- is not live. Nothing is adopted
+    on a maybe: the create that follows is the authority on whether the name is free.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        existing = batch.read_namespaced_job(name=name, namespace=namespace)
+    except ApiException:
+        return False
+    return bool(getattr(getattr(existing, "status", None), "active", None))
+
+
+def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
+    """Keep a still-running Job; delete and re-create a finished one.
+
+    Returns :data:`_JOB_ADOPTED`, :data:`_JOB_RECREATED`, or ``""`` if neither held. The
+    caller needs the two apart rather than a bare success: only the re-created case owns
+    the Job's mounted resources -- see :data:`_JOB_ADOPTED`.
 
     A conversion Job's name comes from the campaign, so the same name is reused every time
     postprocessing is retriggered. Waiting on whatever answers to it means a reaped-but-not-
@@ -955,15 +989,15 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
         if e.status == 404:
             try:
                 batch.create_namespaced_job(namespace=namespace, body=manifest)
-                return True
+                return _JOB_RECREATED
             except ApiException:
-                return False
-        return False
+                return ""
+        return ""
 
     status = getattr(existing, "status", None)
     if getattr(status, "active", None):
         logger.info("Postprocessing job %s is already running; waiting on it", name)
-        return True
+        return _JOB_ADOPTED
 
     logger.info("Replacing finished postprocessing job %s", name)
     try:
@@ -972,7 +1006,7 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
     except ApiException as e:
         if e.status != 404:
             logger.warning("Could not delete %s: %s", name, e)
-            return False
+            return ""
 
     deadline = time.time() + 120
     while time.time() < deadline:
@@ -981,18 +1015,18 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
         except ApiException as e:
             if e.status == 404:
                 break
-            return False
+            return ""
         time.sleep(_POLL_SECONDS)
     else:
         logger.warning("Postprocessing job %s did not go away", name)
-        return False
+        return ""
 
     try:
         batch.create_namespaced_job(namespace=namespace, body=manifest)
     except ApiException as e:
         logger.warning("Could not re-create %s: %s", name, e)
-        return False
-    return True
+        return ""
+    return _JOB_RECREATED
 
 
 #: How often the Job's own log is published to the campaign's phase file while it runs.
@@ -1490,20 +1524,44 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         host_stage=host_stage, convert_resources=convert_resources)
     name = manifest["metadata"]["name"]
 
+    # Whether a Job of this name is already running is decided HERE, ahead of every write,
+    # and that order is load-bearing. The Job name comes from the campaign, so a second
+    # attempt -- a retrigger, or a service restart resuming the campaign -- meets the first
+    # attempt's Job still converting. Its conversion container has the scripts ConfigMap
+    # below mounted at /scripts and is executing out of that mount, and the kubelet syncs a
+    # ConfigMap's new content into every mount of it: writing the ConfigMap swaps the script
+    # out from under the running interpreter, which exits 1, and deleting it on the way out
+    # takes the mount away entirely. Either one destroys a healthy conversion, and the
+    # attempt that did it is the one that then reports the failure as the campaign's.
+    #
+    # So a live Job is adopted with nothing written: it already carries the scripts it was
+    # created with, generated by this same driver package, so there is nothing this attempt
+    # could add. Only an attempt that creates or re-creates the Job owns what it mounts.
+    #
+    # First call to touch the API server, so it is where an unreachable cluster surfaces.
+    # Reported as a reason on the campaign's postprocessing_error and re-runnable once the
+    # cluster is back -- the runs themselves are already published -- rather than reaching
+    # the caller as a urllib3 traceback.
+    try:
+        with api_transport_errors("submitting the postprocessing job"):
+            adopted = _live_job(batch, namespace, name)
+    except ClusterUnreachableError as e:
+        return False, f"postprocessing cannot be scheduled: {e}"
+
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
     # Job (the pod waits in ContainerCreating until the volume source exists) and delete
     # it once the Job is done. Only where something mounts it: a Job with no conversion
     # container declares no such volume, and creating the ConfigMap anyway would leave one
     # behind for every host-only postprocess.
-    cm_name = ""
-    if rosbag_cmds:
+    #
+    # `owned_cm_name` is the ConfigMap this attempt created or replaced, and it is the only
+    # thing the cleanup below deletes -- deletion follows creation, explicitly, so that an
+    # adopting waiter cannot remove the scripts of the Job it is waiting on.
+    owned_cm_name = ""
+    if rosbag_cmds and not adopted:
         cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
         cm_name = cm["metadata"]["name"]
-        # First call that actually touches the API server, so it is where an unreachable
-        # cluster surfaces. Reported as a reason on the campaign's postprocessing_error and
-        # re-runnable once the cluster is back -- the runs themselves are already
-        # published -- rather than reaching the caller as a urllib3 traceback.
         try:
             with api_transport_errors("submitting the postprocessing job"):
                 try:
@@ -1515,32 +1573,41 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                     else:
                         return False, ("could not create postprocessing scripts "
                                        f"ConfigMap: {e}")
+            owned_cm_name = cm_name
         except ClusterUnreachableError as e:
             return False, f"postprocessing cannot be scheduled: {e}"
 
     try:
-        try:
-            # Wrapped even though the ConfigMap create above usually gets there first: a
-            # host-only Job creates none, so this is then the first call to touch the API
-            # server and the one place an unreachable cluster can surface.
-            with api_transport_errors("submitting the postprocessing job"):
-                batch.create_namespaced_job(namespace=namespace, body=manifest)
-        except ClusterUnreachableError as e:
-            return False, f"postprocessing cannot be scheduled: {e}"
-        except ApiException as e:
-            if e.status != 409:
-                return False, f"could not create postprocessing job: {e}"
-            # 409 means a Job of this name is already here, and the name is derived from
-            # the campaign -- so a FINISHED one from an earlier attempt is indistinguishable
-            # from a running one until it is read. Falling through to wait on it reported
-            # that earlier attempt's outcome as this attempt's: a retrigger that changed
-            # nothing, against a pod whose containers ran a previous version of this
-            # script, presented as a fresh result. Adopt a live one; replace a finished one.
-            if not _adopt_or_replace(batch, namespace, name, manifest):
-                return False, (f"postprocessing job {name} already exists and could not be "
-                               f"replaced; retry once it has been removed")
-        logger.info("Postprocessing job %s created (conversion image=%s)", name,
-                    image if rosbag_cmds else "none needed")
+        if adopted:
+            logger.info("Waiting on the postprocessing job %s already in flight; its "
+                        "scripts are untouched", name)
+        else:
+            try:
+                # Wrapped even though the read above gets there first on every reachable
+                # cluster: a cluster can go away between the two, and then this is where an
+                # unreachable one has to surface.
+                with api_transport_errors("submitting the postprocessing job"):
+                    batch.create_namespaced_job(namespace=namespace, body=manifest)
+            except ClusterUnreachableError as e:
+                return False, f"postprocessing cannot be scheduled: {e}"
+            except ApiException as e:
+                if e.status != 409:
+                    return False, f"could not create postprocessing job: {e}"
+                # 409 with no live Job seen above: either a FINISHED Job of this name is
+                # still here -- the name is derived from the campaign, so waiting on it
+                # would report an earlier attempt's outcome as this attempt's, against a
+                # pod whose containers ran a previous version of this script -- or a Job
+                # started between that read and this create. Replace the finished one;
+                # adopt the one that raced us, and drop ownership of the ConfigMap with it,
+                # because from here on this attempt is a waiter on someone else's Job.
+                outcome = _adopt_or_replace(batch, namespace, name, manifest)
+                if not outcome:
+                    return False, (f"postprocessing job {name} already exists and could "
+                                   f"not be replaced; retry once it has been removed")
+                if outcome == _JOB_ADOPTED:
+                    owned_cm_name = ""
+            logger.info("Postprocessing job %s created (conversion image=%s)", name,
+                        image if rosbag_cmds else "none needed")
 
         deadline = time.time() + timeout
         # Published from here because this is the only place that knows the Job is still
@@ -1586,11 +1653,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
             time.sleep(_POLL_SECONDS)
         return False, f"postprocessing job {name} timed out after {timeout}s"
     finally:
-        # Best-effort cleanup of the scripts ConfigMap (labeled for manual sweep if the
-        # driver dies before this runs). The Job's own ttlSecondsAfterFinished reaps it.
-        if cm_name:
+        # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
+        # manual sweep if the driver dies before this runs). The Job's own
+        # ttlSecondsAfterFinished reaps it. Empty for an adopted Job: those scripts are
+        # mounted in a container this attempt did not start, and deleting them out from
+        # under it is how a waiter breaks the conversion it is waiting on.
+        if owned_cm_name:
             try:
-                core.delete_namespaced_config_map(name=cm_name, namespace=namespace)
+                core.delete_namespaced_config_map(name=owned_cm_name, namespace=namespace)
             except ApiException as e:
                 if e.status != 404:
-                    logger.warning("Could not delete scripts ConfigMap %s: %s", cm_name, e)
+                    logger.warning("Could not delete scripts ConfigMap %s: %s",
+                                   owned_cm_name, e)
