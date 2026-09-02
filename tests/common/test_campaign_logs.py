@@ -18,6 +18,8 @@
 
 import logging
 
+from robovast.common import campaign_logs
+
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log, assemble_log_from_dir,
                                            phase_banner)
@@ -237,3 +239,80 @@ def test_a_later_source_is_not_consulted_when_the_first_has_every_phase():
     scratch = _store_reader({name: b"x\n" for _, name in _ALL_PHASE_FILES})
     assemble_log(layered_get_bytes(scratch, _tracking), offset=0, eof=True)
     assert asked == []
+
+
+def test_a_phase_is_read_from_whoever_writes_it():
+    """A local copy wins for the phases this process appends to, and loses for the one it
+    does not write.
+
+    Postprocessing runs in a Job and publishes to the object store, so a local
+    ``postprocessing.log`` is whatever an earlier attempt left behind. Present, frozen and
+    wrong is the one combination an absence-only fallback cannot see past -- and it inverts
+    the answer, showing a postprocess that succeeded as the failure that preceded it.
+    """
+    local = {"controller.log": b"live run", "postprocessing.log": b"an older attempt"}
+    remote = {"controller.log": b"lagging run", "postprocessing.log": b"what the pod wrote"}
+
+    get_bytes = campaign_logs.layered_by_writer(local.get, remote.get)
+
+    assert get_bytes("controller.log") == b"live run"
+    assert get_bytes("postprocessing.log") == b"what the pod wrote"
+
+
+def test_every_phase_that_runs_after_the_driver_is_read_from_the_store():
+    """Not a postprocessing special case: the same holds for any phase that runs as a
+    background operation against a FETCHED campaign root and publishes from there, because
+    none of them ever touches the tracked scratch directory a local read looks in. The
+    share export is the other one today.
+    """
+    local = {name: b"an older attempt"
+             for name in campaign_logs.REMOTELY_WRITTEN_PHASE_FILES}
+    remote = {name: b"what actually ran" for name in local}
+
+    get_bytes = campaign_logs.layered_by_writer(local.get, remote.get)
+
+    assert "share.log" in campaign_logs.REMOTELY_WRITTEN_PHASE_FILES
+    for name in local:
+        assert get_bytes(name) == b"what actually ran", name
+
+
+def test_the_phases_the_driver_writes_are_still_read_locally():
+    """The driver's own phases must keep winning locally: it is appending to them, so the
+    durable copy lags, and preferring the store there would show a stale RUN phase for the
+    whole of a campaign's life."""
+    driver_written = [f for _phase, f in campaign_logs.INFRA_PHASES
+                      if f not in campaign_logs.REMOTELY_WRITTEN_PHASE_FILES]
+    get_bytes = campaign_logs.layered_by_writer(
+        {f: b"live" for f in driver_written}.get,
+        {f: b"lagging" for f in driver_written}.get)
+
+    assert driver_written  # the rule is not vacuous
+    for name in driver_written:
+        assert get_bytes(name) == b"live", name
+
+
+def test_either_source_still_covers_the_other_absence():
+    """Changing which copy is believed must not cost the coverage: a phase present in only
+    one place is still served, whichever place that is. Reading one location alone drops
+    whole phases silently, since a missing phase file is also the normal "has not run yet".
+    """
+    get_bytes = campaign_logs.layered_by_writer(
+        {"controller.log": b"only local"}.get,
+        {"postprocessing.log": b"only remote"}.get)
+
+    assert get_bytes("controller.log") == b"only local"
+    assert get_bytes("postprocessing.log") == b"only remote"
+    assert get_bytes("variation.log") is None
+
+
+def test_the_phase_served_from_a_source_cannot_change_mid_campaign():
+    """The choice is by writer, never by which copy is longer or newer: a size or mtime
+    comparison would flip as a file grows, and a poll that returned fewer bytes than the
+    last one leaves the client's offset past the end of the stream.
+    """
+    for local_len, remote_len in ((1, 500), (500, 1)):
+        get_bytes = campaign_logs.layered_by_writer(
+            {"postprocessing.log": b"x" * local_len}.get,
+            {"postprocessing.log": b"y" * remote_len}.get)
+
+        assert get_bytes("postprocessing.log") == b"y" * remote_len

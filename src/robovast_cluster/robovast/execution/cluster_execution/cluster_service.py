@@ -1394,16 +1394,18 @@ class ClusterService(LocalTransport):
         missing phase file is also how "this phase has not run" looks.
         """
         from robovast.common.campaign_logs import (assemble_log, disk_get_bytes,
-                                                   layered_get_bytes)
+                                                   layered_by_writer)
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         store = self._store_phase_bytes(campaign_id)
         if entry is not None:
-            # Scratch first: a phase file this process is still appending to is the live
-            # copy, and the durable one lags it. See ``layered_get_bytes`` on why the
-            # fallback triggers on absence only.
+            # Per phase, whoever writes it: scratch for the phases the driver appends to
+            # as it goes, the store for the ones that run afterwards against a fetched root
+            # and publish there. A local copy of one of those is an earlier attempt's --
+            # present, frozen, and therefore the winner under an absence-only fallback,
+            # which is how a succeeded postprocess read as the failure before it.
             campaign_dir = Path(entry.results_dir) / campaign_id
-            get_bytes = layered_get_bytes(disk_get_bytes(campaign_dir), store)
+            get_bytes = layered_by_writer(disk_get_bytes(campaign_dir), store)
             eof = self._is_done(entry)
         else:  # past / reaped campaign: the store holds every phase file's durable copy
             get_bytes = store
