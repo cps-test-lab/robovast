@@ -39,6 +39,7 @@ import {
   robovast,
   hasRecordedRuns,
   hasResults,
+  isPreviewable,
   isTerminalPhase,
   type CampaignSummary,
   type JobSummary,
@@ -63,6 +64,7 @@ import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
+import { declaresScene3d } from '@/lib/previewRuns'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
 import { LaunchedBy } from '@/components/LaunchedBy'
@@ -573,11 +575,28 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   // Shortcuts into the Results views, offered only where they lead somewhere. Both read the
   // *summary* — the very object the Results topic filters on — rather than the live status, so a
-  // button can never open a view that would greet the reader with an empty state. `hasResults`
-  // implies a terminal phase, so neither shows while the campaign runs; the summary arrives over
-  // the same stream as everything else here, so they appear by themselves once postprocessing ends.
+  // button can never open a view that would greet the reader with an empty state. The summary
+  // arrives over the same stream as everything else here, so they appear by themselves.
+  //
+  // The Explorer still needs a finished, postprocessed campaign: its notebooks and its rows are
+  // what postprocessing produces. The Run view also takes a campaign that is still RUNNING, where
+  // it previews the runs that have already finished — which is the only way to reach one at all,
+  // since the jobs list below is live-only and a run leaves it the moment it completes.
   const canExplore = hasResults(summary)
-  const canReplay = canExplore && hasRecordedRuns(summary)
+  // A preview replays a run's 3D recording and shows nothing else, so it is offered only where
+  // there is a scene to replay — asked of the campaign's served panel list, and only for a campaign
+  // that could be previewed at all (one that is running, with a run recorded). The same question
+  // the Run view's picker asks, under the same key, so the two cannot offer different campaigns.
+  const mightPreview = isPreviewable(summary) && hasRecordedRuns(summary)
+  const previewPanels = useQuery({
+    queryKey: ['panels', id],
+    queryFn: () => robovast.listCampaignPanels(id),
+    enabled: active && mightPreview,
+    retry: false,
+    staleTime: 60_000,
+  })
+  const previewing = mightPreview && declaresScene3d(previewPanels.data?.panels) === true
+  const canReplay = hasRecordedRuns(summary) && (canExplore || previewing)
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
@@ -658,7 +677,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
     canReplay ? (
       <MenuItem key="runview" onClick={() => { closeMenu(); openResultsView('run', id) }}>
         <ListItemIcon><RunViewIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>Open in Run View</ListItemText>
+        {/* Named a preview in the label as well as at the destination, so the menu does not promise
+            the finished article and then hand over one panel. */}
+        <ListItemText>{previewing ? 'Open in Run View (preview)' : 'Open in Run View'}</ListItemText>
       </MenuItem>
     ) : null,
   ].filter(Boolean)
