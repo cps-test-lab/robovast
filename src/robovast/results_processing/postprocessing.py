@@ -875,9 +875,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # `skip_db` is deliberately not special-cased: a caller who skipped the ingest asked
     # for a campaign that is not queryable, and the record still describes what was
     # derived, which is what an archive's recipient reads it for.
+    # Written before the metadata step, and still written when that step fails: it records
+    # what was DERIVED, which is true either way. Withholding it to express the failure
+    # would tell every reader the CSVs and index rows are absent when they are there, and
+    # trade one wrong signal for another -- the failure is carried by the return below.
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Generate metadata.yaml in each campaign directory
+    meta_failure = ""
     if skip_metadata:
         output("Skipping metadata generation")
     else:
@@ -886,18 +891,36 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             campaign=campaign,
         )
         if not meta_success:
-            output(f"Warning: Metadata generation failed: {meta_msg}")
+            # A failure, not a warning. What goes unwritten is the campaign's FAIR
+            # provenance record -- what an archive's recipient reads to know what produced
+            # the data -- and a warning in a log left the campaign reporting unqualified
+            # success while missing it, so it would export and be shared as complete.
+            meta_failure = meta_msg
+            output(f"Metadata generation failed: {meta_msg}")
 
-    if success:
+    if success and not meta_failure:
         return True, "Postprocessing completed successfully!"
-    if not failures:
+
+    reasons = []
+    if failures:
+        detail = "; ".join(failures[:3])
+        more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+        reasons.append(f"{len(failures)} of {len(commands)} step(s) — {detail}{more}")
+    if meta_failure:
+        # Its own reason rather than one of the counted steps: metadata generation is not
+        # in `commands`, so counting it there would make the denominator lie. Says what is
+        # missing and what it costs to fix, because the derived data IS complete -- the
+        # marker above records that truthfully, and re-running rewrites the record without
+        # re-deriving anything.
+        reasons.append(
+            f"the campaign has no FAIR provenance record: {meta_failure}. Its derived data "
+            "is complete and queryable; re-running postprocessing writes the record without "
+            "re-deriving it")
+    if not reasons:
         # Belt and braces: a future early-exit that sets success=False without recording why
         # would otherwise regress to the message this replaced.
         return False, "Postprocessing failed (no step reported a reason; see the log)"
-    detail = "; ".join(failures[:3])
-    more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
-    return False, (f"Postprocessing failed: {len(failures)} of {len(commands)} step(s) — "
-                   f"{detail}{more}")
+    return False, "Postprocessing failed: " + " | ".join(reasons)
 
 
 def _campaign_provider_records(campaign_dir) -> list:

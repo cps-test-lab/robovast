@@ -17,10 +17,73 @@
 
 import csv
 import json
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+
+# -- how much CPU this process may actually use -------------------------------
+
+
+def available_cpus() -> int:
+    """Cores this process may use, from its cgroup rather than from the machine.
+
+    ``os.cpu_count()`` reports the cores the kernel can see, which in a container is every
+    core of the node and has nothing to do with what the container may have. Sizing a worker
+    pool from it puts one worker per core of the machine inside an allocation of a few cores:
+    the workers do not run faster for being many, they spend the conversion competing for a
+    quota they collectively exceeded, and each one holds a bag's worth of memory while it
+    waits. On a large node that is dozens of deserializers inside a limit sized for a handful.
+
+    Lives in this module because it is the only one the conversion can reach: the container
+    gets this directory mounted and nothing else of ``robovast`` (see ``docker_exec.sh``), and
+    ``rosbags_process.py`` runs there as a standalone script.
+
+    Read in order of how specifically each source describes *this* process:
+
+    1. the cgroup v2 CPU quota -- what the kernel will actually enforce;
+    2. the cgroup v1 quota, for an older host;
+    3. the CPU affinity mask, which bounds us even with no quota set;
+    4. the machine's cores, when nothing above applies -- an uncontained process.
+
+    Rounded up, and never below 1: a fractional quota still runs, one worker at a time.
+    """
+    def _quota_v2() -> "Optional[float]":
+        try:
+            with open("/sys/fs/cgroup/cpu.max", encoding="utf-8") as handle:
+                quota, period = handle.read().split()
+        except (OSError, ValueError):
+            return None
+        # "max" is the literal the kernel writes for "no quota", not a number to parse.
+        if quota == "max":
+            return None
+        try:
+            return float(quota) / float(period)
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    def _quota_v1() -> "Optional[float]":
+        try:
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", encoding="utf-8") as handle:
+                quota = float(handle.read().strip())
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as handle:
+                period = float(handle.read().strip())
+        except (OSError, ValueError):
+            return None
+        # A negative quota is v1's spelling of "unlimited".
+        if quota <= 0 or period <= 0:
+            return None
+        return quota / period
+
+    cores = _quota_v2() or _quota_v1()
+    if cores is None:
+        try:
+            cores = float(len(os.sched_getaffinity(0)))
+        except (AttributeError, OSError):
+            cores = float(os.cpu_count() or 1)
+    return max(1, int(math.ceil(cores)))
+
 
 # -- the wall<->sim clock map -------------------------------------------------
 #
@@ -279,7 +342,11 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
                 )
         return bags, subdirs
 
-    n_workers = min(64, (os.cpu_count() or 4) * 8)
+    # Threads, not processes, and the work is a directory walk -- so this is deliberately a
+    # multiple of the CPU budget rather than equal to it: a scan blocks on the store far more
+    # than it computes. The cap is what keeps a large allocation from opening more concurrent
+    # reads than a store answers well.
+    n_workers = min(32, available_cpus() * 4)
     pending = [directory]
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         while pending:
