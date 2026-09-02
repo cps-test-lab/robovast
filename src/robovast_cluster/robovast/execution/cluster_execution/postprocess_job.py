@@ -217,16 +217,14 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
     return n
 
 
-def _report_staging_failure(cluster_config, campaign_id: str, campaign_root) -> None:
-    """Land the staging container's own log where the campaign log can show it.
+def _staging_log_text(cluster_config, campaign_id: str) -> "str | None":
+    """The staging container's own log, or ``None`` when it filed none.
 
-    Only reached when the conversion wrote nothing, which is the case the initContainer's
-    log exists for. Copied into ``_execution/`` so it is published with the rest and reads
-    in the campaign log beside the phases -- the reader who was told there is no
-    POSTPROCESSING section gets, in the same place, the reason there is none.
+    It files one only if it survived long enough to: a pod SIGKILLed by the kubelet under
+    node disk pressure, or OOM-killed, never reaches its own report. Staging pulls every
+    bag of the campaign onto the node, so that is the likeliest way it dies -- which is
+    why the absence of this log is itself a finding and not simply missing information.
     """
-    import os  # noqa: PLC0415
-
     from . import in_pod_storage  # noqa: PLC0415
     try:
         bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
@@ -235,20 +233,68 @@ def _report_staging_failure(cluster_config, campaign_id: str, campaign_root) -> 
         raw = storage.read_object(bucket, f"{campaign_prefix}{STAGING_LOG}")
     except Exception as e:  # noqa: BLE001 - a diagnostic may not raise over the failure
         logger.warning("Could not read the staging log for %s: %s", campaign_id, e)
-        return
-    if raw is None:
-        logger.warning("No staging log for %s either: the Job failed before either of "
-                       "its containers could report anything", campaign_id)
-        return
-    text = raw.decode("utf-8", "replace").rstrip()
-    logger.warning("Postprocessing failed while staging the campaign's bags:\n%s", text)
+        return None
+    return None if raw is None else raw.decode("utf-8", "replace").rstrip()
+
+
+def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
+                       log_path: str, message: str) -> None:
+    """Write the POSTPROCESSING phase file when the conversion produced none.
+
+    The phase file IS the section: every surface assembles the campaign log from the files
+    that exist (``campaign_logs.INFRA_PHASES``), so a conversion that wrote nothing left a
+    campaign with no POSTPROCESSING section at all -- the reader saw the phases stop after
+    RUN, with the failure reported only in a status field elsewhere. Writing the account
+    here is what makes a failed postprocess visible where a successful one is read.
+
+    Not an ``add_campaign_log_handler`` around the whole operation, the way the local lane
+    can afford: on this lane the same file is written by the conversion Job and pulled down
+    by ``sync_outputs``, so a handler streaming into it would be overwritten mid-write by
+    the fetch. Only the path where no such file arrived is free to author one.
+    """
+    import os  # noqa: PLC0415
+
+    staging = _staging_log_text(cluster_config, campaign_id)
+    # The message still carries POINTER_SLOT: the pointer is decided after this file is
+    # written, precisely BY whether it was. Inside the file the slot has nothing to say --
+    # the reader is already in the section it would point at.
+    headline = message.replace(POINTER_SLOT, "").strip()
+    lines = [
+        f"Postprocessing failed: {headline}",
+        "",
+        "The conversion container produced no log, so it did not run. The Job stages the "
+        "campaign's bags into the pod before converting them; that step is where this "
+        "failed.",
+    ]
+    if staging is None:
+        lines += [
+            "",
+            "The staging step filed no log of its own either, which narrows rather than "
+            "hides the cause: it means the container did not survive to report -- a pod "
+            "SIGKILLed under node disk pressure or OOM-killed cannot. Staging pulls every "
+            "bag of this campaign onto one node, so its free space is the first thing to "
+            "check.",
+        ]
+    else:
+        lines += ["", "===== staging =====", staging]
+    text = "\n".join(lines) + "\n"
+    logger.warning("Postprocessing failed before the conversion ran; recording the "
+                   "account for %s", campaign_id)
     try:
-        dst = os.path.join(str(campaign_root), STAGING_LOG)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(dst, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(text)
     except OSError as e:
-        logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
+        logger.warning("Could not write the postprocessing log for %s: %s", campaign_id, e)
+        return
+    if staging is not None:
+        try:
+            dst = os.path.join(str(campaign_root), STAGING_LOG)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write(staging + "\n")
+        except OSError as e:
+            logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
 
 
 def _manifest_paths(manifest: bytes) -> list:
@@ -384,10 +430,8 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                     logger.warning("Postprocessing conversion failed:\n%s",
                                    f.read().rstrip())
             else:
-                logger.warning("Postprocessing job for %s failed before it wrote a "
-                               "conversion log; there is no POSTPROCESSING section",
-                               campaign_id)
-                _report_staging_failure(cluster_config, campaign_id, campaign_root)
+                _write_failure_log(cluster_config, campaign_id, campaign_root,
+                                   log_path, message)
             return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",

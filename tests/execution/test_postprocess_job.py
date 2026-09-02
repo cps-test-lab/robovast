@@ -379,3 +379,56 @@ def test_the_conversion_mirrors_to_the_canonical_prefix_with_a_manifest():
     assert pj.OUTPUT_MANIFEST in script
     trap = next(line for line in script.splitlines() if line.startswith("trap "))
     assert pj.OUTPUT_MANIFEST in trap and "mc mirror" in trap
+
+
+def test_a_failed_conversion_still_writes_a_postprocessing_section(monkeypatch, tmp_path):
+    """The phase file IS the section: every surface assembles the campaign log from the
+    files that exist, so a conversion that wrote nothing left the phases stopping after RUN
+    with the failure reported only in a status field elsewhere.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+    monkeypatch.setattr(in_pod_storage, 'campaign_storage_location',
+                        lambda cfg, cid: ('b', 'p/'))
+    monkeypatch.setattr(in_pod_storage, 'storage_client_for',
+                        lambda cfg: type('S', (), {'read_object': lambda *a: None})())
+
+    log = tmp_path / '_execution' / 'postprocessing.log'
+    pj._write_failure_log(object(), 'camp', str(tmp_path), str(log),
+                          pj.job_failed_message('job-x'))
+    text = log.read_text()
+
+    assert 'job-x' in text
+    # The slot is decided by whether this file exists, so inside it there is nothing for it
+    # to say -- and it must never reach a reader.
+    assert pj.POINTER_SLOT not in text
+    # No staging log is a finding, not missing information: a SIGKILLed container cannot
+    # file one, and staging is what meets a full disk first.
+    assert 'disk' in text.lower()
+
+
+def test_the_staging_log_is_carried_into_the_section_when_there_is_one(monkeypatch, tmp_path):
+    """When staging did survive to report, its account is what the reader came for."""
+    from robovast.execution.cluster_execution import in_pod_storage
+    monkeypatch.setattr(in_pod_storage, 'campaign_storage_location',
+                        lambda cfg, cid: ('b', 'p/'))
+    monkeypatch.setattr(
+        in_pod_storage, 'storage_client_for',
+        lambda cfg: type('S', (), {
+            'read_object': lambda *a: b'mc: <ERROR> no space left on device\n'})())
+
+    log = tmp_path / '_execution' / 'postprocessing.log'
+    pj._write_failure_log(object(), 'camp', str(tmp_path), str(log),
+                          pj.job_failed_message('job-x'))
+
+    assert 'no space left on device' in log.read_text()
+    assert 'no space left on device' in (tmp_path / pj.STAGING_LOG).read_text()
+
+
+def test_the_message_points_at_the_section_once_it_has_been_written(tmp_path):
+    """The two changes have to agree: writing the section is what makes the pointer true."""
+    log = tmp_path / 'postprocessing.log'
+    raw = pj.job_failed_message('job-x')
+
+    assert 'no POSTPROCESSING section' in pj.with_log_pointer(raw, log)
+    log.write_text('an account')
+    assert 'see the POSTPROCESSING section' in pj.with_log_pointer(raw, log)
