@@ -1158,9 +1158,10 @@ hover tooltip spelling the numbers out:
   Unlike CPU and memory on a cluster, this is **measured** usage rather than a sum of
   pod requests — nothing reserves disk, so a request sum would read near-empty on
   a full disk.
-* **Store** — the campaign results store, where the backend can measure one. Its
-  denominator is the store's own volume, not the **Disk** figure; the two can sit on
-  different nodes.
+* **Store** — the campaign results store, where the backend can measure one. This is
+  where finished campaigns live until they are archived, so a full one is not merely a
+  slow lane. Its denominator is the store's own volume, not the **Disk** figure; the two
+  can sit on different nodes.
 
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a

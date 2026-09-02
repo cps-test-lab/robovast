@@ -1598,6 +1598,44 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
     return True
 
 
+#: The container an embedded object store runs in, and the path campaigns live under inside
+#: it. Spelled here rather than imported from a cluster config because this module must not
+#: depend on which provider is deployed -- and the question it asks is about the live pod,
+#: which answers for whichever provider created it.
+STORE_CONTAINER_NAME = "minio"
+STORE_DATA_MOUNT = "/data"
+
+
+def store_backing(pod):
+    """What holds this deployment's campaigns, as ``(kind, detail)``.
+
+    ``("emptyDir", None)`` when the store lives and dies with its pod, ``("hostPath", path)``
+    or ``("claim", name)`` when it outlives one, and ``(None, None)`` where the pod runs no
+    embedded store -- the campaigns are then in a bucket, which no pod holds.
+
+    Resolved from the container's own mount rather than from a volume name, so it stays true
+    for every provider that embeds a store without this module knowing which one is deployed.
+    """
+    container = next((c for c in (pod.spec.containers or [])
+                      if c.name == STORE_CONTAINER_NAME), None)
+    if container is None:
+        return None, None
+    mount = next((m for m in (container.volume_mounts or [])
+                  if m.mount_path == STORE_DATA_MOUNT), None)
+    if mount is None:
+        return None, None
+    volume = next((v for v in (pod.spec.volumes or []) if v.name == mount.name), None)
+    if volume is None:
+        return None, None
+    if volume.host_path is not None:
+        return "hostPath", volume.host_path.path
+    if volume.persistent_volume_claim is not None:
+        return "claim", volume.persistent_volume_claim.claim_name
+    if volume.empty_dir is not None:
+        return "emptyDir", None
+    return None, None
+
+
 def verify_store_pod_infrastructure(namespace="default", kube_context=None):
     """Raise unless the live ``robovast`` pod runs the registry and the index.
 
@@ -1609,9 +1647,10 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
     whose DSN names a port nothing listens on: an ImagePullBackOff on the next campaign's
     job pods, and an IndexUnreachableError on the next query, both far from here.
 
-    Checked before the service is deployed, because the honest remedy is destructive
-    (``vast cluster cleanup`` then ``vast cluster setup``) and an operator must choose it
-    knowingly rather than discover it from a failing pilot run.
+    Checked before the service is deployed, because the remedy recreates the store pod
+    (``vast cluster cleanup`` then ``vast cluster setup``) and what that costs depends on
+    what backs the store -- so the operator must choose it knowingly rather than discover it
+    from a failing pilot run.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
@@ -1630,14 +1669,27 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
     missing = store_pod.missing_infrastructure(pod)
     if not missing:
         return
+    kind, detail = store_backing(pod)
+    if kind == "emptyDir":
+        cost = ("Its campaign store lives in the pod, so recreating it DISCARDS every "
+                "campaign the store holds, and the index cannot be re-ingested afterwards "
+                "because its source goes at the same moment. Archive what matters first -- "
+                "'vast share <campaign>' or 'vast campaign download <campaign>' -- because "
+                "nothing else holds a complete copy.")
+    elif kind in ("hostPath", "claim"):
+        where = f"the node directory {detail}" if kind == "hostPath" else f"the {detail} volume"
+        cost = (f"The campaigns are in {where} and outlive the pod, so the new one finds "
+                f"them again and the index is re-ingested from them.")
+    else:
+        cost = ("The campaigns are in this deployment's bucket rather than in the pod, so "
+                "nothing it holds is lost, and the index is re-ingested from them.")
     raise RuntimeError(
         f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
         f"{', '.join(missing)}. This deployment predates their move out of the "
-        f"{SERVICE_NAME} pod, and an existing store pod is deliberately kept as it is by "
-        f"setup (recreating it would discard the campaign store), so re-running setup "
-        f"cannot add them. Run 'vast cluster cleanup' and then 'vast cluster setup': the "
-        f"object store is a transfer buffer, built images are rebuilt on demand, and the "
-        f"campaign index is re-ingested from the campaign data in the object store.")
+        f"{SERVICE_NAME} pod, and setup keeps an existing store pod as it is, so re-running "
+        f"setup cannot add them. The remedy is 'vast cluster cleanup' then "
+        f"'vast cluster setup', which recreates the pod; built images are rebuilt on "
+        f"demand. {cost}")
 
 
 def published_host(namespace="default", kube_context=None):
