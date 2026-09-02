@@ -83,3 +83,21 @@ def test_staging_restores_the_job_links_the_store_cannot_hold(tmp_path, monkeypa
     # The link exists, and what reads through it now resolves.
     assert (root / "cfg-a" / "0" / "job").is_symlink()
     assert read_sysinfo(root / "cfg-a" / "0")["cpu_name"] == "Intel Xeon"
+
+
+def test_the_log_this_attempt_writes_is_not_staged_back_into_it():
+    """The conversion APPENDS to `_execution/postprocessing.log`, so a copy of the previous
+    attempt's would become the head of this attempt's log -- and did: a postprocess whose
+    conversion failed presented, as its own account, the image-pull failure of the attempt
+    before it. It is also where the running Job's log is published, so staging it back would
+    fold this attempt's own head into itself.
+    """
+    from robovast.execution.cluster_execution.postprocess_stage import NOT_STAGED_LOG
+
+    for skip_bags in (False, True):
+        include = build_include(skip_bags=skip_bags)
+
+        assert not include(NOT_STAGED_LOG), skip_bags
+        # Its neighbours in the same directory are still needed.
+        assert include("_execution/execution.yaml")
+        assert include("_execution/interventions.json")
