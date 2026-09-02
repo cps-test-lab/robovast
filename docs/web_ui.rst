@@ -1409,6 +1409,14 @@ simulator that records no capture contributes no ``scene3d``, so there would be 
 show; such a campaign simply does not appear — in the run picker or in its card's menu — until it
 has finished, when its real results exist. Both surfaces ask the campaign's served panel list, so
 neither can offer what the other refuses.
+
+Having a scene is the *only* extra condition: a campaign is offered as soon as it is running,
+without asking how many runs it has recorded. That question has no cheap honest answer while a
+campaign runs — the run counts come from ``campaign.db``, which the controller writes only once a
+**batch** has finished, and a batch-mode campaign has exactly one batch — so a preview gated on them
+was unreachable for the entire life of exactly the campaigns it exists for. What runs there are is
+answered where it can be answered: by the listing that fills the picker. A campaign on its first run
+is therefore offered, and says so.
 For the same reason there is no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>`
 reports nothing to trim, and **Edit visualization** is disabled — saving writes a ``.vast`` override
 into the campaign's own ``_config/``, which its remaining runs are configured from, so editing the
