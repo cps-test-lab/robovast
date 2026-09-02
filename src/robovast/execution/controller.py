@@ -356,6 +356,15 @@ class CampaignController:
         images = execution.get("images") or {}
         if not images:
             return
+        # Every role that OUGHT to have a lock, which is not the same as every role in
+        # ``images``: that map holds only the containers whose image the campaign names, so a
+        # container robovast supplies is absent from it and was never even asked. It is the
+        # same set the report below measures against, so what is asked for and what is
+        # reported missing cannot drift apart -- they did, and the gap read as a failed read
+        # rather than as a question never put.
+        ours = {role for role, refs in (execution.get("image_build_refs") or {}).items()
+                if isinstance(refs, dict) and not refs.get("declared")}
+        roles = sorted(ours | set(images))
         # The roles are the campaign's containers, but the REF has to be what actually ran.
         # On the cluster lane ``images`` records what the .vast declared, and for a container
         # robovast builds that is its *base* -- whose lock describes different software than
@@ -366,8 +375,10 @@ class CampaignController:
             from robovast.service.image_build import read_image_build_manifest
 
             manifests = {}
-            for role, declared in sorted(images.items()):
-                image = revisions.get(role) or declared
+            for role in roles:
+                image = revisions.get(role) or images.get(role)
+                if not image:
+                    continue
                 # Per role, so one role's failure cannot discard the locks already read for
                 # the others. Both readers reach outside the process -- a container runtime,
                 # a registry -- and either can fail for one image and work for the next.
@@ -393,8 +404,6 @@ class CampaignController:
             # the image is gone and the rebuild installs current versions instead of the
             # recorded ones. A container whose `provenance:` the author declared is skipped --
             # robovast did not build it, so there was never a lock of ours to find.
-            ours = {role for role, refs in (execution.get("image_build_refs") or {}).items()
-                    if isinstance(refs, dict) and not refs.get("declared")}
             missing = sorted(ours - set(manifests))
             if missing:
                 logger.warning(
