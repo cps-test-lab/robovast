@@ -20,12 +20,14 @@ import { robovast, type SceneStatus } from '@/lib/robovastClient'
 export const SCENE_POLL_MS = 1000
 
 /** What each stage is called, naming the *cost* rather than the mechanism -- the point of showing a
- *  stage at all is that a two-minute image pull must not look like a hang. */
+ *  stage at all is that a two-minute image pull must not look like a hang. Every key here is a stage
+ *  the service can actually report (`scene_cache.STAGES`); an entry for one it cannot is a message
+ *  no reader will ever see, and reads as supported. */
 export const STAGE_TEXT: Record<string, string> = {
-  queued: 'Waiting for cluster capacity — the campaign queue is busy',
+  queued: 'Waiting for a node to build on — the cluster has no free capacity yet',
   pulling: 'Fetching the simulation image onto the node — first time only',
+  starting: 'Starting the build container',
   compiling: 'Compiling the world geometry',
-  transferring: 'Copying the scene back from the container',
 }
 
 export interface SceneGeometry {
@@ -37,6 +39,10 @@ export interface SceneGeometry {
   url: string
   /** Non-empty exactly while a build is in flight, naming the stage. */
   buildingText: string
+  /** The service's own words for that stage, when it has any -- a pod's `ImagePullBackOff` message,
+   *  say. Shown under the stage rather than instead of it: the stage says which wait this is, and
+   *  only this says that the wait is one that will never end. */
+  buildingDetail: string
 }
 
 /**
@@ -93,15 +99,15 @@ export function useSceneGeometry(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
+  // The status of a build in flight, or null. Never once it is cached or has failed -- polling a
+  // dead task while showing "nearly there" is worse than showing the error.
+  const building = status && !status.cached && !status.error && !error ? status : null
+
   return {
     status,
     error,
     url: status?.cached && status.url ? robovast.sceneAssetUrl(status.url) : '',
-    // Non-empty exactly while building, and never once it is cached or has failed -- polling a
-    // dead task while showing "nearly there" is worse than showing the error.
-    buildingText:
-      status && !status.cached && !status.error && !error
-        ? STAGE_TEXT[status.stage] ?? 'Building the world geometry'
-        : '',
+    buildingText: building ? STAGE_TEXT[building.stage] ?? 'Building the world geometry' : '',
+    buildingDetail: building?.stage_detail ?? '',
   }
 }

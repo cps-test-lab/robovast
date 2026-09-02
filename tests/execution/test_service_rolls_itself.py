@@ -11,9 +11,11 @@ which re-renders the whole manifest from the pod's own baked-in environment.
 
 # pylint: disable=redefined-outer-name  # the pytest fixture idiom
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from robovast.execution.cluster_execution import service_deploy
 from robovast.execution.cluster_execution.cluster_service import ClusterService
@@ -30,7 +32,7 @@ class _Service(ClusterService):
     image store.
     """
 
-    def __init__(self, campaigns=(), results_dir=""):  # pylint: disable=super-init-not-called
+    def __init__(self, campaigns=(), results_dir="", store=None):  # pylint: disable=super-init-not-called
         self.namespace, self.kube_context = "default", None
         self._campaigns = list(campaigns)
         self.published = "repo/robovast-controller@sha256:aaa"
@@ -38,10 +40,29 @@ class _Service(ClusterService):
         # campaign's records. Empty by default: a campaign with nothing on disk is one
         # nothing could re-launch, which is the case the refusal exists for.
         self._results_dir = results_dir or "/nonexistent"
+        #: The object store's copy of the campaign, as a directory, or ``None`` for a
+        #: deployment whose store holds nothing for it.
+        self._store = store
 
     def list_campaigns(self, request=None):
         del request
         return ListCampaignsResponse(campaigns=self._campaigns)
+
+    def fetch_campaign(self, campaign_id, force=False, dest=None, include=None):
+        """Copy out of the fake store whatever *include* selects.
+
+        A real copy rather than a stub, because what the fetch leaves in the campaign root
+        is what the check then plans from: a fetch that quietly brought nothing would report
+        every live campaign as lost, which is the regression below.
+        """
+        del campaign_id, force
+        for src in sorted(self._store.rglob("*") if self._store is not None else []):
+            rel = src.relative_to(self._store).as_posix()
+            if not src.is_file() or (include is not None and not include(rel)):
+                continue
+            (Path(dest) / rel).parent.mkdir(parents=True, exist_ok=True)
+            (Path(dest) / rel).write_bytes(src.read_bytes())
+        return dest
 
     @property
     def _images(self):
@@ -53,8 +74,8 @@ def svc(monkeypatch):
     """Build a service whose cluster reads are answered from arguments."""
     def build(campaigns=(), in_pod=True, image="repo/robovast-controller:latest",
               running="sha256:aaa", published="repo/robovast-controller@sha256:aaa",
-              denied=False):
-        s = _Service(campaigns)
+              denied=False, results_dir="", store=None):
+        s = _Service(campaigns, results_dir=results_dir, store=store)
         s.published = published
         s.patched = []
         if in_pod:
@@ -70,7 +91,16 @@ def svc(monkeypatch):
     return build
 
 
-def _live(campaign_id="nav-2026-01-01-000000", phase="running"):
+_CAMPAIGN = "nav-2026-01-01-000000"
+
+#: The smallest ``.vast`` that validates — what a campaign froze, as the check reads it back.
+_VAST = {"version": 3, "metadata": {"name": "pilot"},
+         "configuration": [{"name": "config1"}],
+         "execution": {"scenario_file": "scenario.osc", "runs": 2,
+                       "containers": {"scenario": {"image": "base:1"}}}}
+
+
+def _live(campaign_id=_CAMPAIGN, phase="running"):
     return CampaignSummary(campaign_id=campaign_id, phase=phase)
 
 
@@ -91,13 +121,25 @@ def test_it_refuses_for_a_campaign_the_replacement_could_not_pick_up(svc):
     assert not s.patched, "nothing may be patched when the roll was refused"
 
 
-def test_a_campaign_that_survives_the_roll_is_not_a_reason_to_refuse(svc, monkeypatch):
-    """The point of the whole change: rolling mid-campaign stops being a data-loss event."""
-    from robovast.execution.cluster_execution import campaign_resume
+def test_a_campaign_that_survives_the_roll_is_not_a_reason_to_refuse(svc, tmp_path):
+    """The point of the whole change: rolling mid-campaign stops being a data-loss event.
 
-    monkeypatch.setattr(campaign_resume, "plan_for",
-                        lambda service, cid, root: (object(), object(), None))
-    s = svc(campaigns=[_live()])
+    Out of a campaign's real records, and split the way a running campaign's really are --
+    the launch record in the campaign root, the frozen ``_config/`` still only in the object
+    store, which is every campaign's shape until its first batch lands. Stubbing the decision
+    here instead is what let a check that planned against the root alone refuse every one of
+    them, telling an operator that rolling would stop live campaigns for good.
+    """
+    results = tmp_path / "results"
+    (results / _CAMPAIGN / "_execution").mkdir(parents=True)
+    (results / _CAMPAIGN / "_execution" / "launch.yaml").write_text(yaml.dump(
+        {"runs": 2, "images": {"scenario": "reg.example.com/e@sha256:a"}}))
+    store = tmp_path / "store"
+    (store / "_config").mkdir(parents=True)
+    (store / "_config" / "pilot.vast").write_text(yaml.safe_dump(_VAST))
+    (store / "_config" / "scenario.osc").write_text("scenario pilot:\n")
+
+    s = svc(campaigns=[_live()], results_dir=str(results), store=store)
 
     assert s.upgrade_service().ok
     assert s.patched == [("default", None)]

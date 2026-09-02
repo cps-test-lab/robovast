@@ -91,11 +91,6 @@ spec:
 
 class MinikubeClusterConfig(BaseConfig):
 
-    #: The store is an ``emptyDir``: it is on the node's own filesystem, so which node the
-    #: pod lands on decides both how much room a sweep has and where the bytes are. Not a
-    #: durability claim -- an emptyDir is a transfer buffer either way.
-    store_is_node_local = True
-
     @staticmethod
     def _refuse_a_store_pod_on_the_wrong_node(namespace, pod_name, node_labels):
         """Raise when a live store Pod sits somewhere the resolved placement does not want.
@@ -124,8 +119,9 @@ class MinikubeClusterConfig(BaseConfig):
             f"cannot be moved by re-applying its manifest -- an existing pod is kept as it "
             f"is, so the new placement would be reported but never take effect. Delete it "
             f"(`kubectl delete pod {pod_name} -n {namespace}`) or run "
-            f"`vast cluster cleanup` first; the store is a transfer buffer, so nothing "
-            f"durable is lost.")
+            f"`vast cluster cleanup` first -- both DISCARD every campaign the store holds, "
+            f"so archive what matters first with `vast share <campaign>` or "
+            f"`vast campaign download <campaign>`.")
 
     def setup_cluster(self, **kwargs):
         """Set up MinIO S3 server for Minikube cluster.
@@ -204,8 +200,9 @@ class MinikubeClusterConfig(BaseConfig):
 
         readme_content = """# Minikube Cluster Setup Instructions
 
-Uses MinIO with ephemeral (emptyDir) storage. Data is lost when the pod restarts.
-Suitable for development and short-lived runs.
+Uses MinIO with ephemeral (emptyDir) storage: finished campaigns live in it and go
+when the pod restarts. Suitable for development and short-lived runs; archive
+anything worth keeping with `vast share`.
 
 ## Setup Steps
 

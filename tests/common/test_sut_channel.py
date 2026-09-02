@@ -208,6 +208,43 @@ def test_materialize_writes_one_rewritten_copy_per_configuration(campaign, tmp_p
         "inflation_layer"]["inflation_radius"] == 0.55
 
 
+def test_a_source_no_factor_touched_is_still_staged(campaign, tmp_path):
+    """The original is dropped from run_files for the whole campaign, so a configuration that
+    addresses nothing in a declared source must still get a copy of it -- otherwise that cell's
+    containers have no such file at all, and the stack fails on a missing path far from the
+    declaration that caused it."""
+    execution, vast_dir = campaign
+    out = str(tmp_path / "out")
+
+    contribution = materialize(execution, vast_dir, {
+        "nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius": 0.30,
+    }, out, "config1")
+
+    # bt was declared and never addressed; it is staged all the same.
+    assert {rel for rel, _ in contribution.files} == {"files/nav2_params.yaml",
+                                                      "files/nav2_bt.xml"}
+    written = dict(contribution.files)
+    assert os.path.exists(written["files/nav2_bt.xml"])
+    assert "NavigateRecovery" in open(written["files/nav2_bt.xml"], encoding="utf-8").read()
+
+
+def test_a_configuration_that_varies_nothing_still_gets_every_source(campaign, tmp_path):
+    """The degenerate case of the above, and the one that actually bites: a campaign declares its
+    sources so that SOME cell can vary them, and the cells that vary none are the controls."""
+    execution, vast_dir = campaign
+    out = str(tmp_path / "out")
+
+    contribution = materialize(execution, vast_dir, {}, out, "control")
+
+    assert {rel for rel, _ in contribution.files} == {"files/nav2_params.yaml",
+                                                      "files/nav2_bt.xml"}
+    written = dict(contribution.files)
+    params = yaml.safe_load(open(written["files/nav2_params.yaml"], encoding="utf-8"))
+    # unvaried, so byte-for-byte the campaign's own values
+    assert params["local_costmap"]["local_costmap"]["ros__parameters"][
+        "inflation_layer"]["inflation_radius"] == 0.55
+
+
 def test_absence_removes_the_node_rather_than_emptying_it(campaign, tmp_path):
     """A block that is present and empty is not one that is absent, and a stack tells them
     apart -- which is why this is a value and not an assignment of null."""

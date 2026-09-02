@@ -548,7 +548,7 @@ def _echo_placement(placement):
         click.echo(f"  moved here from {', '.join(moved)}; the bytes written there are NOT "
                    "migrated")
         click.echo("  so this deployment starts with an empty registry and rebuilds what "
-                   "it needs")
+                   "it needs; campaigns held on the old node do NOT come with it")
     click.echo("  recorded as a node label, so a later cleanup + setup returns here "
                "without any flag")
 
@@ -619,12 +619,13 @@ def _node_labels(pairs, flag):
                    '(default: /var/lib/robovast-registry).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
-                   'the registry, (where it is an emptyDir) the results store and, unless '
-                   '--buildkit-node says otherwise, the build cache. Rarely needed -- setup '
-                   'picks the node with the most free space the first time and records the '
-                   'choice as a node label, so later runs stay put without any flag. Naming '
-                   'a node moves the placement off whatever node holds it now and says so; '
-                   'the bytes are NOT migrated, so the new node starts empty.')
+                   'the registry, the results store and, unless --buildkit-node says '
+                   'otherwise, the build cache. Rarely needed -- setup picks the node with '
+                   'the most free space the first time and records the choice as a node '
+                   'label, so later runs stay put without any flag. Naming a node moves the '
+                   'placement off whatever node holds it now and says so; the bytes are NOT '
+                   'migrated, so the new node starts empty -- including the store, which is '
+                   'where finished campaigns live.')
 @click.option('--buildkit-storage-class', default='', metavar='NAME',
               help='Back the shared build daemon\'s cache with a PVC from this '
                    'StorageClass instead of a hostPath. Prefer an SSD class: BuildKit\'s '

@@ -103,11 +103,6 @@ spec:
 
 class Rke2ClusterConfig(BaseConfig):
 
-    #: The store is an ``emptyDir``: it is on the node's own filesystem, so which node the
-    #: pod lands on decides both how much room a sweep has and where the bytes are. Not a
-    #: durability claim -- an emptyDir is a transfer buffer either way.
-    store_is_node_local = True
-
     @staticmethod
     def _refuse_a_store_pod_on_the_wrong_node(namespace, pod_name, node_labels):
         """Raise when a live store Pod sits somewhere the resolved placement does not want.
@@ -136,8 +131,9 @@ class Rke2ClusterConfig(BaseConfig):
             f"cannot be moved by re-applying its manifest -- an existing pod is kept as it "
             f"is, so the new placement would be reported but never take effect. Delete it "
             f"(`kubectl delete pod {pod_name} -n {namespace}`) or run "
-            f"`vast cluster cleanup` first; the store is a transfer buffer, so nothing "
-            f"durable is lost.")
+            f"`vast cluster cleanup` first -- both DISCARD every campaign the store holds, "
+            f"so archive what matters first with `vast share <campaign>` or "
+            f"`vast campaign download <campaign>`.")
 
     def setup_cluster(self, **kwargs):
         """Set up MinIO S3 server for RKE2 cluster.
@@ -220,11 +216,13 @@ class Rke2ClusterConfig(BaseConfig):
 Uses MinIO backed by an `emptyDir`, so it needs no storage class and no
 preparation on the nodes.
 
-The store is a **transfer buffer, not an archive**: campaign results pass through
-it and are pulled off to wherever you run `vast`. Its contents do not survive the
-MinIO pod being restarted or rescheduled, so do not treat it as the place your
-results live. Because the volume is an `emptyDir` with no size limit, it draws
-from the node filesystem, and the web UI's **Store** meter reports how full it is.
+The store is where finished campaigns live: a campaign's full directory is
+published into it, and downloads, re-postprocessing and the campaign index all
+read from there. Because the volume is an `emptyDir`, that ends when the MinIO pod
+is restarted or rescheduled -- so archive anything worth keeping with `vast share`
+or pull it with `vast campaign download`. The volume declares no size limit, so it
+draws from the node filesystem, and the web UI's **Store** meter reports how full
+it is.
 
 ## Setup Steps
 
@@ -249,11 +247,11 @@ MinIO console is available at port 9001.
     def get_store_usage(self, node_summaries, namespace="default"):
         """The embedded MinIO pod's ``/data`` volume, from the kubelet's volume stats.
 
-        This config mounts ``/data`` as an ``emptyDir`` (see ``MINIO_MANIFEST_RKE2``): the
-        store is a transfer buffer that results are pulled off, not an archive. So kubelet
-        reports it as a volume of the MinIO pod, and because the ``emptyDir`` declares no
-        ``sizeLimit`` it has no bound of its own. Worth a meter regardless: a full buffer
-        stalls campaigns.
+        This config mounts ``/data`` as an ``emptyDir`` (see ``MINIO_MANIFEST_RKE2``), which
+        the kubelet therefore reports as a volume of the MinIO pod; because the ``emptyDir``
+        declares no ``sizeLimit`` it has no bound of its own. The meter matters because this
+        volume holds every campaign the deployment has finished -- a full one stalls
+        campaigns, and what it holds is not scratch.
 
         THE DENOMINATOR IS ``used + available``, NOT ``capacityBytes``. For an unbounded
         ``emptyDir`` the volume's ``capacityBytes`` is the whole node filesystem, which the
