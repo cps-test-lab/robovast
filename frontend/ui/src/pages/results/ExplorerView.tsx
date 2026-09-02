@@ -16,7 +16,7 @@ import Typography from '@mui/material/Typography'
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
-import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
 import { formatDataFetchLabel, progressPercent } from '@/lib/format'
 import {
   resolveSelection,
@@ -65,8 +65,18 @@ export function ExplorerView({
   // Whether this campaign actually has the config/run the URL names, and which round proposed it.
   // The rows are the tree's own query (same key, so this is served from its cache), and a finished
   // campaign's are fixed — so this is a derivation, not something to keep watching.
-  const campaign = campaigns.find((c) => c.campaign_id === campaignId)
-  const rows = useQuery({ ...runsQuery(campaignId), enabled: !!campaignId })
+  // Only finished+postprocessed campaigns have the notebooks and the queryable rows this view is
+  // built on. The Results container lists those the Run view can PREVIEW while they run as well —
+  // the three views share one selection, so they must share one list — and filtering here is how
+  // this one declines them. Kept defensive like the Data browser's own filter, since `campaigns`
+  // is a prop.
+  const explorable = useMemo(() => campaigns.filter(hasResults), [campaigns])
+
+  // Looked up in `explorable`, not in every campaign handed over: a campaign this view declines is
+  // one it must not query either. Selecting a running campaign in the Run view leaves it in the
+  // shared selection, and finding it here would set the Explorer fetching a preview's listings.
+  const campaign = explorable.find((c) => c.campaign_id === campaignId)
+  const rows = useQuery({ ...runsQuery(campaign), enabled: !!campaign })
   const resolved = useMemo(
     () => resolveSelection(rows.data?.rows ?? [], campaign?.mode === 'search', sel),
     [rows.data, campaign?.mode, sel],
@@ -94,8 +104,10 @@ export function ExplorerView({
   // would hide branches whose children simply have not been fetched yet.
   const needle = filter.trim().toLowerCase()
   const shown = useMemo(
-    () => (needle ? campaigns.filter((c) => c.campaign_id.toLowerCase().includes(needle)) : campaigns),
-    [campaigns, needle],
+    () => (needle
+      ? explorable.filter((c) => c.campaign_id.toLowerCase().includes(needle))
+      : explorable),
+    [explorable, needle],
   )
 
   return (
@@ -114,7 +126,7 @@ export function ExplorerView({
         <RefreshResultsButton state={refresh} />
       </Stack>
 
-      {!campaigns.length ? (
+      {!explorable.length ? (
         <Alert severity="info" variant="outlined">
           No finished campaigns yet — results appear here once a campaign finishes and is
           postprocessed.

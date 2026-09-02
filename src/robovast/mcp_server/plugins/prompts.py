@@ -79,9 +79,12 @@ address space with `list_files` / `read_file` on `/results/<campaign_id>/<path>`
   campaign — use `list_campaigns` to discover what is available.
 - Prefer `describe_campaign_data` + `query_campaign_data_sql` for any
   count/rate/aggregate question rather than reading files run-by-run.
-- SQL works **before** postprocessing: `run_view` answers per-run outcomes as soon
-  as runs are recorded. Only per-run *metrics* need postprocessing (`postprocessed`
-  in `list_campaigns` says whether it has run).
+- SQL needs the campaign to have been **ingested**, which postprocessing is what
+  does: a campaign still running has no rows at all, and the reply says so rather
+  than answering empty. Once ingested, `run_view` answers per-run outcomes even
+  where no *metrics* were derived (`postprocessed` in `list_campaigns` says
+  whether postprocessing has run). To see what a running campaign has produced so
+  far, list its directories.
 - To list a campaign's configurations, list its **directories**
   (`list_files("/results/<campaign_id>/")`). SQL sees only configurations that
   produced runs, so on a stopped or partially-run campaign it omits some.

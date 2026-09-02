@@ -7,8 +7,9 @@
 // answering "what did it find?". That boundary is why there is no per-config breakdown here.
 //
 // Nothing below depends on a postprocessing plugin a campaign happens to declare: the run rows
-// come from `run_view` (a temp view over the live `campaign.db`, so it works before any
-// postprocessing at all) and the CPU rows from `resource_usage`, which is written by an
+// come from `run_view` (the campaign record mirrored into the index, so it needs no measurements --
+// though it does need the campaign to have been ingested, which postprocessing is what does)
+// and the CPU rows from `resource_usage`, which is written by an
 // **auto**-injected plugin for every campaign. CPU is therefore the one part that can be
 // missing — a campaign that was never postprocessed has no `resource_usage` table — and it
 // degrades to absent rather than to zero.

@@ -9,14 +9,19 @@
 // would say nothing, and its tree keeps the shape it always had.
 
 import { CAMPAIGN_SEL, type ResultsSel } from './hashNav'
-import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
+import { isFailed, isPreviewable, isRunning, type CampaignSummary } from './robovastClient'
 
 // The tree's one query, shared by the Explorer and the Run view's picker (see `runsQuery`).
 //
-// `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
-// (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
-// postprocessed rows at all -- still lists its runs. It also means both surfaces build the same tree from
-// the same rows.
+// `run_view`, not the postprocessed `runs` table: it is a view over the campaign record -- the
+// dimensions mirrored from `campaign.db` -- so a campaign that produced no rosbags, and therefore has
+// no postprocessed measurements at all, still lists its runs. It also means both surfaces build the
+// same tree from the same rows.
+//
+// It is NOT readable before postprocessing: the record reaches the index only when the campaign is
+// ingested, so a campaign that is still running has no rows here at all (the service answers with
+// `index_query.missing_campaign_note`). The Run view's preview picker therefore builds the same rows
+// from the campaign's output directories instead -- see `previewRuns.ts`.
 //
 // `batch` is the ask/tell round that proposed the configuration, and `objective` its score --
 // the two things that make a search's history readable. `objective_direction` comes from the
@@ -300,13 +305,16 @@ export function campaignItem(c: CampaignSummary): ResultsTreeItem {
   // while dropping them entirely makes a half-uncomposable search look complete.
   const runs = c.num_runs > 0 ? `${c.num_passed}/${c.num_runs}` : undefined
   const count = skipped > 0 ? [runs, `${skipped} skipped`].filter(Boolean).join(' · ') : runs
+  // Named in the picker, not only over the scene: this is where the campaign is CHOSEN, so it is
+  // where "what you are about to open is a preview" is still useful. A running campaign's runs are
+  // listed from its directories and only the 3D replay works — see `previewRuns.ts`.
   return {
     id: c.campaign_id,
     label: c.campaign_id,
     kind: 'campaign',
     campaignId: c.campaign_id,
     status: campaignStatus(c),
-    count,
+    count: isPreviewable(c) ? [count, 'preview'].filter(Boolean).join(' · ') : count,
   }
 }
 
@@ -417,8 +425,15 @@ function configNodes(
       ...(batch == null ? {} : { batch }),
       objective,
       status,
-      // "0/0 passed" would be a misleading verdict on something that never ran.
-      count: status === 'skipped' ? 'skipped' : `${passed}/${runs.length}`,
+      // "0/0 passed" would be a misleading verdict on something that never ran, and so would
+      // "0/3" on runs whose verdicts are simply not readable yet: that is what a *failed* config
+      // looks like. Where no run has a verdict at all, the count says how many runs there are
+      // and claims nothing about them.
+      count: status === 'skipped'
+        ? 'skipped'
+        : runs.every((r) => r.status === 'unknown')
+          ? `${runs.length} runs`
+          : `${passed}/${runs.length}`,
       children: runs,
     }
   })
