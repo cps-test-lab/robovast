@@ -52,15 +52,26 @@ spec:
     - mountPath: /data
       name: minio-storage
     resources:
-      # A floor, not an estimate: every milli-core requested here is capacity campaign jobs
-      # cannot be admitted against. MinIO streams objects rather than buffering them, so
-      # the request covers an idle server and the limit leaves room for concurrent
-      # multi-part transfers. No CPU limit -- throttling the store slows every upload and
-      # download with no visible cause.
+      # A floor, not an estimate: every milli-core and byte requested here is capacity that
+      # campaign jobs cannot be admitted against, so the request covers an IDLE server. That
+      # is what the scheduler places on, and what keeps the store off the top of the kubelet's
+      # eviction list when a node does run short.
+      #
+      # NEITHER RESOURCE IS CAPPED, for one reason: the store's demand is set by how much
+      # campaign work is in flight, and this manifest cannot know that. A batch mirrors dozens
+      # of multi-part transfers at once, so the peak follows a concurrency declared in a
+      # campaign somewhere, and any ceiling written here is a guess against a number that
+      # moves. Capping CPU would throttle every upload and download with no visible cause;
+      # capping MEMORY is worse, because exceeding that cap is an OOM kill rather than a
+      # slowdown -- and it kills setup-lifetime infrastructure the whole deployment depends
+      # on, taking the running campaign's transfers with it and failing that campaign
+      # somewhere that says nothing about the store.
+      #
+      # This is not "no ceiling at all": a genuine leak still surfaces, as node memory
+      # pressure the kubelet reports and acts on, which is diagnosable in a way a periodic
+      # exit 137 on the store is not.
       requests:
         cpu: "50m"
-        memory: "256Mi"
-      limits:
         memory: "1Gi"
     readinessProbe:
       httpGet:
