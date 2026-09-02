@@ -98,3 +98,65 @@ def test_every_planned_container_reaches_the_launch_record(tmp_path):
     before = dict(images)
     KubernetesBackend._record_launch_images(str(tmp_path), runner)
     assert read_launch_record(tmp_path)["images"] == before
+
+
+# -- what the record names before the batch has run -------------------------------------
+
+def _runner(containers, resolved=None):
+    """A stand-in for the batch runner: a pinned plan, and nothing read off a pod yet."""
+    plan = types.SimpleNamespace(containers=tuple(containers))
+    return types.SimpleNamespace(plan=plan, _resolved_image_digests=resolved or {})
+
+
+def _container(name, image, roles=()):
+    return types.SimpleNamespace(name=name, image=image, roles=tuple(roles))
+
+
+def test_planned_images_answers_by_role_and_by_name():
+    """A role is how a reader asks; the name is what the pod calls it."""
+    from robovast.execution.cluster_execution.kubernetes_backend import _planned_images
+
+    images = _planned_images(_runner([
+        _container("roqsim", "ghcr.io/o/roqsim@sha256:aaa", roles=("simulation",)),
+        _container("robovast", "ghcr.io/o/rv@sha256:bbb", roles=("scenario",)),
+    ]))
+
+    assert images["simulation"] == "ghcr.io/o/roqsim@sha256:aaa"
+    assert images["roqsim"] == "ghcr.io/o/roqsim@sha256:aaa"
+    assert images["scenario"] == "ghcr.io/o/rv@sha256:bbb"
+
+
+def test_the_plan_names_the_bytes_before_any_pod_has_run():
+    """The regression: an early record that named its images by TAG.
+
+    ``_resolved_image_digests`` is read back off a pod, so before the batch it is empty — and
+    the record is now written before the batch. Reading only that source left the campaign
+    saying what it had ASKED for and not what it would run, which is enough to refuse building
+    any artifact from it: an artifact that cannot be attributed to the bytes that produced it
+    is not attributable at all. The plan carries those bytes already.
+    """
+    from robovast.execution.cluster_execution.kubernetes_backend import _planned_images
+
+    runner = _runner([_container("roqsim", "ghcr.io/o/roqsim@sha256:aaa", roles=("simulation",))])
+    assert runner._resolved_image_digests == {}
+    assert _planned_images(runner)["simulation"] == "ghcr.io/o/roqsim@sha256:aaa"
+
+
+def test_an_unpinnable_ref_is_left_out_rather_than_recorded_as_a_revision():
+    """Pinning is fail-soft, so a ref that could not be resolved is still a tag.
+
+    A tag in ``image_revisions`` would claim an identity it does not have — the same name can
+    be re-pushed between one batch and the next. It is left out, and the write after the batch
+    fills it in from the pod that actually ran it.
+    """
+    from robovast.common.campaign_data import image_identifies_bytes
+    from robovast.execution.cluster_execution.kubernetes_backend import _planned_images
+
+    images = _planned_images(_runner([
+        _container("roqsim", "ghcr.io/o/roqsim:latest", roles=("simulation",)),
+        _container("robovast", "ghcr.io/o/rv@sha256:bbb", roles=("scenario",)),
+    ]))
+    named = {k: v for k, v in images.items() if image_identifies_bytes(v)}
+
+    assert "simulation" not in named
+    assert named["scenario"] == "ghcr.io/o/rv@sha256:bbb"
