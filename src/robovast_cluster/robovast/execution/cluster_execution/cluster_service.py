@@ -3564,9 +3564,16 @@ class ClusterService(LocalTransport):
 
         The rosbag→CSV step runs as a Job in the campaign's own execution image and the
         host step — metrics, provenance, the index ingest — runs here (pure Python), the
-        same two stages the campaign loop chains. ``postprocess_campaign`` streams into the
-        scratch ``postprocessing.log``, which is published to the object store so the
-        Monitor and a later restart see it.
+        same two stages the campaign loop chains. Both write the scratch
+        ``postprocessing.log``, which is published to the object store so the Monitor and a
+        later restart see it.
+
+        No campaign log handler is attached around this, unlike the local lane: on this lane
+        that same file is written by the conversion Job and pulled down by ``sync_outputs``,
+        so a handler streaming into it would be overwritten mid-write by the fetch. The
+        failure path where no such file arrives authors one instead
+        (``postprocess_job._write_failure_log``), which is what keeps a failed postprocess
+        visible in the campaign log where a successful one is read.
         """
         from robovast.execution.status_recovery import record_step_outcome
 

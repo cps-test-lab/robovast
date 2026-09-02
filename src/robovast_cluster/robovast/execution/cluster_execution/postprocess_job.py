@@ -64,9 +64,14 @@ logger = logging.getLogger(__name__)
 #: the canonical paths.
 POSTPROC_PREFIX = "_postproc"
 
-#: Campaign-relative path of the manifest the conversion Job writes listing every file it
-#: produced, one path per line. Riding inside ``/out`` means the same mirror that carries
-#: the outputs carries the index of them, so the two cannot disagree.
+#: Campaign-relative path of the manifest the Job writes listing every file it produced,
+#: one path per line. Riding inside ``/out`` means the same mirror that carries the outputs
+#: carries the index of them, so the two cannot disagree.
+#:
+#: Built by walking ``/out``, so it describes whatever the Job produced rather than what
+#: any one plugin was expected to produce. The payload is whatever declared
+#: ``needs_execution_image`` -- the rosbag conversion today, and that flag exists on the
+#: plugin base class precisely so it will not always be only that.
 #:
 #: This is what lets the outputs go straight to the canonical prefix: the service reads one
 #: known key and then fetches exactly the objects it names, instead of listing a prefix
@@ -75,10 +80,10 @@ OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 
 #: Where the staging initContainer leaves its account of itself when it fails.
 #:
-#: Its own channel, not the conversion's: a failure here means the conversion container
-#: never starts, so nothing it would have written exists, and a diagnostic that rides the
-#: conversion's end-of-run mirror is a diagnostic that is only delivered when it is not
-#: needed. Staging pulls every bag onto the node, so it is also the step that meets a full
+#: Its own channel, not the step's: a failure here means the step container never starts,
+#: so nothing it would have written exists, and a diagnostic that rides the step's
+#: end-of-run mirror is a diagnostic that is only delivered when it is not needed. Staging
+#: copies the campaign's run data onto the node, so it is also the step that meets a full
 #: disk first -- the failure most in need of an explanation is the one that had none.
 STAGING_LOG = "_execution/staging.log"
 _POLL_SECONDS = 5
@@ -217,16 +222,14 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
     return n
 
 
-def _report_staging_failure(cluster_config, campaign_id: str, campaign_root) -> None:
-    """Land the staging container's own log where the campaign log can show it.
+def _staging_log_text(cluster_config, campaign_id: str) -> "str | None":
+    """The staging container's own log, or ``None`` when it filed none.
 
-    Only reached when the conversion wrote nothing, which is the case the initContainer's
-    log exists for. Copied into ``_execution/`` so it is published with the rest and reads
-    in the campaign log beside the phases -- the reader who was told there is no
-    POSTPROCESSING section gets, in the same place, the reason there is none.
+    It files one only if it survived long enough to: a pod SIGKILLed by the kubelet under
+    node disk pressure, or OOM-killed, never reaches its own report. Staging copies the
+    campaign's run data onto the node, so that is the likeliest way it dies -- which is
+    why the absence of this log is itself a finding and not simply missing information.
     """
-    import os  # noqa: PLC0415
-
     from . import in_pod_storage  # noqa: PLC0415
     try:
         bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
@@ -235,20 +238,70 @@ def _report_staging_failure(cluster_config, campaign_id: str, campaign_root) -> 
         raw = storage.read_object(bucket, f"{campaign_prefix}{STAGING_LOG}")
     except Exception as e:  # noqa: BLE001 - a diagnostic may not raise over the failure
         logger.warning("Could not read the staging log for %s: %s", campaign_id, e)
-        return
-    if raw is None:
-        logger.warning("No staging log for %s either: the Job failed before either of "
-                       "its containers could report anything", campaign_id)
-        return
-    text = raw.decode("utf-8", "replace").rstrip()
-    logger.warning("Postprocessing failed while staging the campaign's bags:\n%s", text)
+        return None
+    return None if raw is None else raw.decode("utf-8", "replace").rstrip()
+
+
+def _write_failure_log(cluster_config, campaign_id: str, campaign_root,
+                       log_path: str, message: str) -> None:
+    """Write the POSTPROCESSING phase file when the conversion produced none.
+
+    The phase file IS the section: every surface assembles the campaign log from the files
+    that exist (``campaign_logs.INFRA_PHASES``), so a conversion that wrote nothing left a
+    campaign with no POSTPROCESSING section at all -- the reader saw the phases stop after
+    RUN, with the failure reported only in a status field elsewhere. Writing the account
+    here is what makes a failed postprocess visible where a successful one is read.
+
+    Not an ``add_campaign_log_handler`` around the whole operation, the way the local lane
+    can afford: on this lane the same file is written by the conversion Job and pulled down
+    by ``sync_outputs``, so a handler streaming into it would be overwritten mid-write by
+    the fetch. Only the path where no such file arrived is free to author one.
+    """
+    import os  # noqa: PLC0415
+
+    staging = _staging_log_text(cluster_config, campaign_id)
+    # The message still carries POINTER_SLOT: the pointer is decided after this file is
+    # written, precisely BY whether it was. Inside the file the slot has nothing to say --
+    # the reader is already in the section it would point at.
+    headline = message.replace(POINTER_SLOT, "").strip()
+    lines = [
+        f"Postprocessing failed: {headline}",
+        "",
+        "The step container produced no log, so it did not run. The Job stages the "
+        "campaign's recorded run data into the pod before postprocessing it; that is "
+        "where this failed.",
+    ]
+    if staging is None:
+        lines += [
+            "",
+            "The staging step filed no log of its own. A container the kubelet kills -- "
+            "under node disk pressure, or for memory -- runs no cleanup and files nothing, "
+            "so the absence of one is expected for exactly those failures rather than "
+            "evidence they did not happen. What the pod itself recorded is in the line "
+            "above, and it does not depend on any container having survived. Staging "
+            "copies this campaign's run data onto one node, so that node's free space is "
+            "the first thing to check.",
+        ]
+    else:
+        lines += ["", "===== staging =====", staging]
+    text = "\n".join(lines) + "\n"
+    logger.warning("Postprocessing failed before its step ran; recording the account "
+                   "for %s", campaign_id)
     try:
-        dst = os.path.join(str(campaign_root), STAGING_LOG)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(dst, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(text)
     except OSError as e:
-        logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
+        logger.warning("Could not write the postprocessing log for %s: %s", campaign_id, e)
+        return
+    if staging is not None:
+        try:
+            dst = os.path.join(str(campaign_root), STAGING_LOG)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write(staging + "\n")
+        except OSError as e:
+            logger.warning("Could not write the staging log into %s: %s", campaign_root, e)
 
 
 def _manifest_paths(manifest: bytes) -> list:
@@ -384,10 +437,8 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                     logger.warning("Postprocessing conversion failed:\n%s",
                                    f.read().rstrip())
             else:
-                logger.warning("Postprocessing job for %s failed before it wrote a "
-                               "conversion log; there is no POSTPROCESSING section",
-                               campaign_id)
-                _report_staging_failure(cluster_config, campaign_id, campaign_root)
+                _write_failure_log(cluster_config, campaign_id, campaign_root,
+                                   log_path, message)
             return False, with_log_pointer(message, log_path)
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
@@ -678,8 +729,8 @@ POINTER_SLOT = "<<log>>"
 #: Appended to a failed Job's message once the conversion log has actually been synced
 #: down. Kept apart from :func:`job_failed_message` because only the caller that has run
 #: :func:`sync_outputs` knows whether the section it names exists.
-LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
-               "conversion error")
+LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for what it "
+               "reported")
 
 #: The same slot when no log arrived, and then there is no POSTPROCESSING section and
 #: never will be. Pointing at one regardless sends the reader to an empty panel and reads
@@ -692,15 +743,19 @@ LOG_POINTER = ("— see the POSTPROCESSING section of the campaign log for the "
 #: which case the conversion container never starts and there is nothing anywhere to tee.
 #: Staging is the likelier of the two on a campaign of any size: it pulls every bag onto
 #: the node, so it is the step that meets a full disk first.
-NO_LOG_POINTER = ("— before the conversion produced any output, so the campaign log has "
-                  "no POSTPROCESSING section and no conversion error to read. The "
-                  "conversion did not run: the Job failed while staging the campaign's "
-                  "bags into the pod, or while setting up around them. Node disk and the "
-                  "object store are what to check.")
+NO_LOG_POINTER = ("— before its step produced any output, so the campaign log has no "
+                  "POSTPROCESSING section and nothing it reported to read. The step did "
+                  "not run: the Job failed while staging the campaign's run data into the "
+                  "pod, or while setting up around it. Node disk and the object store are "
+                  "what to check.")
 
 
-def job_failed_message(job_name: str) -> str:
+def job_failed_message(job_name: str, pod_reason: str = "") -> str:
     """What a failed conversion Job reports to the user, before the log is accounted for.
+
+    *pod_reason*, when the pod could be read, is the one part of this that does not depend
+    on a container having survived to explain itself -- see :func:`pod_failure_reason`. It
+    leads, because it is the answer: everything after it is where to read more.
 
     Named so the string has one definition and a test can hold it to its contract: it
     carries **no cluster command**. It lands on ``postprocessing_error``, which the web UI
@@ -715,6 +770,8 @@ def job_failed_message(job_name: str) -> str:
     it cannot know whether a POSTPROCESSING section exists. The caller appends
     :data:`LOG_POINTER` or :data:`NO_LOG_POINTER` once it does.
     """
+    if pod_reason:
+        return f"postprocessing job {job_name} failed -- {pod_reason} {POINTER_SLOT}"
     return f"postprocessing job {job_name} failed {POINTER_SLOT}"
 
 
@@ -729,6 +786,61 @@ def with_log_pointer(message: str, log_path) -> str:
         return message
     pointer = LOG_POINTER if os.path.isfile(log_path) else NO_LOG_POINTER
     return message.replace(POINTER_SLOT, pointer)
+
+
+def pod_failure_reason(core, namespace: str, job_name: str) -> str:
+    """Why this Job's pod actually died, read from the pod rather than from the pod's help.
+
+    The only account that does not depend on the dying container's cooperation. A pod
+    SIGKILLed by the kubelet under node disk pressure, or OOM-killed, runs no cleanup and
+    files no report -- so a design where the container uploads its own log covers the
+    graceful failures and misses the ones that matter most. The kubelet, meanwhile, has
+    recorded ``Evicted`` with a message naming ephemeral storage all along.
+
+    Nothing here is specific to what the Job was running. The payload is whatever
+    postprocessing plugin declared ``needs_execution_image`` -- today the rosbag
+    conversion, deliberately not only that -- and a pod's cause of death is the same
+    question either way.
+
+    Infrastructure causes come from :func:`pod_termination_reason`, shared with the run
+    loop so both lanes agree on what those mean. A plain non-zero exit is added here, which
+    that function deliberately omits: for a *run* the reason is in the scenario's own log,
+    but this Job's step may have died before writing one, and then the container's name and
+    exit code are the whole of what is known.
+
+    Advisory: this runs while reporting a failure, so it must not raise one of its own.
+    """
+    from .cluster_execution import pod_termination_reason  # noqa: PLC0415
+
+    try:
+        pods = core.list_namespaced_pod(namespace=namespace,
+                                        label_selector=f"job-name={job_name}").items or []
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not read pods of %s: %s", job_name, e)
+        return ""
+
+    for pod in pods:
+        found = pod_termination_reason(pod)
+        if found:
+            reason, message = found
+            return f"{reason}: {message}" if message else reason
+
+    for pod in pods:
+        status = getattr(pod, "status", None)
+        # Init containers first and in declaration order: staging runs before the step, so
+        # when staging is what failed the step container's status says nothing.
+        statuses = list(getattr(status, "init_container_statuses", None) or []) + \
+            list(getattr(status, "container_statuses", None) or [])
+        for cs in statuses:
+            state = getattr(cs, "state", None)
+            term = getattr(state, "terminated", None) if state else None
+            code = getattr(term, "exit_code", None) if term else None
+            if isinstance(code, int) and code != 0:
+                name = getattr(cs, "name", None) or "?"
+                detail = (getattr(term, "reason", None) or "").strip()
+                exited = f"container {name} exited {code}"
+                return f"{exited} ({detail})" if detail else exited
+    return ""
 
 
 def _blocked_reason(core, namespace: str, job_name: str) -> str:
@@ -959,7 +1071,11 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
                     logger.info("Postprocessing job %s succeeded", name)
                     return True, "rosbag conversion complete"
                 if status.failed:
-                    return False, job_failed_message(name)
+                    # Read before the message is built: ttlSecondsAfterFinished reaps this
+                    # Job 300 s after it fails, and by the time anyone reads the campaign
+                    # the pod that knows why is gone.
+                    return False, job_failed_message(
+                        name, pod_reason=pod_failure_reason(core, namespace, name))
             # A pod that CANNOT start leaves the Job `active` forever, so the polling above
             # never sees a verdict and this returns "timed out" -- naming a duration where the
             # cause was an unpullable image or an unschedulable pod. The same signal the run
