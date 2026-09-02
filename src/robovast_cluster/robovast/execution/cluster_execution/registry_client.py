@@ -55,6 +55,23 @@ _ACCEPT = ", ".join([
 
 _TIMEOUT = 10
 
+#: How many further goes a request that never REACHED the registry gets, and how long to
+#: wait between them. A status code -- any status code -- is an answer and is never
+#: retried: repeating a 401 or a 404 spends time to be told the same thing.
+#:
+#: Retried at all because this read gates a campaign launch: the compatibility check
+#: refuses a campaign when it cannot read the image, and a single TLS handshake timeout is
+#: not evidence about the image. Nor is it rare at the moment it matters -- a service
+#: upgrade prewarms the family images on every node, so the minutes after one are when
+#: concurrent multi-gigabyte pulls are likeliest to starve a small control request of
+#: egress, and are exactly when someone launches the campaign this check gates.
+#:
+#: Short and finite rather than generous: the alternative to an answer is a refusal with a
+#: reason, and a caller made to wait a minute for one is worse served than a caller refused
+#: in three seconds.
+_ATTEMPTS = 3
+_RETRY_WAIT = 1.0
+
 
 def split_image_ref(image_ref: str) -> "tuple[str, str, str]":
     """``host[:port]/path/name:tag`` or ``…@sha256:…`` → ``(host, repository, reference)``.
@@ -292,6 +309,12 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
     """
     import requests
 
+    # "Did not answer" as opposed to "answered something unwanted": only the former can
+    # change on a second ask.
+    transport_errors = (requests.exceptions.Timeout,
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.ChunkedEncodingError)
+
     scheme = "http" if insecure else "https"
     url = f"{scheme}://{host}/v2/{path}"
     verify: "bool | str" = True
@@ -304,46 +327,58 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
     headers = {"Accept": accept}
     key = _token_key(host, path, creds)
 
-    try:
-        with requests.Session() as session:
-            # Dispatched by name rather than through ``session.request``: the verb is a
-            # literal at every call site, and the named methods are what a Session is
-            # substituted for in tests.
-            call = getattr(session, method.lower())
-            # A token already held for this repository is presented up front, so a walk of
-            # several requests costs one challenge instead of one per request. Reading an
-            # image's labels is three requests through an index, and pinning a campaign's
-            # refs is one per ref -- which was a dozen round trips and half a dozen separate
-            # token requests within a second or two, against a token endpoint that is
-            # entitled to rate-limit exactly that.
-            token = _cached_token(key)
-            if token:
-                resp = call(url, verify=verify, timeout=_TIMEOUT,
-                            headers={**headers, "Authorization": f"Bearer {token}"})
-                if resp.status_code != 401:
-                    return resp
-                # Presented and refused: revoked, or expiring inside our safety margin.
-                # Drop it and fall through to earn a fresh one rather than failing, so a
-                # stale cache is never worse than no cache.
-                _forget_token(key)
-                token = None
-            resp = call(url, headers=headers, verify=verify,
-                        auth=creds if creds else None, timeout=_TIMEOUT)
-            if resp.status_code == 401:
-                token, ttl = _bearer_token(session,
-                                           resp.headers.get("WWW-Authenticate", ""), creds)
-                if token is None:
-                    logger.warning(
-                        "registry check: %s needs authentication that could not be "
-                        "satisfied", host)
-                    return None
-                _store_token(key, token, ttl)
-                resp = call(url, verify=verify, timeout=_TIMEOUT,
-                            headers={**headers, "Authorization": f"Bearer {token}"})
-            return resp
-    except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
-        logger.warning("registry check: could not reach %s (%s)", host, e)
-        return None
+    for attempt in range(_ATTEMPTS):
+        try:
+            with requests.Session() as session:
+                # Dispatched by name rather than through ``session.request``: the verb is a
+                # literal at every call site, and the named methods are what a Session is
+                # substituted for in tests.
+                call = getattr(session, method.lower())
+                # A token already held for this repository is presented up front, so a walk of
+                # several requests costs one challenge instead of one per request. Reading an
+                # image's labels is three requests through an index, and pinning a campaign's
+                # refs is one per ref -- which was a dozen round trips and half a dozen separate
+                # token requests within a second or two, against a token endpoint that is
+                # entitled to rate-limit exactly that.
+                token = _cached_token(key)
+                if token:
+                    resp = call(url, verify=verify, timeout=_TIMEOUT,
+                                headers={**headers, "Authorization": f"Bearer {token}"})
+                    if resp.status_code != 401:
+                        return resp
+                    # Presented and refused: revoked, or expiring inside our safety margin.
+                    # Drop it and fall through to earn a fresh one rather than failing, so a
+                    # stale cache is never worse than no cache.
+                    _forget_token(key)
+                    token = None
+                resp = call(url, headers=headers, verify=verify,
+                            auth=creds if creds else None, timeout=_TIMEOUT)
+                if resp.status_code == 401:
+                    token, ttl = _bearer_token(session,
+                                               resp.headers.get("WWW-Authenticate", ""), creds)
+                    if token is None:
+                        logger.warning(
+                            "registry check: %s needs authentication that could not be "
+                            "satisfied", host)
+                        return None
+                    _store_token(key, token, ttl)
+                    resp = call(url, verify=verify, timeout=_TIMEOUT,
+                                headers={**headers, "Authorization": f"Bearer {token}"})
+                return resp
+        except transport_errors as e:
+            if attempt + 1 == _ATTEMPTS:
+                logger.warning("registry check: %s did not answer after %d attempts "
+                               "(%s)", host, _ATTEMPTS, e)
+                return None
+            logger.info("registry check: %s did not answer (%s); retrying (%d of %d)",
+                        host, e, attempt + 2, _ATTEMPTS)
+            time.sleep(_RETRY_WAIT)
+        except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
+            logger.warning("registry check: could not reach %s (%s)", host, e)
+            return None
+    # Every attempt ended in a transport failure and the last one returned above; this
+    # is unreachable in practice and stated so the function has one exit shape.
+    return None
 
 
 def _head_manifest(image_ref: str, *, dockerconfigjson: str = "",
