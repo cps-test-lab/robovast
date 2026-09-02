@@ -161,6 +161,51 @@ def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes
     return _read
 
 
+#: Phase files a service does not append to itself. Their live copy is the DURABLE one.
+#:
+#: :func:`layered_by_writer` prefers a local copy because a phase a process is appending to
+#: runs ahead of the store. That holds for the phases a campaign's own driver writes as it
+#: goes -- and fails for the ones that run afterwards, as background operations against a
+#: FETCHED campaign root: postprocessing (in a Job) and the share export both write their
+#: phase file there and publish it, so neither ever touches the tracked scratch directory a
+#: local read looks in.
+#:
+#: What is in that directory for those phases is therefore an earlier attempt's, if
+#: anything. Present, frozen and wrong is the one combination an absence-only fallback
+#: cannot see past, and it inverts the answer: a postprocess that succeeded reads as the
+#: failure that preceded it.
+#:
+#: The membership test is which process writes the phase, so adding a phase here is a
+#: statement about where it runs -- not a preference for the newer copy.
+REMOTELY_WRITTEN_PHASE_FILES = frozenset({"postprocessing.log", "share.log"})
+
+
+def layered_by_writer(
+    local: Callable[[str], Optional[bytes]],
+    remote: Callable[[str], Optional[bytes]],
+    remote_written: "frozenset[str]" = REMOTELY_WRITTEN_PHASE_FILES,
+) -> Callable[[str], Optional[bytes]]:
+    """A ``get_bytes`` asking, per phase file, whoever writes it first.
+
+    Both orders are :func:`layered_get_bytes`, so either source still covers for the
+    other's absence -- what changes is which one is believed when both have the file. That
+    is decided by who WRITES the phase, not by which copy is longer or newer: a length
+    comparison would flip mid-stream as a file grows, and the streaming protocol needs the
+    assembled stream to grow monotonically.
+
+    The choice is constant for a given phase, so each phase is served from one source for
+    the whole of a campaign's life and cannot shrink between polls.
+    """
+    local_first = layered_get_bytes(local, remote)
+    remote_first = layered_get_bytes(remote, local)
+
+    def _read(filename: str) -> Optional[bytes]:
+        source = remote_first if filename in remote_written else local_first
+        return source(filename)
+
+    return _read
+
+
 def layered_get_bytes(
     *sources: Callable[[str], Optional[bytes]]
 ) -> Callable[[str], Optional[bytes]]:
