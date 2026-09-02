@@ -101,3 +101,17 @@ def test_the_log_this_attempt_writes_is_not_staged_back_into_it():
         # Its neighbours in the same directory are still needed.
         assert include("_execution/execution.yaml")
         assert include("_execution/interventions.json")
+
+
+def test_the_finished_log_sections_are_not_staged_either():
+    """Archived sections of the campaign log are immutable history read only by whoever
+    streams it. Nothing in the pod produces or consumes one, so staging them would transfer
+    bytes it cannot use and hand the tail upload a second copy to publish.
+    """
+    from robovast.execution.cluster_execution.postprocess_stage import not_staged_sections
+
+    include = build_include(skip_bags=False)
+
+    assert not include(f"{not_staged_sections()}0001-postprocessing.log")
+    assert not include(f"{not_staged_sections()}0002-share.log")
+    assert include("_execution/execution.yaml")

@@ -111,6 +111,21 @@ def cluster_config_from_env():
 #: itself.
 NOT_STAGED_LOG = "_execution/postprocessing.log"
 
+def not_staged_sections() -> str:
+    """The prefix holding finished sections of earlier runs of a repeatable phase.
+
+    Not staged into this pod either. They are the immutable history of the campaign log,
+    read only by whoever streams it, and nothing here produces or consumes one -- so
+    staging them would transfer bytes the pod cannot use and hand the tail upload a second
+    copy to publish.
+
+    A function rather than a constant because it needs ``robovast.common``, and this
+    module's ``robovast`` imports are deliberately below module scope: an unimportable
+    package must exit with a diagnosis rather than a traceback from the interpreter.
+    """
+    from robovast.common.campaign_logs import SECTIONS_DIR  # noqa: PLC0415
+    return f"_execution/{SECTIONS_DIR}/"
+
 
 def build_include(skip_bags: bool):
     """Return the ``download_prefix`` predicate deciding what a pod is given.
@@ -127,14 +142,17 @@ def build_include(skip_bags: bool):
     Only the probe directory, never the reserved directories as a set: the others hold data
     the pod needs, and ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log bag, so
     excluding them wholesale would drop every ``/rosout`` record in the campaign.
+
+    The two log exclusions are :data:`NOT_STAGED_LOG` and :func:`not_staged_sections`.
     """
     from robovast.common.campaign_data import PROBE_DIR  # noqa: PLC0415
+    sections_prefix = not_staged_sections()
 
     def include(rel: str) -> bool:
         parts = rel.split("/")
         if parts[0] == PROBE_DIR:
             return False
-        if rel == NOT_STAGED_LOG:
+        if rel == NOT_STAGED_LOG or rel.startswith(sections_prefix):
             return False
         if skip_bags and any(p in BAG_DIR_NAMES for p in parts[:-1]):
             return False
