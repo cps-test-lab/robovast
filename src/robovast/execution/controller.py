@@ -1148,6 +1148,8 @@ class CampaignController:
         # search feels that harder than the campaign-level path it is copied from: one
         # stopped job stays in the campaign root for the rest of the search, so without
         # this every *later* batch's conversion fails on it too and nothing scores again.
+        from robovast.common.results_utils import campaign_vast
+        from robovast.results_processing.postprocessing import postprocess_convert_resources
         from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
         try:
             run_job, sync, image_for, complete_message = _conversion_job_runner()
@@ -1165,7 +1167,13 @@ class CampaignController:
                 # would ingest a partial campaign as if it were finished (and mark it
                 # postprocessed) once per batch, and the batch needs nothing from it but
                 # the CSVs. The campaign-level chain runs the host stage after the search.
-                host_stage=False)
+                host_stage=False,
+                # The same sizing the campaign-level conversion uses. A search converts
+                # once per batch, so a conversion left at the default here would be the
+                # one place a campaign's declared figure did not apply -- and it is the
+                # path that runs it most often.
+                convert_resources=postprocess_convert_resources(
+                    str(campaign_vast(self.campaign_root))))
             sync(cluster_config, self.campaign_id, self.campaign_root)
             # Only now can the message say where the conversion error is: the sync is what
             # decides whether a POSTPROCESSING section exists to point at.
