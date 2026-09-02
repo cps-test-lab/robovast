@@ -293,3 +293,20 @@ USER ubuntu:ubuntu
 # before building, precisely so the ARG is not a moving branch.
 ARG ROQSIM_REF
 LABEL org.robovast.roqsim-ref="${ROQSIM_REF}"
+
+# What this image ended up containing, rewritten for the overlay. The base already wrote these
+# files, and FROM inherits them -- but they describe the base, so leaving them is worse than
+# having none: this image adds apt packages and a colcon build on top, and a reader pinning a
+# rebuild from the base's list would install a different image and believe it matched. They are
+# also buried under every layer added since, where a reader looking at the end of the image (the
+# only place a CURRENT manifest can be) does not see them at all.
+#
+# Last, and in its own layer, for the reasons the base states: it observes the finished image,
+# and it never invalidates the install layers above it. Same files and formats, so one parser
+# reads every image robovast builds. No vcs.txt -- the roqsim ref is the label above.
+USER root
+RUN dpkg-query -W -f='${Package}=${Version}\n' 2>/dev/null | sort \
+    > /etc/robovast/build-manifest/apt.txt
+RUN (pip list --format=freeze 2>/dev/null || true) | sort \
+    > /etc/robovast/build-manifest/pip.txt
+USER ubuntu:ubuntu

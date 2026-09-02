@@ -211,3 +211,60 @@ def test_a_missing_lock_for_an_image_we_built_is_reported(tmp_path, monkeypatch,
 
     assert "No build lock recorded for sut" in caplog.text
     assert "vendor" not in caplog.text
+
+
+def test_a_role_the_campaign_does_not_name_is_still_asked(tmp_path, monkeypatch):
+    """``images`` holds only the containers whose image the ``.vast`` names, so a container
+    robovast supplies is absent from it. Iterating that map alone never put the question for
+    such a role -- and the report, which measures against the images we BUILT, then listed it
+    as missing a lock. Two different sets, so a question never asked read as a failed read.
+    """
+    from robovast.execution.controller import CampaignController
+
+    asked = []
+
+    def _lock(image):
+        asked.append(image)
+        return {"apt": {"tree": "2.2.1-1"}}
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest",
+                        lambda _image: {})
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(read_build_lock=_lock)
+
+    controller._persist_build_manifests({
+        # `scenario` is in neither `images` nor a declaration -- robovast supplies it.
+        "images": {"sut": "reg.example.com/robovast:latest"},
+        "image_revisions": {"sut": "reg.example.com/sut@sha256:" + "a" * 64,
+                            "scenario": "reg.example.com/robovast@sha256:" + "b" * 64},
+        "image_build_refs": {"sut": {"revision": "abc"}, "scenario": {"revision": "abc"}},
+    })
+
+    assert sorted(asked) == ["reg.example.com/robovast@sha256:" + "b" * 64,
+                             "reg.example.com/sut@sha256:" + "a" * 64]
+    assert set(read_build_manifests(tmp_path)) == {"scenario", "sut"}
+
+
+def test_nothing_is_reported_missing_once_every_role_answers(tmp_path, monkeypatch, caplog):
+    """The report and the read now share one set, so a lock that was found cannot also be
+    announced as absent."""
+    from robovast.execution.controller import CampaignController
+
+    monkeypatch.setattr("robovast.service.image_build.read_image_build_manifest",
+                        lambda _image: {"apt": {"tree": "1.0"}})
+
+    controller = CampaignController.__new__(CampaignController)
+    controller.campaign_root = str(tmp_path)
+    controller.backend = types.SimpleNamespace(read_build_lock=lambda _i: {})
+
+    with caplog.at_level("WARNING"):
+        controller._persist_build_manifests({
+            "images": {"sut": "reg.example.com/sut:t"},
+            "image_build_refs": {"sut": {"revision": "abc"},
+                                 "scenario": {"revision": "abc"}},
+            "image_revisions": {"scenario": "reg.example.com/robovast@sha256:" + "b" * 64},
+        })
+
+    assert "No build lock recorded" not in caplog.text
