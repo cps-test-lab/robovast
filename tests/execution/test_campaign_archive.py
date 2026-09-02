@@ -10,6 +10,7 @@ injection via a custom ``add_members``, and error propagation from the writer.
 import io
 import os
 import tarfile
+from unittest import mock
 
 import pytest
 
@@ -131,3 +132,71 @@ def test_writer_error_propagates_on_close():
 
     with pytest.raises(ValueError, match="kaboom"):
         list(campaign_archive.iter_tar(boom))
+
+
+def test_a_file_truncated_under_the_copy_is_padded_rather_than_raising(tmp_path):
+    """``tarfile`` copies exactly the header's byte count, and a live file may not have it.
+
+    A short read makes it raise ``unexpected end of data``, aborting an archive whose
+    response is already 200 -- so the caller gets a truncated body rather than an error.
+    Every file in a running campaign is a candidate for that, so the tail is padded: one
+    member of the snapshot has a garbled end, the rest arrive intact.
+    """
+    source = tmp_path / "run.log"
+    source.write_bytes(b"abc")
+    with open(source, "rb") as raw:
+        reader = campaign_archive._LiveFile(raw, 10)
+        assert reader.read(10) == b"abc" + b"\0" * 7
+        assert reader.read(10) == b""
+
+
+def test_a_file_that_vanishes_mid_walk_costs_one_member_not_the_archive(tmp_path):
+    """A campaign directory is written to while it is read, and files go away.
+
+    Skipped *before* the header is written, which is the last point at which skipping is
+    free: a member whose header is already in the stream cannot be taken back out of it.
+    """
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    (campaign / "_config").mkdir(parents=True)
+    (campaign / "_config" / "campaign.vast").write_text("configuration:\n", encoding="utf-8")
+    doomed = campaign / "aaa-goes-away.log"
+    doomed.write_bytes(b"x" * 32)
+
+    real_open = open
+
+    def vanishing_open(path, *args, **kwargs):
+        if str(path).endswith("aaa-goes-away.log"):
+            os.unlink(doomed)
+        return real_open(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", vanishing_open):
+        payload = b"".join(campaign_archive.iter_campaign_tar(str(campaign), snapshot={}))
+
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+        names = set(tar.getnames())
+    assert "camp-2026-01-01-000000/_config/campaign.vast" in names
+    assert "camp-2026-01-01-000000/aaa-goes-away.log" not in names
+
+
+def test_a_snapshot_says_so_inside_the_archive(tmp_path):
+    """The marker travels with the campaign, carrying what was true at capture.
+
+    Named facts rather than a bare flag because the file is read by a person deciding
+    whether to trust the archive at least as often as by the importer.
+    """
+    import json
+
+    from robovast.execution import campaign_archive
+
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    (campaign / "_config").mkdir(parents=True)
+    payload = b"".join(campaign_archive.iter_campaign_tar(
+        str(campaign), snapshot={"runs_completed": 3, "runs_total": 20}))
+
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+        member = tar.extractfile(
+            f"camp-2026-01-01-000000/{campaign_archive.SNAPSHOT_MEMBER}")
+        facts = json.loads(member.read())
+    assert facts["complete"] is False
+    assert (facts["runs_completed"], facts["runs_total"]) == (3, 20)
+    assert facts["campaign_id"] == "camp-2026-01-01-000000"

@@ -1196,6 +1196,21 @@ class ClusterService(LocalTransport):
                 return indexed
         return super()._finished_at_for(cid)
 
+    def campaign_is_live(self, campaign_id: str) -> bool:
+        """This pod's registry first, then the object store's finish marker.
+
+        A stateless service outlives the drivers it started and shares the store with its
+        siblings, so "not in my registry" cannot mean "over" here: after a restart that is
+        every campaign, and the download of one still running would then be offered under a
+        name promising a complete campaign. A campaign the index knows and has no finish
+        marker for is treated as live -- the direction that errs towards warning about an
+        archive that turns out to be whole, rather than the reverse.
+        """
+        if super().campaign_is_live(campaign_id):
+            return True
+        indexed, finished = self._campaign_index()
+        return campaign_id in indexed and campaign_id not in finished
+
     def _on_campaign_finished(self, campaign_id: str, state) -> None:
         """Publish the campaign's finish marker, so a listing can order by it.
 
@@ -3978,9 +3993,18 @@ class ClusterService(LocalTransport):
             raise KeyError(f"no campaign {campaign_id!r} on this service")
 
         cfg = self._cluster_config()
-        return campaign_archive.iter_tar(
-            lambda tar: cfg.add_campaign_members(
-                tar, campaign_id, exclude_prefixes={"_postproc"}))
+        # No tolerant reader here, unlike the local lane: an object is written once and
+        # whole, so a campaign in flight is a set of complete files that happens to be
+        # short a few -- which is exactly what the marker announces.
+        live = self.campaign_is_live(campaign_id)
+        facts = self._snapshot_facts(campaign_id) if live else {}
+
+        def _add(tar):
+            cfg.add_campaign_members(tar, campaign_id, exclude_prefixes={"_postproc"})
+            if live:
+                campaign_archive.add_snapshot_marker(tar, campaign_id, **facts)
+
+        return campaign_archive.iter_tar(_add)
 
     def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None, include=None):
         """Pull a campaign from the object store to a local dir; return it.

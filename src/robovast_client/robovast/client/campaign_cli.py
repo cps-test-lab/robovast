@@ -656,6 +656,10 @@ def download_cmd(campaigns, output, force, namespace, context):
     share's raw, pre-postprocess snapshot is a different system with different
     credentials: ``vast share download``.
 
+    A campaign that is **still running** downloads too, and lands as
+    ``<campaign-id>.incomplete.tar.gz`` -- runs that had not finished are simply not in it.
+    The service names that file, so the name cannot disagree with what is inside.
+
     Writes into the current directory unless ``-o`` says otherwise -- an archive is a
     file, not a results tree, so a results directory is the wrong home for it.
 
@@ -688,10 +692,13 @@ def download_cmd(campaigns, output, force, namespace, context):
                     continue
                 start = time.monotonic()
                 try:
-                    download_campaign_archive(
+                    # The service may name it something else -- an incomplete campaign is
+                    # marked in the name -- so what landed is what gets reported, not what
+                    # was asked for.
+                    dest = Path(download_campaign_archive(
                         client, campaign_id, str(dest),
                         progress_callback=make_transfer_progress_callback(
-                            campaign_id, start))
+                            campaign_id, start)))
                 # Ahead of the broad handler below, which would otherwise swallow click's
                 # own control flow and report a usage error as an unexpected failure.
                 except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise

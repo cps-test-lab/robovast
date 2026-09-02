@@ -400,6 +400,26 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     return stats
 
 
+def _served_filename(disposition) -> str:
+    """The bare file name out of a ``Content-Disposition`` header, or ``""``.
+
+    Only a name is accepted: a header is remote input and this value becomes a path on the
+    caller's disk, so anything carrying a separator or climbing out of the directory is
+    dropped and the caller's own name stands.
+    """
+    if not disposition:
+        return ""
+    for part in disposition.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.strip().lower() != "filename":
+            continue
+        name = value.strip().strip('"')
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            return ""
+        return name
+    return ""
+
+
 def download_campaign_archive(client, campaign_id: str, dest_path: str,
                               progress_callback=None) -> str:
     """Stream the campaign's ``tar.gz`` through *client* into *dest_path*; return it.
@@ -413,6 +433,11 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     transfer cannot leave a truncated archive sitting under the real name looking
     complete. There is no resume: this is a service on your own network, and a
     half-finished HTTP GET is cheaper to repeat than to reason about.
+
+    The **service** names the file, not *dest_path*: a campaign that was still running when
+    it was archived comes back as ``<id>.incomplete.tar.gz``, and only the service knows
+    that. *dest_path* supplies the directory and the fallback name; the returned path is
+    where the archive actually landed, which is the one a caller must report.
     """
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
@@ -427,6 +452,9 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
             # the URL and throws the body away, which is where this service writes the
             # actionable sentence ("no campaign 'x' on this service").
             client.raise_for_status(resp)
+            served = _served_filename(resp.headers.get("Content-Disposition"))
+            if served:
+                dest_path = os.path.join(os.path.dirname(os.path.abspath(dest_path)), served)
             # Absent for a campaign archive: the service tars it on the fly, so there is
             # nothing to divide by and the progress callback reports a running count.
             total = int(resp.headers.get("Content-Length") or 0)
