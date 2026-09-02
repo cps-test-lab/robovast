@@ -1287,6 +1287,23 @@ first), or when a search fails either condition above. Each says which it is in 
 log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
 stays recoverable with ``vast campaign import``.
 
+**A running postprocess is re-attached to separately** (``postprocess_reattach``, called
+from startup right after the resume). Postprocessing is a Job that outlives the service
+process too, but only the *waiting* process writes the campaign's postprocessing verdict --
+so a restart mid-postprocess leaves a Job that converts every bag, finishes, and a campaign
+still carrying the previous attempt's message: fully derived data marked as none. The resume
+above cannot cover it, because a postprocess retriggered on a finished campaign runs against
+a terminal ``outcome.json``, which ``owed_work`` excludes precisely so that a campaign that
+recorded an ending is never restarted. What is owed here is a verdict, not work.
+
+The live Jobs are found with one labelled listing (``jobgroup=postprocessing``) and the
+label's campaign resolved against the store's index, then confirmed against the
+campaign-level Job name -- a *discriminated* Job is a search's per-batch conversion and is
+owed to its batch's driver, not to any campaign record. The waiter creates and replaces
+nothing (the Job already mounts the scripts it was created with), publishes the live log
+while it waits, and records nothing at all when the Job cannot be read: a campaign whose
+conversion succeeded must never be marked failed because the API server was unreadable.
+
 
 How free capacity is measured, and why it is not the whole cluster
 ------------------------------------------------------------------
