@@ -602,6 +602,23 @@
       "ignore"
     ]
   ],
+  "PostprocessResourcesConfig": [
+    [
+      "cpu",
+      false,
+      "Union[int, float, str, list[dict[str, Union[int, float, str]]], NoneType]"
+    ],
+    [
+      "memory",
+      false,
+      "Union[str, list[dict[str, str]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "RepetitionsConfig": [
     [
       "max",
@@ -691,6 +708,11 @@
       "publication",
       false,
       "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "resources",
+      false,
+      "Union[PostprocessResourcesConfig, NoneType]"
     ],
     [
       "<extra>",

@@ -1558,9 +1558,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """Stream a ``tar.gz`` of the campaign, on either lane.
 
         Backs ``vast campaign download`` and the web UI's download button. What comes
-        out is the campaign as this service holds it -- postprocessed, if it has been.
-        Internal ``_postproc/`` staging is excluded so the archive is the clean
-        campaign layout.
+        out is the campaign as this service holds it -- postprocessed if it has been,
+        raw if it has not, and a campaign whose postprocessing failed downloads like any
+        other: derived data is an addition to a campaign, never the condition for reading
+        one, so nothing on this path waits on it. Internal ``_postproc/`` staging is
+        excluded so the archive is the clean campaign layout.
 
         Nothing is buffered and no scratch is used, on either lane: the cluster fetches
         objects from the store and tars them on the fly, the local lane tars its own
