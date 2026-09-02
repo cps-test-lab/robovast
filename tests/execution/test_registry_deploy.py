@@ -121,14 +121,18 @@ def test_the_registry_reports_readiness_on_the_registry_api():
 
 
 def test_the_setup_help_quotes_the_real_default_storage_path():
-    """The help text spells the default out, and click evaluates it at import time so it
-    cannot interpolate the constant. Pin the two together rather than let the documented
-    default drift from the one the code uses."""
-    from pathlib import Path
+    """The documented default is the constant itself, not a literal kept in step with it.
 
-    cli = (Path(__file__).resolve().parents[2] / "src" / "robovast_cluster"
-           / "robovast" / "execution" / "cluster_execution" / "cli.py").read_text()
-    assert f"(default: {rd.DEFAULT_REGISTRY_HOST_PATH})" in cli
+    Asserted against the rendered help rather than the source, so it stays true of what an
+    operator is actually told when they ask.
+    """
+    import click
+
+    from robovast.execution.cluster_execution.cli import setup
+
+    help_text = {opt.opts[0]: (opt.help or "")
+                 for opt in setup.params if isinstance(opt, click.Option)}
+    assert rd.DEFAULT_REGISTRY_HOST_PATH in help_text["--registry-path"]
 
 
 def test_the_ingress_path_and_the_prefix_describe_the_same_registry():

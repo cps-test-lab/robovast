@@ -239,8 +239,10 @@ which is node-local by default: a stock cluster ships no StorageClass, so ``host
 what the registry, the workspaces and the build cache fall back to, and on ``rke2`` /
 ``minikube`` the results store is an ``emptyDir``.
 
-**There is nothing to configure.** Setup decides once, and records the decision as a node
-label:
+**Where it goes** is one flag, ``--data-root``; **which node** it goes on needs no flag at
+all. The two are separate questions and are answered separately below.
+
+Setup decides the node once, and records the decision as a node label:
 
 .. code-block:: bash
 
@@ -304,15 +306,87 @@ Two rules keep it sticky:
   **not** migrated -- the new node starts with an empty registry and rebuilds what it
   needs.
 
-Nothing is pinned where nothing is on a node: pass ``--registry-storage-class`` /
-``--workspaces-storage-class`` (or use a provider whose store is a bucket) and the pods
-schedule freely, because a ``nodeSelector`` on a provisioned volume is noise at best and
+Nothing is pinned where nothing is on a node: pass ``--registry-class`` /
+``--workspaces-class`` (or use a provider whose store is a bucket) and the pods schedule
+freely, because a ``nodeSelector`` on a provisioned volume is noise at best and
 unschedulable at worst.
 
 ``--control-node-label`` still applies and is **ANDed** with the
 placement label rather than replaced by it: it narrows which nodes may be chosen, while the
 label decides which one of them holds the data. A pool selector alone still lets the pod
 float within the pool, which is this same problem at a smaller scale.
+
+Which directories it uses
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The node label above decides *which machine*. This decides *where on it* — normally with one
+flag, because the ordinary case is a machine with a disk mounted for RoboVAST:
+
+.. code-block:: bash
+
+   vast cluster setup rke2 --data-root /media/data
+
+That places every node-local directory this deployment keeps:
+
+.. code-block:: text
+
+   /media/data/workspaces      the service's workspaces
+   /media/data/results         the campaign results root, placed beside them
+   /media/data/registry        the built experiment images
+   /media/data/buildkit        the build cache
+
+Each tenant can also be named on its own, and overrides the root for itself:
+
+============================  ==============================  =================================
+Flag                          Environment                     Default
+============================  ==============================  =================================
+``--data-root``               ``ROBOVAST_DATA_ROOT``          *(unset)*
+``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
+``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
+``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
+``--registry-class``          ``ROBOVAST_REGISTRY_CLASS``     *(unset — a hostPath)*
+``--buildkit-path``           ``ROBOVAST_BUILDKIT_PATH``      ``/data/robovast-buildkit``
+``--buildkit-class``          ``ROBOVAST_BUILDKIT_CLASS``     *(unset — a hostPath)*
+``--buildkit-size``           ``ROBOVAST_BUILDKIT_SIZE``      ``200Gi`` (needs a class)
+============================  ==============================  =================================
+
+Every one reads an environment variable, so a ``.env`` — or ``~/.config/robovast/env``, for
+what is true of the machine rather than of a project — sets them once instead of on every
+``setup``.
+
+**The campaign results take no flag.** They are placed beside the workspaces and share their
+backing: ``/media/data/workspaces`` puts them at ``/media/data/results``, and
+``--workspaces-class`` makes both a claim. The service pod mirrors a campaign between the two,
+so a flag able to separate them could only ever be ignored or refused.
+
+In order, the first that answers wins: what you stated (flag or environment), then
+``--data-root``, then **what the cluster is already doing**, then the default. That third step
+is why a re-run with no flags leaves a moved deployment where it is — and why ``--data-root``
+outranks it: recovery answers for a caller that said nothing, while a root is a caller saying
+where this deployment's data goes. Ranked the other way, a root would move the registry and
+the build cache and leave the workspaces behind.
+
+Two settings that cannot both apply are refused rather than ordered, before anything is
+applied:
+
+.. code-block:: text
+
+   --registry-path and --registry-class both place the registry, and they cannot both
+   apply: a class provisions a volume, a path names a directory on the node. Pass one.
+
+A class and a path for one tenant is the case worth catching: the class wins, so the path is
+accepted, reported, and ignored. ``--buildkit-size`` without ``--buildkit-class`` is the same
+failure a step smaller — it sizes a claim nothing will create.
+
+.. note::
+
+   ``--data-root`` places this deployment's **own** state, not the scratch a run produces on
+   its way to the store. A campaign job's working directory is an ``emptyDir``, so it lives
+   under the kubelet's root directory on whichever node the job ran — which is right: an
+   ``emptyDir`` is per-pod, isolated and reclaimed automatically, and a shared host directory
+   would put concurrent runs on one node in each other's way. On a node whose root filesystem
+   is small, moving *those* means moving the kubelet's root directory, which is the node's
+   configuration rather than RoboVAST's.
 
 Moving it, and forgetting it
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -970,8 +1044,8 @@ The build daemon
 
 .. code-block:: bash
 
-   vast cluster setup rke2 --buildkit-storage-path /data/robovast-buildkit
-   vast cluster setup gcp  --buildkit-storage-class premium-rwo --buildkit-storage-size 200Gi
+   vast cluster setup rke2 --buildkit-path /data/robovast-buildkit
+   vast cluster setup gcp  --buildkit-class premium-rwo --buildkit-size 200Gi
 
 A **hostPath** by default, because a stock RKE2 cluster ships no StorageClass and a PVC there
 stays ``Pending`` forever. That makes the cache node-local, so ``--buildkit-node`` pins the

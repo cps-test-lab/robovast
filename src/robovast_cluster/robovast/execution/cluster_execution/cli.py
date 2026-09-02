@@ -28,6 +28,7 @@ import time
 import click
 
 from robovast.client.errors import handle_cli_exception
+from robovast.execution.cluster_execution import data_paths
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
@@ -609,14 +610,35 @@ def _node_labels(pairs, flag):
 @click.option('--rotate-token', is_flag=True,
               help='Issue a new access token, logging everyone out. Without this an '
                    'already-deployed token is preserved across re-runs.')
-@click.option('--registry-storage-class', default='', metavar='NAME',
+@click.option('--data-root', default='', metavar='PATH', envvar='ROBOVAST_DATA_ROOT',
+              help='Put every node-local directory this deployment keeps under one path: '
+                   'the workspaces, the campaign results beside them, the registry and the '
+                   'build cache. The flag for the ordinary case -- a machine with a disk '
+                   'mounted for RoboVAST -- and any per-tenant flag below overrides it for '
+                   'its own tenant. Reads ROBOVAST_DATA_ROOT, so a .env can set it once per '
+                   'machine. It does NOT place a campaign job\'s scratch: that is an '
+                   'emptyDir under the kubelet root, which is the node\'s configuration '
+                   'rather than this deployment\'s.')
+@click.option('--workspaces-path', default='', metavar='PATH',
+              envvar='ROBOVAST_WORKSPACES_PATH',
+              help='Host directory holding the service\'s workspaces '
+                   f'(default: {data_paths.DEFAULT_WORKSPACES_HOST_PATH}). The campaign '
+                   'results root is placed beside it and needs no flag of its own.')
+@click.option('--workspaces-class', default='', metavar='NAME',
+              envvar='ROBOVAST_WORKSPACES_CLASS',
+              help='Back the workspaces and the campaign results with PVCs from this '
+                   'StorageClass instead of hostPaths, which also unpins the service pod. '
+                   'Stock RKE2 provisions nothing, which is why hostPath is the default.')
+@click.option('--registry-class', 'registry_storage_class', default='', metavar='NAME',
+              envvar='ROBOVAST_REGISTRY_CLASS',
               help='Back the built-in container registry with a PVC from this '
                    'StorageClass instead of a hostPath. Preferred where the cluster can '
                    'provision volumes; stock RKE2 cannot, which is why hostPath is the '
                    'default.')
-@click.option('--registry-storage-path', default='', metavar='PATH',
+@click.option('--registry-path', 'registry_storage_path', default='', metavar='PATH',
+              envvar='ROBOVAST_REGISTRY_PATH',
               help='Host directory backing the registry when using hostPath '
-                   '(default: /var/lib/robovast-registry).')
+                   f'(default: {data_paths.DEFAULT_REGISTRY_HOST_PATH}).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
                    'the registry, the results store and, unless --buildkit-node says '
@@ -626,18 +648,22 @@ def _node_labels(pairs, flag):
                    'placement off whatever node holds it now and says so; the bytes are NOT '
                    'migrated, so the new node starts empty -- including the store, which is '
                    'where finished campaigns live.')
-@click.option('--buildkit-storage-class', default='', metavar='NAME',
+@click.option('--buildkit-class', 'buildkit_storage_class', default='', metavar='NAME',
+              envvar='ROBOVAST_BUILDKIT_CLASS',
               help='Back the shared build daemon\'s cache with a PVC from this '
                    'StorageClass instead of a hostPath. Prefer an SSD class: BuildKit\'s '
                    'snapshotter is small-file heavy and a slow disk becomes the bottleneck '
                    'the cache was meant to remove.')
-@click.option('--buildkit-storage-path', default='', metavar='PATH',
+@click.option('--buildkit-path', 'buildkit_storage_path', default='', metavar='PATH',
+              envvar='ROBOVAST_BUILDKIT_PATH',
               help='Host directory backing the build cache when using hostPath '
                    '(default: /data/robovast-buildkit). This is what makes a base image '
                    'pulled once stay pulled.')
-@click.option('--buildkit-storage-size', default='', metavar='SIZE',
-              help='Size of the build cache PVC (default: 200Gi). Ignored with hostPath, '
-                   'where the node\'s disk and the daemon\'s GC ceiling bound it instead.')
+@click.option('--buildkit-size', 'buildkit_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_BUILDKIT_SIZE',
+              help='Size of the build cache PVC (default: 200Gi). Needs --buildkit-class: '
+                   'without one the cache is a directory on the node, bounded by that disk '
+                   'and the daemon\'s GC ceiling, and there is no volume to size.')
 @click.option('--buildkit-node', default='', metavar='NODE',
               help='Hold the build cache on this node. Defaults to the data node, because '
                    'auto-separating would put a 150 GB cache on whichever node was left '
@@ -688,6 +714,7 @@ def _node_labels(pairs, flag):
                    '--context is unset. Omitted, no node labels are applied.')
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
+          data_root, workspaces_path, workspaces_class,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
@@ -754,19 +781,37 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         key, value = option.split('=', 1)
         cluster_kwargs[key] = value
 
+    # Resolved here, once, so every tenant is placed by the same rule and a --data-root
+    # cannot reach three of them and miss the fourth. Refused before anything is applied:
+    # an argument error must not leave a half-set-up cluster behind it.
+    stated = {
+        'workspaces_path': workspaces_path, 'workspaces_class': workspaces_class,
+        'registry_path': registry_storage_path, 'registry_class': registry_storage_class,
+        'buildkit_path': buildkit_storage_path, 'buildkit_class': buildkit_storage_class,
+    }
+    try:
+        data_paths.refuse_conflicts(stated, data_root=data_root,
+                                    sizes={'buildkit': buildkit_storage_size})
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    placements = data_paths.resolve(stated, data_root=data_root)
+
     service_kwargs = {
         'ingress_host': ingress_host, 'ingress_class': ingress_class,
         'issuer': issuer, 'tls_secret': tls_secret,
         'insecure_http': insecure_http, 'rotate_token': rotate_token,
-        'registry_storage_class': registry_storage_class,
-        'registry_storage_path': registry_storage_path,
+        'registry_storage_class': placements['registry'].storage_class,
+        'registry_storage_path': placements['registry'].path,
+        'workspaces_storage_class': placements['workspaces'].storage_class,
+        'workspaces_storage_path': placements['workspaces'].path,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
     # manifest per kind, so a second Deployment would silently replace the service's own.
     buildkit_kwargs = {
-        'storage_class': buildkit_storage_class,
-        'storage_path': buildkit_storage_path,
+        'storage_class': placements['buildkit'].storage_class,
+        'storage_path': placements['buildkit'].path,
         'storage_size': buildkit_storage_size,
         'gc_max_used': buildkit_cache_max,
         'gc_min_free': buildkit_cache_min_free,
