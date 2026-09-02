@@ -1399,13 +1399,17 @@ class ClusterService(LocalTransport):
             entry = self._campaigns.get(campaign_id)
         store = self._store_phase_bytes(campaign_id)
         if entry is not None:
-            # Per phase, whoever writes it: scratch for the phases the driver appends to
-            # as it goes, the store for the ones that run afterwards against a fetched root
-            # and publish there. A local copy of one of those is an earlier attempt's --
-            # present, frozen, and therefore the winner under an absence-only fallback,
-            # which is how a succeeded postprocess read as the failure before it.
+            # Scratch first, except for the phase files THIS entry's operation writes
+            # somewhere else. A postprocess and a share export on this lane work against a
+            # fetched root and publish from there, so the copy under the tracked root is an
+            # earlier attempt's -- present, frozen, and therefore the winner under an
+            # absence-only fallback, which is how a succeeded postprocess read as the
+            # image-pull failure before it. Asked of the entry rather than of a fixed list
+            # of phases, so a campaign this process drives costs no store call at all: that
+            # read sits behind an SSE stream that re-polls while a user watches.
             campaign_dir = Path(entry.results_dir) / campaign_id
-            get_bytes = layered_by_writer(disk_get_bytes(campaign_dir), store)
+            get_bytes = layered_by_writer(disk_get_bytes(campaign_dir), store,
+                                          entry.elsewhere_written_phase_files)
             eof = self._is_done(entry)
         else:  # past / reaped campaign: the store holds every phase file's durable copy
             get_bytes = store
@@ -3635,8 +3639,11 @@ class ClusterService(LocalTransport):
             else:
                 notifier.postprocessing_failed(message)
 
+        # The pod writes postprocessing.log into its own staged tree and publishes it, so
+        # the copy under the tracked root is whatever an earlier attempt left there.
         return self._dispatch_background(
-            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
+            request.campaign_id, phase=Phase.POSTPROCESSING, work=work,
+            elsewhere_written_phase_files={"postprocessing.log"})
 
     #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is a
     #: legacy staging copy carried by campaigns converted before the conversion wrote the
@@ -3709,8 +3716,11 @@ class ClusterService(LocalTransport):
             state.update(share_error=status.share_error)
             state.set_phase(Phase.FINISHED)
 
+        # Same as the postprocess: this writes share.log into a materialised root and
+        # publishes it, never into the tracked one a local read looks in.
         return self._dispatch_background(
-            request.campaign_id, phase=Phase.SHARING, work=work)
+            request.campaign_id, phase=Phase.SHARING, work=work,
+            elsewhere_written_phase_files={"share.log"})
 
     def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
         """Tar the campaign's stored objects straight into the share. No scratch.
