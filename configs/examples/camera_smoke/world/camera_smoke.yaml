@@ -8,24 +8,26 @@
 # `sim.world` is left unset, so the engine builds the default `empty_room` — a lit, walled room,
 # which is enough geometry for both consumers below to render something non-trivial.
 
-plugins:
-  # 320x240 @ 5 Hz, not the manifest's 640x480 @ 30 Hz: a cluster node has no render device, so
-  # this renders through llvmpipe on the CPU. The question is whether a frame comes out at all,
-  # and a cheap frame answers it just as well as an expensive one.
+components:
   - spawn_sensor:
       model: d435
-      name: cam
       prefix: "cam_"
       pos: [1.0, 0.0, 0.5]
       rpy: [0.0, 0.0, 1.5708]   # yaw +90°, so the +y-default camera faces -x, across the room
       default_plugins: false    # the manifest would attach realsense_d435 at its own defaults
-
-  - realsense_d435:
-      robot: cam
-      camera: d435_color
-      width: 320
-      height: 240
-      rate_hz: 5.0
+    name: cam
+    components:
+      # 320x240 @ 5 Hz, not the manifest's 640x480 @ 30 Hz: a cluster node has no render device, so
+      # this renders through llvmpipe on the CPU. The question is whether a frame comes out at all,
+      # and a cheap frame answers it just as well as an expensive one.
+      #
+      # A component of the sensor, which is how it resolves the camera: `camera:` is the name inside
+      # the model, and the owner supplies the `cam_` prefix the spawn attached it under.
+      - realsense_d435:
+          camera: d435_color
+          width: 320
+          height: 240
+          rate_hz: 5.0
 
   # The positive artifact, and the reason this world does not rely on the camera alone. The camera
   # plugin gates its capture on `has_subscribers()`, so in a shape where nobody subscribes it can

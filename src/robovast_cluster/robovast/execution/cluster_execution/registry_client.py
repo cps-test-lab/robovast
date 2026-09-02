@@ -55,6 +55,32 @@ _ACCEPT = ", ".join([
 
 _TIMEOUT = 10
 
+#: Backoff between goes at a request that never REACHED the registry, in seconds; the last
+#: value repeats. Exponential rather than flat because the outage this survives is not
+#: instantaneous -- concurrent multi-gigabyte image pulls starving a small control request
+#: of egress last minutes -- so a fixed short wait spends its whole budget inside the bad
+#: period, and a registry that is rate-limiting is owed a widening gap rather than a drum.
+_RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+
+#: How long a caller keeps asking, when it does not say. Short: this helper also backs the
+#: image-state probes behind build decisions and status reads, and a request path that
+#: stalls for minutes to answer "is this image published" is worse than one that says it
+#: does not know.
+DEFAULT_PATIENCE = 3.0
+
+#: How long the campaign-launch compatibility check keeps asking, which is a different
+#: trade from every other caller's.
+#:
+#: A campaign runs for minutes to days, so waiting minutes to START one beats being refused
+#: -- and being refused is what an unread image means: the check cannot tell a host that
+#: may not drive the image from a registry that would not answer, so it fails closed. The
+#: remedy it suggests is a flag that turns the check off, which is worse than waiting.
+#:
+#: Sized against the outage rather than against a person's patience: the pulls that cause
+#: it run for minutes, so a budget shorter than that would expire inside the very event it
+#: exists for.
+LAUNCH_PATIENCE = 150.0
+
 
 def split_image_ref(image_ref: str) -> "tuple[str, str, str]":
     """``host[:port]/path/name:tag`` or ``…@sha256:…`` → ``(host, repository, reference)``.
@@ -278,7 +304,8 @@ def _forget_token(key: tuple) -> None:
 
 def _registry_request(host: str, path: str, *, method: str = "HEAD",
                       dockerconfigjson: str = "", insecure: bool = False,
-                      ca_path: str = "", accept: str = _ACCEPT):
+                      ca_path: str = "", accept: str = _ACCEPT,
+                      patience_s: float = DEFAULT_PATIENCE):
     """One authenticated v2 request against *host*, or ``None``.
 
     Speaks just enough of the v2 API: the request, retried once with a Bearer token when
@@ -292,6 +319,12 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
     """
     import requests
 
+    # "Did not answer" as opposed to "answered something unwanted": only the former can
+    # change on a second ask.
+    transport_errors = (requests.exceptions.Timeout,
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.ChunkedEncodingError)
+
     scheme = "http" if insecure else "https"
     url = f"{scheme}://{host}/v2/{path}"
     verify: "bool | str" = True
@@ -304,46 +337,64 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
     headers = {"Accept": accept}
     key = _token_key(host, path, creds)
 
-    try:
-        with requests.Session() as session:
-            # Dispatched by name rather than through ``session.request``: the verb is a
-            # literal at every call site, and the named methods are what a Session is
-            # substituted for in tests.
-            call = getattr(session, method.lower())
-            # A token already held for this repository is presented up front, so a walk of
-            # several requests costs one challenge instead of one per request. Reading an
-            # image's labels is three requests through an index, and pinning a campaign's
-            # refs is one per ref -- which was a dozen round trips and half a dozen separate
-            # token requests within a second or two, against a token endpoint that is
-            # entitled to rate-limit exactly that.
-            token = _cached_token(key)
-            if token:
-                resp = call(url, verify=verify, timeout=_TIMEOUT,
-                            headers={**headers, "Authorization": f"Bearer {token}"})
-                if resp.status_code != 401:
-                    return resp
-                # Presented and refused: revoked, or expiring inside our safety margin.
-                # Drop it and fall through to earn a fresh one rather than failing, so a
-                # stale cache is never worse than no cache.
-                _forget_token(key)
-                token = None
-            resp = call(url, headers=headers, verify=verify,
-                        auth=creds if creds else None, timeout=_TIMEOUT)
-            if resp.status_code == 401:
-                token, ttl = _bearer_token(session,
-                                           resp.headers.get("WWW-Authenticate", ""), creds)
-                if token is None:
-                    logger.warning(
-                        "registry check: %s needs authentication that could not be "
-                        "satisfied", host)
-                    return None
-                _store_token(key, token, ttl)
-                resp = call(url, verify=verify, timeout=_TIMEOUT,
-                            headers={**headers, "Authorization": f"Bearer {token}"})
-            return resp
-    except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
-        logger.warning("registry check: could not reach %s (%s)", host, e)
-        return None
+    # A deadline rather than a number of goes, and the deadline is the ONLY bound: each
+    # attempt can itself burn _TIMEOUT, so a count bounds the tries and not the wait --
+    # and "keep asking for this long" is the thing a caller has an opinion about. With the
+    # backoff below that works out at roughly nine attempts over LAUNCH_PATIENCE and one
+    # over a patience of zero.
+    give_up_at = time.monotonic() + max(0.0, patience_s)
+    attempt = -1
+    while True:
+        attempt += 1
+        try:
+            with requests.Session() as session:
+                # Dispatched by name rather than through ``session.request``: the verb is a
+                # literal at every call site, and the named methods are what a Session is
+                # substituted for in tests.
+                call = getattr(session, method.lower())
+                # A token already held for this repository is presented up front, so a walk of
+                # several requests costs one challenge instead of one per request. Reading an
+                # image's labels is three requests through an index, and pinning a campaign's
+                # refs is one per ref -- which was a dozen round trips and half a dozen separate
+                # token requests within a second or two, against a token endpoint that is
+                # entitled to rate-limit exactly that.
+                token = _cached_token(key)
+                if token:
+                    resp = call(url, verify=verify, timeout=_TIMEOUT,
+                                headers={**headers, "Authorization": f"Bearer {token}"})
+                    if resp.status_code != 401:
+                        return resp
+                    # Presented and refused: revoked, or expiring inside our safety margin.
+                    # Drop it and fall through to earn a fresh one rather than failing, so a
+                    # stale cache is never worse than no cache.
+                    _forget_token(key)
+                    token = None
+                resp = call(url, headers=headers, verify=verify,
+                            auth=creds if creds else None, timeout=_TIMEOUT)
+                if resp.status_code == 401:
+                    token, ttl = _bearer_token(session,
+                                               resp.headers.get("WWW-Authenticate", ""), creds)
+                    if token is None:
+                        logger.warning(
+                            "registry check: %s needs authentication that could not be "
+                            "satisfied", host)
+                        return None
+                    _store_token(key, token, ttl)
+                    resp = call(url, verify=verify, timeout=_TIMEOUT,
+                                headers={**headers, "Authorization": f"Bearer {token}"})
+                return resp
+        except transport_errors as e:
+            wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            if time.monotonic() + wait >= give_up_at:
+                logger.warning("registry check: %s did not answer within %.0fs (%s)",
+                               host, patience_s, e)
+                return None
+            logger.info("registry check: %s did not answer (%s); asking again in %.0fs",
+                        host, e, wait)
+            time.sleep(wait)
+        except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
+            logger.warning("registry check: could not reach %s (%s)", host, e)
+            return None
 
 
 def _head_manifest(image_ref: str, *, dockerconfigjson: str = "",
@@ -458,7 +509,8 @@ def manifest_created(image_ref: str, *, dockerconfigjson: str = "",
 
 
 def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
-                    insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
+                    insecure: bool = False, ca_path: str = "",
+                    patience_s: float = DEFAULT_PATIENCE) -> "Optional[dict]":
     """Every label *image_ref* carries per the registry, or ``None`` if it could not be read.
 
     The same walk :func:`manifest_created` does -- manifest, index child if there is one, then
@@ -475,7 +527,7 @@ def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
     about the image. See :func:`manifest_state` for the same rule spelled as three values.
     """
     config = _image_config(image_ref, dockerconfigjson=dockerconfigjson,
-                           insecure=insecure, ca_path=ca_path)
+                           insecure=insecure, ca_path=ca_path, patience_s=patience_s)
     if config is None:
         return None
     labels = (config.get("config") or {}).get("Labels") or {}
@@ -483,7 +535,8 @@ def manifest_labels(image_ref: str, *, dockerconfigjson: str = "",
 
 
 def _image_config(image_ref: str, *, dockerconfigjson: str = "",
-                  insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
+                  insecure: bool = False, ca_path: str = "",
+                  patience_s: float = DEFAULT_PATIENCE) -> "Optional[dict]":
     """*image_ref*'s image config blob, parsed, or ``None`` when it could not be read.
 
     Shared by the two readers above so the manifest -> index child -> config blob walk exists
@@ -504,7 +557,7 @@ def _image_config(image_ref: str, *, dockerconfigjson: str = "",
         logger.warning("registry check: %s", e)
         return None
     manifest = _manifest_json(image_ref, dockerconfigjson=dockerconfigjson,
-                              insecure=insecure, ca_path=ca_path)
+                              insecure=insecure, ca_path=ca_path, patience_s=patience_s)
     if manifest is None:
         return None
     if "manifests" in manifest:
@@ -516,7 +569,7 @@ def _image_config(image_ref: str, *, dockerconfigjson: str = "",
             return None
         manifest = _manifest_json(image_ref, digest=child,
                                   dockerconfigjson=dockerconfigjson,
-                                  insecure=insecure, ca_path=ca_path)
+                                  insecure=insecure, ca_path=ca_path, patience_s=patience_s)
         if manifest is None:
             return None
     config_digest = (manifest.get("config") or {}).get("digest") or ""
@@ -524,7 +577,7 @@ def _image_config(image_ref: str, *, dockerconfigjson: str = "",
         return None
     resp = _registry_request(host, f"{repository}/blobs/{config_digest}", method="GET",
                              dockerconfigjson=dockerconfigjson, insecure=insecure,
-                             ca_path=ca_path, accept="application/json")
+                             ca_path=ca_path, accept="application/json", patience_s=patience_s)
     if resp is None or resp.status_code != 200:
         return None
     try:
@@ -536,7 +589,8 @@ def _image_config(image_ref: str, *, dockerconfigjson: str = "",
 
 
 def _manifest_json(image_ref: str, *, digest: str = "", dockerconfigjson: str = "",
-                   insecure: bool = False, ca_path: str = "") -> "Optional[dict]":
+                   insecure: bool = False, ca_path: str = "",
+                   patience_s: float = DEFAULT_PATIENCE) -> "Optional[dict]":
     """The parsed manifest for *image_ref*'s own reference, or for *digest* when given."""
     try:
         host, repository, reference = split_image_ref(image_ref)
@@ -544,7 +598,7 @@ def _manifest_json(image_ref: str, *, digest: str = "", dockerconfigjson: str = 
         return None
     resp = _registry_request(host, f"{repository}/manifests/{digest or reference}", method="GET",
                              dockerconfigjson=dockerconfigjson, insecure=insecure,
-                             ca_path=ca_path)
+                             ca_path=ca_path, patience_s=patience_s)
     if resp is None or resp.status_code != 200:
         return None
     try:

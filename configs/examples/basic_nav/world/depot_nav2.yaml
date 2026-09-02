@@ -28,14 +28,18 @@ sim:
     azimuth: 32.8
     elevation: -9.8
 
-plugins:
+components:
   # Spawn pose matches gz tb4_simulation_launch.py (world -8, 0); AMCL seeds at the map origin.
-  - spawn_robot: {model: turtlebot4, name: robot, pos: [-8.0, 0.0], yaw: 0.0}
-  # Ground-truth leaf frame map -> turtlebot4_base_link_gt for offline path evaluation (not wired
-  # into localization). Mirrors Gazebo's turtlebot4_base_link_gt. Listed BEFORE the bridge: the
-  # bridge binds ctx.interface once, in its own configure(), so a producer registered after it is
-  # never published (see the plugin-order rule in docs/architecture.rst).
-  - ground_truth_pose: {robot: robot}
+  - spawn_robot: {model: turtlebot4, pos: [-8.0, 0.0], yaw: 0.0}
+    name: robot
+    components:
+      # Ground-truth leaf frame map -> turtlebot4_base_link_gt for offline path evaluation (not
+      # wired into localization). Mirrors Gazebo's turtlebot4_base_link_gt. A component of the
+      # robot, which is where it reads its base pose and its frame name from -- and which also puts
+      # it BEFORE the bridge below: the bridge binds ctx.interface once, in its own configure(), so
+      # a producer registered after it is never published (see the plugin-order rule in
+      # docs/architecture.rst).
+      - ground_truth_pose: {}
   # Publishes /clock, /odom, odom->base_link, /scan (rplidar_link), /joint_states, and subscribes
   # /cmd_vel -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
   # robot_state_publisher over the TB4 URDF, which publishes base_link and every link below it
