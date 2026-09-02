@@ -470,6 +470,16 @@ class CampaignSummary(BaseModel):
     # growth this payload must not take on. The first line is the sentence a notice needs; the
     # card fetches the whole thing from ``get_status`` when someone opens it.
     error: str = ""
+    #: Total bytes the campaign's results occupy in their durable home, as measured once
+    #: when the campaign ended (see ``Status.results_bytes``). ``None`` means **not
+    #: recorded** -- a campaign that ended before this was measured -- which a reader shows
+    #: as no figure rather than as ``0 B``.
+    #:
+    #: It rides this hot payload because it is one integer that was computed once and
+    #: cannot change: the growth this listing must not take on is per-row work or a series,
+    #: and asking storage how big a campaign is would be exactly that. Read from the same
+    #: snapshot as the phase, so it costs nothing beyond the field.
+    results_bytes: Optional[int] = None
 
 
 class ListCampaignsRequest(BaseModel):

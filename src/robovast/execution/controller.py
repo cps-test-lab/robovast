@@ -1499,9 +1499,46 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
             if state is not None:
                 _record_controller_outcome(campaign_root, campaign_id, state, backend)
         _finalize(backend, campaign_root)
+        # After the finalize upload, not before: on a lane whose durable home is a store,
+        # the data postprocessing derived reaches that home in the upload above, so a total
+        # taken earlier would under-report exactly the artifacts the campaign was
+        # postprocessed to produce. Skipped for a failed campaign, which never finished
+        # projecting its results -- a partial tree's size is a number that invites the wrong
+        # conclusion, and `None` already says "not recorded".
+        if not failed:
+            _record_results_size(backend, campaign_root, campaign_id, state)
     finally:
         if options.finalize_phase:
             end_campaign(campaign_id, state, notifier)
+
+
+def _record_results_size(backend: ExecutionBackend, campaign_root: str, campaign_id: str,
+                         state) -> None:
+    """Measure the campaign's results once and make the figure durable.
+
+    Here rather than on every read: a campaign is displayed far more often than it ends, and
+    the alternative -- enumerating the results whenever someone opens the campaign -- pays a
+    walk that grows with the campaign in order to tell each viewer the same number.
+
+    Re-writes ``outcome.json`` (a second, kilobyte-sized write of a record already produced
+    above) because the measurement can only run once the finalize upload has happened, and
+    the record is what carries the figure to a service that no longer has this driver.
+
+    Best-effort throughout: a size is a convenience, and no part of it may cost a campaign
+    that has otherwise finished.
+    """
+    if state is None:
+        return
+    try:
+        total = backend.campaign_results_bytes(campaign_root)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not measure the results size of %s", campaign_id,
+                       exc_info=True)
+        return
+    if total is None:
+        return
+    state.update(results_bytes=total)
+    _record_controller_outcome(campaign_root, campaign_id, state, backend)
 
 
 def _share_campaign(backend: ExecutionBackend, campaign_root: str,

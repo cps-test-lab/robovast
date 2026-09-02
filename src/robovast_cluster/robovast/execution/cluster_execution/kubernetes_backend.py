@@ -3445,6 +3445,25 @@ class KubernetesBackend(ExecutionBackend):
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
                     "_execution / metrics) to %s/%s", n, bucket, prefix)
 
+    def campaign_results_bytes(self, campaign_root: str) -> "int | None":
+        """Sum the campaign's stored objects — the durable home on this lane is the store.
+
+        Measured against the object store rather than ``campaign_root`` because this
+        driver's disk is scratch: a campaign this process *resumed* holds only its control
+        plane locally (see ``campaign_resume``), so a walk of the local tree would report a
+        fraction of the campaign as its total and be believed. The store is authoritative
+        whatever the driver happens to hold.
+
+        A listing pass — sizes arrive with the keys, so this moves no data and costs one
+        request per 1000 objects, once, at the end of a campaign.
+        """
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        bucket, prefix = in_pod_storage.campaign_storage_location(
+            self.cluster_config, campaign_id)
+        storage = in_pod_storage.storage_client_for(self.cluster_config)
+        objects, _ = storage.list_entries(bucket, prefix)
+        return sum(int(size or 0) for _, size in objects)
+
     def preflight_upload_to_share(self) -> None:
         """Fail fast when ``--upload-to-share`` is set but no share is configured.
 
