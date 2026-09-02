@@ -2186,6 +2186,7 @@ class BatchJobRunner:
                         ", ".join(f"{r} -> {d.rsplit('@', 1)[-1]}"
                                   for r, d in sorted(moved.items())))
         unpinned = sorted(ref for ref in refs if not cache.get(ref))
+        self._refuse_absent_images(unpinned)
         if unpinned:
             logger.warning(
                 "Could not resolve %d image ref(s) to a digest: %s. They keep their tag "
@@ -2223,6 +2224,53 @@ class BatchJobRunner:
             logger.warning("could not read the build lock of %s", image, exc_info=True)
         self._build_lock_cache[image] = lock
         return lock
+
+    def _refuse_absent_images(self, unresolved: list) -> None:
+        """Refuse the campaign when the registry says an image it needs is simply not there.
+
+        The pin above asks the registry, with the **pull** credential, what each ref resolves
+        to -- which is the same question the kubelet asks a moment later. A ref it could not
+        resolve was treated as a missed optimisation and the campaign went ahead; if the reason
+        was that the image does not exist, every job then died at once on ``ErrImagePull ...
+        NotFound``, having already been scheduled. The answer was in hand one step before any
+        pod existed, next to the compat check that refuses here for the same reason: a refusal
+        costs no pods.
+
+        Only on a **definite** absence -- ``ABSENT`` is a 404 and nothing else. A registry that
+        is unreachable, or one this deployment holds no credential for, answers ``UNKNOWN`` and
+        is left alone: refusing on that is the mistake the image store's ``present`` exists to
+        prevent, since it blames the artifact for a problem with reaching it. So this cannot be
+        tripped by a registry blip, only by an image that is genuinely gone.
+
+        A campaign whose own image is missing needs it rebuilt, and says so, rather than
+        reporting a whole batch that could not start.
+        """
+        if not unresolved:
+            return
+        from .registry_client import ABSENT, manifest_state  # noqa: PLC0415 - optional path
+        try:
+            registry = self.cluster_config.get_registry_config()
+        except Exception:  # noqa: BLE001 - a registry is optional
+            return
+        missing = []
+        for ref in unresolved:
+            try:
+                state = manifest_state(
+                    ref, dockerconfigjson=self._registry_dockerconfig(registry),
+                    insecure=getattr(registry, "insecure", False),
+                    ca_path=self._registry_ca_path(registry))
+            except Exception:  # noqa: BLE001 - not knowing is not a refusal
+                continue
+            if state == ABSENT:
+                missing.append(ref)
+        if missing:
+            raise CampaignConfigError(
+                f"the registry does not have {', '.join(missing)}, so every job of this "
+                f"campaign would fail to start. Checked before any pod was created, with the "
+                f"credential the kubelet uses. An image robovast builds for a campaign is "
+                f"identified by its inputs, so a tag that is absent has never been pushed -- "
+                f"rebuild it (vast image build) and launch again. If the image is one you "
+                f"supplied, check the reference and its pull credentials.")
 
     def _check_image_compat(self) -> None:
         """Refuse the campaign here if this host cannot drive the image its pods will run.
