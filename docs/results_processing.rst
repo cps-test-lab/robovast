@@ -480,6 +480,41 @@ Three things differ from ``run_log``, each deliberate:
 carry a ``_column_notes`` entry that ``describe_campaign_data`` shows: CPU is per-core, and
 summed RSS double-counts pages shared with forks.
 
+.. _postprocess-usage:
+
+``postprocess_system_usage.csv`` — what postprocessing itself cost
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+One row per postprocessing step -- ``stage``, ``convert``, ``host`` -- written to
+``_execution/postprocess_system_usage.csv`` on the cluster lane, beside the campaign it
+describes. The columns are the sampler's own (``memory_peak``, ``memory_max``,
+``cpu_usage_usec``, ``nr_periods``, ``nr_throttled``, ``oom_kills``, ...), so a step's figures
+read the same way as a run's :ref:`system_usage <per-run-resource-usage>` rows and can be
+compared with them. The same row is logged as one line per step in the POSTPROCESSING section,
+so the usual question -- did a step come near its limit? -- is answered without downloading
+anything.
+
+**``system_usage``, not ``resource_usage``.** The distinction is the one that table pair
+already makes: ``resource_usage`` is per *process* and every reader aggregates it that way,
+while these figures are the cgroup's accounting for a whole step and have no pid. Filing them
+as processes would mean summing them as processes.
+
+**Read once from the kernel, not sampled.** These steps are containers rather than runs, and
+each is short, so the daemon's per-second rows are the wrong shape twice over: a poll interval
+longer than the step reports a comfortable figure for one that may have come close to its
+ceiling, and ``memory.peak`` is a high-water mark the kernel already keeps that no sampler can
+beat. ``monitor_resources.py --once`` writes exactly one row of the container-level probes;
+the conversion step -- which runs the campaign's own image and can import nothing of RoboVAST
+-- invokes it from the ``/scripts`` mount the pod already has.
+
+This is what makes ``results_processing.resources`` checkable: a campaign that raised it can
+see whether it needed to, and the shipped default can be argued about with a number instead of
+the absence of a failure.
+
+Unlike ``resource_usage`` it stays a file rather than becoming an index table, because it
+describes how a campaign was *processed* rather than what its runs did -- a row under a run
+would be summed as something that run consumed.
+
 .. _scenario-verdict:
 
 ``scenario_timestamps`` — where the trial ended
