@@ -371,7 +371,8 @@ class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
     __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
-                 "description", "created_by", "workspace_id", "origin")
+                 "description", "created_by", "workspace_id", "origin",
+                 "elsewhere_written_phase_files")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
@@ -379,6 +380,12 @@ class _LocalCampaign:
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
+        # Phase files this entry's operation writes somewhere OTHER than ``results_dir``,
+        # so a reader knows not to believe the copy it finds there. Empty for a campaign
+        # this process drives and for every operation that writes where it is tracked --
+        # which is the whole of the local lane. It outlives the operation on purpose: the
+        # stale local copy is still stale after the operation that superseded it ended.
+        self.elsewhere_written_phase_files = frozenset()
         # Which workspace this campaign is *currently* reading its project from, so a
         # push can be refused while it runs. Live-only and deliberately never persisted:
         # ``write_launch_record`` leaves ``workspace_id`` out because a finished campaign
@@ -4143,7 +4150,8 @@ class LocalTransport(RobovastInterface):
         return PostprocessingSource(campaign_id=request.campaign_id,
                                     content=request.content)
 
-    def _dispatch_background(self, campaign_id: str, *, phase: str, work) -> ActionResult:
+    def _dispatch_background(self, campaign_id: str, *, phase: str, work,
+                             elsewhere_written_phase_files=frozenset()) -> ActionResult:
         """Run a post-run operation (postprocessing / share) as a tracked background
         campaign and return immediately, so the campaign view shows it live.
 
@@ -4171,6 +4179,10 @@ class LocalTransport(RobovastInterface):
             state.update(campaign_id=campaign_id)
             state.set_phase(phase)
             entry = _LocalCampaign(campaign_id, str(self._campaigns_root()), state)
+            # A lane whose operation works against a fetched root, not the tracked one,
+            # says so here -- see the attribute. Default empty: this lane's own operations
+            # write where they are tracked, so the local copy is the live one.
+            entry.elsewhere_written_phase_files = frozenset(elsewhere_written_phase_files)
             # The store's recorded start time, not now: re-running postprocessing or
             # sharing must not restamp (and so re-order) a finished campaign. Read
             # directly rather than via _started_at_for — we already hold self._lock,

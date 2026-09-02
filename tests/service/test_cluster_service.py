@@ -2453,12 +2453,18 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
 # -- the campaign log's two byte sources ------------------------------------
 
 
-def _tracked(cs, campaign_id, results_dir, terminal=True):
-    """Register *campaign_id* as tracked here, rooted at *results_dir*."""
+def _tracked(cs, campaign_id, results_dir, terminal=True, elsewhere=frozenset()):
+    """Register *campaign_id* as tracked here, rooted at *results_dir*.
+
+    *elsewhere* mirrors ``_LocalCampaign.elsewhere_written_phase_files``: the phase files
+    this entry's operation writes somewhere other than *results_dir*. Empty is the campaign
+    case -- a campaign this process drives writes every phase where it is tracked.
+    """
     from robovast.client.status import Phase
     phase = Phase.FINISHED if terminal else Phase.RUNNING
     cs._campaigns[campaign_id] = types.SimpleNamespace(
         results_dir=str(results_dir), thread=None,
+        elsewhere_written_phase_files=frozenset(elsewhere),
         state=types.SimpleNamespace(snapshot=lambda: types.SimpleNamespace(phase=phase)))
 
 
@@ -2600,3 +2606,27 @@ def test_without_results_dir_the_lane_keeps_its_default(cs):
     """No flag, no surprise: the shared ``local_results_root`` precedence still decides."""
     from robovast.common.results_root import local_results_root
     assert cs._campaigns_root() == local_results_root(cs.store.registry.root)
+
+
+def test_a_postprocess_that_ran_elsewhere_is_read_from_the_store(cs, monkeypatch, tmp_path):
+    """A retriggered postprocess writes its log into a fetched root and publishes it, so
+    the copy under the tracked root is an earlier attempt's -- present, frozen, and the
+    winner under an absence-only fallback. That is how a postprocess which had just
+    ingested twenty thousand rows showed the image-pull failure of the attempt before it.
+
+    Only that phase moves: the driver's own phases must still be read locally, or a running
+    campaign would show a stale RUN section for its whole life.
+    """
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"live run\n")
+    (exec_dir / "postprocessing.log").write_bytes(b"an older attempt\n")
+    _tracked(cs, "camp-1", tmp_path, elsewhere={"postprocessing.log"})
+    _fake_store(cs, monkeypatch, {
+        "camp-1/_execution/controller.log": b"lagging run\n",
+        "camp-1/_execution/postprocessing.log": b"what the pod wrote\n"})
+
+    text = cs.get_campaign_logs("camp-1").text
+
+    assert "what the pod wrote" in text and "an older attempt" not in text
+    assert "live run" in text and "lagging run" not in text

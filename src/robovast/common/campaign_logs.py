@@ -161,40 +161,31 @@ def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes
     return _read
 
 
-#: Phase files a service does not append to itself. Their live copy is the DURABLE one.
-#:
-#: :func:`layered_by_writer` prefers a local copy because a phase a process is appending to
-#: runs ahead of the store. That holds for the phases a campaign's own driver writes as it
-#: goes -- and fails for the ones that run afterwards, as background operations against a
-#: FETCHED campaign root: postprocessing (in a Job) and the share export both write their
-#: phase file there and publish it, so neither ever touches the tracked scratch directory a
-#: local read looks in.
-#:
-#: What is in that directory for those phases is therefore an earlier attempt's, if
-#: anything. Present, frozen and wrong is the one combination an absence-only fallback
-#: cannot see past, and it inverts the answer: a postprocess that succeeded reads as the
-#: failure that preceded it.
-#:
-#: The membership test is which process writes the phase, so adding a phase here is a
-#: statement about where it runs -- not a preference for the newer copy.
-REMOTELY_WRITTEN_PHASE_FILES = frozenset({"postprocessing.log", "share.log"})
-
-
 def layered_by_writer(
     local: Callable[[str], Optional[bytes]],
     remote: Callable[[str], Optional[bytes]],
-    remote_written: "frozenset[str]" = REMOTELY_WRITTEN_PHASE_FILES,
+    remote_written: "frozenset[str]" = frozenset(),
 ) -> Callable[[str], Optional[bytes]]:
     """A ``get_bytes`` asking, per phase file, whoever writes it first.
 
-    Both orders are :func:`layered_get_bytes`, so either source still covers for the
-    other's absence -- what changes is which one is believed when both have the file. That
-    is decided by who WRITES the phase, not by which copy is longer or newer: a length
-    comparison would flip mid-stream as a file grows, and the streaming protocol needs the
-    assembled stream to grow monotonically.
+    A local copy is preferred by default because a process appending to a phase file runs
+    ahead of the durable one. *remote_written* names the phase files for which that is
+    false -- the ones an operation writes somewhere other than where it is tracked, so the
+    local copy is an earlier attempt's. Present, frozen and wrong is the one combination an
+    absence-only fallback cannot see past, and it inverts the answer: a postprocess that
+    succeeded then reads as the failure that preceded it.
 
-    The choice is constant for a given phase, so each phase is served from one source for
-    the whole of a campaign's life and cannot shrink between polls.
+    **Empty by default, and named by the caller that knows.** Which files those are is a
+    fact about one operation on one lane, not about the phase: the same postprocessing log
+    is written into the tracked root on the local lane and into a fetched one on the
+    cluster. A set fixed here would make every reader pay for the one case it applies to --
+    two store round-trips per poll behind an SSE stream that re-polls while a user watches.
+
+    Both directions remain :func:`layered_get_bytes`, so either source still covers the
+    other's absence: what changes is which is believed when both have the file, never
+    whether a phase is served at all. And the choice is constant for a phase over a
+    campaign's life, so the assembled stream cannot shrink between polls -- which the byte
+    offset protocol requires.
     """
     local_first = layered_get_bytes(local, remote)
     remote_first = layered_get_bytes(remote, local)
