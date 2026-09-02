@@ -3851,7 +3851,7 @@ class ClusterService(LocalTransport):
         else:
             notifier.postprocessing_failed(message)
 
-    def reattach_live_postprocessing(self) -> dict:
+    def reattach_live_postprocessing(self):
         """Wait on the postprocessing Jobs a previous service process left running.
 
         Its own concern beside :meth:`resume_interrupted_campaigns`, not part of it: that
@@ -3861,11 +3861,15 @@ class ClusterService(LocalTransport):
         work: the Job is running and will finish either way, and only a waiter writes what
         it did into the campaign.
 
-        Returns ``{campaign_id: job name}`` for the Jobs now being waited on; see
-        :mod:`.postprocess_reattach` for how they are found. Never raises.
+        Started in the background rather than run here, because identifying which campaign
+        a live Job belongs to needs the campaign index, and a restart is exactly when the
+        store may not be up yet -- a redeploy brings it back alongside this process. So the
+        discovery waits for the store, and waiting must not hold up a service that has to
+        answer. Returns the thread, for a caller that needs to join it; see
+        :mod:`.postprocess_reattach` for how the Jobs are found. Never raises.
         """
         from . import postprocess_reattach
-        return postprocess_reattach.reattach_all(self)
+        return postprocess_reattach.start_reattach(self)
 
     def reattach_postprocessing(self, campaign_id: str, job_name: str) -> bool:
         """Wait for *job_name* in the background and record its outcome. False if busy.
