@@ -3215,6 +3215,37 @@ class KubernetesBackend(ExecutionBackend):
             }
         return facts
 
+    @staticmethod
+    def _record_launch_images(campaign_root: str, runner) -> None:
+        """Record every planned container's pinned image in ``_execution/launch.yaml``.
+
+        The launch record's ``images`` otherwise holds only what the campaign *built*, so a
+        container the backend supplies -- a simulator named by no ``image:`` in the ``.vast``
+        -- appears nowhere in it, and a retrigger re-resolves its family tag to whatever has
+        been pushed since.
+
+        Keyed by container name **and** by every role it backs, roles first so a name always
+        wins: a role is how a reader asks ("which simulator ran?") while the name is what the
+        pod calls it, and a stepped simulator makes one container answer to both.
+
+        Never fatal. This improves a record; the campaign it describes is already running.
+        """
+        from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
+        images = {}
+        for container in getattr(runner.plan, "containers", ()) or ():
+            if not container.image:
+                continue
+            for role in getattr(container, "roles", ()) or ():
+                images[role] = container.image
+        for container in getattr(runner.plan, "containers", ()) or ():
+            if container.image:
+                images[container.name] = container.image
+        try:
+            update_launch_images(Path(campaign_root), images)
+        except (OSError, ValueError) as e:
+            logger.warning("Could not record the launched images for %s: %s",
+                           campaign_root, e)
+
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
@@ -3237,6 +3268,11 @@ class KubernetesBackend(ExecutionBackend):
             image_label_cache=self._image_label_cache,
             admission=self._admission,
         )
+        # Now, and not after the batch: the runner's plan carries the digest every pod will
+        # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
+        # that dies in its first batch still leaves a record naming the exact bytes it was
+        # launched against, which is what makes it re-runnable as the same experiment.
+        self._record_launch_images(campaign_root, runner)
         batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)

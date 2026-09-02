@@ -1109,6 +1109,46 @@ def write_launch_record(campaign_root: Path, request, images: dict | None = None
         yaml.dump(record, f, default_flow_style=False, sort_keys=False)
 
 
+def update_launch_images(campaign_dir: Path, images: dict) -> None:
+    """Merge resolved image refs into ``_execution/launch.yaml``'s ``images``.
+
+    The launch path writes the record before the images are concrete, and writes it again
+    once the builds have resolved -- but a build resolves only the containers this campaign
+    *builds*. A container whose image the campaign does not build is never in that map at
+    all: a simulator the backend supplies, or one the ``.vast`` names outright. This closes
+    that by role, adding what the record lacks and replacing what it has with the more
+    concrete ref, so the record covers every container the campaign actually starts.
+
+    It matters because the record is the only place a digest survives a campaign that dies
+    before its first batch finishes -- ``execution.yaml`` is written after one -- and that
+    is the usual shape of a cluster failure. Without it a retrigger re-resolves a family
+    tag, which is how a campaign gets re-run against a *different* simulator than the one
+    it was launched against, silently and while looking like a faithful repeat.
+
+    Merged rather than overwritten: the caller knows the containers it planned, not the
+    request fields beside them, and a whole-file write would drop what it did not pass.
+
+    Best-effort, by the same reasoning as :func:`write_launch_record`: a campaign must not
+    fail because a record could not be improved. A missing record is left missing -- it is
+    written by the launch path, and creating a bare one here would produce a launch record
+    with no request in it, which every reader would take for a campaign that asked for
+    nothing.
+    """
+    if not images:
+        return
+    record = read_launch_record(campaign_dir)
+    if record is None:
+        return
+    merged = dict(record.get("images") or {})
+    merged.update({role: ref for role, ref in images.items() if ref})
+    if merged == (record.get("images") or {}):
+        return
+    record["images"] = merged
+    path = Path(campaign_dir) / "_execution" / _LAUNCH_FILENAME
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(record, f, default_flow_style=False, sort_keys=False)
+
+
 def read_launch_record(campaign_dir: Path) -> dict[str, Any] | None:
     """Read ``_execution/launch.yaml``; ``None`` when the campaign has none.
 
