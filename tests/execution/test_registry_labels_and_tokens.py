@@ -89,6 +89,18 @@ def test_the_build_date_reader_still_collapses_both(monkeypatch):
 # -- one challenge per repository, not per request ---------------------------
 
 
+class _Timeout(Exception):
+    """Stands in for ``requests.exceptions.Timeout``."""
+
+
+class _Exceptions:
+    """The subset of ``requests.exceptions`` the reader names."""
+
+    Timeout = _Timeout
+    ConnectionError = type("ConnectionError", (Exception,), {})
+    ChunkedEncodingError = type("ChunkedEncodingError", (Exception,), {})
+
+
 class _Session:
     """A registry that demands a Bearer token and counts how often it issues one."""
 
@@ -132,6 +144,11 @@ def _sessions(monkeypatch):
             s = _Session(tokens)
             made.append(s)
             return s
+
+        # The reader asks which failures mean "did not answer", so a stand-in for the
+        # module has to answer that too -- a fake missing it fails the code under test on
+        # the fake rather than on its subject.
+        exceptions = _Exceptions
 
     monkeypatch.setitem(__import__("sys").modules, "requests", _Requests)
     return tokens, made
@@ -215,3 +232,105 @@ def test_an_expired_token_is_not_presented(_sessions):
         "repo.example.com", "robovast/manifests/latest", method="GET",
         dockerconfigjson=_cfg())
     assert len(tokens) == 1
+
+
+class _FlakySession(_Session):
+    """Answers with a transport failure *fail_times* times, then normally."""
+
+    def __init__(self, tokens, budget):
+        super().__init__(tokens)
+        self.budget = budget
+
+    def get(self, url, headers=None, params=None, auth=None, timeout=None, verify=None):
+        if "/token" not in url and self.budget:
+            self.budget[0] -= 1
+            raise _Timeout("handshake timed out")
+        return super().get(url, headers=headers, params=params, auth=auth,
+                           timeout=timeout, verify=verify)
+
+    head = get
+
+
+@pytest.fixture
+def _flaky(monkeypatch):
+    """Real `_registry_request` against a transport that fails a set number of times.
+
+    The backoff is shortened rather than zeroed: the give-up rule compares elapsed time
+    against the budget, so a zero wait spins instead of expiring and the test would measure
+    nothing.
+    """
+    monkeypatch.setattr(registry_client, "_TOKENS", {})
+    monkeypatch.setattr(registry_client, "_RETRY_BACKOFF", (0.01,))
+    budget = [0]
+    made: list = []
+
+    class _Requests:
+        @staticmethod
+        def Session():  # pylint: disable=invalid-name
+            s = _FlakySession([], budget if budget[0] else None)
+            made.append(s)
+            return s
+
+        exceptions = _Exceptions
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", _Requests)
+    return budget, made
+
+
+def test_a_registry_that_did_not_answer_is_asked_again(_flaky):
+    """This read gates a campaign launch: the compatibility check refuses a campaign it
+    cannot read the image for, so one TLS handshake timeout refused a campaign on evidence
+    about the network rather than about the image. It happens exactly when it matters, too
+    -- a service upgrade prewarms the family images on every node, and the minutes after
+    one are when a small control request is likeliest to be starved of egress.
+    """
+    budget, made = _flaky
+    budget[0] = 1
+
+    resp = registry_client._registry_request("repo.example.com", "x/manifests/latest",
+                                             method="GET", dockerconfigjson=_cfg(),
+                                             patience_s=1.0)
+
+    assert resp is not None and resp.status_code == 200
+    assert len(made) == 2, "the failed attempt and the one that answered"
+
+
+def test_asking_stops_when_the_budget_is_spent(_flaky):
+    """Bounded by elapsed time rather than by a number of goes: each attempt can itself
+    burn the request timeout, so a count bounds the tries and not the wait."""
+    budget, made = _flaky
+    budget[0] = 999
+
+    resp = registry_client._registry_request("repo.example.com", "x/manifests/latest",
+                                             method="GET", dockerconfigjson=_cfg(),
+                                             patience_s=0.05)
+
+    assert resp is None
+    assert 1 < len(made) < 999, "it kept asking, and it stopped"
+
+
+def test_an_answer_is_never_retried(_sessions):
+    """A status code -- any status code -- is an answer. Repeating a 401 or a 404 spends
+    time to be told the same thing, and would multiply every real refusal by the attempt
+    count."""
+    _tokens, made = _sessions
+
+    registry_client._registry_request("repo.example.com", "x/manifests/latest",
+                                      method="GET", dockerconfigjson=_cfg())
+
+    assert len(made) == 1
+
+
+def test_only_the_launch_check_gets_the_patient_budget():
+    """The same helper backs the image-state probes behind build decisions and status
+    reads, where a path that stalls for minutes to answer "is this image published" is
+    worse served than one that says it does not know. Only the compatibility check has the
+    other trade: unread means the campaign is refused, and a campaign runs for minutes to
+    days -- so its budget is sized against the outage (pulls lasting minutes), not against
+    a person's patience.
+    """
+    assert registry_client.DEFAULT_PATIENCE <= 5
+    assert registry_client.LAUNCH_PATIENCE >= 120
+    # Widening, so a registry that is rate-limiting is owed a growing gap rather than a drum.
+    assert list(registry_client._RETRY_BACKOFF) == sorted(registry_client._RETRY_BACKOFF)
+    assert registry_client._RETRY_BACKOFF[0] < registry_client._RETRY_BACKOFF[-1]
