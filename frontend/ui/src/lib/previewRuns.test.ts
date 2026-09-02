@@ -97,19 +97,31 @@ describe('previewRunRows', () => {
 })
 
 describe('isPreviewable', () => {
-  it('is a running campaign that has recorded a run', () => {
+  it('is a running campaign', () => {
     expect(isPreviewable(summary({ phase: 'running', num_runs: 1 }))).toBe(true)
   })
 
-  it('is not a campaign that has produced nothing yet', () => {
-    // Nothing to list, so the picker would be empty for a reason nobody could act on.
-    expect(isPreviewable(summary({ phase: 'running', num_runs: 0 }))).toBe(false)
+  it('does NOT depend on the recorded run counts', () => {
+    // The regression this predicate exists to avoid. `num_runs` counts `campaign.db`'s run rows,
+    // which the controller writes only once a batch has finished — and a batch-mode campaign has
+    // exactly one batch. Gating on it made the preview unreachable for the entire life of exactly
+    // the campaigns it is for, while reading as correct, because the file IS read live; it is only
+    // written late.
+    expect(isPreviewable(summary({ phase: 'running', num_runs: 0 }))).toBe(true)
   })
 
-  it('is not a search whose every draw failed to compose', () => {
-    // `hasRecordedRuns` counts those as something to show, because the *reason* is worth reading.
-    // There is no run behind them, so there is nothing to replay.
-    expect(isPreviewable(summary({ phase: 'running', num_composition_failed: 3 }))).toBe(false)
+  it('covers the late live phases, where the runs exist but the index does not', () => {
+    // Postprocessing is what writes the index, so until it ends a preview is still the only way in.
+    for (const phase of ['running', 'finishing', 'postprocessing']) {
+      expect(isPreviewable(summary({ phase, num_runs: 0 }))).toBe(true)
+    }
+  })
+
+  it('is not a campaign that has not started running anything', () => {
+    // These phases execute no runs at all, so there is nothing on disk for the picker to list.
+    for (const phase of ['initializing', 'building', 'starting', 'variation', 'importing']) {
+      expect(isPreviewable(summary({ phase, num_runs: 0 }))).toBe(false)
+    }
   })
 
   it('is never true once the campaign is over, whatever its results', () => {

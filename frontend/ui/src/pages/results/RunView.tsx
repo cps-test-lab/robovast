@@ -257,9 +257,14 @@ export function RunView({
   // the picker never lists a campaign whose store was never written, and a selection inherited from
   // another Results view (the campaign is shared) is treated as no selection here rather than
   // queried into a "no store to read" error.
+  // A finished campaign is offered when its store recorded runs; a previewed one when it has a
+  // scene to replay. `hasRecordedRuns` must NOT be asked of a preview: it counts `campaign.db`'s
+  // run rows, written only once a batch has finished, so it is 0 for the whole life of a
+  // batch-mode campaign — see `isPreviewable`.
   const replayable = useMemo(
-    () => campaigns.filter((c) =>
-      hasRecordedRuns(c) && (!isPreviewable(c) || previewable.has(c.campaign_id))),
+    () => campaigns.filter((c) => (isPreviewable(c)
+      ? previewable.has(c.campaign_id)
+      : hasRecordedRuns(c))),
     [campaigns, previewable],
   )
   const available = !!campaignId && replayable.some((c) => c.campaign_id === campaignId)
