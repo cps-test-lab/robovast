@@ -148,7 +148,12 @@ def test_only_the_host_container_is_given_the_index_and_the_store():
     """
     containers = _by_name(_pod_spec())
 
-    assert "env" not in containers["convert"] or containers["convert"]["env"] == []
+    # The property is that it holds no CREDENTIAL, not that it holds no environment: it is
+    # also the container whose progress output the live log is read from, so it carries the
+    # one variable that gets that output out unbuffered.
+    convert_env = {e["name"] for e in containers["convert"].get("env") or []}
+    assert not (convert_env - {"PYTHONUNBUFFERED"}), (
+        f"the conversion runs a stranger's image and was handed {convert_env}")
 
     host_env = {e["name"] for e in containers["host"]["env"]}
     assert DSN_ENV in host_env
@@ -235,3 +240,21 @@ def test_one_tree_is_writable_by_containers_that_run_as_different_users():
         if container["name"] == pj.CONVERT_CONTAINER:
             continue  # it writes as itself; it is the reader of this arrangement
         assert "umask 0002" in " ".join(container["command"]), container["name"]
+
+
+def test_every_container_runs_python_unbuffered():
+    """The campaign log is read from the pod's stdout, and stdout here is a pipe.
+
+    Python block-buffers a pipe, so a step's output would reach the log in ~8 KB clumps long
+    after it happened -- and publishing a running postprocess exists precisely so someone can
+    watch it. The conversion container matters most: it is the longest step and the source of
+    the progress output, and it is the one container deliberately given no other environment,
+    which makes it the easiest to leave out.
+    """
+    containers = _by_name(_pod_spec())
+
+    assert containers, "the manifest defines no containers"
+    for name, container in sorted(containers.items()):
+        env = {e["name"]: e.get("value") for e in container.get("env") or []}
+        assert env.get("PYTHONUNBUFFERED") == "1", (
+            f"container {name} buffers its output, so the live log lags behind it")

@@ -3425,6 +3425,13 @@ class KubernetesBackend(ExecutionBackend):
         self._record_launch_images(campaign_root, runner)
         self._record_execution_yaml(runner, campaign_root, execution_params, runs,
                                     with_locks=False)
+        # And published here, for the same reason it is written here. The driver's disk is
+        # scratch on this lane, so a record that stays on it describes the campaign to nobody:
+        # the next publish is at the batch BOUNDARY, which for a batch-mode campaign -- one
+        # batch -- is after every run has finished. Until then a reader asking what this
+        # campaign is running, or which packages a run's world must be built from, finds no
+        # record of a campaign that has been running for an hour.
+        self.publish_records(campaign_root)
         batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
@@ -3586,30 +3593,49 @@ class KubernetesBackend(ExecutionBackend):
             logger.warning("Could not publish the execution records of %s: %s",
                            campaign_id, e)
 
-    def publish_records(self, campaign_root: str) -> None:
-        """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.
+    #: What a campaign's record is, as paths under its root. Named files rather than the
+    #: ``_execution`` directory: the logs beside them are written continuously and are
+    #: published once, at the boundary where another process starts reading
+    #: (``publish_execution_records``). These three are small, complete the moment they are
+    #: written, and are what a reader needs to say what this campaign IS.
+    _RECORD_FILES = ("campaign.db", "_execution/launch.yaml", "_execution/execution.yaml")
 
-        The one file, not the directory: this runs before any compute is spent and again
-        at every batch boundary, and the campaign root beside it holds the batch's results.
-        ``finalize_campaign`` is what publishes those, once.
+    def publish_records(self, campaign_root: str) -> None:
+        """Publish the campaign's record, so an unfinished campaign still has one.
+
+        Named files, not the directory: this runs before any compute is spent, again as soon
+        as the images are pinned, and again at every batch boundary, and the campaign root
+        beside it holds the batch's results. ``finalize_campaign`` is what publishes those,
+        once.
+
+        The execution record belongs here and not only at the end. This lane's driver disk is
+        scratch, so a record that is written but never uploaded describes the campaign to
+        nobody -- which defeats the reason it is written before the jobs at all (see
+        :meth:`_record_execution_yaml`: a campaign that dies in its first batch should still
+        name the images it ran). It is also what any reader of a LIVE campaign has to go on:
+        the images it names are how the service resolves the packages a run's world must be
+        built from, and asking for that mid-campaign is ordinary.
 
         Best-effort. The campaign is mid-flight and its own result uploads go through the
         same client moments later, so a store that is genuinely unreachable is reported by
         those with a real error rather than by ending the campaign over its bookkeeping.
         """
-        db = os.path.join(campaign_root, "campaign.db")
-        if not os.path.isfile(db):
+        present = [rel for rel in self._RECORD_FILES
+                   if os.path.isfile(os.path.join(campaign_root, rel))]
+        if not present:
             # Nothing to publish yet is not a failure: the local batch runner reaches the
-            # per-batch call before the store has been created in some test lanes.
+            # per-batch call before the store has been created in some test lanes, and the
+            # first call of all runs before anything has been written.
             return
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         try:
             bucket, prefix = in_pod_storage.campaign_storage_location(
                 self.cluster_config, campaign_id)
             storage = in_pod_storage.storage_client_for(self.cluster_config)
-            storage.upload_file(db, bucket, f"{prefix}campaign.db")
+            for rel in present:
+                storage.upload_file(os.path.join(campaign_root, rel), bucket, f"{prefix}{rel}")
         except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
-            logger.warning("Could not publish campaign.db for %s: %s", campaign_id, e)
+            logger.warning("Could not publish the record of %s: %s", campaign_id, e)
 
     def ensure_campaign_root_complete(self, campaign_root: str) -> None:
         """Fetch whatever of *campaign_root* resume left in the object store.
