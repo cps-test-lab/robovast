@@ -590,9 +590,13 @@ function CampaignCard({ summary, newest, openedByLink }: {
   const canExplore = hasResults(summary)
   // A preview replays a run's 3D recording and shows nothing else, so it is offered only where
   // there is a scene to replay — asked of the campaign's served panel list, and only for a campaign
-  // that could be previewed at all (one that is running, with a run recorded). The same question
-  // the Run view's picker asks, under the same key, so the two cannot offer different campaigns.
-  const mightPreview = isPreviewable(summary) && hasRecordedRuns(summary)
+  // that could be previewed at all. The same question the Run view's picker asks, under the same
+  // key, so the two cannot offer different campaigns.
+  //
+  // Deliberately not also gated on `hasRecordedRuns`: that counts `campaign.db`'s run rows, which
+  // are written only once a batch has finished, so it is 0 for the whole life of a batch-mode
+  // campaign — see `isPreviewable`.
+  const mightPreview = isPreviewable(summary)
   const previewPanels = useQuery({
     queryKey: ['panels', id],
     queryFn: () => robovast.listCampaignPanels(id),
@@ -601,7 +605,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
     staleTime: 60_000,
   })
   const previewing = mightPreview && declaresScene3d(previewPanels.data?.panels) === true
-  const canReplay = hasRecordedRuns(summary) && (canExplore || previewing)
+  // A finished campaign still has to have recorded runs; a previewed one must not be asked, for
+  // the reason above.
+  const canReplay = (canExplore && hasRecordedRuns(summary)) || previewing
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is

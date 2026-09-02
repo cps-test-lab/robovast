@@ -107,15 +107,30 @@ export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocess
 export const hasRecordedRuns = (c: CampaignSummary) =>
   c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
+// The phases in which a campaign can already have finished runs on disk. The earlier live phases
+// (`initializing`, `building`, `variation`, …) run nothing, so offering a preview there would be an
+// invitation to an empty view for a reason that has not happened yet. `finishing` and
+// `postprocessing` still qualify: the runs are all there and the index is not written until
+// postprocessing ends, so a preview is still the only way to see them.
+const PREVIEWABLE_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'running', 'finishing', 'postprocessing',
+])
+
 // Whether the Run view may replay this campaign's finished runs *while it is still running*.
 // A preview: the 3D scene replays from each run's own capture file, and nothing else works, because
 // a running campaign has no rows in the index at all (they are written by postprocessing).
 //
-// This is deliberately NOT the same question as "has something to replay". A capture is written at a
-// run's clean stop, so a campaign on its first run passes this and has nothing to show yet; answering
-// exactly would mean probing every run of every card. The Run view says "no run has finished yet"
-// instead — a state that resolves itself within one run.
-export const isPreviewable = (c: CampaignSummary) => isRunning(c) && c.num_runs > 0
+// Deliberately NOT gated on `num_runs`, and this is the whole point of the predicate rather than a
+// detail: those counts come from the `run` rows of `campaign.db`, which the controller writes only
+// once a batch has FINISHED — a batch-mode campaign has exactly one batch, so `num_runs` is 0 for
+// its entire life. Gating on it made the preview unreachable for exactly the campaigns it exists
+// for, while looking correct, because the file is read live even though it is not written live.
+//
+// So this asks only whether runs can exist yet. Whether any actually do is answered where it can be
+// answered honestly — by the run listing, which is the picker's source anyway. A campaign on its
+// first run is offered and says "no run has finished yet", a state that resolves itself within one
+// run; that is the deliberate cost of not asking a question no cheap signal can answer.
+export const isPreviewable = (c: CampaignSummary) => PREVIEWABLE_PHASES.has(c.phase)
 
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 

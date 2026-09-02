@@ -11,13 +11,17 @@ import {
 } from '@mui/x-tree-view/TreeItem2'
 import { TreeItem2Icon } from '@mui/x-tree-view/TreeItem2Icon'
 import { TreeItem2Provider } from '@mui/x-tree-view/TreeItem2Provider'
+import { livePulseSx } from '@/components/PhaseChip'
 import { statusColor, type NodeStatus, type ResultsTreeItem } from '@/lib/resultsTree'
 
 const STATUS_TITLE: Record<NodeStatus, string> = {
   passed: 'passed',
   failed: 'failed',
   skipped: 'skipped — the configuration could not be built from these parameters, so it never ran',
-  running: 'running',
+  // Said at length because this dot is the answer to "why are there only four runs here?" — the
+  // campaign is still producing them. Only a campaign node is ever `running`: a run's verdict is
+  // read from what it wrote, so it is `unknown` until it has written one.
+  running: 'still running — more runs appear here as they finish',
   unknown: 'no verdict',
   neutral: 'nothing to judge yet',
 }
@@ -67,6 +71,11 @@ export const StatusTreeItem = forwardRef(function StatusTreeItem(
                 flexShrink: 0,
                 mr: 1,
                 bgcolor: statusColor(item.status),
+                // A live campaign's dot breathes, the same way the monitor's phase dot does — the
+                // one thing on a still tree that moves, which is what makes "this list is not
+                // finished yet" legible before anything is read. The verdict dot is already here
+                // and already amber for a running campaign; this only stops it looking settled.
+                ...(item.status === 'running' ? livePulseSx : {}),
               }}
             />
           ) : null}
