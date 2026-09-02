@@ -1399,6 +1399,135 @@ class ClusterService(LocalTransport):
 
         return _read
 
+    def _store_section_names(self, campaign_id: str) -> list[str]:
+        """Names under the campaign's durable ``_execution/``, relative to it.
+
+        One listing, for the reader that has no local copy to enumerate: an archived
+        section's name carries the sequence that orders it, so a campaign whose repeatable
+        phases ran more than once cannot be assembled without knowing which names exist.
+
+        Fails soft to ``[]``, like :meth:`_store_phase_bytes` fails soft to ``None``: the
+        live base files are named unconditionally by the caller, so an unreachable store
+        costs the archived sections of an old campaign, not the log.
+        """
+        from robovast.common.campaign_logs import EXECUTION_DIR
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            base = f"{prefix}{EXECUTION_DIR}/"
+            return [key[len(base):] for key in storage.list_keys(bucket, base)
+                    if key.startswith(base)]
+        except Exception as e:  # noqa: BLE001 - best-effort; see the docstring
+            logger.debug("could not list the execution dir of %s: %s", campaign_id, e)
+            return []
+
+    def _archive_repeatable_sections(self, campaign_id: str) -> None:
+        """Move every finished repeatable-phase log aside, before a new run writes one.
+
+        A repeatable phase (postprocess, share) writes the same filename every time it
+        runs. Left in place, the next run either replaces those bytes or appends to them,
+        and either way the assembled campaign log stops being append-only: the reader
+        streams it by byte offset, so a section that changes behind an offset already
+        consumed is a section nobody is ever shown. Archived under
+        ``_execution/sections/<seq>-<phase>.log``, it is finished and immutable, the new
+        run's file is the only one still growing, and
+        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last.
+
+        **All** of them, not only the phase about to run, so at most one live base file
+        exists and "the live one is last" has exactly one answer.
+
+        One sequence across the store and both local roots, allocated from everything
+        already archived anywhere, so the same run of a phase gets the same name wherever
+        its copy lives and the two listings cannot disagree about the order.
+
+        The store keeps the base object and it is **truncated**, not deleted: the only
+        delete this API offers is by prefix, and it appends a ``/`` to whatever it is given
+        (so it would refuse the exact key rather than remove it -- and a prefix delete that
+        did match would take siblings). An empty base object is also the honest state
+        between the archive and the new run's first publish, and it grows from there.
+
+        Best-effort throughout: an operation must run even when the account of the
+        previous one could not be moved. What a failure costs is a duplicated section
+        until the new run publishes over the base file, which is worth strictly less than
+        the postprocess it would otherwise block.
+        """
+        from robovast.common.campaign_logs import (EXECUTION_DIR, REPEATABLE_PHASES,
+                                                   disk_section_names, next_section_seq,
+                                                   section_name)
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        roots = [self._cache_dir(campaign_id)]
+        if entry is not None:
+            roots.append(Path(entry.results_dir) / campaign_id)
+        existing = list(self._store_section_names(campaign_id))
+        for root in roots:
+            existing += disk_section_names(root)
+        seq = next_section_seq(existing)
+        for base in REPEATABLE_PHASES:
+            target = section_name(seq, base)
+            moved = self._archive_stored_section(campaign_id, base, target,
+                                                 mirror_root=roots[0])
+            for root in roots:
+                live = Path(root) / EXECUTION_DIR / base
+                if not live.exists():
+                    continue
+                try:
+                    (Path(root) / EXECUTION_DIR / target).parent.mkdir(
+                        parents=True, exist_ok=True)
+                    live.replace(Path(root) / EXECUTION_DIR / target)
+                    moved = True
+                except OSError as e:
+                    logger.warning("Could not archive %s of %s under %s: %s",
+                                   base, campaign_id, root, e)
+            if moved:
+                # Consumed only when something actually moved: a phase that never ran
+                # would otherwise burn a number and leave a gap in the campaign's order.
+                seq += 1
+
+    def _archive_stored_section(self, campaign_id: str, base: str, target: str, *,
+                                mirror_root) -> bool:
+        """Copy the durable *base* phase log to *target* and empty it. ``True`` if moved.
+
+        The copy is landed under *mirror_root* as well, and that is not a cache
+        optimisation: the reader of a **tracked** campaign names the archived sections from
+        its local roots, because listing the store behind an SSE poll is the round-trip
+        this path exists to avoid. A phase whose log lives only in the store -- a
+        postprocess publishes from the pod's own tree -- would otherwise be archived where
+        no tracked reader can name it, and the section would vanish from the stream for as
+        long as the operation runs.
+        """
+        from robovast.common.campaign_logs import EXECUTION_DIR
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            key = f"{prefix}{EXECUTION_DIR}/{base}"
+            raw = storage.read_object(bucket, key)
+            if not raw:
+                return False
+            with tempfile.TemporaryDirectory() as tmp:
+                archived = Path(tmp) / "section.log"
+                archived.write_bytes(raw if isinstance(raw, bytes)
+                                     else raw.encode("utf-8", "replace"))
+                storage.upload_file(str(archived), bucket,
+                                    f"{prefix}{EXECUTION_DIR}/{target}")
+                local = Path(mirror_root) / EXECUTION_DIR / target
+                local.parent.mkdir(parents=True, exist_ok=True)
+                local.write_bytes(archived.read_bytes())
+                # Only after the copy is up, so a failure here leaves the section
+                # duplicated rather than lost.
+                empty = Path(tmp) / "empty.log"
+                empty.write_bytes(b"")
+                storage.upload_file(str(empty), bucket, key)
+            return True
+        except Exception as e:  # noqa: BLE001 - never block the operation; see the caller
+            logger.warning("Could not archive the stored %s of %s: %s", base,
+                           campaign_id, e)
+            return False
+
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
 
@@ -1418,8 +1547,12 @@ class ClusterService(LocalTransport):
         the whole time. That is not detectable as a bug from the reader's side: a
         missing phase file is also how "this phase has not run" looks.
         """
-        from robovast.common.campaign_logs import (assemble_log, disk_get_bytes,
-                                                   layered_by_writer)
+        from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log,
+                                                   disk_get_bytes, disk_section_names,
+                                                   layered_by_writer, layered_get_bytes,
+                                                   ordered_sections)
+        # Every phase's live file, whether or not it is there; see `available` below.
+        live = [filename for _banner, filename in INFRA_PHASES]
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         store = self._store_phase_bytes(campaign_id)
@@ -1433,13 +1566,32 @@ class ClusterService(LocalTransport):
             # of phases, so a campaign this process drives costs no store call at all: that
             # read sits behind an SSE stream that re-polls while a user watches.
             campaign_dir = Path(entry.results_dir) / campaign_id
-            get_bytes = layered_by_writer(disk_get_bytes(campaign_dir), store,
+            # Two local roots, because a re-triggered operation does not work where the
+            # campaign is tracked: it works against the cache dir `_materialize` fills.
+            # Both are ordinary directory reads, so covering the second costs no round
+            # trip -- and the archived sections a retrigger moves aside land there.
+            cache_dir = self._cache_dir(campaign_id)
+            local = layered_get_bytes(disk_get_bytes(campaign_dir),
+                                      disk_get_bytes(cache_dir))
+            get_bytes = layered_by_writer(local, store,
                                           entry.elsewhere_written_phase_files)
+            # Archived sections are discovered from the local roots -- their names carry
+            # the sequence, and only what exists can be ordered. The live base files are
+            # named unconditionally instead of listed: a tracked campaign's phase file may
+            # exist only in the store (a postprocess publishes from the pod's own tree, not
+            # into either root), and listing this path's sources would drop that whole
+            # section. A name whose bytes are nowhere is skipped by `assemble_log`, so
+            # naming one costs nothing, where missing one costs a section.
+            available = (live
+                         + disk_section_names(campaign_dir)
+                         + disk_section_names(cache_dir))
             eof = self._is_done(entry)
         else:  # past / reaped campaign: the store holds every phase file's durable copy
             get_bytes = store
+            available = live + self._store_section_names(campaign_id)
             eof = True
-        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof)
+        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof,
+                                              sections=ordered_sections(available))
         return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
     # -- jobs (live) --------------------------------------------------------
@@ -3671,6 +3823,9 @@ class ClusterService(LocalTransport):
             else:
                 notifier.postprocessing_failed(message)
 
+        # Before the dispatch, so no writer of a repeatable phase file is running while its
+        # finished predecessor is moved aside: the campaign log may only grow at its end.
+        self._archive_repeatable_sections(request.campaign_id)
         # The pod writes postprocessing.log into its own staged tree and publishes it, so
         # the copy under the tracked root is whatever an earlier attempt left there.
         return self._dispatch_background(
@@ -3748,6 +3903,10 @@ class ClusterService(LocalTransport):
             state.update(share_error=status.share_error)
             state.set_phase(Phase.FINISHED)
 
+        # Before the dispatch, for the same reason as the postprocess, and one more: the
+        # handler `work` opens on share.log APPENDS, so an earlier export's copy left in the
+        # materialised root would become the head of this export's section.
+        self._archive_repeatable_sections(request.campaign_id)
         # Same as the postprocess: this writes share.log into a materialised root and
         # publishes it, never into the tracked one a local read looks in.
         return self._dispatch_background(

@@ -15,8 +15,9 @@ it was given, then the one still running -- always last, because it is the only 
 bytes are still arriving.
 """
 
-from robovast.common.campaign_logs import (assemble_log, next_section_seq,
-                                           ordered_sections, section_name)
+from robovast.common.campaign_logs import (assemble_log, disk_section_names,
+                                           next_section_seq, ordered_sections,
+                                           section_name)
 
 
 def test_a_repeated_phase_lands_after_the_one_that_followed_it_the_first_time():
@@ -98,3 +99,33 @@ def test_the_next_sequence_follows_the_highest_used():
                              "sections/0002-share.log"]) == 3
     # Unrelated names do not consume a number.
     assert next_section_seq(["build.log", "sections/0007-share.log", "notes.txt"]) == 8
+
+
+def test_overlapping_listings_may_simply_be_concatenated():
+    """A reader unions several listings of one campaign (two local roots, or a local root
+    and the store). A name repeated there must not repeat its section: a section counted
+    twice is bytes inserted mid-stream on the next poll."""
+    names = ["build.log", section_name(1, "postprocessing.log"), "share.log"]
+    order = ordered_sections(names + names)
+
+    assert [name for _banner, name in order] == names
+
+
+def test_a_disk_listing_names_sections_the_way_the_order_reads_them(tmp_path):
+    """The two must agree on the form of a name, or an archived section is invisible to the
+    reader that just found it on disk."""
+    exec_dir = tmp_path / "_execution"
+    (exec_dir / "sections").mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"ran\n")
+    (exec_dir / "sections" / "0001-share.log").write_bytes(b"exported\n")
+
+    names = disk_section_names(tmp_path)
+
+    assert sorted(names) == ["controller.log", "sections/0001-share.log"]
+    assert ordered_sections(names) == [("RUN", "controller.log"),
+                                       ("SHARE", "sections/0001-share.log")]
+
+
+def test_a_campaign_with_nothing_on_disk_lists_nothing(tmp_path):
+    """The normal case for a reader with no local copy, not an error."""
+    assert disk_section_names(tmp_path / "never-here") == []
