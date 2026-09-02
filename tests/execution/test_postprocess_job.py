@@ -1194,6 +1194,8 @@ def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
 
     assert ok is True
     assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
+
+
 # -- Unknown is not failure --------------------------------------------------
 #
 # The conversion Job is a cluster object that outlives the process waiting on it. So the
@@ -1329,3 +1331,67 @@ def test_an_unknown_outcome_reaches_the_caller_without_a_failure_log(monkeypatch
 
     assert ok is None and message == "outcome unknown"
     assert not authored
+
+
+# -- re-attaching to a Job this process did not submit -----------------------
+#
+# The Job outlives the service process, and only the waiter writes the campaign's verdict.
+# So a waiter that has no submit half is needed, and it has to be a waiter and nothing
+# more: everything the Job mounts belongs to the attempt that created it.
+
+
+def _reattach(monkeypatch, core, batch, published):
+    cluster_config = types.SimpleNamespace(
+        get_s3_credentials=lambda: ("key", "secret"),
+        get_s3_endpoint=lambda: "https://store.example.com")
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: "test")
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr(pj, "publish_live_log",
+                        lambda *a, **k: published.append("log"))
+    monkeypatch.setattr(pj, "record_job_outputs",
+                        lambda cfg, cid, root, ok, message, force=False: (ok, message))
+    return pj.reattach_conversion_job(cluster_config, "camp", "/nonexistent", "ns",
+                                     pj.campaign_job_name("camp"))
+
+
+def test_reattaching_waits_and_records_without_submitting_anything(monkeypatch):
+    """A live Job's outcome is recorded, and nothing about the Job is written.
+
+    No second Job, and no touch of the scripts ConfigMap it is executing out of: the
+    kubelet syncs new ConfigMap content into every mount of it, so a waiter that wrote them
+    would kill the healthy conversion it is waiting for and then report the failure as the
+    campaign's.
+    """
+    calls = []
+    published = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=1, calls=calls)
+
+    ok, message = _reattach(monkeypatch, core, batch, published)
+
+    assert ok is True and "complete" in message
+    assert calls == ['read-job']
+    # And the live log keeps being published while it waits: nothing the pod writes leaves
+    # it until it exits, so this is the only account of a running conversion anyone has.
+    assert published == ["log"]
+
+
+def test_a_job_that_cannot_be_read_yields_no_verdict(monkeypatch):
+    """``ok is None``, so the caller writes nothing.
+
+    A Job that is absent, finished, or on an unreadable API server is one this process did
+    not observe. Recording a failure for it would mark a campaign whose conversion
+    succeeded as having derived nothing -- worse than the stale record it replaces, because
+    it reads as a fresh finding.
+    """
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, message = _reattach(monkeypatch, core, batch, [])
+
+    assert ok is None
+    assert "no longer active" in message
+    assert calls == ['read-job']

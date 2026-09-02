@@ -239,6 +239,11 @@ class ClusterService(LocalTransport):
         if reap_on_start:
             self.reap_orphans()
             self.resume_interrupted_campaigns()
+            # After the resume, and separately from it: a campaign whose postprocess is
+            # still running has recorded an ending, so the resume above passes over it by
+            # design. Only a waiter writes what that Job did, so without this the previous
+            # attempt's verdict stands over a conversion that succeeded.
+            self.reattach_live_postprocessing()
 
     # -- version ------------------------------------------------------------
 
@@ -3760,8 +3765,6 @@ class ClusterService(LocalTransport):
         (``postprocess_job._write_failure_log``), which is what keeps a failed postprocess
         visible in the campaign log where a successful one is read.
         """
-        from robovast.execution.status_recovery import record_step_outcome
-
         from .postprocess_job import postprocess_campaign
 
         def work(state):
@@ -3781,47 +3784,11 @@ class ClusterService(LocalTransport):
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
                 kube_context=self.kube_context, state=state)
-            # Re-materialised after the pod has run, because the pod is what wrote the
-            # provenance marker and the run rows this reconstruction reads: without this,
-            # the Status is rebuilt from the copies pulled *before* the postprocess and a
-            # campaign that was just postprocessed is recorded as carrying no derived data.
-            campaign_root = self._materialize(
-                request.campaign_id, self._SHARE_STATUS_OBJECTS,
-                "the campaign's postprocessing status")
-            status = record_step_outcome(campaign_root, postprocessing=(ok, message))
-            # Publish _execution (outcome + the conversion's postprocessing.log, even on
-            # failure) so the result survives a restart and the Monitor can read it.
-            #
-            # Reported as its own failure rather than raised, because the two are different
-            # findings that a shared handler renders identical: the postprocess may have
-            # succeeded and only the account of it be missing. A reader told "postprocessing
-            # failed" would go looking for a fault in the campaign instead of at the store.
-            try:
-                self._publish_execution(request.campaign_id, campaign_root)
-            except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
-                logger.exception("Could not publish the postprocessing account for %s",
-                                 request.campaign_id)
-                detail = (f"the account of this postprocess was written but could not be "
-                          f"published, so the campaign log may not show it: {e}")
-                message = f"{message} ({detail})" if not ok else detail
-                state.update(error=detail)
-            state.update(postprocessed=status.postprocessed,
-                         postprocessing_error=status.postprocessing_error)
-            state.set_phase(Phase.FINISHED)
-            # Same one-shot notifier as the local lane, and it matters more here: this is
-            # the detached lane the push notifications exist for.
-            notifier = self._notifier(request.campaign_id)
-            if ok:
-                notifier.postprocessed()
-            elif ok is None:
-                # No push at all while the outcome is open: both notifications are
-                # terminal statements about the campaign, and ``None`` says the Job could
-                # not be read -- announcing a failure over a conversion that may be
-                # finishing is the one message that cannot be taken back.
-                logger.warning("Postprocessing outcome for %s is unknown, so no "
-                               "notification is sent: %s", request.campaign_id, message)
-            else:
-                notifier.postprocessing_failed(message)
+            # The recording re-materialises after the pod has run, because the pod is what
+            # wrote the provenance marker and the run rows the reconstruction reads: from
+            # the copies pulled *before* the postprocess, a campaign that was just
+            # postprocessed is recorded as carrying no derived data.
+            self._record_postprocess_outcome(request.campaign_id, state, ok, message)
 
         # Before the dispatch, so no writer of a repeatable phase file is running while its
         # finished predecessor is moved aside: the campaign log may only grow at its end.
@@ -3831,6 +3798,105 @@ class ClusterService(LocalTransport):
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work,
             elsewhere_written_phase_files={"postprocessing.log"})
+
+    def _record_postprocess_outcome(self, campaign_id: str, state, ok: bool,
+                                    message: str) -> None:
+        """Write and publish a postprocessing verdict, and notify on it.
+
+        One definition for the process that submitted the Job and the one that only waited
+        for it (:meth:`reattach_postprocessing`): the campaign has a single record of what
+        its postprocess did, so two writers of it would be two answers a reader cannot
+        choose between.
+        """
+        from robovast.execution.status_recovery import record_step_outcome
+        campaign_root = self._materialize(
+            campaign_id, self._SHARE_STATUS_OBJECTS,
+            "the campaign's postprocessing status")
+        status = record_step_outcome(campaign_root, postprocessing=(ok, message))
+        # Publish _execution (outcome + the conversion's postprocessing.log, even on
+        # failure) so the result survives a restart and the Monitor can read it.
+        #
+        # Reported as its own failure rather than raised, because the two are different
+        # findings that a shared handler renders identical: the postprocess may have
+        # succeeded and only the account of it be missing. A reader told "postprocessing
+        # failed" would go looking for a fault in the campaign instead of at the store.
+        try:
+            self._publish_execution(campaign_id, campaign_root)
+        except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
+            logger.exception("Could not publish the postprocessing account for %s",
+                             campaign_id)
+            detail = (f"the account of this postprocess was written but could not be "
+                      f"published, so the campaign log may not show it: {e}")
+            message = f"{message} ({detail})" if not ok else detail
+            state.update(error=detail)
+        state.update(postprocessed=status.postprocessed,
+                     postprocessing_error=status.postprocessing_error)
+        state.set_phase(Phase.FINISHED)
+        # Same one-shot notifier as the local lane, and it matters more here: this is
+        # the detached lane the push notifications exist for.
+        notifier = self._notifier(campaign_id)
+        if ok:
+            notifier.postprocessed()
+        elif ok is None:
+            # No push at all while the outcome is open: both notifications are terminal
+            # statements about the campaign, and ``None`` says the Job could not be read --
+            # announcing a failure over a conversion that may be finishing is the one
+            # message that cannot be taken back.
+            logger.warning("Postprocessing outcome for %s is unknown, so no "
+                           "notification is sent: %s", campaign_id, message)
+        else:
+            notifier.postprocessing_failed(message)
+
+    def reattach_live_postprocessing(self) -> dict:
+        """Wait on the postprocessing Jobs a previous service process left running.
+
+        Its own concern beside :meth:`resume_interrupted_campaigns`, not part of it: that
+        one picks up campaigns owed work, and a retriggered postprocess runs on a campaign
+        whose ``outcome.json`` is already terminal -- which resume excludes on purpose, so
+        that a finished campaign is never restarted. What is owed here is a *verdict*, not
+        work: the Job is running and will finish either way, and only a waiter writes what
+        it did into the campaign.
+
+        Returns ``{campaign_id: job name}`` for the Jobs now being waited on; see
+        :mod:`.postprocess_reattach` for how they are found. Never raises.
+        """
+        from . import postprocess_reattach
+        return postprocess_reattach.reattach_all(self)
+
+    def reattach_postprocessing(self, campaign_id: str, job_name: str) -> bool:
+        """Wait for *job_name* in the background and record its outcome. False if busy.
+
+        Dispatched exactly as a retrigger is, so the campaign reads as POSTPROCESSING while
+        the Job runs and its live log keeps being published -- and so a launch or a
+        retrigger arriving over the API meets the same busy campaign it would meet if this
+        process had submitted the Job itself.
+
+        Nothing is submitted, created or replaced: the Job already mounts the scripts it
+        was created with, and writing those again swaps the script out from under the
+        running interpreter (see ``postprocess_job.reattach_conversion_job``). An outcome
+        that could not be established is logged and left unwritten -- the previous record
+        standing is wrong, but a verdict this process did not observe would be worse.
+        """
+        from .postprocess_job import reattach_conversion_job
+
+        def work(state):
+            campaign_root = self._materialize(
+                campaign_id, self._SHARE_STATUS_OBJECTS,
+                "the campaign's postprocessing status")
+            ok, message = reattach_conversion_job(
+                self._cluster_config(), campaign_id, str(campaign_root), self.namespace,
+                job_name, kube_context=self.kube_context)
+            if ok is None:
+                logger.info("Left the postprocessing record of %s alone: %s",
+                            campaign_id, message)
+                state.set_phase(Phase.FINISHED)
+                return
+            self._record_postprocess_outcome(campaign_id, state, ok, message)
+
+        result = self._dispatch_background(
+            campaign_id, phase=Phase.POSTPROCESSING, work=work,
+            elsewhere_written_phase_files={"postprocessing.log"})
+        return bool(result.ok)
 
     #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is a
     #: legacy staging copy carried by campaigns converted before the conversion wrote the
