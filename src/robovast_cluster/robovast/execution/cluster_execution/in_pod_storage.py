@@ -495,18 +495,18 @@ class _S3StorageClient(StorageClient):
         naming the endpoint, what was being attempted (*what*, phrased to follow
         "while") and the transport's own reason. This is the single place every S3
         operation here funnels through, so no caller has to enumerate botocore's
-        transport exceptions to avoid a 90-line traceback; the one that did, for
-        ``EndpointConnectionError`` only, still 500'd on a connection reset.
+        transport exceptions to avoid a 90-line traceback. The tuple and the sentence
+        come from :mod:`store_errors`, which the S3 callers outside this class share:
+        one list of what counts as "no answer", so no path is left translating a
+        subset of it.
         """
-        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
-            ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError, ReadTimeoutError)
-
         from robovast.common.errors import \
             ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.common.shutdown import \
             is_shutting_down  # pylint: disable=import-outside-toplevel
-        transient = (ReadTimeoutError, ConnectTimeoutError,
-                     EndpointConnectionError, ConnectionClosedError)
+
+        from . import store_errors  # pylint: disable=import-outside-toplevel
+        transient = store_errors.transport_exceptions()
         last = None
         for attempt in range(self._reconnect_attempts):
             try:
@@ -529,15 +529,8 @@ class _S3StorageClient(StorageClient):
                     "retrying (attempt %d/%d)",
                     type(exc).__name__, attempt + 2, self._reconnect_attempts)
                 self._connect(force_reconnect=True)
-        # botocore's message already quotes the endpoint URL, but of the failed
-        # *request* — for a port-forward that rotates, the client's current endpoint is
-        # the one an operator can probe, so name it here.
         raise ObjectStoreUnreachableError(
-            f"Object store at {self._endpoint} is unreachable while {what}: {last}. "
-            "Check that the object store (MinIO) is running; off-cluster it is reached "
-            "through a kubectl port-forward, which the service's keep-alive reopens "
-            "within ~10 s of a stall — so retrying shortly may be all that is needed."
-        ) from last
+            store_errors.unreachable_message(self._endpoint, what, last)) from last
 
     @staticmethod
     def _strip_expect_header(request, **kwargs):
