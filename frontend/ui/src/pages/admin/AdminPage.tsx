@@ -118,6 +118,12 @@ export function AdminPage() {
     // least able to spot as stale. Same period as the upgrade read below, so the two lines
     // cannot disagree by more than one interval; it is a cheap in-pod read either way.
     refetchInterval: 60_000,
+    // And on the way back to the tab, ahead of the next tick: returning to a window left open
+    // is the moment someone asks what is deployed, and a minute of the previous answer is the
+    // stale reading this panel is worst at. The app disables focus refetching by default (see
+    // main.tsx) because most views here read listings that cost real work; these two lines do
+    // not, so they opt back in.
+    refetchOnWindowFocus: true,
     retry: false,
   })
   const upgrade = useQuery({
@@ -133,6 +139,9 @@ export function AdminPage() {
     // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
     // thing to do, and it must not spend a registry round trip each time.
     staleTime: 10_000,
+    // Re-read on return to the tab, like the version above -- and the floor is what keeps that
+    // affordable, since a focus is far more frequent than the poll it short-circuits.
+    refetchOnWindowFocus: true,
     retry: false,
   })
 
