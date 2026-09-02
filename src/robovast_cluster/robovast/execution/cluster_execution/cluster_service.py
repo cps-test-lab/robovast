@@ -3744,7 +3744,10 @@ class ClusterService(LocalTransport):
         return postprocess_campaign(
             self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
             force=force, skip=list(skip or []), kube_context=self.kube_context,
-            state=state)
+            state=state,
+            # The same queue the campaign's trials went through, so this pod waits for room
+            # rather than being created against a cluster that has none.
+            admission=self._admission_controller())
 
     def run_postprocessing(self, request) -> ActionResult:
         """(Re)run analysis postprocessing for a cluster campaign, as a monitored
@@ -3783,7 +3786,8 @@ class ClusterService(LocalTransport):
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
-                kube_context=self.kube_context, state=state)
+                kube_context=self.kube_context, state=state,
+                admission=self._admission_controller())
             # The recording re-materialises after the pod has run, because the pod is what
             # wrote the provenance marker and the run rows the reconstruction reads: from
             # the copies pulled *before* the postprocess, a campaign that was just

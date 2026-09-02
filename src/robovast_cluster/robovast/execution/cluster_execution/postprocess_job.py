@@ -54,7 +54,8 @@ from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
 from . import postprocess_usage
-from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+from .node_placement import (CAMPAIGN_NODE_TOLERATIONS, NODE_ID_LABEL,
+                             job_node_pool)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,26 @@ CONVERT_CONTAINER = "convert"
 
 #: Name of the container that runs everything after the conversion.
 HOST_CONTAINER = "host"
+
+#: Where postprocessing ranks in the admission queue. Above a campaign's trials (0) and above
+#: a calibration probe (1).
+#:
+#: **Because this is the step that turns a finished campaign into results, and it is one short
+#: pod.** A trial that waits is a campaign progressing more slowly; postprocessing that waits
+#: is a campaign that has already spent all its compute and has nothing to show for it -- and
+#: it is submitted last by construction, so on a cluster kept full by other campaigns a queue
+#: ordered by submission alone would never reach it. It also releases its reservation in
+#: seconds to minutes rather than for the length of a batch, so ranking it first delays the
+#: work below it by very little.
+#:
+#: Above a probe for the same reason it is above trials, and the two barely compete: a probe
+#: gates its own campaign's runs, while this gates a finished campaign's output.
+POSTPROCESS_PRIORITY = 2
+
+#: Distinguishes this campaign's postprocessing from its trials in the queue's ledger, which
+#: is keyed by owner. Same device as the calibration probe's suffix, and for the same reason:
+#: one campaign has two kinds of work outstanding, and a refusal message must name which.
+_POSTPROCESS_OWNER_SUFFIX = ":postprocess"
 
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
@@ -202,6 +223,122 @@ def raised_to(floor: dict, declared: dict) -> dict:
             # reaching here means a caller bypassed it; the floor is the safe answer.
             continue
     return out
+
+
+def pod_sizing(manifest: dict):
+    """What the scheduler will charge this pod, as a :class:`~.node_admission.JobSizing`.
+
+    **The maximum over the steps, not their sum**, which is where a reader will reach for
+    ``JobSizing``'s own docstring and be misled: a pod's request *is* the sum of its
+    containers' for a pod of ordinary containers, and that is what it says. Staging and
+    conversion here are initContainers, which run to completion one at a time before the main
+    container starts, so Kubernetes charges ``max(max(init requests), sum(container
+    requests))``. Asking for the sum would demand something like ten cores on behalf of a pod
+    that requests four, and the queue would hold it out of a cluster that had room -- the
+    opposite of what this exists to fix.
+    """
+    from .node_admission import JobSizing  # noqa: PLC0415
+
+    spec = manifest["spec"]["template"]["spec"]
+
+    def _requests(container, resource, convert):
+        raw = ((container.get("resources") or {}).get("requests") or {}).get(resource)
+        return (convert(raw) or 0) if raw is not None else 0
+
+    def _charge(resource, convert):
+        inits = [_requests(c, resource, convert) for c in spec.get("initContainers", [])]
+        mains = sum(_requests(c, resource, convert) for c in spec.get("containers", []))
+        return max([*inits, mains]) if (inits or mains) else 0
+
+    return JobSizing(cpu=_charge("cpu", to_cores),
+                     memory=int(_charge("memory", to_bytes)))
+
+
+def _pin_to(manifest: dict, node_id) -> dict:
+    """Confine the pod to the operator's node pool, then to the node admission granted.
+
+    The pin is what makes the grant mean something: the queue found room on a particular
+    machine, and a pod free to land anywhere can still arrive at a full one -- which is the
+    ``Unschedulable`` this path exists to avoid. The pool must reach the pod for the reason
+    the trial path gives: the budget provider counts only nodes inside it, so a pod outside
+    would run on capacity nothing reserved.
+    """
+    spec = manifest["spec"]["template"]["spec"]
+    selector = {**(spec.get("nodeSelector") or {}), **job_node_pool()}
+    if node_id:
+        selector[NODE_ID_LABEL] = node_id
+    if selector:
+        spec["nodeSelector"] = selector
+    return manifest
+
+
+def await_admission(admission, campaign_id: str, name: str, manifest: dict,
+                    timeout: float = _DEFAULT_TIMEOUT, poll: float = _POLL_SECONDS) -> tuple:
+    """Wait for the queue to find room for this pod. Returns ``(ok, node_id, message)``.
+
+    **Why this pod queues at all.** Its cpu request equals its limit, so on a cluster kept
+    full by other campaigns' trials -- which pack by request and burst past it -- no node has
+    that much *free*, and a pod created regardless is simply ``Unschedulable``. Leaving it
+    Pending for Kubernetes to place later is not the alternative it looks like: this
+    deployment reads an unschedulable pod as a failure and says so, which is right for a pod
+    that can never fit and wrong for one waiting behind work that will finish. The queue is
+    what tells those apart -- :meth:`~.node_admission.AdmissionController.preflight` refuses
+    the first permanently, and the second is an ordinary wait.
+
+    The grant is recorded here and the Job created by the caller immediately after, rather
+    than from inside the callback: everything the create has to get right -- adopting a Job
+    already in flight, replacing a finished one of the same name, owning the ConfigMap it
+    mounts -- is a sequence this must not be threaded through. The reservation is held from
+    the grant until :func:`run_conversion_job` releases it, so it spans the pod's whole life;
+    the window in which the queue believes a pod exists slightly before it does is the width
+    of one API call, and the next budget reading reconciles it against the real pod anyway.
+    """
+    from .node_admission import CREATED, AdmissionRefused  # noqa: PLC0415
+    from .node_admission import campaign_start_key  # noqa: PLC0415
+
+    sizing = pod_sizing(manifest)
+    granted = {}
+
+    try:
+        # Permanent, so it raises rather than waits: a pod larger than any node in the
+        # cluster is a figure to change, and waiting for a machine that does not exist would
+        # hold the campaign's results forever with nothing said.
+        admission.preflight(sizing)
+    except AdmissionRefused as exc:
+        return False, None, (
+            f"postprocessing needs {sizing.cpu:g} cpu / {sizing.memory // 1024 ** 2}Mi and "
+            f"no node in this cluster is that large. Lower results_processing.resources for "
+            f"this campaign. ({exc})")
+
+    def _record_grant(node_id):
+        granted["node_id"] = node_id
+
+    owner = f"{campaign_id}{_POSTPROCESS_OWNER_SUFFIX}"
+    admission.submit(owner, [(name, sizing, _record_grant)],
+                     started_at=campaign_start_key(campaign_id),
+                     priority=POSTPROCESS_PRIORITY)
+
+    deadline = time.monotonic() + timeout
+    logged = 0.0
+    while time.monotonic() < deadline:
+        # Works the GLOBAL queue, like every other caller: whichever thread is awake advances
+        # everybody, which is what keeps the queue free of a thread of its own.
+        admission.drain()
+        if admission.states(owner).get(name) == CREATED:
+            return True, granted.get("node_id"), ""
+        reason = admission.refusal(owner)
+        if reason and time.monotonic() - logged > 60:
+            logged = time.monotonic()
+            logger.info("Postprocessing of %s is queued for capacity: %s", campaign_id,
+                        reason)
+        time.sleep(poll)
+
+    admission.finished(name)
+    return False, None, (
+        f"postprocessing waited {timeout:g}s for {sizing.cpu:g} cpu / "
+        f"{sizing.memory // 1024 ** 2}Mi and the cluster stayed full. The campaign's runs "
+        f"are published; re-run postprocessing when there is room, or lower "
+        f"results_processing.resources.")
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -592,7 +729,7 @@ def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
 def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=unused-argument
                          campaign_root: str, namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False,
-                         kube_context=None, state=None) -> tuple:
+                         kube_context=None, state=None, admission=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
     ``ok`` carries :func:`run_conversion_job`'s three values through unchanged, ``None``
@@ -632,7 +769,7 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     ok, message = run_conversion_job(
         cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
         kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
-        convert_resources=convert_resources)
+        convert_resources=convert_resources, admission=admission)
     return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message,
                               force=force)
 
@@ -1483,8 +1620,9 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                     # Campaign nodes are where the bags already are and where this is
                     # allowed to run; without the toleration a deployment that dedicates
                     # its nodes to campaigns has nowhere to put this at all, and the Job
-                    # sits Pending until its three-hour timeout. Easy to miss here, because
-                    # this Job is created outside the admission path entirely.
+                    # sits Pending until its three-hour timeout. The toleration is what
+                    # gets it onto those nodes; `await_admission` is what waits until one
+                    # of them has room.
                     # One tree, written by containers that run as different users -- see
                     # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose
                     # own user is not the family's.
@@ -1677,7 +1815,8 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
-                       host_stage: bool = True, convert_resources=None) -> tuple:
+                       host_stage: bool = True, convert_resources=None,
+                       admission=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
     ``ok`` is three-valued, and the third value is the point of it: ``True`` the Job was
@@ -1696,6 +1835,11 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
 
     *host_stage* off makes this a conversion-only Job -- see :func:`build_manifest`. With
     it off and nothing to convert there is no work at all, which is a no-op success.
+
+    *admission* is the deployment's queue. Given, this pod waits for room like every other
+    pod on the cluster rather than being created against a cluster that has none -- see
+    :func:`await_admission`. ``None`` creates it directly, which is what a lane with no queue
+    (a local service, an off-cluster driver) must do.
 
     *discriminator* names WHICH conversion of this campaign this is, and must be set by
     any caller that converts the same campaign more than once -- a search, which converts
@@ -1768,6 +1912,18 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     except ClusterUnreachableError as e:
         return False, f"postprocessing cannot be scheduled: {e}"
 
+    # Queued for capacity BEFORE anything is written, and only when this attempt is the one
+    # creating the Job: an adopted Job already holds real capacity on a real node, so
+    # admitting it a second time would charge the cluster twice for one pod.
+    admitted = False
+    if admission is not None and not adopted:
+        granted, node_id, message = await_admission(admission, campaign_id, name, manifest,
+                                                    timeout=timeout)
+        if not granted:
+            return False, message
+        admitted = True
+        _pin_to(manifest, node_id)
+
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
     # Job (the pod waits in ContainerCreating until the volume source exists) and delete
@@ -1832,6 +1988,12 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         return await_job(core, batch, cluster_config, campaign_id, namespace, name,
                          timeout=timeout, host_stage=host_stage)
     finally:
+        # Release the reservation the moment the pod is gone, so what it held is spendable on
+        # the next drain. In the `finally` because every exit from here -- finished, failed
+        # or timed out -- ends the pod's claim, and a reservation left behind would shrink
+        # the cluster by a pod that no longer exists for as long as this service runs.
+        if admitted:
+            admission.finished(name)
         # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
         # manual sweep if the driver dies before this runs). The Job's own
         # ttlSecondsAfterFinished reaps it. Empty for an adopted Job: those scripts are
