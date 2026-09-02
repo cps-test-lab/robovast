@@ -603,9 +603,9 @@ export const robovast = {
   // tens of thousands of paths to learn a few dozen names.
   // A trailing slash is what makes the address a *directory* in this space (`/results/<c>/nav/`
   // lists, `/results/<c>/nav` reads), so it is appended here rather than left to every caller.
-  listResultsDir: (campaignId: string, path: string) =>
+  listResultsDir: (campaignId: string, path: string, opts: { recursive?: boolean } = {}) =>
     listFilesAt(resultsUrl(campaignId, path.endsWith('/') || !path ? path : `${path}/`),
-                { recursive: false }),
+                { recursive: opts.recursive === true }),
 
   readProjectFile: (id: string, path: string) => readFileAt(sourcesUrl(id, path)),
 

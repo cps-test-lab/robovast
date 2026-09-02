@@ -9,7 +9,9 @@
 // Scope is deliberately narrow -- see the testing convention in docs/developer_guide.rst.
 
 import { describe, expect, it } from 'vitest'
-import { configDirs, declaresScene3d, previewRunRows, runIds } from './previewRuns'
+import {
+  configDirs, declaresScene3d, previewRunRows, replayableRunIds,
+} from './previewRuns'
 import { buildCampaignChildren, CAMPAIGN_RUNS_SQL, campaignItem } from './resultsTree'
 import { hasResults, isPreviewable, type CampaignSummary } from './robovastClient'
 
@@ -37,16 +39,37 @@ describe('configDirs', () => {
   })
 })
 
-describe('runIds', () => {
-  it('keeps only the numeric run directories', () => {
-    // A configuration directory holds more than its runs; only the numbered ones are runs.
-    expect(runIds(['0/', '1/', 'notebook.ipynb', 'summary/'])).toEqual([0, 1])
+describe('replayableRunIds', () => {
+  it('lists a run that has written a recording, and not one that has not', () => {
+    // The whole point: a run still going has a directory and no manifest. Offering it would fill
+    // the picker with rows that answer "no recording yet" when they are opened.
+    expect(replayableRunIds([
+      '0/test.xml', '0/capture/capture.json', '0/capture/capture.bin',
+      '1/test.xml',
+      '2/capture/capture.json',
+    ])).toEqual([0, 2])
   })
 
   it('orders numerically, not by name', () => {
     // Lexical order puts 10 between 1 and 2, which would disagree with every other listing
     // of the same runs — including the one the Explorer draws once the campaign finishes.
-    expect(runIds(['0/', '1/', '2/', '10/', '11/'])).toEqual([0, 1, 2, 10, 11])
+    const paths = ['0', '1', '2', '10', '11'].map((n) => `${n}/capture/capture.json`)
+    expect(replayableRunIds(paths)).toEqual([0, 1, 2, 10, 11])
+  })
+
+  it('ignores a manifest that is not a run\u2019s own', () => {
+    // Only `<run>/capture/capture.json` counts: a non-numeric first segment is some other
+    // artifact of the configuration, and the manifest at another depth is not this contract.
+    expect(replayableRunIds([
+      '_config/capture/capture.json',
+      'summary/capture/capture.json',
+      '3/capture/nested/capture.json',
+      '4/capture.json',
+    ])).toEqual([])
+  })
+
+  it('is empty for a configuration whose runs have all only just started', () => {
+    expect(replayableRunIds(['0/test.xml', '1/rosbag2/metadata.yaml'])).toEqual([])
   })
 })
 
@@ -57,14 +80,21 @@ describe('runIds', () => {
 describe('a real campaign listing', () => {
   const ROOT = ['_config/', '_execution/', '_jobs/', '_transient/', 'campaign.db',
                 'goal-1/', 'metadata.prov.json', 'metadata.yaml']
-  const CONFIG = ['0/', '1/', '2/', '3/', '_config/']
 
   it('finds the configuration among the machinery and the loose files', () => {
     expect(configDirs(ROOT)).toEqual(['goal-1'])
   })
 
-  it('finds the runs, and not the per-config _config directory beside them', () => {
-    expect(runIds(CONFIG)).toEqual([0, 1, 2, 3])
+  it('finds the runs that have a recording, from the same listing', () => {
+    // The recursive form of the same configuration listing: run 1 is still going.
+    const RECURSIVE = [
+      '0/test.xml', '0/capture/capture.json', '0/rosbag2/metadata.yaml',
+      '1/test.xml',
+      '2/capture/capture.json',
+      '3/capture/capture.json',
+      '_config/config.yaml',
+    ]
+    expect(replayableRunIds(RECURSIVE)).toEqual([0, 2, 3])
   })
 })
 

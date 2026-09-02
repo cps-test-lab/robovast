@@ -96,7 +96,23 @@ export function ResultsPage({
   useEffect(() => {
     if (shown === null && campaigns.data) setShown(live)
   }, [shown, campaigns.data, live])
-  const list = shown ?? live
+  // The snapshot freezes a list that is being READ, and its premise is the sentence above: a
+  // finished campaign is immutable, so moving it gains nothing. A campaign being PREVIEWED is
+  // outside that premise — it appears while somebody is looking, and looking at it while it runs
+  // is the entire point — so it is merged in live rather than waiting for a Refresh. Without this
+  // a campaign that started after the snapshot was taken was reachable only by arriving from its
+  // card, which adopts the live list on the way in; the picker itself never listed it.
+  //
+  // Merged into the ONE list rather than handed to the Run view separately, because this list is
+  // also what the self-heal below reads to decide whether the selected campaign exists: a campaign
+  // the Run view can show but this list lacks would be healed straight back out of the URL.
+  const previewLive = useMemo(() => live.filter(isPreviewable), [live])
+  const list = useMemo(() => {
+    const frozen = shown ?? live
+    const fresh = new Set(previewLive.map((c) => c.campaign_id))
+    // The live copy wins where both have it: same campaign, newer phase and counts.
+    return [...previewLive, ...frozen.filter((c) => !fresh.has(c.campaign_id))]
+  }, [shown, live, previewLive])
   // Take the service's answer as the new snapshot. A failed refetch carries no data; keep the list
   // that is on screen rather than blanking every view.
   const adopt = (res: { data?: { campaigns: CampaignSummary[] } }) => {
