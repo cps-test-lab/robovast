@@ -56,8 +56,9 @@ def _make_filter(exclude, on_member=None):
     """Return a ``tarfile.add`` filter dropping any member under an *exclude* name.
 
     Excluding a *directory* prunes its whole subtree: ``tarfile.add`` does not
-    recurse into a member whose filter returns ``None``. That is how internal
-    staging like ``_postproc/`` is kept out of a downloaded campaign.
+    recurse into a member whose filter returns ``None``. That is how a rebuildable
+    cache, or a legacy staging copy of derived data, is kept out of a downloaded
+    campaign.
 
     *on_member*, when given, is called with each **kept** member's byte size as it
     is added. It is the source-side counter behind the upload progress bar: the
