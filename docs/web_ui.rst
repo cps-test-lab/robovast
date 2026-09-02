@@ -1426,14 +1426,23 @@ It says so in both places it can be misread: a **Preview** chip at the top right
 hover explains what is and is not available, and the word ``preview`` beside the campaign in the run
 picker, where the campaign is actually chosen.
 
-The picker's rows come from the campaign's **output directories** — one listing for its
-configurations, then one per configuration for its runs — because the query the Explorer uses
-answers nothing for a campaign that has not been ingested. That is deliberately a listing of runs
-rather than of *replayable* runs: knowing which have written a recording would cost a request per
-run, which is the one shape that does not scale to a campaign of thousands. A run still in progress
-is therefore listed, and says it has no recording yet when opened. The rows carry no verdict either
-— pass/fail is not readable without the index — so a configuration shows how many runs it has
-rather than a ``0/N`` that would be indistinguishable from every run having failed.
+The picker's rows come from the campaign's **output directories**, because the query the Explorer
+uses answers nothing for a campaign that has not been ingested: one listing for its configurations,
+then one *recursive* listing per configuration. That second listing is where the trade is made — a
+request per configuration either way, and the recursive answer says not only which runs exist but
+which have written a recording, so it costs response size rather than round trips, bounded by one
+configuration rather than the whole campaign.
+
+**Only runs that can be replayed are offered**, and a configuration with none of them is not shown
+at all. A run still in progress has a directory and no recording; listing it would fill the picker
+with rows that report they have nothing to show once they are opened, which on a campaign of several
+configurations is most of the tree. The presence of the recording is exact — it is written once, at
+a run's clean stop — so this neither offers a half-written run nor hides a finished one.
+
+The rows carry no verdict: pass/fail lives in each run's own report, so colouring the dots would
+cost a read per run, the shape that does not scale. The dot therefore stays neutral, and a
+configuration shows how many runs it has rather than a ``0/N`` that would be indistinguishable from
+every run having failed.
 
 When the campaign finishes, nothing swaps under the reader: the **Refresh** button beside the picker
 reports that there is something new, and taking it re-reads the campaign with all of its panels.

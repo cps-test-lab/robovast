@@ -9,11 +9,16 @@
 // grammar in `resultsTree.ts` then work unchanged, and the preview picker is the same tree the
 // Explorer draws rather than a second one that would have to spell that id grammar again.
 //
-// Walked one level at a time, never recursively. A recursive listing of this space returns every FILE
-// beneath the address (`file_view.scan_dir`), so over a campaign of thousands of runs it is tens of
+// Walked a level at a time rather than in one sweep. A recursive listing returns every FILE beneath
+// the address (`file_view.scan_dir`), so over a whole campaign of thousands of runs that is tens of
 // thousands of paths — megabytes, and a full prefix listing on the cluster — to learn a few dozen
-// directory names. One level is a handful of names, and the caller fetches a configuration's runs only
-// when its node is expanded.
+// directory names. So the campaign root is listed one level deep, for its configurations.
+//
+// Each CONFIGURATION is then listed recursively, and that is a deliberate trade of response size for
+// round trips: one request per configuration either way, and the recursive answer says not only which
+// runs exist but which have written a recording. That is the difference between offering a run to
+// replay and offering one that reports it has nothing yet, and it is bounded by the runs of one
+// configuration rather than of the campaign.
 
 import type { NodeStatus } from './resultsTree'
 
@@ -39,17 +44,31 @@ export function configDirs(entries: string[]): string[] {
   return dirNames(entries).filter((n) => !RESERVED.has(n) && !n.startsWith('.'))
 }
 
-/** The run ids of one configuration's listing, ascending.
+/** Where a run keeps the recording the 3D view replays, relative to its own directory. */
+const CAPTURE_MANIFEST = 'capture/capture.json'
+
+/** The runs of one configuration that can actually be REPLAYED, ascending.
  *
- *  A run directory is named by its number and nothing else, so anything non-numeric here is some
- *  other artifact of the configuration and not a run. Sorted numerically rather than by name, or
- *  `10` would sit between `1` and `2` and the picker would disagree with every other listing of the
- *  same runs. */
-export function runIds(entries: string[]): number[] {
-  return dirNames(entries)
-    .filter((n) => /^\d+$/.test(n))
-    .map(Number)
-    .sort((a, b) => a - b)
+ *  Reads file PATHS from a recursive listing of the configuration, not directory names: the same
+ *  request that says which runs exist also says which have written a recording, so replayability
+ *  costs no extra round trip. A run still in progress has a directory and no manifest, and is simply
+ *  not listed — the picker offers what can be opened rather than a run that answers "no recording
+ *  yet" once it is.
+ *
+ *  The recording is written once, at a run's clean stop, so its presence is exact: there is no
+ *  half-written manifest to mistake for a finished one. A run killed hard never writes one and is
+ *  never offered, which is right — there is nothing to replay.
+ *
+ *  A run directory is named by its number and nothing else, so a non-numeric first segment is some
+ *  other artifact of the configuration. Sorted numerically rather than by name, or `10` would sit
+ *  between `1` and `2` and the picker would disagree with every other listing of the same runs. */
+export function replayableRunIds(paths: string[]): number[] {
+  const ids = new Set<number>()
+  for (const path of paths) {
+    const [run, ...rest] = path.split('/')
+    if (/^\d+$/.test(run) && rest.join('/') === CAPTURE_MANIFEST) ids.add(Number(run))
+  }
+  return [...ids].sort((a, b) => a - b)
 }
 
 /** A run's verdict is unknowable in preview. `unknown` is the existing `NodeStatus` for exactly this
