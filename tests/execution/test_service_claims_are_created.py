@@ -38,6 +38,13 @@ def apis(monkeypatch):
     monkeypatch.setattr(kclient, "RbacAuthorizationV1Api", lambda *a, **k: rbac)
     monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: apps)
     monkeypatch.setattr(kclient, "NetworkingV1Api", lambda *a, **k: net)
+    # Both spellings: `deploy_service` resolves its own loader through a deferred
+    # `from .kube_client import load_kube_config`, so patching service_deploy's alias alone
+    # leaves that one reaching for a real kubeconfig -- which passes on a developer's machine
+    # and fails on a runner that has none.
+    from robovast.execution.cluster_execution import kube_client
+
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
