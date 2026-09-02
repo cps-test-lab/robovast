@@ -356,14 +356,53 @@ class CampaignController:
         images = execution.get("images") or {}
         if not images:
             return
+        # The roles are the campaign's containers, but the REF has to be what actually ran.
+        # On the cluster lane ``images`` records what the .vast declared, and for a container
+        # robovast builds that is its *base* -- whose lock describes different software than
+        # the image the campaign ran. ``image_revisions`` is the digest of the built image.
+        revisions = execution.get("image_revisions") or {}
         try:
             from robovast.common.campaign_data import write_build_manifests
             from robovast.service.image_build import read_image_build_manifest
 
-            manifests = {role: read_image_build_manifest(image)
-                         for role, image in sorted(images.items())}
-            write_build_manifests(self.campaign_root,
-                                  {role: m for role, m in manifests.items() if m})
+            manifests = {}
+            for role, declared in sorted(images.items()):
+                image = revisions.get(role) or declared
+                # Per role, so one role's failure cannot discard the locks already read for
+                # the others. Both readers reach outside the process -- a container runtime,
+                # a registry -- and either can fail for one image and work for the next.
+                try:
+                    # Local first: it needs no network, and it answers for an image built
+                    # here that may never have been pushed anywhere.
+                    lock = read_image_build_manifest(image)
+                    if not lock:
+                        # getattr, so a backend from outside this tree that predates the hook
+                        # degrades to "cannot read one here" instead of losing every lock.
+                        reader = getattr(self.backend, "read_build_lock", None)
+                        lock = reader(image) if callable(reader) else {}
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug("Could not read the build lock of %s.", image,
+                                 exc_info=True)
+                    continue
+                if lock:
+                    manifests[role] = lock
+            write_build_manifests(self.campaign_root, manifests)
+            # Say so when a lock is missing for an image ROBOVAST BUILT. Those are the ones
+            # that must have one, and a silent absence is what let this go unnoticed: the
+            # campaign looks complete either way, and the cost only appears much later, when
+            # the image is gone and the rebuild installs current versions instead of the
+            # recorded ones. A container whose `provenance:` the author declared is skipped --
+            # robovast did not build it, so there was never a lock of ours to find.
+            ours = {role for role, refs in (execution.get("image_build_refs") or {}).items()
+                    if isinstance(refs, dict) and not refs.get("declared")}
+            missing = sorted(ours - set(manifests))
+            if missing:
+                logger.warning(
+                    "No build lock recorded for %s. This campaign can be re-run while its "
+                    "images exist, but not rebuilt from its own record: a rebuild would "
+                    "re-resolve the declared packages and install whatever is current, "
+                    "which is a different experiment under the same name.",
+                    ", ".join(missing))
         except Exception:  # pylint: disable=broad-except
             logger.debug("Could not persist build manifests.", exc_info=True)
 

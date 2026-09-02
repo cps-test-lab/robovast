@@ -61,3 +61,40 @@ def test_campaign_execution_image_falls_back_to_tag(tmp_path):
     _write_execution_yaml(tmp_path, image="ghcr.io/o/sut:latest",
                           image_revision="unknown")
     assert campaign_execution_image(str(tmp_path)) == "ghcr.io/o/sut:latest"
+
+
+def test_every_planned_container_reaches_the_launch_record(tmp_path):
+    """Keyed by container name AND by every role it backs, roles first so a name wins.
+
+    A role is how a reader asks the question ("which simulator ran?"); the name is what the
+    pod calls it. A stepped simulator makes one container answer to both, so recording only
+    names loses the role the campaign was actually configured by.
+    """
+    from robovast.common.campaign_data import read_launch_record, write_launch_record
+    from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
+    from robovast.service.interface import CreateCampaignRequest
+
+    write_launch_record(tmp_path, CreateCampaignRequest(
+        workspace_id="ws", config_path="p.vast", config_filter="", campaign_name="c",
+        runs=1, postprocess=True, upload_to_share=False, show_gui=False, description=""))
+
+    runner = types.SimpleNamespace(plan=types.SimpleNamespace(containers=(
+        types.SimpleNamespace(name="sut", image="r.example.com/sut@sha256:a", roles=("sut",)),
+        # One container backing two roles -- the stepped-simulator shape.
+        types.SimpleNamespace(name="scenario", image="r.example.com/sc@sha256:b",
+                              roles=("scenario", "simulation")),
+        # No image: nothing to record, and it must not write a null.
+        types.SimpleNamespace(name="sidecar", image=None, roles=()),
+    )))
+
+    KubernetesBackend._record_launch_images(str(tmp_path), runner)
+
+    images = read_launch_record(tmp_path)["images"]
+    assert images["sut"] == "r.example.com/sut@sha256:a"
+    assert images["simulation"] == "r.example.com/sc@sha256:b"
+    assert images["scenario"] == "r.example.com/sc@sha256:b"
+    assert "sidecar" not in images
+    # Idempotent: a search re-runs this per batch against an unchanged plan.
+    before = dict(images)
+    KubernetesBackend._record_launch_images(str(tmp_path), runner)
+    assert read_launch_record(tmp_path)["images"] == before
