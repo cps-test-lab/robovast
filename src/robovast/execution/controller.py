@@ -1382,6 +1382,14 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                     state.update(postprocessed=True)
                 state.update(postprocessing_error=None)
                 state.set_phase(Phase.FINISHED)
+            elif ok is None:
+                # The Job is a cluster object that outlives this driver, and ``None`` says
+                # the driver stopped being able to read it -- so nothing about the campaign
+                # is known to be wrong and ``postprocessing_error`` stays unset. Named in
+                # the stage marker instead, which is where a non-terminal report belongs:
+                # a re-run reads the Job and settles it.
+                state.set_phase(Phase.FINISHED,
+                                stage=f"postprocessing outcome unknown: {message}")
             else:
                 # The runs finished — postprocessing is a separate step, so a
                 # postprocessing failure keeps ``phase == finished`` (the runs are

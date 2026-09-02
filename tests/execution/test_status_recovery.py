@@ -227,3 +227,43 @@ def test_a_failure_after_an_earlier_success_keeps_the_data_it_has(tmp_path):
 
     assert status.postprocessing_error == "the latest one died"
     assert status.postprocessed is True
+
+
+def test_an_unestablished_outcome_leaves_the_record_alone(tmp_path):
+    """``ok is None`` is an unanswered question, and a record answers only what it knows.
+
+    The cluster lane returns it when the driver can no longer read the Job that is doing
+    the work -- so the conversion may well be finishing. Writing the reason onto
+    ``postprocessing_error`` would turn "I stopped looking" into "it failed", and mark a
+    campaign whose derived data is complete as carrying none.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1"))
+    _marker(campaign)          # a postprocess did derive this campaign's data
+
+    status = record_step_outcome(campaign, postprocessing=(None, "the Job went unread"))
+
+    assert status.postprocessing_error is None
+    assert status.postprocessed is True
+    # And durably: this file is what every later reader reconstructs from.
+    recovered = reconstruct_status_from_disk(campaign)
+    assert recovered.postprocessing_error is None
+    assert recovered.postprocessed is True
+
+
+def test_an_unestablished_outcome_does_not_erase_an_earlier_failure(tmp_path):
+    """The other direction of the same rule: unknown overwrites nothing at all, so a real
+    failure already on the record stays readable until something can read the Job again."""
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1",
+                                             postprocessing_error="an attempt died"))
+
+    status = record_step_outcome(campaign, postprocessing=(None, "the Job went unread"))
+
+    assert status.postprocessing_error == "an attempt died"

@@ -3661,6 +3661,13 @@ class ClusterService(LocalTransport):
             notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
+            elif ok is None:
+                # No push at all while the outcome is open: both notifications are
+                # terminal statements about the campaign, and ``None`` says the Job could
+                # not be read -- announcing a failure over a conversion that may be
+                # finishing is the one message that cannot be taken back.
+                logger.warning("Postprocessing outcome for %s is unknown, so no "
+                               "notification is sent: %s", request.campaign_id, message)
             else:
                 notifier.postprocessing_failed(message)
 

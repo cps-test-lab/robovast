@@ -1194,3 +1194,138 @@ def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
 
     assert ok is True
     assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
+# -- Unknown is not failure --------------------------------------------------
+#
+# The conversion Job is a cluster object that outlives the process waiting on it. So the
+# wait can end in three ways, not two, and the third one -- "this process can no longer
+# see what the Job is doing" -- must never be recorded as the second. A conversion that
+# succeeds while the driver is not watching, written down as a failure, sends someone to
+# redo hours of work and marks a campaign whose derived data is complete as carrying none.
+
+
+def _waiting_on_a_job(monkeypatch, batch, core=None):
+    """Everything :func:`run_conversion_job` touches before its wait loop, faked.
+
+    Returns nothing: the point is the wait, and every seam in front of it -- kubeconfig,
+    the object store, the pull secret, the live-log publish -- is stubbed so the only
+    thing a test in this group varies is what the API server answers about the Job.
+    """
+    from unittest import mock
+
+    core = core or mock.Mock()
+    monkeypatch.setattr(pj, "publish_live_log", lambda *a, **k: False)
+    monkeypatch.setattr(pj, "_POLL_SECONDS", 0)
+    return [
+        mock.patch("robovast.execution.cluster_execution.in_pod_storage."
+                   "campaign_storage_location", return_value=("bucket", "prefix/")),
+        mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"),
+        mock.patch("kubernetes.client.CoreV1Api", return_value=core),
+        mock.patch("kubernetes.client.BatchV1Api", return_value=batch),
+        mock.patch("robovast.execution.cluster_execution.cluster_execution."
+                   "resolve_pull_secret", return_value=""),
+    ]
+
+
+def _job_status(**fields):
+    from unittest import mock
+    absent = {"active": None, "succeeded": None, "failed": None}
+    return mock.Mock(status=types.SimpleNamespace(**{**absent, **fields}))
+
+
+def _run_the_wait(monkeypatch, batch, core=None, **kwargs):
+    import contextlib
+    from unittest import mock
+
+    cluster_config = mock.Mock()
+    cluster_config.get_s3_credentials.return_value = ("key", "secret")
+    with contextlib.ExitStack() as stack:
+        for patch in _waiting_on_a_job(monkeypatch, batch, core):
+            stack.enter_context(patch)
+        return pj.run_conversion_job(cluster_config, "camp", "ns", "img",
+                                     [{"plugins": []}], **kwargs)
+
+
+def test_a_job_status_that_cannot_be_read_is_unknown_not_failed(monkeypatch):
+    """An API server that will not answer costs the observation, not the conversion.
+
+    The Job keeps converting while this process cannot see it, so there is no negative
+    result to record -- only an open question, which is what ``ok is None`` says.
+    """
+    from unittest import mock
+
+    from kubernetes.client.rest import ApiException
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.side_effect = ApiException(status=500,
+                                                               reason="Internal")
+
+    ok, message = _run_the_wait(monkeypatch, batch)
+
+    assert ok is None, "the Job was never read as failed"
+    assert "unknown" in message and "may still be running" in message
+    assert "failed" not in message
+
+
+def test_giving_up_on_the_wait_is_unknown_not_failed(monkeypatch):
+    """The deadline is this process's patience. Nothing here stops the Job, so a wait that
+    ends is a wait that ended -- the conversion is still running and its outcome is open.
+    """
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=1)
+
+    ok, message = _run_the_wait(monkeypatch, batch, timeout=0)
+
+    assert ok is None
+    assert "unknown" in message
+    assert "failed" not in message
+
+
+def test_a_job_read_as_failed_is_still_reported_in_full(monkeypatch):
+    """The genuine failure keeps every part of its report: the Job controller's own
+    verdict (``backoffLimit: 0`` makes one container exit terminal), the pod's cause of
+    death, and the slot the log pointer is filled into once the sync has run."""
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=0, failed=1)
+    core = mock.Mock()
+    core.list_namespaced_pod.return_value = types.SimpleNamespace(items=[
+        types.SimpleNamespace(status=types.SimpleNamespace(
+            phase="Failed", reason=None, conditions=[], init_container_statuses=[],
+            container_statuses=[types.SimpleNamespace(
+                name="convert",
+                state=types.SimpleNamespace(terminated=types.SimpleNamespace(
+                    exit_code=1, reason="Error")))]))])
+
+    ok, message = _run_the_wait(monkeypatch, batch, core)
+
+    assert ok is False
+    assert "container convert exited 1 (Error)" in message
+    assert pj.POINTER_SLOT in message
+    assert "see the POSTPROCESSING section" in pj.with_log_pointer(message, __file__)
+
+
+def test_an_unknown_outcome_reaches_the_caller_without_a_failure_log(monkeypatch,
+                                                                    tmp_path):
+    """``postprocess_campaign`` carries the third value through rather than collapsing it.
+
+    The failure log is the account of a fault; authoring one for a conversion that may be
+    finishing writes a fault into the campaign log that nobody found.
+    """
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", (), None))
+    monkeypatch.setattr(pj, "run_conversion_job",
+                        lambda *a, **k: (None, "outcome unknown"))
+    monkeypatch.setattr(pj, "sync_outputs", lambda cfg, cid, cr, force=False: 1)
+    monkeypatch.setattr(pj, "publish_postprocessing_log", lambda *a, **k: None)
+    authored = []
+    monkeypatch.setattr(pj, "_write_failure_log",
+                        lambda *a, **k: authored.append(a))
+
+    ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns")
+
+    assert ok is None and message == "outcome unknown"
+    assert not authored
