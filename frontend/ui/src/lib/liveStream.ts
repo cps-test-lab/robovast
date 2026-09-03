@@ -57,9 +57,20 @@ export interface LiveStreamOptions {
 /**
  * Subscribe to an SSE endpoint, and keep the subscription honest.
  *
- * Returns the stream's state, a `reconnect()` for a user-driven refresh, a `finish()` for
- * the case where the *server* has said there is nothing more coming (an `eof` frame on a
- * terminal log), and a `generation` that counts connections this hook opened itself.
+ * Returns the stream's state, a `received` flag, a `reconnect()` for a user-driven refresh,
+ * a `finish()` for the case where the *server* has said there is nothing more coming (an
+ * `eof` frame on a terminal log), and a `generation` that counts connections this hook
+ * opened itself.
+ *
+ * `received` separates "the socket is up" from "the server has said something", which
+ * `state === 'open'` cannot: these servers flush the response headers immediately (an SSE
+ * comment, so proxies release them) and only then run their first pull — and those pulls
+ * are network I/O, up to tens of seconds for a log read across a cluster. So an open stream
+ * with nothing in it means one of two opposite things, and only the arrival of a frame — a
+ * delta or a `heartbeat`, which is the server saying "read it, there was nothing" — tells
+ * them apart. A consumer that renders an empty state needs that: without it, every slow
+ * first pull renders as an authoritative "nothing here". It stays true across the browser's
+ * own reconnect, where the accumulated state survives too.
  *
  * `finish()` matters: without it the watchdog would read a deliberately closed stream as a
  * broken one and reopen it forever.
@@ -80,6 +91,9 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
 
   const [state, setState] = useState<LiveState>('connecting')
   const [epoch, setEpoch] = useState(0)
+  // Whether the *server* has spoken on this connection, as opposed to the socket being up.
+  // See the `received` note on the return value.
+  const [received, setReceived] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const lastFrame = useRef(0)
   const finished = useRef(false)
@@ -97,6 +111,7 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
   useEffect(() => {
     finished.current = false
     setState('connecting')
+    setReceived(false)
     const es = new EventSource(url)
     esRef.current = es
     lastFrame.current = Date.now()
@@ -104,21 +119,27 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
     const stamp = () => {
       lastFrame.current = Date.now()
     }
+    // A frame is a stamp plus the news that the server has produced something. `onopen` is
+    // deliberately not one: the headers are flushed before the server's first pull runs.
+    const frame = () => {
+      stamp()
+      setReceived(true)
+    }
     es.onopen = () => {
       stamp()
       setState('open')
     }
     es.onmessage = (e) => {
-      stamp()
+      frame()
       setState('open')
       optsRef.current.onMessage?.(e)
     }
     // Quiet tick. Nothing to render — its whole job is to prove the socket still carries
     // bytes, which is what the watchdog below reads.
-    es.addEventListener('heartbeat', stamp)
+    es.addEventListener('heartbeat', frame)
     for (const name of Object.keys(optsRef.current.events ?? {})) {
       es.addEventListener(name, (e) => {
-        stamp()
+        frame()
         optsRef.current.events?.[name]?.(e as MessageEvent)
       })
     }
@@ -168,5 +189,5 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
     if (active) check()
   }, [active, check])
 
-  return { state, reconnect, finish, generation: epoch }
+  return { state, received, reconnect, finish, generation: epoch }
 }
