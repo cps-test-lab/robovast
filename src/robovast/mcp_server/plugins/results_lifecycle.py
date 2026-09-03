@@ -105,15 +105,18 @@ def run_postprocessing(campaign_id: str, force: bool = False,
 
 
 def run_share(campaign_id: str) -> dict:
-    """(Re)trigger the upload-to-share of one finished campaign's raw archive.
+    """(Re)trigger the upload-to-share of one finished campaign.
 
     **Dispatched in the background** — returns as soon as the upload is started; the
     campaign enters the ``sharing`` phase, so background ``vast campaign wait <campaign_id>``
-    until it is over, then read the outcome (``share_error`` on failure). Works from disk with no
-    live campaign (usable
-    after a `vast serve` restart). The target provider comes from the service environment
-    (``ROBOVAST_SHARE_TYPE`` + credentials): adjust it and re-trigger to upload to a
-    different provider. Fails loudly if no share provider is configured.
+    until it is over, then read the outcome (``share_error`` on failure). Works from disk
+    with no live campaign (usable after a `vast serve` restart). ``ok=false`` means an
+    operation is already running for it — an upload, postprocessing and the campaign
+    itself cannot overlap. **The variant is read off the campaign, not chosen**:
+    ``<id>.raw.tar.gz`` before postprocessing (metrics still to compute),
+    ``<id>.postprocessed.tar.gz`` after. The target provider comes from the service
+    environment (``ROBOVAST_SHARE_TYPE`` + credentials): adjust it and re-trigger to
+    upload to a different provider. Fails loudly if no share provider is configured.
 
     Args:
         campaign_id: The finished campaign to (re)upload.

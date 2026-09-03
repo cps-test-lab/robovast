@@ -3862,7 +3862,10 @@ class ClusterService(LocalTransport):
             state.update(error=detail)
         state.update(postprocessed=status.postprocessed,
                      postprocessing_error=status.postprocessing_error)
-        state.set_phase(Phase.FINISHED)
+        # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+        # campaign ended, and a live entry that disagreed with it would answer
+        # differently until the next restart.
+        state.set_phase(status.phase)
         # Same one-shot notifier as the local lane, and it matters more here: this is
         # the detached lane the push notifications exist for.
         notifier = self._notifier(campaign_id)
@@ -3998,7 +4001,10 @@ class ClusterService(LocalTransport):
             status = record_step_outcome(campaign_root, share=(ok, message))
             self._publish_execution(request.campaign_id, campaign_root)
             state.update(share_error=status.share_error)
-            state.set_phase(Phase.FINISHED)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with it would answer
+            # differently until the next restart.
+            state.set_phase(status.phase)
 
         # Before the dispatch, for the same reason as the postprocess, and one more: the
         # handler `work` opens on share.log APPENDS, so an earlier export's copy left in the
@@ -4013,9 +4019,10 @@ class ClusterService(LocalTransport):
     def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
         """Tar the campaign's stored objects straight into the share. No scratch.
 
-        *campaign_root* supplies only the variant (``_execution/data.db`` present or
-        not), so the name an export writes and the name the campaign-end upload writes
-        are decided by the same rule.
+        *campaign_root* supplies only the variant — postprocessing's provenance record
+        (``_transient/postprocessing.yaml``) present with entries, or not — so the name
+        an export writes and the name the campaign-end upload writes are decided by the
+        same rule. That record is why it is among :data:`_SHARE_STATUS_OBJECTS`.
         """
         from robovast.common.errors import CampaignConfigError
         from robovast.execution import campaign_archive
