@@ -773,12 +773,19 @@ function CampaignCard({ summary, newest, openedByLink }: {
         spacing={1}
         alignItems="center"
         onClick={toggle}
-        // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
-        // target should not paint its phase dot and its age. The text worth copying opts back
-        // in individually.
+        // Selectable only while the card is OPEN, and there entirely. Folded, the row is one of
+        // a column of click targets and a drag down the page should not paint their phase dots
+        // and their ages, so nothing in it is selectable but the strings that opt back in. Open,
+        // the card is read on its own — there is no column to drag across — and a header that
+        // refuses the drag leaves retyping a timestamped id by hand as the only way to get it
+        // out. Selecting the whole header is also what gives the name the whitespace around it
+        // as a grab area: it sizes to its glyphs here (see the id below), so an island of
+        // selectable text inside an unselectable row is a target as wide as the id and no wider,
+        // and a drag that starts a pixel outside it selects nothing at all.
+        // Either way `toggle` refuses to fold on the click that ends a selection.
         sx={{
           cursor: 'pointer',
-          userSelect: 'none',
+          userSelect: collapsed ? 'none' : 'text',
           // The Paper's padding, cancelled outside and restored inside, so the padded strip is
           // part of the target and nothing moves. The gap the row used to hold below itself
           // (`mb`) is folded into the bottom margin rather than kept as a second rule.
@@ -822,10 +829,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
               with — and there the same fixed width cuts the ids that overrun it, so it sizes to
               the id instead and shows the whole of it. Folded, `noWrap` clips the column
               visually only, so a truncated id still copies whole and the hover carries it. */}
-          {/* Selectable, against the fold target it sits in: this is the one string on the
-              card that gets copied out — into a CLI, a message, an issue — and a header that
-              refuses the drag leaves retyping a timestamped id by hand as the only way. The
-              cursor stays the row's pointer; an I-beam would suggest a field that takes typing. */}
+          {/* Selectable against the fold target it sits in, which folded is the row's default
+              for everything else: this is the one string on the card that gets copied out — into
+              a CLI, a message, an issue. Open, the header is selectable as a whole and this adds
+              nothing. The cursor stays the row's pointer; an I-beam would suggest a field that
+              takes typing. */}
           <CampaignOrigin origin={summary.origin}>
             <Typography
               variant="subtitle2"
