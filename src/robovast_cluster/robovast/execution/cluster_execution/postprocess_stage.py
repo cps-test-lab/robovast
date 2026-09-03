@@ -52,6 +52,18 @@ ENV_STAGE_DEST = "ROBOVAST_STAGE_DEST"
 #: configured: the bags are then the bulk of the transfer and nothing in the pod opens them.
 ENV_SKIP_BAGS = "ROBOVAST_STAGE_SKIP_BAGS"
 
+#: The batch whose job artifacts this pod needs, as the ``_jobs/<tag>`` sub-path they live
+#: under -- ``batch-3``, or ``batch-3/reps-5`` for a repetitions group. Set on a per-batch
+#: Job; unset stages every batch, which is what a campaign-level pass wants.
+#:
+#: A search converts once per batch, and every batch's bags sit under the SAME campaign
+#: prefix. Without this each batch stages every batch before it as well as its own, so the
+#: download grows with the campaign while the work per batch does not -- and the bags are
+#: the bulk of a campaign by orders of magnitude. It is the same value the batch's runs were
+#: written under (``kubernetes_backend``'s ``_jobs/<batch_tag>``) and the same one that
+#: discriminates the Job, so there is one tag per batch rather than a second naming of it.
+ENV_BATCH_JOBS = "ROBOVAST_STAGE_BATCH_JOBS"
+
 #: Directory names holding rosbags, excluded when :data:`ENV_SKIP_BAGS` is set. These are
 #: the ``bag_dir`` values ``robovast.results_processing.postprocessing``'s rosbag batch map
 #: defaults to (``rosbag2`` for the per-run bag, ``logs/rosout_bag`` for the infrastructure
@@ -127,7 +139,7 @@ def not_staged_sections() -> str:
     return f"_execution/{SECTIONS_DIR}/"
 
 
-def build_include(skip_bags: bool):
+def build_include(skip_bags: bool, batch_jobs: str = ""):
     """Return the ``download_prefix`` predicate deciding what a pod is given.
 
     Called with each object's key **relative to the campaign prefix**, so it matches the
@@ -144,9 +156,24 @@ def build_include(skip_bags: bool):
     excluding them wholesale would drop every ``/rosout`` record in the campaign.
 
     The two log exclusions are :data:`NOT_STAGED_LOG` and :func:`not_staged_sections`.
+
+    *batch_jobs* narrows ``_jobs/`` to one batch's artifacts (see :data:`ENV_BATCH_JOBS`).
+    Only ``_jobs/`` is narrowed, and that is the whole of the saving: the bags live there,
+    while a run directory holds its verdict, its parameters and a ``job`` symlink into the
+    batch that produced it. Narrowing the run directories too would need this pod to know
+    which configurations were in the batch, and would buy the difference between a few
+    kilobytes and a few kilobytes.
+
+    The symlink is why the match is a prefix of the tag rather than its first segment: a
+    repetitions group writes under ``_jobs/batch-3/reps-5``, and a run of it links to that
+    path exactly. Excluding what a staged run's ``job`` link points at would leave the link
+    dangling, which reads downstream as a run whose artifacts were lost rather than as one
+    this pod was never given.
     """
     from robovast.common.campaign_data import PROBE_DIR  # noqa: PLC0415
     sections_prefix = not_staged_sections()
+
+    wanted_jobs = f"_jobs/{batch_jobs.strip('/')}/" if batch_jobs else ""
 
     def include(rel: str) -> bool:
         parts = rel.split("/")
@@ -155,6 +182,8 @@ def build_include(skip_bags: bool):
         if rel == NOT_STAGED_LOG or rel.startswith(sections_prefix):
             return False
         if skip_bags and any(p in BAG_DIR_NAMES for p in parts[:-1]):
+            return False
+        if wanted_jobs and parts[0] == "_jobs" and not rel.startswith(wanted_jobs):
             return False
         return True
 
@@ -176,6 +205,7 @@ def main() -> int:
         if not campaign_id or not dest:
             raise ValueError(f"{ENV_CAMPAIGN_ID} and {ENV_STAGE_DEST} must be non-empty")
         skip_bags = os.environ.get(ENV_SKIP_BAGS) == "1"
+        batch_jobs = os.environ.get(ENV_BATCH_JOBS) or ""
         cluster_config = cluster_config_from_env()
         bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
             cluster_config, campaign_id)
@@ -185,8 +215,9 @@ def main() -> int:
         return 41
 
     campaign_root = os.path.join(dest, campaign_id)
-    logger.info("Staging campaign %s into %s (bags %s)", campaign_id, campaign_root,
-                "excluded" if skip_bags else "included")
+    logger.info("Staging campaign %s into %s (bags %s, jobs %s)", campaign_id, campaign_root,
+                "excluded" if skip_bags else "included",
+                f"of {batch_jobs} only" if batch_jobs else "all")
 
     def report(done, total, bytes_done, bytes_total):
         logger.info("Staged %s/%s file(s), %.1f/%.1f MiB", done, total,
@@ -195,7 +226,7 @@ def main() -> int:
     try:
         count = storage.download_prefix(
             bucket, campaign_prefix, campaign_root,
-            include=build_include(skip_bags),
+            include=build_include(skip_bags, batch_jobs),
             # The tree is read, never executed, so restoring per-file executable bits would
             # buy nothing for one metadata round-trip per file -- the transfer's dominant
             # cost at this file count.
