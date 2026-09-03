@@ -369,6 +369,15 @@ def _service_rbac_manifests(namespace):
                 # else, so /usage never depends on an add-on being installed.
                 {"apiGroups": ["metrics.k8s.io"], "resources": ["nodes"],
                  "verbs": ["get", "list"]},
+                # And the pod metrics behind the per-job cpu/memory the campaign view shows --
+                # one namespaced list per sample window for the whole service, shared by every
+                # campaign. A separate rule from ``nodes`` above because the two are read on
+                # different paths and either may be absent on its own; fails soft the same way,
+                # so a deployment whose role predates this shows no per-job numbers and
+                # everything else as before. ``get,list`` is the whole of what metrics.k8s.io
+                # serves -- it has no watch.
+                {"apiGroups": ["metrics.k8s.io"], "resources": ["pods"],
+                 "verbs": ["get", "list"]},
             ],
         },
         {

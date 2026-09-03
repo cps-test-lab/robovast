@@ -604,23 +604,29 @@ class CampaignController:
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
         start = time.monotonic()
-        best_objective = None          # best-so-far, in raw objective units
         result = None
-        # On `self`, not a local, and that is the whole point: the loop below runs in a
-        # callee, so a local here would still read 0 after the callee raised -- which is
+        # Where this campaign already stands: the zero position for one starting now, and
+        # everything its record holds for one being re-entered after a service restart. One
+        # value rather than a counter assigned per line, because two of the fields below
+        # decide when the search STOPS rather than merely what it displays, and a counter
+        # left at zero is indistinguishable from one that is legitimately zero.
+        position = self._rehydrate_search(
+            campaign_id, lambda best, evs: self._update_best(best, evs, obj_name))
+        # On `self`, not locals, and that is the whole point: the loop below runs in a
+        # callee, so locals here would still read 0 after the callee raised -- which is
         # how the first campaign to exercise this path recorded `batches: 0` for 22
-        # batches of completed work. A count that survives the raise is the one fact this
+        # batches of completed work. Counts that survive the raise are the one fact this
         # record exists to carry.
-        self._batches_done = 0
-        # Same reason as _batches_done above: on `self`, so a raise in the callee does
-        # not lose the counts the stop record and the progress line are built from.
-        self._evaluations_done = 0
-        self._runs_done = 0
-        # Zero for a campaign starting now; for one being re-entered after a service
-        # restart, everything its earlier life recorded. `_search_loop` already begins at
-        # `self._batches_done` -- it was written that way so an abort mid-loop still counted
-        # the batches behind it -- so seeding these IS the resume.
-        start -= self._rehydrate_search(campaign_id)
+        self._batches_done = position.batches
+        self._evaluations_done = position.evaluations
+        self._runs_done = position.runs
+        self._history.extend(position.history)
+        best_objective = position.best_objective   # best-so-far, in raw objective units
+        # `_search_loop` already begins at `self._batches_done` -- it was written that way
+        # so an abort mid-loop still counted the batches behind it -- so seeding these IS
+        # the resume.
+        stop.seed_history(position.best_per_batch)
+        start -= position.age_s
         # The search's time ORIGIN, published once, so every reader can derive elapsed itself
         # instead of waiting for the next batch to republish it.
         #
@@ -634,8 +640,15 @@ class CampaignController:
         # `_progress_signal` includes each budget row's `current`, so a row rewritten from
         # wall-clock advances the progress signal on every poll forever and no time-budgeted
         # search could be called stalled again. An origin cannot do that.
+        #
+        # `batches_done` and `best_objective` go with it, for the same reason and in the same
+        # breath: they are what the readers show beside the budget, so publishing them only
+        # at the first batch boundary leaves a resumed search unreportable for exactly as
+        # long as a batch takes.
         if self.state is not None:
-            self.state.update(search_since=time.time() - (time.monotonic() - start))
+            self.state.update(search_since=time.time() - (time.monotonic() - start),
+                              batches_done=self._batches_done,
+                              best_objective=best_objective)
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -646,12 +659,21 @@ class CampaignController:
         # the campaign card has no batches row to offer (or, since the objective chart
         # hangs off that row, to open).
         #
-        # Honest at t=0 rather than optimistic: `0 / 50` batches and `0s` elapsed are
-        # facts, and a `target_objective` with nothing to report yet comes through as NaN,
-        # which `_budget_item` renders as `None` and the readers show as `—`. A `metric`
-        # criterion reports nothing at all until the strategy has measured it, and
-        # `_progress` already omits that row rather than inventing a value for it.
-        self._publish_budget(stop, StopSnapshot(batch=0, elapsed=0.0))
+        # From the campaign's POSITION, which is zero only for a campaign that has none.
+        # Built from the same counters the loop publishes from, never from literals: this
+        # runs after the position is restored, so a literal zero here reports a resumed
+        # search as having done nothing until its next batch closes -- a whole batch, on a
+        # reading whose only job is to answer that question before one completes.
+        #
+        # Honest rather than optimistic either way: a `target_objective` with nothing to
+        # report yet comes through as NaN, which `_budget_item` renders as `None` and the
+        # readers show as `—`. A `metric` criterion reports nothing at all until the strategy
+        # has measured it, and `_progress` already omits that row rather than inventing a
+        # value for it.
+        self._publish_budget(stop, StopSnapshot(
+            batch=self._batches_done, elapsed=time.monotonic() - start,
+            best_objective=best_objective, evaluations=self._evaluations_done,
+            runs=self._runs_done))
         try:
             result, best_objective = self._search_loop(
                 campaign_id, stop, obj_name, start, best_objective)
@@ -666,47 +688,41 @@ class CampaignController:
             raise
         return self._finish_search(campaign_id, result, self._batches_done, start)
 
-    def _rehydrate_search(self, campaign_id: int) -> float:
-        """Re-drive the strategy and the counters from what this campaign already recorded.
+    def _rehydrate_search(self, campaign_id: int, fold_best):
+        """Re-drive the strategy from what this campaign already recorded, and return the
+        :class:`~robovast.search.history.SearchPosition` that record folds to.
 
-        Returns how long the campaign has already been alive, in seconds, which the caller
-        subtracts from its ``time.monotonic()`` origin. Wall-clock age rather than time
-        actually spent computing, because that is what a ``time`` budget caps: a search that
-        got a fresh clock on every restart would have no wall-clock bound at all.
+        The caller assigns every counter from that one value, so a field added to the
+        position is filled in one place instead of being remembered at each of them.
 
-        A no-op for a campaign starting now, whose store has no batches -- so there is no
-        resume branch here, only a loop over a record that is usually empty.
+        The age it carries is wall-clock rather than time actually spent computing, because
+        that is what a ``time`` budget caps: a search that got a fresh clock on every restart
+        would have no wall-clock bound at all.
+
+        For a campaign starting now the record is empty and folds to the zero position, so
+        the fold has no resume branch. What is conditional here is only what would be a lie
+        for a fresh campaign: re-driving a strategy through nothing, and announcing a resume
+        that is not one.
 
         The strategy is re-driven through :meth:`~robovast.search.strategy.SearchStrategy.resume`
         rather than restored from a serialized state, because nothing serializes one; see
         that method for why the replay is by batch and asks before it tells.
         """
-        from robovast.search.history import recorded_batches
+        from robovast.search.history import position_from, recorded_batches
 
         batches = recorded_batches(self.store, campaign_id)
-        if not batches:
-            return 0.0
-        self.strategy.resume(batches)
-        self._batches_done = len(batches)
-        for batch in batches:
-            self._evaluations_done += len(batch.evaluations)
-            self._history.extend(batch.evaluations)
-            # What the batch COST, by the same measure the live loop uses: executions
-            # attempted -- every cell's ALLOCATION, not what produced a sample. A draw that
-            # composed to nothing still occupied the plan its allocation reserved, so this
-            # sums over every recorded cell rather than over the scored ones.
-            #
-            # Read from the record rather than re-derived. `search.repetitions` sizes each
-            # cell separately, so re-deriving meant recounting an unevenly-spent campaign as
-            # an evenly spent one -- under where the policy had spent above `execution.runs`,
-            # over where it had spent below -- and a `runs` budget then stopped the resumed
-            # search in the wrong place. `execution.runs` stands in only for a row that
-            # recorded no allocation, which is a store from before one could be recorded,
-            # where it is what that cell actually got.
-            self._runs_done += sum((n or self.runs) for n in batch.reps)
-        logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
-                    "%d run(s) already spent.",
-                    self._batches_done, self._evaluations_done, self._runs_done)
+        position = position_from(
+            batches, default_runs=self.runs, fold_best=fold_best,
+            age_s=self._campaign_age(campaign_id) if batches else 0.0)
+        if batches:
+            self.strategy.resume(batches)
+            logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
+                        "%d run(s) already spent.",
+                        position.batches, position.evaluations, position.runs)
+        return position
+
+    def _campaign_age(self, campaign_id: int) -> float:
+        """How long this campaign has been alive, in wall-clock seconds."""
         return max(0.0, time.time() - (self._campaign_started_at(campaign_id) or time.time()))
 
     def _campaign_started_at(self, campaign_id: int):

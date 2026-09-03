@@ -605,6 +605,20 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    running pod's log on the cluster, the live ``system.log`` file locally). A
    finished job whose pod has been garbage-collected has no live log.
 
+   Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
+   on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
+   has not begun executing has one too) and, while it runs on a cluster, ``usage``: what it
+   is consuming against **both** figures it was given. Measured against the request says
+   whether the reservation was the right size; against the limit, whether the job is near
+   being throttled or OOM-killed. Reading it answers those without an ``exec_in_job``, and
+   without costing the run anything.
+
+   An absent ``usage``, or an absent field inside it, means **not measured** — never zero.
+   The job is not running, the lane sets no container limits, or a container left a limit
+   open (which means the whole node, so no ceiling is true). When the cause is worth acting
+   on, the response carries ``metrics_unavailable`` saying so. Do not read a listing with no
+   usage anywhere as an idle cluster: check that field first.
+
 .. note::
 
    ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current

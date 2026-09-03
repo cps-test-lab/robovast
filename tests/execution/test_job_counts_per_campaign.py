@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Per-campaign job counts for the CLI monitor, over the shared phase classifier.
 
-This function had no test at all, and it shows: it unpacked
-``list_jobs_with_phase``'s three-tuples as two, so *every* call raised
-``ValueError``. The classifier is the one place that decides a job's phase, and
-reading its vocabulary as this function's schema is the same mistake twice --
-each phase added there (``blocked``, then ``waiting``) also became a KeyError on
-the increment.
+The classifier is the one place that decides a job's phase, and this function must
+read both its shape and its vocabulary without restating either. Reading the shape
+wrong is now structural rather than positional -- the classifier returns a
+``ListedJob`` record, so a field cannot be read as its neighbour and a stale caller
+fails loudly -- but the vocabulary still has to be kept in step: each phase added
+there (``blocked``, then ``waiting``) is a ``KeyError`` on the increment here until
+``JOB_PHASE_COUNTERS`` learns it.
 
 Neither showed up as a crash. The monitor wraps the call in ``except Exception``
 and prints "(unreachable)", which is what a healthy cluster had been reporting.
@@ -18,7 +19,7 @@ import types
 from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (
-    JOB_PHASE_COUNTERS, get_cluster_job_counts_per_campaign)
+    JOB_PHASE_COUNTERS, ListedJob, get_cluster_job_counts_per_campaign)
 
 
 def _job(name, campaign, *, succeeded=0, active=0, failed=0, suspend=False, total=None):
@@ -31,17 +32,28 @@ def _job(name, campaign, *, succeeded=0, active=0, failed=0, suspend=False, tota
 
 
 def _counts(classified):
-    """Run the function with *classified* standing in for the phase classifier."""
+    """Run the function with *classified* standing in for the phase classifier.
+
+    Takes ``(job, phase, detail)`` triples and wraps them in the record the classifier
+    actually returns, so each test below reads as the case it is about rather than as a
+    constructor call. The wrapping is here and not in the tests precisely so that a change
+    to the record's shape lands in one place.
+    """
+    listed = [ListedJob(job=job, phase=phase, detail=detail, node=None)
+              for job, phase, detail in classified]
     with mock.patch("robovast.execution.cluster_execution.cluster_execution"
-                    ".list_jobs_with_phase", return_value=classified), \
+                    ".list_jobs_with_phase", return_value=listed), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch("kubernetes.client.BatchV1Api"), \
          mock.patch("kubernetes.client.CoreV1Api"):
         return get_cluster_job_counts_per_campaign("ns")
 
 
-def test_the_classifier_s_three_tuples_are_unpacked():
-    """The reported bug: two names for three values, on every call."""
+def test_the_classifier_s_records_are_read_by_name():
+    """The counter reads what the classifier returns, field by field.
+
+    Positional unpacking here is what a field added to the record used to break silently;
+    the record is what makes a stale reader fail at the access instead."""
     counts = _counts([(_job("j1", "camp-a", succeeded=1), "completed", None)])
     assert counts["camp-a"]["completed"] == 1
 
