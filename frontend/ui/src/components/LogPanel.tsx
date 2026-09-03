@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded'
 import Box from '@mui/material/Box'
+import CircularProgress from '@mui/material/CircularProgress'
 import Fab from '@mui/material/Fab'
 import Tooltip from '@mui/material/Tooltip'
-import { useLiveStream } from '@/lib/liveStream'
+import { useLiveStream, type LiveState } from '@/lib/liveStream'
 import { containerColorer } from './containerColor'
 
 // The one live-log renderer in the app. It lived inside StatusView, which is now only one
@@ -45,6 +46,48 @@ function renderLogLines(text: string) {
 /** How the *server* ended the stream, as opposed to how the transport is doing. */
 type LogEnd = 'eof' | 'error' | null
 
+/**
+ * The note under the log body, and how to dress it: `busy` earns a spinner, `error` the
+ * error colour, `note` neither. `null` while a healthy stream is delivering — a tail that
+ * is working says nothing.
+ */
+export type LogFooter = { text: string; kind: 'busy' | 'error' | 'note' } | null
+
+/**
+ * What to say under an empty (or troubled) log.
+ *
+ * The distinction that matters is between an empty log that is *known* to be empty and one
+ * nobody has read yet. `state === 'open'` does not draw it: the server flushes the response
+ * headers before its first pull, so the socket is open — and the panel would claim "(no
+ * output yet)" — for however long that pull takes, which across a cluster is tens of
+ * seconds. `received` is the server having actually spoken (a delta, or a `heartbeat`
+ * meaning "read it, there was nothing"), and only then is the emptiness a fact about the
+ * log rather than about our own latency.
+ *
+ * "(no output yet)" is still the right answer once it *is* a fact — a job whose containers
+ * have not started writing has an open stream and no bytes, and PodLogTail swallows the
+ * API's 400 for a container with no log — so it is kept, just no longer said blind.
+ */
+export function logFooter(o: {
+  end: LogEnd
+  errorMsg: string | null
+  state: LiveState
+  received: boolean
+  /** Nothing has been rendered into the body. */
+  empty: boolean
+}): LogFooter {
+  if (o.end === 'error') {
+    return { text: `stream error: ${o.errorMsg ?? 'unknown'}`, kind: 'error' }
+  }
+  if (o.end !== 'eof' && (o.state === 'reconnecting' || o.state === 'closed')) {
+    return { text: 'reconnecting…', kind: 'busy' }
+  }
+  if (!o.empty) return null
+  if (o.end === 'eof') return { text: '(no log)', kind: 'note' }
+  if (o.state === 'open' && o.received) return { text: '(no output yet)', kind: 'note' }
+  return { text: 'loading…', kind: 'busy' }
+}
+
 // How far from the bottom still counts as "at the bottom", in px. Not zero: a sub-pixel
 // scroll height (fractional line metrics, a zoomed browser) leaves a fraction of a pixel of
 // slack that would read as the reader having deliberately scrolled away.
@@ -67,7 +110,7 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
   // so an opening panel shows the end of the log, which is what a tail is for.
   const [following, setFollowing] = useState(true)
 
-  const { state, finish, generation } = useLiveStream(streamUrl, {
+  const { state, received, finish, generation } = useLiveStream(streamUrl, {
     resetKey,
     onMessage: (e) => {
       try {
@@ -110,25 +153,14 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
   }, [generation, resetKey, streamUrl])
 
   const lines = useMemo(() => (text ? renderLogLines(text) : null), [text])
+  const empty = !lines
 
-  // Footer status shown under the log body: nothing while healthily streaming, an
-  // explicit note while reconnecting / errored / (when empty) connecting or ended.
-  // An open stream with nothing in it is not loading — the connection is up and the
-  // source has produced no bytes (a job whose containers have not started writing yet;
-  // PodLogTail swallows the API's 400 for a container with no log). Saying `loading…`
-  // there promised output that nothing was on its way to deliver.
-  const footer =
-    end === 'error'
-      ? `stream error: ${errorMsg ?? 'unknown'}`
-      : end !== 'eof' && (state === 'reconnecting' || state === 'closed')
-        ? 'reconnecting…'
-        : !lines
-          ? end === 'eof'
-            ? '(no log)'
-            : state === 'open'
-              ? '(no output yet)'
-              : 'loading…'
-          : null
+  // Memoised for the scroll effect below, which must run when the footer's *content*
+  // changes and not on every render.
+  const footer = useMemo(
+    () => logFooter({ end, errorMsg, state, received, empty }),
+    [end, errorMsg, state, received, empty],
+  )
 
   // Stick to the bottom only while following, and never out from under a selection: a scroll
   // mid-drag loses the anchor, which makes a live log impossible to copy from. Holding a
@@ -183,12 +215,21 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
             component="span"
             sx={{
               display: 'block',
-              color: end === 'error' ? 'error.main' : 'text.secondary',
+              color: footer.kind === 'error' ? 'error.main' : 'text.secondary',
               opacity: 0.85,
             }}
           >
             {lines ? '\n' : ''}
-            {footer}
+            {footer.kind === 'busy' ? (
+              <CircularProgress
+                size={11}
+                thickness={6}
+                // Inherits the footer's muted colour so it reads as part of the note rather
+                // than as a control, and sits on the text baseline beside it.
+                sx={{ color: 'inherit', mr: 0.75, verticalAlign: 'middle' }}
+              />
+            ) : null}
+            {footer.text}
           </Box>
         ) : null}
       </Box>

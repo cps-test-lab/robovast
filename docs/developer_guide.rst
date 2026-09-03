@@ -1965,6 +1965,12 @@ maths into a lazily-loaded page that needs none of them. That the same component
 three is not a coincidence: every live log here is a ``fetch(offset) -> LogChunk`` behind
 one SSE loop.
 
+An open stream with nothing in it is ambiguous, and the panel must not resolve it by
+guessing: these servers flush the response headers before their first pull, and that pull is
+network I/O. So ``useLiveStream`` reports ``received`` — whether a frame has actually
+arrived, a delta or the ``heartbeat`` that means "read it, there was nothing" — and only
+then does the panel call the log empty rather than still loading (``logFooter``).
+
 The usage recording and the service-log ring both live in the **serving layer**
 (``service/app.py`` and ``service/service_log.py``), not on ``RobovastInterface``. The
 precedent is ``_sse_campaign_list`` and ``/healthz``: they describe the process that is
