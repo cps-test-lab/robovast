@@ -258,3 +258,92 @@ def test_a_reattach_that_throws_does_not_stop_the_service_coming_up(monkeypatch)
                              cluster_config_kwargs={}, reap_on_start=True)
 
     assert service.version().backend == "kubernetes"
+
+
+# -- waiting for the store ---------------------------------------------------
+
+
+def test_jobs_the_store_cannot_place_yet_are_waited_for(listed, monkeypatch):
+    """A restart is exactly when the store may not be up.
+
+    A redeploy brings the object store back alongside this process, so the index read that
+    says which campaign a live Job belongs to is refused for the first seconds. Observed:
+    the service came up, logged that the campaign index was unreachable, found the Job that
+    was running and resolved none of it -- inert in the one situation it exists for.
+
+    Jobs running that resolve to nothing is the signature of a store still starting, and it
+    is the only case worth waiting on.
+    """
+    from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
+
+    job = postprocess_job.campaign_job_name(_CAMPAIGN)
+    listed["jobs"] = _jobs((_label_safe_campaign(_CAMPAIGN), job))
+    service = _FakeService({})           # the store answers nothing, as at startup
+    slept = []
+    monkeypatch.setattr(postprocess_reattach.time, "sleep", slept.append)
+
+    def _index_comes_up():
+        service.index = {_CAMPAIGN: "2026-08-27T12:00:00+00:00"}
+        return (service.index, {})
+
+    # Refused twice, then the store is there.
+    calls = {"n": 0}
+
+    def _campaign_index():
+        calls["n"] += 1
+        return ({}, {}) if calls["n"] < 3 else _index_comes_up()
+
+    service._campaign_index = _campaign_index
+
+    found = postprocess_reattach._live_when_the_store_answers(
+        service, postprocess_reattach.time.monotonic() + 60)
+
+    assert found == {_CAMPAIGN: job}, "the wait must outlast a store that is still starting"
+    assert len(slept) == 2, "it waited between attempts rather than spinning"
+
+
+def test_a_cluster_with_no_jobs_is_a_finished_answer(listed, monkeypatch):
+    """Nothing running is not "the store is slow": there is nothing to attribute, so this
+    must return at once rather than hold a thread for minutes on every ordinary restart."""
+    listed["jobs"] = _jobs()
+    slept = []
+    monkeypatch.setattr(postprocess_reattach.time, "sleep", slept.append)
+
+    found = postprocess_reattach._live_when_the_store_answers(
+        _FakeService({}), postprocess_reattach.time.monotonic() + 60)
+
+    assert found == {}
+    assert slept == []
+
+
+def test_giving_up_says_which_verdicts_will_be_missing(listed, monkeypatch, caplog):
+    """The deadline exists, and passing it silently is how this became invisible before:
+    a Job whose verdict nobody will record is worth one line naming what to do."""
+    from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
+
+    listed["jobs"] = _jobs((_label_safe_campaign(_CAMPAIGN),
+                            postprocess_job.campaign_job_name(_CAMPAIGN)))
+    monkeypatch.setattr(postprocess_reattach.time, "sleep", lambda _s: None)
+
+    with caplog.at_level("WARNING"):
+        found = postprocess_reattach._live_when_the_store_answers(
+            _FakeService({}), postprocess_reattach.time.monotonic() - 1)
+
+    assert found == {}
+    assert "re-run postprocessing" in caplog.text
+
+
+def test_the_service_does_not_wait_for_the_store_before_answering(monkeypatch):
+    """Identifying a live Job can take minutes; a service that does not answer is worse
+    than a verdict that arrives late, so the discovery runs off the startup path."""
+    started = {}
+
+    def _start(service):
+        started["service"] = service
+        return "thread"
+
+    monkeypatch.setattr(postprocess_reattach, "start_reattach", _start)
+    service = _FakeService({})
+
+    assert ClusterService.reattach_live_postprocessing(service) == "thread"
+    assert started["service"] is service

@@ -267,3 +267,50 @@ def test_an_unestablished_outcome_does_not_erase_an_earlier_failure(tmp_path):
     status = record_step_outcome(campaign, postprocessing=(None, "the Job went unread"))
 
     assert status.postprocessing_error == "an attempt died"
+
+
+def test_a_re_trigger_does_not_rewrite_how_the_campaign_ended(tmp_path):
+    """Sharing a stopped campaign must not make it read as a completed one.
+
+    ``record_step_outcome`` reconstructs, edits one step's field and writes back, so it
+    passes over ``phase`` on the way. Normalising that to ``finished`` unconditionally
+    falsifies the only record that the campaign did not run to completion -- durably, and
+    on the cluster lane published back to the object store with the rest of
+    ``_execution``. Stopping a sweep and then uploading what it produced is ordinary.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-2026-01-01-000002"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.STOPPED, campaign_id=campaign.name,
+                         error="stopped by user"))
+
+    written = record_step_outcome(campaign, share=(True, "upload-to-share complete"))
+
+    assert written.phase == Phase.STOPPED
+    assert written.share_error is None
+    reread = reconstruct_status_from_disk(campaign)
+    assert reread.phase == Phase.STOPPED, "the rewrite would outlive the process"
+    assert reread.error == "stopped by user"
+
+
+def test_a_re_trigger_reports_a_crashed_campaign_as_crashed(tmp_path):
+    """The other half of the same rule, on the phase nothing wrote deliberately.
+
+    A campaign with no durable record reconstructs as ``crashed`` -- terminal, so there
+    is never a non-terminal phase here for a re-trigger to "normalise". Postprocessing
+    the wreckage to see what it left is a normal move, and it must not turn the wreck
+    into a completed run.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-2026-01-01-000003"
+    campaign.mkdir()
+    assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED
+
+    written = record_step_outcome(campaign, postprocessing=(True, "done"))
+
+    assert written.phase == Phase.CRASHED
+    assert is_terminal(written.phase)
+    assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED

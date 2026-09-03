@@ -274,10 +274,11 @@ def _interrupted_job_dirs(results_dir: str) -> list:
     :func:`~robovast.results_processing.run_slices.describe_missing`. Only a genuine
     conversion error fails a step.
 
-    ``rosbags_process`` was the one step that did not follow it — it exits non-zero on any
-    unreadable bag — so one stopped job failed the whole campaign's postprocessing and cost
-    the metrics of every job that did finish. Any future step that *scans* rather than
-    iterating the run table should consult this rather than inventing a second answer.
+    ``rosbags_process`` follows it for every unreadable bag, whoever cut the job off; this
+    list is the narrower question of which of them somebody *chose*, so its summary can
+    separate the expected gaps from the merely observed ones. Any future step that *scans*
+    rather than iterating the run table should consult this rather than inventing a second
+    answer.
 
     Two kinds qualify, for one reason. ``killed``: an operator stopped the job by hand.
     ``invalid``: the runner threw the trial away because a container it depended on crashed
