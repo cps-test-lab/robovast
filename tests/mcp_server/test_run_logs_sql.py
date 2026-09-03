@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from robovast.mcp_server.plugins.run_logs import (_campaign_term, _predicates,
+from robovast.mcp_server.plugins.run_logs import (_campaign_term, _predicates, _rollup_sql,
                                                   _shutdown_term)
 
 #: The campaign under test, and a second one sharing its configuration names -- the index
@@ -111,7 +111,7 @@ def _config_term(config_filter: str) -> str:
 
 
 def test_the_config_filter_uses_no_sqlite_only_operator():
-    """The campaign index answers in Postgres, which has no ``GLOB``: a term carrying one
+    """The index answers in Postgres, which has no ``GLOB``: a term carrying one
     is not a wrong result but a syntax error, so every filtered search fails outright.
     SQLite accepts ``GLOB`` happily, so executing the term is not on its own enough to
     show it is portable -- this asserts the operator itself is gone."""
@@ -138,3 +138,35 @@ def test_the_config_filter_matches_the_campaign_glob_vocabulary(db, config_filte
     rows = db.execute(f"SELECT l.message FROM run_log l WHERE {_campaign_term(_CAMPAIGN)} "
                       f"AND {_config_term(config_filter)}").fetchall()
     assert (["filtered line"] == [r[0] for r in rows]) is matches
+
+
+def test_the_config_filter_carries_no_python_only_regex_syntax():
+    """Postgres runs the pattern, and this fixture does not, so the assertion is on the syntax
+    rather than on a match. Executing a term here would pass on constructs Postgres rejects --
+    the fixture registers Python's own engine as REGEXP, which accepts all of them."""
+    for pattern in ("cfg-*", "probe-?", "plain", "*-1"):
+        term = _config_term(pattern)
+        bad = [frag for frag in ("(?s:", "(?a:", "(?>", "(?P<") if frag in term]
+        assert not bad, f"{pattern!r} produced Postgres-invalid syntax {bad}: {term}"
+
+
+def test_the_config_filter_is_anchored_at_both_ends():
+    """REGEXP searches rather than matches, so an unanchored pattern reports another
+    configuration's runs as this one's."""
+    term = _config_term("cfg-*")
+    assert r"\A" in term and r"\Z" in term, term
+
+
+def test_the_rollup_groups_every_run_column_it_selects():
+    """Postgres refuses a grouped query that selects a column it neither groups nor aggregates,
+    and ``group_by_run`` is the DEFAULT -- so an ungrouped column here breaks the tool's most
+    common call. Asserted against the generated SQL: this fixture is not Postgres and would
+    accept the query."""
+    sql = _rollup_sql(["1=1"], limit=10)
+    select, _, rest = sql.partition(" FROM ")
+    grouped = rest.split("GROUP BY", 1)[1].split("ORDER BY", 1)[0]
+    selected = {tok.strip() for tok in select.replace("SELECT ", "").split(",")
+                if tok.strip().startswith("r.")}
+    assert selected, "the rollup selects no run columns -- this guard would be vacuous"
+    for column in selected:
+        assert column in grouped, f"{column} is selected but not grouped: {sql}"
