@@ -147,7 +147,7 @@ It provides four views:
   open: its work runs in init containers, which a pod log does not carry, and its output is
   published to the campaign log's ``POSTPROCESSING`` section every few seconds while it runs
   — where it stays once the cluster has removed the job, which is when a failed postprocess is
-  usually read. The row says so, and the Log tab beside it is where to look. Both rows are the campaign's
+  usually read. The Log tab beside it is where to look, and the chip's tooltip says so. Both rows are the campaign's
   *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
   and out of the ETA — and neither can be stopped one at a time, because there is no run to
   record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing
