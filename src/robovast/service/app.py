@@ -580,6 +580,30 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: let the client reconnect when we stop.
     _sse_heartbeat = "event: heartbeat\ndata: {}\n\n"
 
+    #: Most characters one stream frame carries. A log panel is a *tail*: a fixed-height
+    #: pane whose reader wants the end. A campaign's assembled infrastructure log reaches
+    #: tens of megabytes, and sending all of it costs the transfer, a JSON parse and a DOM
+    #: node per line before the first character is visible — for output nobody scrolls back
+    #: to. So an over-long frame is served from its end, with a note in place of the head.
+    #:
+    #: Dropping the head is free of the offset protocol: ``next_offset`` is where the *log*
+    #: continues, not how much was sent, so the tail that follows is still exact and a
+    #: resumed connection still resumes at the right byte. It also bounds a catch-up delta,
+    #: not just the first frame — a tab left in the background for hours faces the same
+    #: megabytes at once.
+    _sse_log_frame_cap = 256 * 1024
+
+    def _log_frame(text: str) -> str:
+        """*text* if it fits :data:`_sse_log_frame_cap`, else its tail plus a note."""
+        if len(text) <= _sse_log_frame_cap:
+            return text
+        skipped = len(text) - _sse_log_frame_cap
+        # From the first line break inside the kept window, so the frame opens on a whole
+        # line rather than mid-word.
+        tail = text[-_sse_log_frame_cap:].split("\n", 1)[-1]
+        return (f"[… {skipped / 1e6:.1f} MB of earlier output not shown — "
+                f"read the whole log with `vast campaign log` …]\n{tail}")
+
     async def _pull_or_exit(pull):
         """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
 
@@ -707,7 +731,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
         A tick that produced no new bytes sends a ``heartbeat`` — see
         :data:`_sse_heartbeat`, which is what lets the client tell a log nothing is
-        being written to from one whose connection has quietly died.
+        being written to from one whose connection has quietly died. A tick that
+        produced a great many is served from its end — see :data:`_sse_log_frame_cap`.
         """
         offset = max(0, start_offset)
         yield ": open\n\n"  # prompt proxies to flush the response headers
@@ -723,7 +748,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 return
             if chunk.text:
                 offset = chunk.next_offset
-                yield f"id: {offset}\ndata: {_json.dumps(chunk.text)}\n\n"
+                yield f"id: {offset}\ndata: {_json.dumps(_log_frame(chunk.text))}\n\n"
             else:
                 yield _sse_heartbeat
             if chunk.eof:

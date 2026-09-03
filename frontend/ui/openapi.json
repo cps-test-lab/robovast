@@ -1561,6 +1561,11 @@
             "title": "Pending",
             "type": "integer"
           },
+          "postprocessing": {
+            "default": 0,
+            "title": "Postprocessing",
+            "type": "integer"
+          },
           "running": {
             "default": 0,
             "title": "Running",
@@ -1584,6 +1589,7 @@
           "failed",
           "killed",
           "pending",
+          "postprocessing",
           "running",
           "total",
           "waiting"
