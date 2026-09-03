@@ -556,13 +556,20 @@ class JobKind(StrEnum):
     value, and the field stays typed ``str`` so an unfamiliar kind reads as "some other kind
     of job" rather than as an error.
 
-    This is the cluster's ``jobgroup`` axis narrowed to what a campaign's own listing shows:
-    everything here is a ``scenario-runs`` Job, and the question is whether it is one of the
-    campaign's trials.
+    This is the cluster's ``jobgroup`` axis narrowed to what a campaign's own listing shows,
+    and the question every member answers is whether it is one of the campaign's trials.
+    Only :attr:`RUN` is.
     """
 
     RUN = "run"                  # one of the campaign's own trials
     CALIBRATION = "calibration"  # a node-sizing probe (cluster lane only)
+    #: The campaign's own postprocessing work, running as a job of its own: the rosbag
+    #: conversion, which runs in the execution image its runs were recorded with. Listed for the same reason
+    #: a probe is -- it is real work holding real capacity, and it is the only thing a
+    #: campaign in its ``postprocessing`` phase is doing -- and, like a probe, it carries no
+    #: run. Cluster lane only: the local lane converts in the service process, where there
+    #: is no job to list.
+    POSTPROCESSING = "postprocessing"
 
 
 class JobSummary(BaseModel):
@@ -582,8 +589,8 @@ class JobSummary(BaseModel):
     #: Defaults to ``RUN`` rather than to an empty "unknown": every job on the local lane and
     #: every job of a campaign's own batch *is* a run, so the default is a true statement and
     #: no construction site has to restate it. It is also what a client sees from a service
-    #: older than this field -- which is why a reader must test for the kind it cares about
-    #: (``== "calibration"``) and never for ``!= "run"``.
+    #: older than this field -- which is why a reader must test for the kinds it cares about
+    #: (``== "calibration"``, ``== "postprocessing"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
@@ -637,7 +644,19 @@ class JobCounts(BaseModel):
     #
     # Cluster lane only; always 0 locally, where every job is a run.
     calibration: int = 0
-    #: The campaign's own jobs. See :attr:`calibration` for what is deliberately not in it.
+    # The campaign's postprocessing job in the same listing, on the same terms as
+    # ``calibration`` and for the same reason: a conversion is not a trial, so counting it
+    # among the runs would put a job that never carried a scenario into the run meter, the
+    # ``done/total`` label and the ETA's divisor.
+    #
+    # Not a progress figure. It is 1 while a conversion is in flight and 0 otherwise, so what
+    # it says is "there is postprocessing to look at in the jobs list", not how far along it
+    # is -- the conversion reports its own progress in the campaign log.
+    #
+    # Cluster lane only; always 0 locally, where postprocessing runs in the service process.
+    postprocessing: int = 0
+    #: The campaign's own runs. See :attr:`calibration` and :attr:`postprocessing` for what
+    #: is deliberately not in it.
     total: int = 0
 
 

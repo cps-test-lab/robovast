@@ -1205,6 +1205,21 @@ only as the ``waiting N`` counter, never as a row: the per-job list mirrors the 
 actually exist there (what ``k9s`` shows), and those are the ones with a pod and a log to
 read. ``list_campaign_jobs`` still returns every one of them with its reason.
 
+The listing spans the two jobgroups a campaign creates for its own work — its trials
+(``scenario-runs``) and its postprocessing conversion (``postprocessing``) — in one
+set-based selector, because it is polled while the campaign is live and a second listing
+would double both the Job read and the pod read behind it. Each row carries the
+``JobKind`` that says which it is, and only ``run`` rows reach ``JobCounts``: the counts are
+read as facts about runs, and a conversion or a probe among them would enter the run meter
+and the ETA's divisor. The conversion is the one job a campaign in its ``postprocessing``
+phase has, so listing it is the difference between a busy campaign and an apparently idle
+one. Its row carries no log of its own, and that is deliberate: the conversion runs in init
+containers, which the per-job log does not report (it reports the containers that run for the
+pod's whole life), and every container's output is already published to the campaign's
+POSTPROCESSING section while the Job runs (:func:`publish_live_log`) — a copy in the object
+store, which is the one that is still readable after ``ttlSecondsAfterFinished`` has taken the
+pod away.
+
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
 server and the transport error, within about a minute — every API call has a 10-second
@@ -1286,6 +1301,23 @@ mean migrating it mid-campaign, making the second half a different experiment fr
 first), or when a search fails either condition above. Each says which it is in the service
 log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
 stays recoverable with ``vast campaign import``.
+
+**A running postprocess is re-attached to separately** (``postprocess_reattach``, called
+from startup right after the resume). Postprocessing is a Job that outlives the service
+process too, but only the *waiting* process writes the campaign's postprocessing verdict --
+so a restart mid-postprocess leaves a Job that converts every bag, finishes, and a campaign
+still carrying the previous attempt's message: fully derived data marked as none. The resume
+above cannot cover it, because a postprocess retriggered on a finished campaign runs against
+a terminal ``outcome.json``, which ``owed_work`` excludes precisely so that a campaign that
+recorded an ending is never restarted. What is owed here is a verdict, not work.
+
+The live Jobs are found with one labelled listing (``jobgroup=postprocessing``) and the
+label's campaign resolved against the store's index, then confirmed against the
+campaign-level Job name -- a *discriminated* Job is a search's per-batch conversion and is
+owed to its batch's driver, not to any campaign record. The waiter creates and replaces
+nothing (the Job already mounts the scripts it was created with), publishes the live log
+while it waits, and records nothing at all when the Job cannot be read: a campaign whose
+conversion succeeded must never be marked failed because the API server was unreadable.
 
 
 How free capacity is measured, and why it is not the whole cluster

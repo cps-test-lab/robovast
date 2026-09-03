@@ -3239,6 +3239,30 @@ def registry_ca_file(k8s_client, namespace: str, registry) -> str:
     return fd.name
 
 
+def _planned_images(runner) -> dict:
+    """``{role or container name: image ref}`` from the runner's PLAN.
+
+    The plan is where a pinned ref lives: ``_pin_image_refs`` rewrites every container's image
+    to the digest it names before a single pod is written, so this is the earliest moment the
+    bytes a campaign will run are known -- and, on a batch that has not finished, the only one.
+
+    Keyed by container name **and** by every role it backs, roles first so a name always wins:
+    a role is how a reader asks ("which simulator ran?") while the name is what the pod calls
+    it, and a stepped simulator makes one container answer to both.
+    """
+    plan = getattr(runner, "plan", None)
+    containers = tuple(getattr(plan, "containers", ()) or ())
+    images = {}
+    for container in containers:
+        for role in getattr(container, "roles", ()) or ():
+            if getattr(container, "image", None):
+                images[role] = container.image
+    for container in containers:
+        if getattr(container, "image", None):
+            images[container.name] = container.image
+    return images
+
+
 class KubernetesBackend(ExecutionBackend):
     """Run batches as Kubernetes Jobs from inside the controller pod.
 
@@ -3357,24 +3381,15 @@ class KubernetesBackend(ExecutionBackend):
 
         Effective only where the driver shares a filesystem with whoever wrote the launch
         record. It does on the local lane. On this one the record is written by the service
-        and the driver runs elsewhere, so there is nothing here to merge into and this does
-        nothing -- deliberately, rather than creating a launch record holding images and no
-        request, which every reader would take for a campaign that asked for nothing. What
-        answers "which bytes did this campaign run?" here is ``execution.yaml``'s
-        ``image_revisions``, which is why that file is now written before the jobs too.
+        and the driver runs elsewhere, so there may be nothing here to merge into -- and then
+        this does nothing, deliberately, rather than creating a launch record holding images
+        and no request, which every reader would take for a campaign that asked for nothing.
+        What answers "which bytes did this campaign run?" in that case is ``execution.yaml``'s
+        ``image_revisions``, which is why that file is written before the jobs too -- and from
+        the same :func:`_planned_images`, so the two records cannot name different bytes.
         """
         from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
-        plan = getattr(runner, "plan", None)
-        containers = tuple(getattr(plan, "containers", ()) or ())
-        images = {}
-        for container in containers:
-            if not getattr(container, "image", None):
-                continue
-            for role in getattr(container, "roles", ()) or ():
-                images[role] = container.image
-        for container in containers:
-            if getattr(container, "image", None):
-                images[container.name] = container.image
+        images = _planned_images(runner)
         try:
             update_launch_images(Path(campaign_root), images)
         except (OSError, ValueError) as e:
@@ -3425,6 +3440,13 @@ class KubernetesBackend(ExecutionBackend):
         self._record_launch_images(campaign_root, runner)
         self._record_execution_yaml(runner, campaign_root, execution_params, runs,
                                     with_locks=False)
+        # And published here, for the same reason it is written here. The driver's disk is
+        # scratch on this lane, so a record that stays on it describes the campaign to nobody:
+        # the next publish is at the batch BOUNDARY, which for a batch-mode campaign -- one
+        # batch -- is after every run has finished. Until then a reader asking what this
+        # campaign is running, or which packages a run's world must be built from, finds no
+        # record of a campaign that has been running for an hour.
+        self.publish_records(campaign_root)
         batch_error = None
         try:
             runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
@@ -3553,11 +3575,27 @@ class KubernetesBackend(ExecutionBackend):
                 # Into the cache the controller reads after the batch, when no runner is
                 # alive to ask. Only a runner holds the registry credentials for it.
                 runner.build_lock(container.image)
+        # The digests, from the plan first and from the pods second. `_resolved_image_digests` is
+        # read back off a pod, so before the batch it is empty -- and this method now runs before
+        # the batch, where the plan is the only source there is. Reading only the pods left the
+        # early record naming its images by TAG, with no `image_revisions` at all: enough to say
+        # what was asked for and not enough to attribute an artifact to the bytes that produced
+        # it, which is refused rather than guessed at. The plan already carries those bytes
+        # (`_pin_image_refs`), and the launch record beside this one was already writing them.
+        #
+        # Only refs that name bytes: pinning is fail-soft, so an unresolvable ref stays a tag,
+        # and a tag in `image_revisions` would claim an identity it does not have. It is left
+        # out, and the write after the batch fills it in from the pod that ran it.
+        from robovast.common.campaign_data import \
+            image_identifies_bytes  # pylint: disable=import-outside-toplevel
+        digests = {name: ref for name, ref in _planned_images(runner).items()
+                   if image_identifies_bytes(ref)}
+        digests.update(getattr(runner, "_resolved_image_digests", None) or {})
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
-                              image_digests=getattr(runner, "_resolved_image_digests", None),
+                              image_digests=digests or None,
                               image_labels=image_labels or None)
 
     def publish_execution_records(self, campaign_root: str) -> None:
@@ -3586,30 +3624,49 @@ class KubernetesBackend(ExecutionBackend):
             logger.warning("Could not publish the execution records of %s: %s",
                            campaign_id, e)
 
-    def publish_records(self, campaign_root: str) -> None:
-        """Publish ``campaign.db`` alone, so an unfinished campaign still has its records.
+    #: What a campaign's record is, as paths under its root. Named files rather than the
+    #: ``_execution`` directory: the logs beside them are written continuously and are
+    #: published once, at the boundary where another process starts reading
+    #: (``publish_execution_records``). These three are small, complete the moment they are
+    #: written, and are what a reader needs to say what this campaign IS.
+    _RECORD_FILES = ("campaign.db", "_execution/launch.yaml", "_execution/execution.yaml")
 
-        The one file, not the directory: this runs before any compute is spent and again
-        at every batch boundary, and the campaign root beside it holds the batch's results.
-        ``finalize_campaign`` is what publishes those, once.
+    def publish_records(self, campaign_root: str) -> None:
+        """Publish the campaign's record, so an unfinished campaign still has one.
+
+        Named files, not the directory: this runs before any compute is spent, again as soon
+        as the images are pinned, and again at every batch boundary, and the campaign root
+        beside it holds the batch's results. ``finalize_campaign`` is what publishes those,
+        once.
+
+        The execution record belongs here and not only at the end. This lane's driver disk is
+        scratch, so a record that is written but never uploaded describes the campaign to
+        nobody -- which defeats the reason it is written before the jobs at all (see
+        :meth:`_record_execution_yaml`: a campaign that dies in its first batch should still
+        name the images it ran). It is also what any reader of a LIVE campaign has to go on:
+        the images it names are how the service resolves the packages a run's world must be
+        built from, and asking for that mid-campaign is ordinary.
 
         Best-effort. The campaign is mid-flight and its own result uploads go through the
         same client moments later, so a store that is genuinely unreachable is reported by
         those with a real error rather than by ending the campaign over its bookkeeping.
         """
-        db = os.path.join(campaign_root, "campaign.db")
-        if not os.path.isfile(db):
+        present = [rel for rel in self._RECORD_FILES
+                   if os.path.isfile(os.path.join(campaign_root, rel))]
+        if not present:
             # Nothing to publish yet is not a failure: the local batch runner reaches the
-            # per-batch call before the store has been created in some test lanes.
+            # per-batch call before the store has been created in some test lanes, and the
+            # first call of all runs before anything has been written.
             return
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         try:
             bucket, prefix = in_pod_storage.campaign_storage_location(
                 self.cluster_config, campaign_id)
             storage = in_pod_storage.storage_client_for(self.cluster_config)
-            storage.upload_file(db, bucket, f"{prefix}campaign.db")
+            for rel in present:
+                storage.upload_file(os.path.join(campaign_root, rel), bucket, f"{prefix}{rel}")
         except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
-            logger.warning("Could not publish campaign.db for %s: %s", campaign_id, e)
+            logger.warning("Could not publish the record of %s: %s", campaign_id, e)
 
     def ensure_campaign_root_complete(self, campaign_root: str) -> None:
         """Fetch whatever of *campaign_root* resume left in the object store.

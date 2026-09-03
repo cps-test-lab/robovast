@@ -29,10 +29,12 @@ then has to be sent back, because this pod's filesystem does not outlive it -- t
 store is the campaign's durable home.
 """
 
+import json
 import logging
 import os
 import sys
 
+from . import postprocess_usage
 from .postprocess_stage import ENV_CAMPAIGN_ID, ENV_STAGE_DEST, cluster_config_from_env
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,20 @@ ENV_FORCE = "ROBOVAST_POSTPROCESS_FORCE"
 #: :func:`postprocess_job.run_host_postprocessing` always skips (the conversion container
 #: owns those).
 ENV_SKIP = "ROBOVAST_POSTPROCESS_SKIP"
+
+#: JSON list of ``search.postprocessing`` commands to run instead of the campaign-level
+#: pass. Set only on a per-batch Job.
+#:
+#: A search's batch and a finished campaign run DIFFERENT lists -- ``search.postprocessing``
+#: and ``results_processing.postprocessing`` are separate blocks of the ``.vast`` -- so a
+#: batch cannot be expressed as "the campaign pass, with the completing steps off": it would
+#: run the wrong list. The controller has already resolved which commands are this batch's,
+#: so they are passed rather than looked up again here.
+#:
+#: Running them is also all a batch does. Unset, the host runs the campaign-level pass and
+#: completes the campaign -- index ingest, metadata, provenance record -- which a search
+#: reaching this once per batch must not do to a campaign that is still growing.
+ENV_COMMANDS = "ROBOVAST_POSTPROCESS_COMMANDS"
 
 
 #: Files that appear in the staged tree but are not the campaign's, so they must not be
@@ -91,6 +107,12 @@ def _upload_derived(cluster_config, campaign_id: str, campaign_root: str,
     store, so until this has run the account exists nowhere a reader can see it. Everything
     else is uploaded only where it differs from the snapshot, so the staged run data is not
     written back over itself.
+
+    What went up is then named in :data:`~.postprocess_job.OUTPUT_MANIFEST`, **written here
+    because this is the only place that knows it**: the service fetches these objects back
+    by reading that one key, rather than listing a campaign prefix whose bulk is the rosbags
+    it does not want. It is uploaded LAST, after the objects it names, so a manifest can
+    never advertise something that is not in the store yet.
     """
     from . import in_pod_storage  # noqa: PLC0415
     from .postprocess_job import publish_execution_dir  # noqa: PLC0415
@@ -100,7 +122,7 @@ def _upload_derived(cluster_config, campaign_id: str, campaign_root: str,
     bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
     execution_dir = os.path.join(campaign_root, "_execution")
-    count = 0
+    sent = []
     for path, stamp in _snapshot(campaign_root).items():
         if path.startswith(execution_dir + os.sep) or before.get(path) == stamp:
             continue
@@ -108,9 +130,55 @@ def _upload_derived(cluster_config, campaign_id: str, campaign_root: str,
             continue
         rel = os.path.relpath(path, campaign_root).replace(os.sep, "/")
         storage.upload_file(path, bucket, f"{prefix}{rel}")
-        count += 1
-    logger.info("Uploaded %d derived file(s) of campaign %s", count, campaign_id)
-    return count
+        sent.append(rel)
+    _publish_manifest(storage, bucket, prefix, campaign_root, sent)
+    logger.info("Uploaded %d derived file(s) of campaign %s", len(sent), campaign_id)
+    return len(sent)
+
+
+def _publish_manifest(storage, bucket: str, prefix: str, campaign_root: str,
+                      sent: list) -> None:
+    """Record what was just uploaded, at :data:`~.postprocess_job.OUTPUT_MANIFEST`.
+
+    Written even when nothing was sent. An empty manifest and a missing one mean different
+    things to the fetch -- nothing was derived, against no Job ever said -- and only the
+    first of those is a campaign that is fine.
+    """
+    from .postprocess_job import OUTPUT_MANIFEST  # noqa: PLC0415
+
+    local = os.path.join(campaign_root, *OUTPUT_MANIFEST.split("/"))
+    os.makedirs(os.path.dirname(local), exist_ok=True)
+    with open(local, "w", encoding="utf-8") as handle:
+        handle.write("".join(f"{rel}\n" for rel in sent))
+    storage.upload_file(local, bucket, f"{prefix}{OUTPUT_MANIFEST}")
+
+
+def _derive_batch(campaign_root: str, commands: list, force: bool) -> tuple:
+    """Run one search batch's ``search.postprocessing`` commands, and nothing else.
+
+    The same :func:`~robovast.results_processing.postprocessing.run_postprocessing_commands`
+    the controller calls, against the same campaign root -- it is the function both
+    postprocessing lists already share, so a batch loads its plugins and applies its
+    execution contract exactly as the campaign-level pass does. What differs is only which
+    list, and that the caller supplies it.
+
+    Nothing here completes the campaign: this function has no ingest and no provenance
+    record to skip, which is the reason a batch runs it rather than the campaign-level pass
+    with steps turned off.
+    """
+    from robovast.common.config_plugins import ensure_plugins_importable  # noqa: PLC0415
+    from robovast.common.results_utils import campaign_vast  # noqa: PLC0415
+    from robovast.results_processing.postprocessing import \
+        run_postprocessing_commands  # noqa: PLC0415
+
+    # The campaign's own `plugins:` and any local `./path.py:Class` refs resolve against
+    # its staged config, exactly as they do on the controller.
+    config_dir = os.path.join(campaign_root, "_config")
+    ensure_plugins_importable(campaign_root, vast_path=str(campaign_vast(campaign_root)))
+    ok, _entries = run_postprocessing_commands(
+        commands, results_dir=campaign_root, config_dir=config_dir,
+        output=logger.info, force=force)
+    return ok, ("batch derived" if ok else "a batch postprocessing step failed")
 
 
 def main() -> int:
@@ -133,6 +201,7 @@ def main() -> int:
 
     force = os.environ.get(ENV_FORCE) == "1"
     skip = [s for s in (os.environ.get(ENV_SKIP) or "").split(",") if s.strip()]
+    batch_commands = os.environ.get(ENV_COMMANDS)
     campaign_root = os.path.join(dest, campaign_id)
 
     # Appended to (the handler opens in mode "a"), never truncated: the conversion container
@@ -149,14 +218,27 @@ def main() -> int:
     before = _snapshot(campaign_root)
     ok, message, failure = False, "", None
     try:
-        # *results_dir* is the PARENT: the host stage takes a results directory and names
-        # the campaign inside it, which is why staging lands the campaign one level down.
-        ok, message = run_host_postprocessing(
-            dest, campaign_id, force=force, skip=skip)
+        if batch_commands is None:
+            # *results_dir* is the PARENT: the host stage takes a results directory and
+            # names the campaign inside it, which is why staging lands the campaign one
+            # level down.
+            ok, message = run_host_postprocessing(
+                dest, campaign_id, force=force, skip=skip)
+        else:
+            ok, message = _derive_batch(campaign_root, json.loads(batch_commands), force)
     except Exception as e:  # noqa: BLE001 - the upload below is the only record of this
         failure = e
         message = f"{type(e).__name__}: {e}"
     finally:
+        # What this step cost, before the log handler closes so the figure lands in the
+        # POSTPROCESSING section. Its memory peak is the peak up to *here* and so excludes
+        # the upload that follows -- which is the right cut anyway: the ingest above is this
+        # step's work, and the upload streams rather than accumulating.
+        try:
+            logger.info("%s", postprocess_usage.summary_line(
+                postprocess_usage.record(campaign_root, "host")))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not record what the host step used.", exc_info=True)
         # Before the upload, so the log file holds everything this stage logged.
         remove_campaign_log_handler(handler)
         try:
@@ -167,7 +249,9 @@ def main() -> int:
     if failure is not None or not ok:
         print(f"Host postprocessing failed: {message}", file=sys.stderr)
         return 1
-    logger.info("Host postprocessing of %s finished: %s", campaign_id, message)
+    logger.info("%s of %s finished: %s",
+                "Host postprocessing" if batch_commands is None else "Batch derivation",
+                campaign_id, message)
     return 0
 
 

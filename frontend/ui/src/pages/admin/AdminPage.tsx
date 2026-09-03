@@ -20,6 +20,7 @@ import { useToasts } from '@/components/ToastProvider'
 import * as browserNotify from '@/lib/browserNotify'
 import { LogPanel } from '@/components/LogPanel'
 import { useActiveView } from '@/lib/activeView'
+import { acceptRevision, revisionChanged } from '@/lib/servedRevision'
 import { robovast, RobovastError, type UpgradeInfo } from '@/lib/robovastClient'
 import { formatAge, formatLocalTime } from '@/lib/time'
 import { ServiceConfigPanel } from './ServiceConfigPanel'
@@ -97,6 +98,7 @@ export function AdminPage() {
   // Collapsed too, and for the configuration's reason rather than the log's: this answers
   // "why did that not work?", which is a question somebody arrives with. Its query is gated
   // on the flag, so an unopened panel costs nothing.
+  const [restarted, setRestarted] = useState(false)
   const [eventsOpen, setEventsOpen] = useState(false)
   // Collapsed, like the two above: this answers "which tools do agents actually use, and
   // what happened when they did?", which is a question somebody arrives with rather than
@@ -118,6 +120,12 @@ export function AdminPage() {
     // least able to spot as stale. Same period as the upgrade read below, so the two lines
     // cannot disagree by more than one interval; it is a cheap in-pod read either way.
     refetchInterval: 60_000,
+    // And on the way back to the tab, ahead of the next tick: returning to a window left open
+    // is the moment someone asks what is deployed, and a minute of the previous answer is the
+    // stale reading this panel is worst at. The app disables focus refetching by default (see
+    // main.tsx) because most views here read listings that cost real work; these two lines do
+    // not, so they opt back in.
+    refetchOnWindowFocus: true,
     retry: false,
   })
   const upgrade = useQuery({
@@ -133,8 +141,20 @@ export function AdminPage() {
     // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
     // thing to do, and it must not spend a registry round trip each time.
     staleTime: 10_000,
+    // Re-read on return to the tab, like the version above -- and the floor is what keeps that
+    // affordable, since a focus is far more frequent than the poll it short-circuits.
+    refetchOnWindowFocus: true,
     retry: false,
   })
+
+  // A restart nobody on this page asked for: the poll above reports a revision other than the
+  // one this tab first read. It raises the same standing warning a declined handover leaves,
+  // because it is the same fault -- this tab holds a build the service no longer serves -- and
+  // the operator's remedy is the one button either way. Kept out of render, where the
+  // reference-setting first call would be a side effect.
+  useEffect(() => {
+    if (revisionChanged(version.data?.code_revision)) setRestarted(true)
+  }, [version.data?.code_revision])
 
   // Reload the document once the count reaches zero. It is not a nicety: this tab holds a
   // build whose hashed chunks the service no longer serves, so every view it has not opened
@@ -157,6 +177,14 @@ export function AdminPage() {
     setRefreshing(true)
     void Promise.allSettled([version.refetch(), upgrade.refetch()])
       .finally(() => setRefreshing(false))
+  }
+
+  // Closing the warning has to move the reference the comparison is made against, or the next
+  // poll raises it again and the notice cannot be closed, only outlasted.
+  function dismissHandover() {
+    setHandover(false)
+    setRestarted(false)
+    acceptRevision(version.data?.code_revision)
   }
 
   async function roll(info: UpgradeInfo) {
@@ -408,11 +436,11 @@ export function AdminPage() {
               declining is the button; declined, the tab keeps a standing warning rather than
               a success line, because a build the service no longer has is a fault waiting to
               surface in the next view opened, not a completed job. */}
-          {handover ? (
+          {handover || restarted ? (
             <Alert
               severity={reloadIn === null ? 'warning' : 'success'}
               sx={{ mt: 1 }}
-              onClose={reloadIn === null ? () => setHandover(false) : undefined}
+              onClose={reloadIn === null ? dismissHandover : undefined}
               action={
                 <>
                   <Button color="inherit" size="small" onClick={() => window.location.reload()}>
@@ -426,9 +454,12 @@ export function AdminPage() {
                 </>
               }
             >
-              {reloadIn === null
-                ? 'Upgraded — this page is still on the old version. Reload to finish.'
-                : `Upgraded. Reloading in ${reloadIn}s…`}
+              {reloadIn !== null
+                ? `Upgraded. Reloading in ${reloadIn}s…`
+                : handover
+                  ? 'Upgraded — this page is still on the old version. Reload to finish.'
+                  : 'This service restarted onto another version — this page is still on the'
+                    + ' old one. Reload to catch up.'}
             </Alert>
           ) : null}
           {rollNote ? (

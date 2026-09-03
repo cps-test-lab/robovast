@@ -39,6 +39,7 @@ import {
   robovast,
   hasRecordedRuns,
   hasResults,
+  isPreviewable,
   isTerminalPhase,
   type CampaignSummary,
   type JobSummary,
@@ -63,6 +64,7 @@ import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
+import { declaresScene3d } from '@/lib/previewRuns'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
 import { LaunchedBy } from '@/components/LaunchedBy'
@@ -537,6 +539,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // watching, and the reason for hiding it -- the tree is moving -- is a property of the
   // archive to state, not of the button to refuse.
   const archiveName = running ? `${id}.incomplete.tar.gz` : `${id}.tar.gz`
+  const archiveStage = running
+    ? 'incomplete'
+    : summary.postprocessed
+      ? 'postprocessed'
+      : 'raw'
 
   // One listing for the whole page: every card asks under the same react-query key, so
   // they collapse into a single request, and the share answers for itself rather than
@@ -573,11 +580,34 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   // Shortcuts into the Results views, offered only where they lead somewhere. Both read the
   // *summary* — the very object the Results topic filters on — rather than the live status, so a
-  // button can never open a view that would greet the reader with an empty state. `hasResults`
-  // implies a terminal phase, so neither shows while the campaign runs; the summary arrives over
-  // the same stream as everything else here, so they appear by themselves once postprocessing ends.
+  // button can never open a view that would greet the reader with an empty state. The summary
+  // arrives over the same stream as everything else here, so they appear by themselves.
+  //
+  // The Explorer still needs a finished, postprocessed campaign: its notebooks and its rows are
+  // what postprocessing produces. The Run view also takes a campaign that is still RUNNING, where
+  // it previews the runs that have already finished — which is the only way to reach one at all,
+  // since the jobs list below is live-only and a run leaves it the moment it completes.
   const canExplore = hasResults(summary)
-  const canReplay = canExplore && hasRecordedRuns(summary)
+  // A preview replays a run's 3D recording and shows nothing else, so it is offered only where
+  // there is a scene to replay — asked of the campaign's served panel list, and only for a campaign
+  // that could be previewed at all. The same question the Run view's picker asks, under the same
+  // key, so the two cannot offer different campaigns.
+  //
+  // Deliberately not also gated on `hasRecordedRuns`: that counts `campaign.db`'s run rows, which
+  // are written only once a batch has finished, so it is 0 for the whole life of a batch-mode
+  // campaign — see `isPreviewable`.
+  const mightPreview = isPreviewable(summary)
+  const previewPanels = useQuery({
+    queryKey: ['panels', id],
+    queryFn: () => robovast.listCampaignPanels(id),
+    enabled: active && mightPreview,
+    retry: false,
+    staleTime: 60_000,
+  })
+  const previewing = mightPreview && declaresScene3d(previewPanels.data?.panels) === true
+  // A finished campaign still has to have recorded runs; a previewed one must not be asked, for
+  // the reason above.
+  const canReplay = (canExplore && hasRecordedRuns(summary)) || previewing
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
@@ -658,7 +688,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
     canReplay ? (
       <MenuItem key="runview" onClick={() => { closeMenu(); openResultsView('run', id) }}>
         <ListItemIcon><RunViewIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>Open in Run View</ListItemText>
+        {/* Named a preview in the label as well as at the destination, so the menu does not promise
+            the finished article and then hand over one panel. */}
+        <ListItemText>{previewing ? 'Open in Run View (preview)' : 'Open in Run View'}</ListItemText>
       </MenuItem>
     ) : null,
   ].filter(Boolean)
@@ -672,12 +704,10 @@ function CampaignCard({ summary, newest, openedByLink }: {
           onClick={closeMenu}
         >
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText
-            primary={running ? 'Download snapshot' : 'Download'}
-            // What the reader gets, in the words the file itself will carry: the campaign is
-            // still running, so runs that have not finished are not in it.
-            secondary={running ? `Incomplete — saved as ${archiveName}` : undefined}
-          />
+          {/* The label states which of the three things the archive can be: a running campaign's
+              snapshot is missing the runs that have not finished, and a finished campaign's
+              results are raw until postprocessing has produced its tables and plots. */}
+          <ListItemText primary={`Download (${archiveStage})`} />
         </MenuItem>,
         // Omitted where the provider has no openable link -- sftp never has one, and a webdav
         // URL often needs credentials the recipient lacks.
@@ -743,12 +773,19 @@ function CampaignCard({ summary, newest, openedByLink }: {
         spacing={1}
         alignItems="center"
         onClick={toggle}
-        // `userSelect: 'none'` is the row's default, not its rule: dragging across a click
-        // target should not paint its phase dot and its age. The text worth copying opts back
-        // in individually.
+        // Selectable only while the card is OPEN, and there entirely. Folded, the row is one of
+        // a column of click targets and a drag down the page should not paint their phase dots
+        // and their ages, so nothing in it is selectable but the strings that opt back in. Open,
+        // the card is read on its own — there is no column to drag across — and a header that
+        // refuses the drag leaves retyping a timestamped id by hand as the only way to get it
+        // out. Selecting the whole header is also what gives the name the whitespace around it
+        // as a grab area: it sizes to its glyphs here (see the id below), so an island of
+        // selectable text inside an unselectable row is a target as wide as the id and no wider,
+        // and a drag that starts a pixel outside it selects nothing at all.
+        // Either way `toggle` refuses to fold on the click that ends a selection.
         sx={{
           cursor: 'pointer',
-          userSelect: 'none',
+          userSelect: collapsed ? 'none' : 'text',
           // The Paper's padding, cancelled outside and restored inside, so the padded strip is
           // part of the target and nothing moves. The gap the row used to hold below itself
           // (`mb`) is folded into the bottom margin rather than kept as a second rule.
@@ -792,10 +829,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
               with — and there the same fixed width cuts the ids that overrun it, so it sizes to
               the id instead and shows the whole of it. Folded, `noWrap` clips the column
               visually only, so a truncated id still copies whole and the hover carries it. */}
-          {/* Selectable, against the fold target it sits in: this is the one string on the
-              card that gets copied out — into a CLI, a message, an issue — and a header that
-              refuses the drag leaves retyping a timestamped id by hand as the only way. The
-              cursor stays the row's pointer; an I-beam would suggest a field that takes typing. */}
+          {/* Selectable against the fold target it sits in, which folded is the row's default
+              for everything else: this is the one string on the card that gets copied out — into
+              a CLI, a message, an issue. Open, the header is selectable as a whole and this adds
+              nothing. The cursor stays the row's pointer; an I-beam would suggest a field that
+              takes typing. */}
           <CampaignOrigin origin={summary.origin}>
             <Typography
               variant="subtitle2"

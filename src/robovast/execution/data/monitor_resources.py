@@ -13,7 +13,10 @@ import signal
 import sys
 import time
 
-import psutil
+# **psutil is imported where it is used, not here.** Only the per-process loop needs it, and
+# `--once` (see `main`) runs in the campaign's own image, where it may not be installed --
+# a top-level import would make the container-level counters unreadable in exactly the
+# container that has no other way to report them.
 
 #: The shared-memory pool, sampled once per tick alongside the process rows. It is ONE tmpfs
 #: for the whole run -- the pod's `dshm` volume mounted into every container on the cluster
@@ -499,11 +502,71 @@ def _system_row(probes):
     return row
 
 
+#: Names the row ``--once`` writes: which step of a multi-step job it describes. The daemon's
+#: rows are keyed by a timestamp and sliced into runs; a one-shot row belongs to a phase
+#: instead, and has no run to belong to.
+ONCE_LABEL_COLUMN = "step"
+
+
+def write_once(output_path: str, label: str, probes=None) -> list:
+    """Append one row of the CONTAINER-level counters, and return it.
+
+    For a job whose steps are containers rather than runs -- the postprocessing pod, whose
+    steps stage, convert and ingest in sequence -- where sampling is the wrong shape twice
+    over. Each step is short, so a poll interval longer than the step reports a comfortable
+    figure for one that may have come close to its ceiling; and ``memory.peak`` is a
+    high-water mark the kernel already keeps, which no sampler can beat.
+
+    Only the *system* probes, deliberately: there is no per-process question here, and a
+    per-process file would invite the aggregation ``resource_usage`` readers do to a table
+    that is not per-process.
+
+    Appends, and writes the header only when the file is new, because the steps run in
+    separate containers and no one of them can write the whole file.
+    """
+    probes = start_probes() if probes is None else probes
+    columns = [column for _, columns in probes for column in columns]
+    row = _system_row(probes)
+    new = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+    directory = os.path.dirname(output_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(output_path, "a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        if new:
+            writer.writerow([ONCE_LABEL_COLUMN] + columns)
+        writer.writerow([label] + row)
+    return [label] + row
+
+
+def _run_once(argv) -> int:
+    """``--once <path> <label>``: one row, then exit.
+
+    **Never fails the caller.** This measures a step; it is not part of it. A step whose work
+    was correct must not fail because the record of what it cost could not be written, so
+    every failure here is reported on stderr and the exit status stays 0.
+    """
+    if len(argv) < 2:
+        print("usage: monitor_resources.py --once <path> <label>", file=sys.stderr)
+        return 0
+    try:
+        write_once(argv[0], argv[1])
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(f"could not record what {argv[1]} used: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--once":
+        return _run_once(sys.argv[2:])
+
     output_path = sys.argv[1] if len(sys.argv) > 1 else "/out/resource_usage.csv"
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+
+    import psutil  # noqa: PLC0415 - see the note by the imports
 
     # Prime cpu_percent measurements (first call per process always returns 0.0)
     for proc in psutil.process_iter(["cpu_percent"]):
@@ -559,6 +622,12 @@ def main():
             while not _shutdown and time.time() < deadline:
                 time.sleep(0.1)
 
+    # The daemon ends when a signal sets `_shutdown`, which is an orderly stop and not a
+    # failure. Stated rather than fallen off the end so that both of this function's paths
+    # return a status: the caller exits on whatever it returns.
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    # The daemon path returns None and is ended by a signal; `--once` returns a status.
+    sys.exit(main() or 0)

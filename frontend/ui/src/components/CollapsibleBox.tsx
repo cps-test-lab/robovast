@@ -24,20 +24,7 @@ import Typography from '@mui/material/Typography'
 
 export type BoxTone = 'neutral' | 'error'
 
-export function CollapsibleBox({
-  title,
-  meta,
-  leading,
-  actions,
-  note,
-  tone = 'neutral',
-  variant = 'card',
-  subheader,
-  flush = false,
-  open,
-  onToggle,
-  children,
-}: {
+type BoxProps = {
   title: ReactNode
   // Right-aligned secondary text in the header (a count, a state) — visible while collapsed,
   // which is what makes a folded block worth leaving folded.
@@ -66,17 +53,51 @@ export function CollapsibleBox({
   // `card` is a standalone bordered block; `row` is a flat entry inside another block's body
   // (the job rows), which supplies the separation itself instead of nesting a second border.
   variant?: 'card' | 'row'
+}
+
+// A block that folds, and one that does not: same header, and the second has no body at all.
+//
+// A union rather than three optional props, because the two shapes have to be mutually
+// exclusive to be worth having. A `children` passed alongside `collapsible={false}` would be
+// content that renders nowhere and says nothing about itself — exactly the failure this
+// variant exists to remove, one level up: a row that opened onto a log it could never hold.
+type CollapsibleProps = BoxProps & {
+  collapsible?: true
   open: boolean
   onToggle: () => void
   children: ReactNode
-}) {
+}
+type StaticProps = BoxProps & {
+  // Header only: no chevron, no click target, no body. For an entry that belongs in a list of
+  // foldable ones and has nothing of its own to unfold.
+  collapsible: false
+  open?: never
+  onToggle?: never
+  children?: never
+}
+
+export function CollapsibleBox(props: CollapsibleProps | StaticProps) {
+  const {
+    title,
+    meta,
+    leading,
+    actions,
+    note,
+    tone = 'neutral',
+    variant = 'card',
+    subheader,
+    flush = false,
+  } = props
+  const collapsible = props.collapsible !== false
+  const open = collapsible ? props.open : false
   const card = variant === 'card'
   const error = tone === 'error'
   // See the header note: a click that ends a drag-selection is a copy, not a toggle. A plain
   // click cannot trip it, because its own mousedown collapses any earlier selection first.
   const toggleUnlessSelecting = () => {
+    if (!collapsible) return
     if (window.getSelection()?.toString()) return
-    onToggle()
+    props.onToggle()
   }
   return (
     <Box
@@ -96,13 +117,18 @@ export function CollapsibleBox({
       <Box
         onClick={toggleUnlessSelecting}
         sx={{
-          cursor: 'pointer',
+          // No pointer and no hover tint on a header that does nothing when pressed: both
+          // are the promise that something will happen, and a row that only looks pressable
+          // reads as broken rather than as static.
+          cursor: collapsible ? 'pointer' : 'auto',
           userSelect: 'none',
           px: flush ? 0 : 1,
           py: 0.25,
           bgcolor: error ? 'error.main' : card ? 'action.hover' : 'transparent',
           color: error ? 'error.contrastText' : 'inherit',
-          '&:hover': { bgcolor: error ? 'error.main' : 'action.selected' },
+          ...(collapsible
+            ? { '&:hover': { bgcolor: error ? 'error.main' : 'action.selected' } }
+            : {}),
         }}
       >
         <Stack direction="row" alignItems="center" spacing={1}>
@@ -138,25 +164,27 @@ export function CollapsibleBox({
               {actions}
             </Box>
           ) : null}
-          <IconButton
-            size="small"
-            // Named after the block, so a screen reader gets "Show Jobs" rather than five
-            // identical "Expand" buttons in a row.
-            aria-label={`${open ? 'Hide' : 'Show'} ${typeof title === 'string' ? title : 'details'}`}
-            aria-expanded={open}
-            // The wrapper toggles too, so both handlers would fire for one click on the button.
-            onClick={(e) => {
-              e.stopPropagation()
-              onToggle()
-            }}
-            sx={{ color: 'inherit', p: 0.25 }}
-          >
-            {open ? (
-              <KeyboardArrowUpRoundedIcon fontSize="small" />
-            ) : (
-              <KeyboardArrowDownRoundedIcon fontSize="small" />
-            )}
-          </IconButton>
+          {collapsible ? (
+            <IconButton
+              size="small"
+              // Named after the block, so a screen reader gets "Show Jobs" rather than five
+              // identical "Expand" buttons in a row.
+              aria-label={`${open ? 'Hide' : 'Show'} ${typeof title === 'string' ? title : 'details'}`}
+              aria-expanded={open}
+              // The wrapper toggles too, so both handlers would fire for one click on the button.
+              onClick={(e) => {
+                e.stopPropagation()
+                props.onToggle()
+              }}
+              sx={{ color: 'inherit', p: 0.25 }}
+            >
+              {open ? (
+                <KeyboardArrowUpRoundedIcon fontSize="small" />
+              ) : (
+                <KeyboardArrowDownRoundedIcon fontSize="small" />
+              )}
+            </IconButton>
+          ) : null}
         </Stack>
         {/* Inside the header's click target, unlike `note` below it: clicking the meter folds
             the block, which is the affordance a bar with no other purpose invites. */}
@@ -167,11 +195,13 @@ export function CollapsibleBox({
           </Box>
         ) : null}
       </Box>
-      <Collapse in={open} unmountOnExit>
-        {/* The separator lives here rather than on the header, so a collapsed block ends on
-            its own tinted bar instead of a dangling line. */}
-        <Box sx={{ borderTop: 1, borderColor: 'divider' }}>{children}</Box>
-      </Collapse>
+      {collapsible ? (
+        <Collapse in={open} unmountOnExit>
+          {/* The separator lives here rather than on the header, so a collapsed block ends on
+              its own tinted bar instead of a dangling line. */}
+          <Box sx={{ borderTop: 1, borderColor: 'divider' }}>{props.children}</Box>
+        </Collapse>
+      ) : null}
     </Box>
   )
 }

@@ -239,6 +239,11 @@ class ClusterService(LocalTransport):
         if reap_on_start:
             self.reap_orphans()
             self.resume_interrupted_campaigns()
+            # After the resume, and separately from it: a campaign whose postprocess is
+            # still running has recorded an ending, so the resume above passes over it by
+            # design. Only a waiter writes what that Job did, so without this the previous
+            # attempt's verdict stands over a conversion that succeeded.
+            self.reattach_live_postprocessing()
 
     # -- version ------------------------------------------------------------
 
@@ -1399,6 +1404,135 @@ class ClusterService(LocalTransport):
 
         return _read
 
+    def _store_section_names(self, campaign_id: str) -> list[str]:
+        """Names under the campaign's durable ``_execution/``, relative to it.
+
+        One listing, for the reader that has no local copy to enumerate: an archived
+        section's name carries the sequence that orders it, so a campaign whose repeatable
+        phases ran more than once cannot be assembled without knowing which names exist.
+
+        Fails soft to ``[]``, like :meth:`_store_phase_bytes` fails soft to ``None``: the
+        live base files are named unconditionally by the caller, so an unreachable store
+        costs the archived sections of an old campaign, not the log.
+        """
+        from robovast.common.campaign_logs import EXECUTION_DIR
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            base = f"{prefix}{EXECUTION_DIR}/"
+            return [key[len(base):] for key in storage.list_keys(bucket, base)
+                    if key.startswith(base)]
+        except Exception as e:  # noqa: BLE001 - best-effort; see the docstring
+            logger.debug("could not list the execution dir of %s: %s", campaign_id, e)
+            return []
+
+    def _archive_repeatable_sections(self, campaign_id: str) -> None:
+        """Move every finished repeatable-phase log aside, before a new run writes one.
+
+        A repeatable phase (postprocess, share) writes the same filename every time it
+        runs. Left in place, the next run either replaces those bytes or appends to them,
+        and either way the assembled campaign log stops being append-only: the reader
+        streams it by byte offset, so a section that changes behind an offset already
+        consumed is a section nobody is ever shown. Archived under
+        ``_execution/sections/<seq>-<phase>.log``, it is finished and immutable, the new
+        run's file is the only one still growing, and
+        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last.
+
+        **All** of them, not only the phase about to run, so at most one live base file
+        exists and "the live one is last" has exactly one answer.
+
+        One sequence across the store and both local roots, allocated from everything
+        already archived anywhere, so the same run of a phase gets the same name wherever
+        its copy lives and the two listings cannot disagree about the order.
+
+        The store keeps the base object and it is **truncated**, not deleted: the only
+        delete this API offers is by prefix, and it appends a ``/`` to whatever it is given
+        (so it would refuse the exact key rather than remove it -- and a prefix delete that
+        did match would take siblings). An empty base object is also the honest state
+        between the archive and the new run's first publish, and it grows from there.
+
+        Best-effort throughout: an operation must run even when the account of the
+        previous one could not be moved. What a failure costs is a duplicated section
+        until the new run publishes over the base file, which is worth strictly less than
+        the postprocess it would otherwise block.
+        """
+        from robovast.common.campaign_logs import (EXECUTION_DIR, REPEATABLE_PHASES,
+                                                   disk_section_names, next_section_seq,
+                                                   section_name)
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        roots = [self._cache_dir(campaign_id)]
+        if entry is not None:
+            roots.append(Path(entry.results_dir) / campaign_id)
+        existing = list(self._store_section_names(campaign_id))
+        for root in roots:
+            existing += disk_section_names(root)
+        seq = next_section_seq(existing)
+        for base in REPEATABLE_PHASES:
+            target = section_name(seq, base)
+            moved = self._archive_stored_section(campaign_id, base, target,
+                                                 mirror_root=roots[0])
+            for root in roots:
+                live = Path(root) / EXECUTION_DIR / base
+                if not live.exists():
+                    continue
+                try:
+                    (Path(root) / EXECUTION_DIR / target).parent.mkdir(
+                        parents=True, exist_ok=True)
+                    live.replace(Path(root) / EXECUTION_DIR / target)
+                    moved = True
+                except OSError as e:
+                    logger.warning("Could not archive %s of %s under %s: %s",
+                                   base, campaign_id, root, e)
+            if moved:
+                # Consumed only when something actually moved: a phase that never ran
+                # would otherwise burn a number and leave a gap in the campaign's order.
+                seq += 1
+
+    def _archive_stored_section(self, campaign_id: str, base: str, target: str, *,
+                                mirror_root) -> bool:
+        """Copy the durable *base* phase log to *target* and empty it. ``True`` if moved.
+
+        The copy is landed under *mirror_root* as well, and that is not a cache
+        optimisation: the reader of a **tracked** campaign names the archived sections from
+        its local roots, because listing the store behind an SSE poll is the round-trip
+        this path exists to avoid. A phase whose log lives only in the store -- a
+        postprocess publishes from the pod's own tree -- would otherwise be archived where
+        no tracked reader can name it, and the section would vanish from the stream for as
+        long as the operation runs.
+        """
+        from robovast.common.campaign_logs import EXECUTION_DIR
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
+            key = f"{prefix}{EXECUTION_DIR}/{base}"
+            raw = storage.read_object(bucket, key)
+            if not raw:
+                return False
+            with tempfile.TemporaryDirectory() as tmp:
+                archived = Path(tmp) / "section.log"
+                archived.write_bytes(raw if isinstance(raw, bytes)
+                                     else raw.encode("utf-8", "replace"))
+                storage.upload_file(str(archived), bucket,
+                                    f"{prefix}{EXECUTION_DIR}/{target}")
+                local = Path(mirror_root) / EXECUTION_DIR / target
+                local.parent.mkdir(parents=True, exist_ok=True)
+                local.write_bytes(archived.read_bytes())
+                # Only after the copy is up, so a failure here leaves the section
+                # duplicated rather than lost.
+                empty = Path(tmp) / "empty.log"
+                empty.write_bytes(b"")
+                storage.upload_file(str(empty), bucket, key)
+            return True
+        except Exception as e:  # noqa: BLE001 - never block the operation; see the caller
+            logger.warning("Could not archive the stored %s of %s: %s", base,
+                           campaign_id, e)
+            return False
+
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
 
@@ -1418,8 +1552,12 @@ class ClusterService(LocalTransport):
         the whole time. That is not detectable as a bug from the reader's side: a
         missing phase file is also how "this phase has not run" looks.
         """
-        from robovast.common.campaign_logs import (assemble_log, disk_get_bytes,
-                                                   layered_by_writer)
+        from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log,
+                                                   disk_get_bytes, disk_section_names,
+                                                   layered_by_writer, layered_get_bytes,
+                                                   ordered_sections)
+        # Every phase's live file, whether or not it is there; see `available` below.
+        live = [filename for _banner, filename in INFRA_PHASES]
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         store = self._store_phase_bytes(campaign_id)
@@ -1433,36 +1571,63 @@ class ClusterService(LocalTransport):
             # of phases, so a campaign this process drives costs no store call at all: that
             # read sits behind an SSE stream that re-polls while a user watches.
             campaign_dir = Path(entry.results_dir) / campaign_id
-            get_bytes = layered_by_writer(disk_get_bytes(campaign_dir), store,
+            # Two local roots, because a re-triggered operation does not work where the
+            # campaign is tracked: it works against the cache dir `_materialize` fills.
+            # Both are ordinary directory reads, so covering the second costs no round
+            # trip -- and the archived sections a retrigger moves aside land there.
+            cache_dir = self._cache_dir(campaign_id)
+            local = layered_get_bytes(disk_get_bytes(campaign_dir),
+                                      disk_get_bytes(cache_dir))
+            get_bytes = layered_by_writer(local, store,
                                           entry.elsewhere_written_phase_files)
+            # Archived sections are discovered from the local roots -- their names carry
+            # the sequence, and only what exists can be ordered. The live base files are
+            # named unconditionally instead of listed: a tracked campaign's phase file may
+            # exist only in the store (a postprocess publishes from the pod's own tree, not
+            # into either root), and listing this path's sources would drop that whole
+            # section. A name whose bytes are nowhere is skipped by `assemble_log`, so
+            # naming one costs nothing, where missing one costs a section.
+            available = (live
+                         + disk_section_names(campaign_dir)
+                         + disk_section_names(cache_dir))
             eof = self._is_done(entry)
         else:  # past / reaped campaign: the store holds every phase file's durable copy
             get_bytes = store
+            available = live + self._store_section_names(campaign_id)
             eof = True
-        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof)
+        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof,
+                                              sections=ordered_sections(available))
         return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
     # -- jobs (live) --------------------------------------------------------
 
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
-        """List the campaign's scenario-run Kubernetes Jobs with live status.
+        """List the Kubernetes Jobs a campaign has in flight, with live status.
 
-        Selects Jobs by the campaign label the backend stamps on them
-        (``jobgroup=scenario-runs,campaign-id=<label-safe>``) and classifies each
+        Selects Jobs by the campaign label the backend stamps on them and classifies each
         with :func:`list_jobs_with_phase` — the same pod-accurate logic the CLI
         monitor's aggregate counter uses, so the two never drift. ``display_name``
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
 
-        **Node-calibration probes are listed but not tallied.** A probe carries the same
-        campaign labels -- it is real work on a real node, and every selector that counts or
-        cleans up has to keep seeing it -- so it appears here, marked
-        ``kind="calibration"`` and named for the node it measures. The counts are the
-        campaign's own jobs alone, because a reader takes them as facts about *runs*: see
-        :attr:`~robovast.service.interface.JobCounts.calibration`.
+        **Two jobgroups, one listing and one selector.** The campaign's trials
+        (``scenario-runs``) and its postprocessing conversion (``postprocessing``) are
+        separate jobgroups, and both are the campaign doing its own work — a phase whose only
+        job is not listed shows a reader an empty list while the cluster is busy on their
+        behalf. A set-based requirement fetches them together because this is polled per live
+        campaign every couple of seconds, and a second selector would double both the Job
+        listing and the pod listing behind it for a row that is there at most once.
+
+        **Neither probes nor postprocessing are tallied.** Both carry the campaign's labels —
+        they are real work holding real capacity, and every selector that counts or cleans up
+        has to keep seeing them — so they appear here, marked with their
+        :class:`~robovast.service.interface.JobKind` and named for what they are. The counts
+        stay the campaign's runs alone, because a reader takes them as facts about *runs*:
+        see :attr:`~robovast.service.interface.JobCounts.calibration`.
         """
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
-        label = (f"jobgroup=scenario-runs,"
+        from .postprocess_job import POSTPROCESS_JOBGROUP
+        label = (f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP}),"
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
@@ -1475,7 +1640,8 @@ class ClusterService(LocalTransport):
         # Planned jobs are the campaign's own by construction: probes queue under a separate
         # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
         jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
-        runs = [j for j in jobs if j.kind != JobKind.CALIBRATION]
+        runs = [j for j in jobs
+                if j.kind not in (JobKind.CALIBRATION, JobKind.POSTPROCESSING)]
         counts = JobCounts(
             running=sum(1 for j in runs if j.status == "running"),
             pending=sum(1 for j in runs if j.status == "pending"),
@@ -1483,7 +1649,8 @@ class ClusterService(LocalTransport):
             completed=sum(1 for j in runs if j.status == "completed"),
             failed=sum(1 for j in runs if j.status == "failed"),
             blocked=sum(1 for j in runs if j.status == "blocked"),
-            calibration=len(jobs) - len(runs),
+            calibration=sum(1 for j in jobs if j.kind == JobKind.CALIBRATION),
+            postprocessing=sum(1 for j in jobs if j.kind == JobKind.POSTPROCESSING),
             total=len(runs))
         return ListJobsResponse(jobs=jobs, counts=counts)
 
@@ -1513,22 +1680,36 @@ class ClusterService(LocalTransport):
 
     @staticmethod
     def _job_kind(job) -> str:
-        """Which kind of ``scenario-runs`` Job this is, from the label the backend stamps.
+        """Which kind of Job this is, from the labels the backend stamps.
 
-        Unlabelled means the campaign's own work: the label is stamped by
+        The ``jobgroup`` separates postprocessing from the campaign's batch; within the
+        batch, an unlabelled Job is the campaign's own work, because
+        :data:`~.manifests.JOB_KIND_LABEL` is stamped by
         :func:`~.kubernetes_backend.probe_manifest` and by nothing else, and a Job created
         before it existed is a run.
         """
+        from .postprocess_job import POSTPROCESS_JOBGROUP
         try:
             labels = job.metadata.labels or {}
         except AttributeError:
             return JobKind.RUN
+        if labels.get("jobgroup") == POSTPROCESS_JOBGROUP:
+            return JobKind.POSTPROCESSING
         return (JobKind.CALIBRATION
                 if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
-    @staticmethod
-    def _job_display_name(campaign_id, job) -> "str | None":
-        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix."""
+    @classmethod
+    def _job_display_name(cls, campaign_id, job) -> "str | None":
+        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix.
+
+        A postprocessing Job carries no such annotation — it is not one of the batch's
+        indexed jobs — and its own name is the campaign id with a hash on it, which tells a
+        reader nothing they are not already looking at. Named for the work instead: this is
+        the conversion of the campaign's rosbags, run in the campaign's execution image
+        because only there do its custom message types deserialize.
+        """
+        if cls._job_kind(job) == JobKind.POSTPROCESSING:
+            return "rosbag conversion"
         try:
             full = job.spec.template.metadata.annotations.get("job-name-full")
         except AttributeError:
@@ -1564,8 +1745,11 @@ class ClusterService(LocalTransport):
 
         from .cluster_execution import _label_safe_campaign
         core = self._k8s()
-        label = (f"jobgroup=scenario-runs,"
-                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
+        # Campaign + Job name, with no jobgroup term: the pair already identifies one pod,
+        # and adding the group would decide which of the campaign's own jobs may be read
+        # here. Every row :meth:`list_jobs` shows has to open, including its postprocessing
+        # conversion -- a row whose log 404s is worse than no row.
+        label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
             raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
@@ -3587,7 +3771,10 @@ class ClusterService(LocalTransport):
         return postprocess_campaign(
             self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
             force=force, skip=list(skip or []), kube_context=self.kube_context,
-            state=state)
+            state=state,
+            # The same queue the campaign's trials went through, so this pod waits for room
+            # rather than being created against a cluster that has none.
+            admission=self._admission_controller())
 
     def run_postprocessing(self, request) -> ActionResult:
         """(Re)run analysis postprocessing for a cluster campaign, as a monitored
@@ -3608,8 +3795,6 @@ class ClusterService(LocalTransport):
         (``postprocess_job._write_failure_log``), which is what keeps a failed postprocess
         visible in the campaign log where a successful one is read.
         """
-        from robovast.execution.status_recovery import record_step_outcome
-
         from .postprocess_job import postprocess_campaign
 
         def work(state):
@@ -3628,47 +3813,128 @@ class ClusterService(LocalTransport):
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
-                kube_context=self.kube_context, state=state)
-            # Re-materialised after the pod has run, because the pod is what wrote the
-            # provenance marker and the run rows this reconstruction reads: without this,
-            # the Status is rebuilt from the copies pulled *before* the postprocess and a
-            # campaign that was just postprocessed is recorded as carrying no derived data.
-            campaign_root = self._materialize(
-                request.campaign_id, self._SHARE_STATUS_OBJECTS,
-                "the campaign's postprocessing status")
-            status = record_step_outcome(campaign_root, postprocessing=(ok, message))
-            # Publish _execution (outcome + the conversion's postprocessing.log, even on
-            # failure) so the result survives a restart and the Monitor can read it.
-            #
-            # Reported as its own failure rather than raised, because the two are different
-            # findings that a shared handler renders identical: the postprocess may have
-            # succeeded and only the account of it be missing. A reader told "postprocessing
-            # failed" would go looking for a fault in the campaign instead of at the store.
-            try:
-                self._publish_execution(request.campaign_id, campaign_root)
-            except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
-                logger.exception("Could not publish the postprocessing account for %s",
-                                 request.campaign_id)
-                detail = (f"the account of this postprocess was written but could not be "
-                          f"published, so the campaign log may not show it: {e}")
-                message = f"{message} ({detail})" if not ok else detail
-                state.update(error=detail)
-            state.update(postprocessed=status.postprocessed,
-                         postprocessing_error=status.postprocessing_error)
-            state.set_phase(Phase.FINISHED)
-            # Same one-shot notifier as the local lane, and it matters more here: this is
-            # the detached lane the push notifications exist for.
-            notifier = self._notifier(request.campaign_id)
-            if ok:
-                notifier.postprocessed()
-            else:
-                notifier.postprocessing_failed(message)
+                kube_context=self.kube_context, state=state,
+                admission=self._admission_controller())
+            # The recording re-materialises after the pod has run, because the pod is what
+            # wrote the provenance marker and the run rows the reconstruction reads: from
+            # the copies pulled *before* the postprocess, a campaign that was just
+            # postprocessed is recorded as carrying no derived data.
+            self._record_postprocess_outcome(request.campaign_id, state, ok, message)
 
+        # Before the dispatch, so no writer of a repeatable phase file is running while its
+        # finished predecessor is moved aside: the campaign log may only grow at its end.
+        self._archive_repeatable_sections(request.campaign_id)
         # The pod writes postprocessing.log into its own staged tree and publishes it, so
         # the copy under the tracked root is whatever an earlier attempt left there.
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work,
             elsewhere_written_phase_files={"postprocessing.log"})
+
+    def _record_postprocess_outcome(self, campaign_id: str, state, ok: bool,
+                                    message: str) -> None:
+        """Write and publish a postprocessing verdict, and notify on it.
+
+        One definition for the process that submitted the Job and the one that only waited
+        for it (:meth:`reattach_postprocessing`): the campaign has a single record of what
+        its postprocess did, so two writers of it would be two answers a reader cannot
+        choose between.
+        """
+        from robovast.execution.status_recovery import record_step_outcome
+        campaign_root = self._materialize(
+            campaign_id, self._SHARE_STATUS_OBJECTS,
+            "the campaign's postprocessing status")
+        status = record_step_outcome(campaign_root, postprocessing=(ok, message))
+        # Publish _execution (outcome + the conversion's postprocessing.log, even on
+        # failure) so the result survives a restart and the Monitor can read it.
+        #
+        # Reported as its own failure rather than raised, because the two are different
+        # findings that a shared handler renders identical: the postprocess may have
+        # succeeded and only the account of it be missing. A reader told "postprocessing
+        # failed" would go looking for a fault in the campaign instead of at the store.
+        try:
+            self._publish_execution(campaign_id, campaign_root)
+        except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
+            logger.exception("Could not publish the postprocessing account for %s",
+                             campaign_id)
+            detail = (f"the account of this postprocess was written but could not be "
+                      f"published, so the campaign log may not show it: {e}")
+            message = f"{message} ({detail})" if not ok else detail
+            state.update(error=detail)
+        state.update(postprocessed=status.postprocessed,
+                     postprocessing_error=status.postprocessing_error)
+        # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+        # campaign ended, and a live entry that disagreed with it would answer
+        # differently until the next restart.
+        state.set_phase(status.phase)
+        # Same one-shot notifier as the local lane, and it matters more here: this is
+        # the detached lane the push notifications exist for.
+        notifier = self._notifier(campaign_id)
+        if ok:
+            notifier.postprocessed()
+        elif ok is None:
+            # No push at all while the outcome is open: both notifications are terminal
+            # statements about the campaign, and ``None`` says the Job could not be read --
+            # announcing a failure over a conversion that may be finishing is the one
+            # message that cannot be taken back.
+            logger.warning("Postprocessing outcome for %s is unknown, so no "
+                           "notification is sent: %s", campaign_id, message)
+        else:
+            notifier.postprocessing_failed(message)
+
+    def reattach_live_postprocessing(self):
+        """Wait on the postprocessing Jobs a previous service process left running.
+
+        Its own concern beside :meth:`resume_interrupted_campaigns`, not part of it: that
+        one picks up campaigns owed work, and a retriggered postprocess runs on a campaign
+        whose ``outcome.json`` is already terminal -- which resume excludes on purpose, so
+        that a finished campaign is never restarted. What is owed here is a *verdict*, not
+        work: the Job is running and will finish either way, and only a waiter writes what
+        it did into the campaign.
+
+        Started in the background rather than run here, because identifying which campaign
+        a live Job belongs to needs the campaign index, and a restart is exactly when the
+        store may not be up yet -- a redeploy brings it back alongside this process. So the
+        discovery waits for the store, and waiting must not hold up a service that has to
+        answer. Returns the thread, for a caller that needs to join it; see
+        :mod:`.postprocess_reattach` for how the Jobs are found. Never raises.
+        """
+        from . import postprocess_reattach
+        return postprocess_reattach.start_reattach(self)
+
+    def reattach_postprocessing(self, campaign_id: str, job_name: str) -> bool:
+        """Wait for *job_name* in the background and record its outcome. False if busy.
+
+        Dispatched exactly as a retrigger is, so the campaign reads as POSTPROCESSING while
+        the Job runs and its live log keeps being published -- and so a launch or a
+        retrigger arriving over the API meets the same busy campaign it would meet if this
+        process had submitted the Job itself.
+
+        Nothing is submitted, created or replaced: the Job already mounts the scripts it
+        was created with, and writing those again swaps the script out from under the
+        running interpreter (see ``postprocess_job.reattach_conversion_job``). An outcome
+        that could not be established is logged and left unwritten -- the previous record
+        standing is wrong, but a verdict this process did not observe would be worse.
+        """
+        from .postprocess_job import reattach_conversion_job
+
+        def work(state):
+            campaign_root = self._materialize(
+                campaign_id, self._SHARE_STATUS_OBJECTS,
+                "the campaign's postprocessing status")
+            ok, message = reattach_conversion_job(
+                self._cluster_config(), campaign_id, str(campaign_root), self.namespace,
+                job_name, kube_context=self.kube_context)
+            if ok is None:
+                logger.info("Left the postprocessing record of %s alone: %s",
+                            campaign_id, message)
+                state.set_phase(Phase.FINISHED)
+                return
+            self._record_postprocess_outcome(campaign_id, state, ok, message)
+
+        result = self._dispatch_background(
+            campaign_id, phase=Phase.POSTPROCESSING, work=work,
+            elsewhere_written_phase_files={"postprocessing.log"})
+        return bool(result.ok)
 
     #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is a
     #: legacy staging copy carried by campaigns converted before the conversion wrote the
@@ -3739,8 +4005,15 @@ class ClusterService(LocalTransport):
             status = record_step_outcome(campaign_root, share=(ok, message))
             self._publish_execution(request.campaign_id, campaign_root)
             state.update(share_error=status.share_error)
-            state.set_phase(Phase.FINISHED)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with it would answer
+            # differently until the next restart.
+            state.set_phase(status.phase)
 
+        # Before the dispatch, for the same reason as the postprocess, and one more: the
+        # handler `work` opens on share.log APPENDS, so an earlier export's copy left in the
+        # materialised root would become the head of this export's section.
+        self._archive_repeatable_sections(request.campaign_id)
         # Same as the postprocess: this writes share.log into a materialised root and
         # publishes it, never into the tracked one a local read looks in.
         return self._dispatch_background(
@@ -3750,9 +4023,10 @@ class ClusterService(LocalTransport):
     def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
         """Tar the campaign's stored objects straight into the share. No scratch.
 
-        *campaign_root* supplies only the variant (``_execution/data.db`` present or
-        not), so the name an export writes and the name the campaign-end upload writes
-        are decided by the same rule.
+        *campaign_root* supplies only the variant — postprocessing's provenance record
+        (``_transient/postprocessing.yaml``) present with entries, or not — so the name
+        an export writes and the name the campaign-end upload writes are decided by the
+        same rule. That record is why it is among :data:`_SHARE_STATUS_OBJECTS`.
         """
         from robovast.common.errors import CampaignConfigError
         from robovast.execution import campaign_archive

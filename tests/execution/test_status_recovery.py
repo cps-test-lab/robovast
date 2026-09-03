@@ -227,3 +227,90 @@ def test_a_failure_after_an_earlier_success_keeps_the_data_it_has(tmp_path):
 
     assert status.postprocessing_error == "the latest one died"
     assert status.postprocessed is True
+
+
+def test_an_unestablished_outcome_leaves_the_record_alone(tmp_path):
+    """``ok is None`` is an unanswered question, and a record answers only what it knows.
+
+    The cluster lane returns it when the driver can no longer read the Job that is doing
+    the work -- so the conversion may well be finishing. Writing the reason onto
+    ``postprocessing_error`` would turn "I stopped looking" into "it failed", and mark a
+    campaign whose derived data is complete as carrying none.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1"))
+    _marker(campaign)          # a postprocess did derive this campaign's data
+
+    status = record_step_outcome(campaign, postprocessing=(None, "the Job went unread"))
+
+    assert status.postprocessing_error is None
+    assert status.postprocessed is True
+    # And durably: this file is what every later reader reconstructs from.
+    recovered = reconstruct_status_from_disk(campaign)
+    assert recovered.postprocessing_error is None
+    assert recovered.postprocessed is True
+
+
+def test_an_unestablished_outcome_does_not_erase_an_earlier_failure(tmp_path):
+    """The other direction of the same rule: unknown overwrites nothing at all, so a real
+    failure already on the record stays readable until something can read the Job again."""
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-1"
+    campaign.mkdir()
+    write_execution_outcome(campaign, Status(phase=Phase.FINISHED, campaign_id="camp-1",
+                                             postprocessing_error="an attempt died"))
+
+    status = record_step_outcome(campaign, postprocessing=(None, "the Job went unread"))
+
+    assert status.postprocessing_error == "an attempt died"
+
+
+def test_a_re_trigger_does_not_rewrite_how_the_campaign_ended(tmp_path):
+    """Sharing a stopped campaign must not make it read as a completed one.
+
+    ``record_step_outcome`` reconstructs, edits one step's field and writes back, so it
+    passes over ``phase`` on the way. Normalising that to ``finished`` unconditionally
+    falsifies the only record that the campaign did not run to completion -- durably, and
+    on the cluster lane published back to the object store with the rest of
+    ``_execution``. Stopping a sweep and then uploading what it produced is ordinary.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-2026-01-01-000002"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.STOPPED, campaign_id=campaign.name,
+                         error="stopped by user"))
+
+    written = record_step_outcome(campaign, share=(True, "upload-to-share complete"))
+
+    assert written.phase == Phase.STOPPED
+    assert written.share_error is None
+    reread = reconstruct_status_from_disk(campaign)
+    assert reread.phase == Phase.STOPPED, "the rewrite would outlive the process"
+    assert reread.error == "stopped by user"
+
+
+def test_a_re_trigger_reports_a_crashed_campaign_as_crashed(tmp_path):
+    """The other half of the same rule, on the phase nothing wrote deliberately.
+
+    A campaign with no durable record reconstructs as ``crashed`` -- terminal, so there
+    is never a non-terminal phase here for a re-trigger to "normalise". Postprocessing
+    the wreckage to see what it left is a normal move, and it must not turn the wreck
+    into a completed run.
+    """
+    from robovast.execution.status_recovery import record_step_outcome
+
+    campaign = tmp_path / "camp-2026-01-01-000003"
+    campaign.mkdir()
+    assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED
+
+    written = record_step_outcome(campaign, postprocessing=(True, "done"))
+
+    assert written.phase == Phase.CRASHED
+    assert is_terminal(written.phase)
+    assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED

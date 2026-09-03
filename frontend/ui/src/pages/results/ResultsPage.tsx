@@ -4,7 +4,9 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { useActiveView } from '@/lib/activeView'
-import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
+import {
+  robovast, hasRecordedRuns, hasResults, isPreviewable, type CampaignSummary,
+} from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
 import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
@@ -70,11 +72,18 @@ export function ResultsPage({
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   })
-  // The Results topic only shows campaigns whose results are ready to explore — finished *and*
-  // postprocessed. Everything downstream (Explorer, Run, Data) shares this filtered list, so a
-  // still-running or non-postprocessed campaign never appears in any Results view.
+  // The Results topic shows campaigns whose results are ready to explore — finished *and*
+  // postprocessed — plus those the Run view can PREVIEW while they run. Everything downstream
+  // (Explorer, Run, Data) shares one list because they share one selection, and each filters it to
+  // what it can actually show: the Data browser already did, and the Explorer does now. A preview
+  // campaign is therefore listed here and offered only by the Run view.
+  //
+  // The alternative — keeping preview campaigns out and handing the Run view its own list — cannot
+  // work: the self-heal below reads this list as the authority on whether the selected campaign
+  // exists, so a previewed campaign would be evicted from the URL the moment the view healed.
   const live = useMemo(
-    () => (campaigns.data?.campaigns ?? []).filter(hasResults),
+    () => (campaigns.data?.campaigns ?? [])
+      .filter((c) => hasResults(c) || isPreviewable(c)),
     [campaigns.data],
   )
 
@@ -87,11 +96,29 @@ export function ResultsPage({
   useEffect(() => {
     if (shown === null && campaigns.data) setShown(live)
   }, [shown, campaigns.data, live])
-  const list = shown ?? live
+  // The snapshot freezes a list that is being READ, and its premise is the sentence above: a
+  // finished campaign is immutable, so moving it gains nothing. A campaign being PREVIEWED is
+  // outside that premise — it appears while somebody is looking, and looking at it while it runs
+  // is the entire point — so it is merged in live rather than waiting for a Refresh. Without this
+  // a campaign that started after the snapshot was taken was reachable only by arriving from its
+  // card, which adopts the live list on the way in; the picker itself never listed it.
+  //
+  // Merged into the ONE list rather than handed to the Run view separately, because this list is
+  // also what the self-heal below reads to decide whether the selected campaign exists: a campaign
+  // the Run view can show but this list lacks would be healed straight back out of the URL.
+  const previewLive = useMemo(() => live.filter(isPreviewable), [live])
+  const list = useMemo(() => {
+    const frozen = shown ?? live
+    const fresh = new Set(previewLive.map((c) => c.campaign_id))
+    // The live copy wins where both have it: same campaign, newer phase and counts.
+    return [...previewLive, ...frozen.filter((c) => !fresh.has(c.campaign_id))]
+  }, [shown, live, previewLive])
   // Take the service's answer as the new snapshot. A failed refetch carries no data; keep the list
   // that is on screen rather than blanking every view.
   const adopt = (res: { data?: { campaigns: CampaignSummary[] } }) => {
-    if (res.data) setShown(res.data.campaigns.filter(hasResults))
+    if (res.data) {
+      setShown(res.data.campaigns.filter((c) => hasResults(c) || isPreviewable(c)))
+    }
   }
 
   const shownIds = new Set(list.map((c) => c.campaign_id))
@@ -99,6 +126,15 @@ export function ResultsPage({
   const newCount = live.filter((c) => !shownIds.has(c.campaign_id)).length
   // Deletions count as stale too — a campaign the service no longer has is a dead entry in the tree.
   const gone = list.some((c) => !liveIds.has(c.campaign_id))
+  // So does a campaign that has FINISHED since the snapshot was taken. The freeze exists to hold a
+  // list steady while it is read, and it is right to keep holding one here — swapping a preview for
+  // the real thing mid-read would change the picker's rows and the panels under the reader. But
+  // without this the change is also never announced: the campaign is in both lists, so it is neither
+  // new nor gone, and a reader would sit in a preview of a campaign whose full results were ready.
+  const ripened = list.some((c) => {
+    const now = live.find((l) => l.campaign_id === c.campaign_id)
+    return !!now && isPreviewable(c) && !isPreviewable(now)
+  })
   // Only the clicked refetch shows a spinner — `isFetching` also covers the 15 s poll, which would
   // blink the button at everyone every 15 seconds.
   const [refreshing, setRefreshing] = useState(false)
@@ -108,7 +144,7 @@ export function ResultsPage({
       campaigns.refetch().then(adopt).finally(() => setRefreshing(false))
     },
     newCount,
-    stale: newCount > 0 || gone,
+    stale: newCount > 0 || gone || ripened,
     busy: refreshing,
   }
 
@@ -153,7 +189,14 @@ export function ResultsPage({
   // A campaign with no recorded runs is skipped when defaulting: it has no store, so it is the one
   // campaign neither the Run view nor the Data browser can show anything for — landing on it would
   // greet both views with an empty state while a readable campaign sat one click away.
+  // A campaign being previewed is not something to land on *automatically*: it is somewhere you go
+  // on purpose, from a campaign card, and choosing one by default would open a one-panel view of a
+  // campaign that is still moving while a finished one sat in the list — and leave the Explorer,
+  // which declines it, showing its empty state beside it. So the automatic fallbacks below pick from
+  // `defaultable`. The remembered campaign is not one of them: that is a selection somebody made,
+  // and returning to it is the point of remembering it.
   const evalCampaigns = list
+  const defaultable = useMemo(() => list.filter(hasResults), [list])
   // Gated on the list having actually loaded: a transient service error leaves `campaigns.data`
   // in place (react-query keeps the last value), so the remembered selection survives an outage
   // instead of being wiped by a momentarily empty list.
@@ -200,12 +243,12 @@ export function ResultsPage({
     // have: fall back to what this browser last looked at, then to the newest readable campaign.
     const remembered = localStorage.getItem(LAST_CAMPAIGN_KEY) ?? ''
     const seed = evalCampaigns.find((c) => c.campaign_id === remembered)
-    const readable = evalCampaigns.find(hasRecordedRuns)
+    const readable = defaultable.find(hasRecordedRuns)
     // With nothing eligible, nothing may stay selected: the id would outlive the campaign it names
     // and the Data browser would keep querying a campaign no view lists — while the Explorer, which
     // renders the list directly, shows its empty state.
-    changeCampaign((seed ?? readable ?? evalCampaigns[0])?.campaign_id ?? '')
-  }, [loaded, campaignId, campaigns.isFetching, evalCampaigns.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+    changeCampaign((seed ?? readable ?? defaultable[0])?.campaign_id ?? '')
+  }, [loaded, campaignId, campaigns.isFetching, evalCampaigns.map((c) => c.campaign_id).join(','), defaultable.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (campaignId) localStorage.setItem(LAST_CAMPAIGN_KEY, campaignId)

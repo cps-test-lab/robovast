@@ -46,11 +46,16 @@ def _backend():
     return KubernetesBackend(cluster_config=object(), namespace="ns", kube_context=None)
 
 
-def _campaign(tmp_path, with_db=True):
+def _campaign(tmp_path, with_db=True, with_execution=False):
     root = tmp_path / "camp-2026-07-17-120000"
     root.mkdir()
     if with_db:
         (root / "campaign.db").write_bytes(b"sqlite")
+    if with_execution:
+        (root / "_execution").mkdir()
+        (root / "_execution" / "launch.yaml").write_text("images: {sut: reg/sut:abc}\n")
+        (root / "_execution" / "execution.yaml").write_text(
+            "image_revisions: {simulation: reg/sim@sha256:beef}\n")
     return root
 
 
@@ -60,25 +65,53 @@ def test_the_local_lane_publishes_nothing(tmp_path):
     ExecutionBackend.publish_records(object(), str(root))  # must not raise
 
 
-def test_only_campaign_db_goes_up(storage, tmp_path):
-    """The one file, not the directory it sits in.
+def test_only_the_record_goes_up_never_the_results(storage, tmp_path):
+    """Named files, not the directory they sit in.
 
     This runs at every batch boundary, and the campaign root beside it holds that batch's
     results — gigabytes of them. Publishing the directory would re-upload every earlier
     batch's results per batch, which is what ``finalize_campaign`` does once, at the end.
     """
-    root = _campaign(tmp_path)
+    root = _campaign(tmp_path, with_execution=True)
     (root / "config-a").mkdir()
     (root / "config-a" / "trajectory.csv").write_text("big")
+    (root / "_execution" / "controller.log").write_text("still being written")
 
     _backend().publish_records(str(root))
 
-    assert [key for _, _, key in storage.uploads] == \
-        ["camp-2026-07-17-120000/campaign.db"]
+    assert sorted(key for _, _, key in storage.uploads) == [
+        "camp-2026-07-17-120000/_execution/execution.yaml",
+        "camp-2026-07-17-120000/_execution/launch.yaml",
+        "camp-2026-07-17-120000/campaign.db",
+    ]
 
 
-def test_a_campaign_with_no_store_yet_publishes_nothing(storage, tmp_path):
-    """Nothing to publish is not a failure — the row may not have been written yet."""
+def test_the_execution_record_goes_up_while_the_campaign_runs(storage, tmp_path):
+    """What a reader needs to say what a campaign is RUNNING, not only what it ran.
+
+    ``execution.yaml`` names the pinned image of every role, and is written before the jobs
+    precisely so a campaign that dies in its first batch still names the bytes it ran. On
+    this lane the driver's disk is scratch, so leaving it there records that for nobody —
+    and a reader of a live campaign (which packages must this run's world be built from?)
+    finds nothing at all until the batch ends, which for one batch is the whole campaign.
+    """
+    _backend().publish_records(str(_campaign(tmp_path, with_db=False, with_execution=True)))
+
+    assert [key for _, _, key in storage.uploads] == [
+        "camp-2026-07-17-120000/_execution/launch.yaml",
+        "camp-2026-07-17-120000/_execution/execution.yaml",
+    ]
+
+
+def test_a_record_file_not_written_yet_is_skipped_not_failed(storage, tmp_path):
+    """Each file appears at its own moment; the store is never asked for one that is absent."""
+    _backend().publish_records(str(_campaign(tmp_path)))
+
+    assert [key for _, _, key in storage.uploads] == ["camp-2026-07-17-120000/campaign.db"]
+
+
+def test_a_campaign_with_nothing_written_yet_publishes_nothing(storage, tmp_path):
+    """Nothing to publish is not a failure — the first call runs before anything exists."""
     _backend().publish_records(str(_campaign(tmp_path, with_db=False)))
     assert storage.uploads == []
 

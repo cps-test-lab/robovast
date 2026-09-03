@@ -480,6 +480,41 @@ Three things differ from ``run_log``, each deliberate:
 carry a ``_column_notes`` entry that ``describe_campaign_data`` shows: CPU is per-core, and
 summed RSS double-counts pages shared with forks.
 
+.. _postprocess-usage:
+
+``postprocess_system_usage.csv`` — what postprocessing itself cost
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+One row per postprocessing step -- ``stage``, ``convert``, ``host`` -- written to
+``_execution/postprocess_system_usage.csv`` on the cluster lane, beside the campaign it
+describes. The columns are the sampler's own (``memory_peak``, ``memory_max``,
+``cpu_usage_usec``, ``nr_periods``, ``nr_throttled``, ``oom_kills``, ...), so a step's figures
+read the same way as a run's :ref:`system_usage <per-run-resource-usage>` rows and can be
+compared with them. The same row is logged as one line per step in the POSTPROCESSING section,
+so the usual question -- did a step come near its limit? -- is answered without downloading
+anything.
+
+**``system_usage``, not ``resource_usage``.** The distinction is the one that table pair
+already makes: ``resource_usage`` is per *process* and every reader aggregates it that way,
+while these figures are the cgroup's accounting for a whole step and have no pid. Filing them
+as processes would mean summing them as processes.
+
+**Read once from the kernel, not sampled.** These steps are containers rather than runs, and
+each is short, so the daemon's per-second rows are the wrong shape twice over: a poll interval
+longer than the step reports a comfortable figure for one that may have come close to its
+ceiling, and ``memory.peak`` is a high-water mark the kernel already keeps that no sampler can
+beat. ``monitor_resources.py --once`` writes exactly one row of the container-level probes;
+the conversion step -- which runs the campaign's own image and can import nothing of RoboVAST
+-- invokes it from the ``/scripts`` mount the pod already has.
+
+This is what makes ``results_processing.resources`` checkable: a campaign that raised it can
+see whether it needed to, and the shipped default can be argued about with a number instead of
+the absence of a failure.
+
+Unlike ``resource_usage`` it stays a file rather than becoming an index table, because it
+describes how a campaign was *processed* rather than what its runs did -- a row under a run
+would be summed as something that run consumed.
+
 .. _scenario-verdict:
 
 ``scenario_timestamps`` — where the trial ended
@@ -565,22 +600,29 @@ Its rosbag is unreadable, and that is not a failure
 """""""""""""""""""""""""""""""""""""""""""""""""""
 
 Stopping a job kills its process mid-write, so the rosbag it was recording is never
-finalized and can never be opened. Postprocessing is told which directories belong to
-stopped jobs and counts their unreadable bags **apart** from real handler errors — they are
-reported (``N from stopped job(s)``, plus a ``NOTE`` line) but do not fail the step. Without
-that, one stopped job would cost the metrics of every job that *did* finish, which is the
-opposite of what stopping one job is for.
+finalized and can never be opened. The same is true of a job that ends abruptly for reasons
+nobody chose — an evicted pod, an OOM-kill — and the postprocessing verdict does not depend
+on which it was. **A bag that cannot be opened is missing input, not a failed conversion:**
+the recorder never wrote the sidecar naming the bag's storage plugin, so there is nothing to
+convert and no retry will produce one. Postprocessing names such bags, skips them, and
+succeeds — reported as ``N unreadable`` in the summary plus a ``NOTE`` listing the paths.
+Failing the step over them would cost the metrics of every bag that *was* readable, which on
+a large campaign is thousands for the sake of a handful.
 
-A real conversion error anywhere else still fails postprocessing, exactly as before; and a
-stopped job's bags are still *attempted*, because a kill that landed between bags leaves
-readable ones whose data is worth having.
+``--tolerate-under`` is narrower than that rule and survives alongside it: postprocessing is
+still told which directories belong to jobs an operator stopped, so the ``NOTE`` can say how
+many of the skipped bags were *expected* rather than merely observed.
+
+A real conversion error still fails postprocessing — a bag that opened and whose handlers
+then refused is the case where the data existed and we did not produce it. And every bag is
+still *attempted*, because a job cut off between bags leaves readable ones whose data is
+worth having.
 
 This is the pipeline's general rule rather than a rosbag special case: **a step that cannot
 read something describes the gap and succeeds** — ``run_log`` and ``resource_usage`` already
 report theirs ("no job artifacts for 1 run(s): …") and a run with no ``test.xml`` simply has
 no trial window, so it is left out of the per-run metrics instead of breaking them. Only a
-genuine conversion error fails a step. The rosbag scanner was the one place that did not
-follow the rule.
+genuine conversion error fails a step.
 
 ``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
 already written a valid ``test.xml`` keeps its real verdict. That matters when a job packs

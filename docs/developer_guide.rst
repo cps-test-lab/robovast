@@ -1965,6 +1965,23 @@ maths into a lazily-loaded page that needs none of them. That the same component
 three is not a coincidence: every live log here is a ``fetch(offset) -> LogChunk`` behind
 one SSE loop.
 
+**A log panel is a tail, and both ends of it are bounded.** A campaign's assembled
+infrastructure log reaches tens of megabytes, while the pane it is read through is a few
+hundred pixels tall — so the stream serves an over-long frame from its end
+(``_sse_log_frame_cap`` in ``service/app.py``, which leaves a note naming ``vast campaign
+log`` for the whole thing), and the panel keeps only a bounded tail of what it has received
+(``trimHead``). The second bound is not about memory: the body is rebuilt from the whole
+buffer on every delta, so an unbounded one re-renders a span per line of the entire log
+twice a second. Dropping the head costs the offset protocol nothing — ``next_offset`` is
+where the *log* continues, not how much was sent — so a resumed connection still resumes at
+the right byte.
+
+An open stream with nothing in it is ambiguous, and the panel must not resolve it by
+guessing: these servers flush the response headers before their first pull, and that pull is
+network I/O. So ``useLiveStream`` reports ``received`` — whether a frame has actually
+arrived, a delta or the ``heartbeat`` that means "read it, there was nothing" — and only
+then does the panel call the log empty rather than still loading (``logFooter``).
+
 The usage recording and the service-log ring both live in the **serving layer**
 (``service/app.py`` and ``service/service_log.py``), not on ``RobovastInterface``. The
 precedent is ``_sse_campaign_list`` and ``/healthz``: they describe the process that is

@@ -49,8 +49,106 @@ INFRA_PHASES: list[tuple[str, str]] = [
     ("SHARE", "share.log"),
 ]
 
+#: The phases that happen exactly once, in this order, at the head of the log. They are
+#: the campaign itself: it is built, its inputs are generated, and its runs execute.
+HEAD_PHASES: list[tuple[str, str]] = INFRA_PHASES[:4]
+
+#: The phases a campaign can run **again**, any number of times and in any order --
+#: postprocess, share, postprocess again. Their position in the stream therefore cannot
+#: come from a fixed list: a rerun of one that sits earlier in such a list inserts bytes
+#: ahead of a section already written, and the assembled stream stops being append-only.
+#: A reader streaming it by byte offset has consumed past that point and never sees them,
+#: so a live postprocess appears frozen at whatever ran last.
+REPEATABLE_PHASES: dict[str, str] = {"postprocessing.log": "POSTPROCESSING",
+                                     "share.log": "SHARE"}
+
+#: Where a finished run of a repeatable phase is kept, so the next run starts an empty
+#: file instead of replacing it: ``_execution/sections/<seq>-<phase>.log``. The sequence
+#: is allocated when a run starts, so the name records the order things actually happened
+#: -- which is the only thing that can order them.
+SECTIONS_DIR = "sections"
+
+_SECTION_RE = re.compile(r"^(?P<seq>\d{4})-(?P<base>[a-z_]+\.log)$")
+
+
+def section_name(seq: int, base: str) -> str:
+    """The archived name for run *seq* of the phase whose live file is *base*."""
+    return f"{SECTIONS_DIR}/{seq:04d}-{base}"
+
+
+def next_section_seq(existing: "list[str]") -> int:
+    """The next free sequence number, given the section names that already exist."""
+    used = [int(m.group("seq")) for m in
+            (_SECTION_RE.match(name.rsplit("/", 1)[-1]) for name in existing) if m]
+    return max(used, default=0) + 1
+
+
+def ordered_sections(available: "list[str]") -> list[tuple[str, str]]:
+    """``[(banner, filename), ...]`` in the order the stream must present them.
+
+    The head phases first, in their fixed order -- they run once and cannot move. Then
+    every archived section by its sequence number, then whichever repeatable phase is
+    currently live. That is the order the work happened in, and it is what makes the
+    stream append-only: an archived section is finished and immutable, and the live file
+    is always last, so new bytes only ever arrive at the end.
+
+    *available* is every filename present under the campaign's ``_execution/``, archived
+    ones included as ``sections/<seq>-<phase>.log``; it is read as a set, so overlapping
+    listings may simply be concatenated. Anything unrecognised is ignored
+    rather than appended: this decides a byte offset's meaning, and a stray file changing
+    it would corrupt every reader's position.
+
+    A campaign whose repeatable phases each ran once has no archived sections at all, so
+    it assembles exactly as it always did -- which is what keeps every campaign recorded
+    before this readable.
+    """
+    have = set(available)
+    out = [(banner, name) for banner, name in HEAD_PHASES if name in have]
+
+    archived = []
+    # Over the set, so a caller may union several listings of the same campaign without
+    # deduplicating first -- a name repeated there would otherwise repeat its section, and
+    # a section counted twice is bytes inserted mid-stream on the next poll.
+    for name in sorted(have):
+        match = _SECTION_RE.match(name.rsplit("/", 1)[-1])
+        if match and match.group("base") in REPEATABLE_PHASES:
+            archived.append((int(match.group("seq")), name,
+                             REPEATABLE_PHASES[match.group("base")]))
+    out += [(banner, name) for _seq, name, banner in sorted(archived)]
+
+    # The live files last. Two can only be present on a campaign recorded before
+    # archiving existed, where their fixed order is the best available answer and the
+    # same one it always gave.
+    out += [(banner, base) for base, banner in REPEATABLE_PHASES.items()
+            if base in have]
+    return out
+
 #: Subdirectory under the campaign root holding the phase log files.
 EXECUTION_DIR = "_execution"
+
+
+def disk_section_names(campaign_dir: "Path | str") -> list[str]:
+    """The phase filenames present under ``<campaign_dir>/_execution/``.
+
+    Names an archived section as ``sections/<seq>-<phase>.log``, the same relative form
+    :func:`section_name` produces and :func:`ordered_sections` reads, so a caller can union
+    a disk listing with names it knows from elsewhere without translating either. Only the
+    two levels that hold phase files are walked -- everything a campaign keeps under
+    ``_execution/`` is one of them, and a recursive walk would pay for the run tree.
+
+    A directory that is not there yields ``[]``: a campaign this service never had on disk
+    is the normal case for a reader, not an error.
+    """
+    exec_dir = Path(campaign_dir) / EXECUTION_DIR
+    names = []
+    for path in (exec_dir, exec_dir / SECTIONS_DIR):
+        try:
+            entries = sorted(p.name for p in path.iterdir() if p.is_file())
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            continue
+        prefix = "" if path == exec_dir else f"{SECTIONS_DIR}/"
+        names += [f"{prefix}{name}" for name in entries]
+    return names
 
 
 def phase_banner(name: str) -> str:
@@ -68,17 +166,25 @@ def assemble_log(
     get_bytes: Callable[[str], Optional[bytes]],
     offset: int = 0,
     eof: bool = False,
+    sections: "Optional[list[tuple[str, str]]]" = None,
 ) -> tuple[str, int, bool]:
     """Concatenate the present phase files into one divider-separated stream.
 
     Args:
         get_bytes: Maps a phase filename (e.g. ``"variation.log"``) to its raw
             bytes, or ``None`` when that phase file does not exist yet. Presence
-            is monotonic across a campaign's life (phases appear in order and
-            never disappear), which is what keeps the assembled stream
-            append-only and the byte offset stable.
+            is monotonic across a campaign's life -- a section appears and never
+            disappears -- and *sections* orders them so that the only one still
+            growing is last. Together that is what keeps the assembled stream
+            append-only and the byte offset stable, which the streaming protocol
+            requires: bytes inserted ahead of a section a reader has already
+            consumed are bytes it can never be shown.
         offset: Byte offset into the assembled stream to resume from.
         eof: Whether the campaign is terminal (no phase file will grow further).
+        sections: The ``(banner, filename)`` order to present, from
+            :func:`ordered_sections`. Omitted, the fixed :data:`INFRA_PHASES` order is
+            used -- correct for a campaign whose repeatable phases each ran once, and
+            for every caller reading a finished campaign in one pass.
 
     Returns:
         ``(text, next_offset, eof)`` — the slice from *offset* onward, the offset
@@ -86,7 +192,7 @@ def assemble_log(
         streaming protocol so callers wrap the tuple into their own type.
     """
     segments: list[bytes] = []
-    for name, filename in INFRA_PHASES:
+    for name, filename in (INFRA_PHASES if sections is None else sections):
         data = get_bytes(filename)
         if data is None:
             continue

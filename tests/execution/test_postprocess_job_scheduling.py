@@ -12,13 +12,15 @@ completion in declaration order before the main container starts, so the *order 
 lists in this manifest* is the schedule.
 """
 
+import json
+
 import pytest
 
 from robovast.execution.cluster_execution import postprocess_job as pj
 
 from robovast.common.index_db import DSN_ENV
 from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
-from robovast.execution.cluster_execution.postprocess_host import ENV_FORCE
+from robovast.execution.cluster_execution.postprocess_host import ENV_COMMANDS, ENV_FORCE
 from robovast.execution.cluster_execution.postprocess_job import (CAMPAIGN_MOUNT,
                                                                   HOST_CONTAINER,
                                                                   STAGE_CONTAINER,
@@ -81,20 +83,36 @@ def test_the_containers_run_stage_then_convert_then_host():
     assert [c["name"] for c in spec["containers"]] == [HOST_CONTAINER]
 
 
-def test_a_conversion_only_job_makes_the_conversion_the_main_container():
-    """``host_stage=False`` is the search's per-batch path, and it has no host step.
+def test_a_batch_job_has_the_same_shape_and_is_told_not_to_complete():
+    """``complete_campaign=False`` is the search's per-batch path, and it is not a
+    different pod -- it is the same pod asked for less.
 
-    The host step writes the campaign's provenance marker and drives the index ingest, so
-    running it per batch would mark a partial campaign postprocessed, repeatedly. With it
-    off the conversion has to be the pod's *main* container: a pod needs one to complete,
-    and it is also where ``get_job_log`` looks. A conversion left as an initContainer with
-    no main container behind it is a Job that never finishes.
+    What a batch must not do is COMPLETE the campaign: the index ingest, the metadata and
+    the provenance record describe a finished campaign, and this runs per batch on one that
+    is still growing. What it must still do is derive and upload, and the host container is
+    the only one holding the store -- the conversion runs the campaign's own image and is
+    given nothing. A Job that ended at its conversion would leave every CSV in the pod's
+    emptyDir, so the batch could never be scored, and nothing would report an error: the Job
+    succeeds, the fetch finds nothing, and the search spends its budget scoring no cells.
     """
-    spec = _pod_spec(host_stage=False)
+    cmds = [{"nav2_bt_tree": {"bt_xml": "files/bt.xml"}}]
+    spec = _pod_spec(batch_commands=cmds)
 
-    assert [c["name"] for c in spec["initContainers"]] == [STAGE_CONTAINER]
-    assert [c["name"] for c in spec["containers"]] == ["convert"]
-    assert HOST_CONTAINER not in _by_name(spec)
+    assert [c["name"] for c in spec["initContainers"]] == [STAGE_CONTAINER, "convert"]
+    assert [c["name"] for c in spec["containers"]] == [HOST_CONTAINER]
+    host_env = {e["name"]: e["value"] for e in _by_name(spec)[HOST_CONTAINER]["env"]
+                if "value" in e}
+    # The batch's OWN list, carried in. `search.postprocessing` and
+    # `results_processing.postprocessing` are different blocks, so a Job left to look its
+    # own up would derive the campaign-level one.
+    assert json.loads(host_env[ENV_COMMANDS]) == cmds
+
+
+def test_a_campaign_level_job_looks_its_own_pass_up():
+    """No commands passed: the host runs the whole `results_processing` pass and completes."""
+    host_env = {e["name"]: e["value"] for e in _by_name(_pod_spec())[HOST_CONTAINER]["env"]
+                if "value" in e}
+    assert ENV_COMMANDS not in host_env
 
 
 def test_a_campaign_with_nothing_to_convert_never_reaches_for_an_image():
@@ -148,7 +166,12 @@ def test_only_the_host_container_is_given_the_index_and_the_store():
     """
     containers = _by_name(_pod_spec())
 
-    assert "env" not in containers["convert"] or containers["convert"]["env"] == []
+    # The property is that it holds no CREDENTIAL, not that it holds no environment: it is
+    # also the container whose progress output the live log is read from, so it carries the
+    # one variable that gets that output out unbuffered.
+    convert_env = {e["name"] for e in containers["convert"].get("env") or []}
+    assert not (convert_env - {"PYTHONUNBUFFERED"}), (
+        f"the conversion runs a stranger's image and was handed {convert_env}")
 
     host_env = {e["name"] for e in containers["host"]["env"]}
     assert DSN_ENV in host_env
@@ -174,7 +197,7 @@ def test_every_container_in_every_shape_reserves_cpu_and_memory():
     Every shape, because the shapes differ in which containers exist: a container that
     declares nothing is only ever missed in the shape nobody checked.
     """
-    for shape in ({}, {"host_stage": False}, {"rosbag_cmds": []}):
+    for shape in ({}, {"batch_commands": []}, {"rosbag_cmds": []}):
         for name, container in _by_name(_pod_spec(**shape)).items():
             requests = container["resources"]["requests"]
             assert requests["cpu"] and requests["memory"], (shape, name)
@@ -190,7 +213,7 @@ def test_the_shared_campaign_volume_is_backed_by_a_storage_request():
     pod's requests as the max over initContainers and the sum over the rest, and a
     container that omits it drops the reservation for as long as it is the one running.
     """
-    for shape in ({}, {"host_stage": False}, {"rosbag_cmds": []}):
+    for shape in ({}, {"batch_commands": []}, {"rosbag_cmds": []}):
         spec = _pod_spec(**shape)
         # One emptyDir, mounted everywhere: there is exactly one copy of the data.
         assert {"name": "campaign", "emptyDir": {}} in spec["volumes"]
@@ -235,3 +258,21 @@ def test_one_tree_is_writable_by_containers_that_run_as_different_users():
         if container["name"] == pj.CONVERT_CONTAINER:
             continue  # it writes as itself; it is the reader of this arrangement
         assert "umask 0002" in " ".join(container["command"]), container["name"]
+
+
+def test_every_container_runs_python_unbuffered():
+    """The campaign log is read from the pod's stdout, and stdout here is a pipe.
+
+    Python block-buffers a pipe, so a step's output would reach the log in ~8 KB clumps long
+    after it happened -- and publishing a running postprocess exists precisely so someone can
+    watch it. The conversion container matters most: it is the longest step and the source of
+    the progress output, and it is the one container deliberately given no other environment,
+    which makes it the easiest to leave out.
+    """
+    containers = _by_name(_pod_spec())
+
+    assert containers, "the manifest defines no containers"
+    for name, container in sorted(containers.items()):
+        env = {e["name"]: e.get("value") for e in container.get("env") or []}
+        assert env.get("PYTHONUNBUFFERED") == "1", (
+            f"container {name} buffers its output, so the live log lags behind it")

@@ -34,7 +34,10 @@ declaration order before the regular containers start:
   test's *custom ROS2 message types* and only deserialize in its image, which is also
   why nothing else may be asked of that image.
 * ``host`` (container, controller image) runs everything after the conversion — the
-  index ingest and metadata — and is what uploads the results.
+  derived tables, and for a campaign-level Job the index ingest and metadata — and is what
+  uploads the results. It is the pod's main container in both shapes of this Job, because
+  it is the only one given the store: a Job that ended at its conversion could send
+  nothing anywhere. A per-batch Job (a search's) runs it without the completing steps.
 
 **Nothing is baked into the execution image.** The conversion scripts are mounted in
 from a per-campaign ConfigMap (the K8s analog of ``-v $SCRIPT_DIR:/scripts:ro``), so
@@ -53,7 +56,9 @@ from robovast.common.execution import resolve_controller_image
 from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
-from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+from . import postprocess_usage
+from .node_placement import (CAMPAIGN_NODE_TOLERATIONS, NODE_ID_LABEL,
+                             job_node_pool)
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +75,28 @@ logger = logging.getLogger(__name__)
 #: the canonical paths.
 POSTPROC_PREFIX = "_postproc"
 
-#: Campaign-relative path of the manifest the Job writes listing every file it produced,
-#: one path per line. Riding inside the campaign tree means whatever carries the outputs
-#: carries the index of them, so the two cannot disagree.
+#: ``jobgroup`` label every postprocessing Job carries. Named rather than repeated because
+#: it is a contract in two directions: the manifest sets it and :func:`live_campaign_jobs`
+#: selects on it, and a Job created without it is a Job no later service process can find
+#: still running.
+POSTPROCESS_JOBGROUP = "postprocessing"
+
+#: Campaign-relative path of the manifest listing every file the Job uploaded, one path
+#: per line. Riding inside the campaign tree means whatever carries the outputs carries the
+#: index of them, so the two cannot disagree.
 #:
-#: Describes whatever the Job produced rather than what any one plugin was expected to
-#: produce. The payload is whatever declared
-#: ``needs_execution_image`` -- the rosbag conversion today, and that flag exists on the
-#: plugin base class precisely so it will not always be only that.
+#: Written by the ``host`` container as it uploads (:func:`~.postprocess_host._upload_derived`),
+#: which is the only place that knows what went up. Describes whatever the Job produced
+#: rather than what any one plugin was expected to produce.
 #:
 #: This is what lets the outputs go straight to the canonical prefix: the service reads one
 #: known key and then fetches exactly the objects it names, instead of listing a prefix
 #: whose bulk is rosbags it does not want.
+#:
+#: An ABSENT manifest is not an empty one. Absent means no Job ever said, and the fetch
+#: falls back to the legacy prefix for a campaign converted by an older service; empty means
+#: a Job ran and derived nothing. Reading the first as the second is how a batch that
+#: produced no metrics came to look like a batch whose metrics were simply not interesting.
 OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 
 #: Where the campaign tree lives inside the Job's pod, mounted from one ``emptyDir`` into
@@ -114,6 +129,26 @@ CONVERT_CONTAINER = "convert"
 
 #: Name of the container that runs everything after the conversion.
 HOST_CONTAINER = "host"
+
+#: Where postprocessing ranks in the admission queue. Above a campaign's trials (0) and above
+#: a calibration probe (1).
+#:
+#: **Because this is the step that turns a finished campaign into results, and it is one short
+#: pod.** A trial that waits is a campaign progressing more slowly; postprocessing that waits
+#: is a campaign that has already spent all its compute and has nothing to show for it -- and
+#: it is submitted last by construction, so on a cluster kept full by other campaigns a queue
+#: ordered by submission alone would never reach it. It also releases its reservation in
+#: seconds to minutes rather than for the length of a batch, so ranking it first delays the
+#: work below it by very little.
+#:
+#: Above a probe for the same reason it is above trials, and the two barely compete: a probe
+#: gates its own campaign's runs, while this gates a finished campaign's output.
+POSTPROCESS_PRIORITY = 2
+
+#: Distinguishes this campaign's postprocessing from its trials in the queue's ledger, which
+#: is keyed by owner. Same device as the calibration probe's suffix, and for the same reason:
+#: one campaign has two kinds of work outstanding, and a refusal message must name which.
+_POSTPROCESS_OWNER_SUFFIX = ":postprocess"
 
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
@@ -195,6 +230,122 @@ def raised_to(floor: dict, declared: dict) -> dict:
             # reaching here means a caller bypassed it; the floor is the safe answer.
             continue
     return out
+
+
+def pod_sizing(manifest: dict):
+    """What the scheduler will charge this pod, as a :class:`~.node_admission.JobSizing`.
+
+    **The maximum over the steps, not their sum**, which is where a reader will reach for
+    ``JobSizing``'s own docstring and be misled: a pod's request *is* the sum of its
+    containers' for a pod of ordinary containers, and that is what it says. Staging and
+    conversion here are initContainers, which run to completion one at a time before the main
+    container starts, so Kubernetes charges ``max(max(init requests), sum(container
+    requests))``. Asking for the sum would demand something like ten cores on behalf of a pod
+    that requests four, and the queue would hold it out of a cluster that had room -- the
+    opposite of what this exists to fix.
+    """
+    from .node_admission import JobSizing  # noqa: PLC0415
+
+    spec = manifest["spec"]["template"]["spec"]
+
+    def _requests(container, resource, convert):
+        raw = ((container.get("resources") or {}).get("requests") or {}).get(resource)
+        return (convert(raw) or 0) if raw is not None else 0
+
+    def _charge(resource, convert):
+        inits = [_requests(c, resource, convert) for c in spec.get("initContainers", [])]
+        mains = sum(_requests(c, resource, convert) for c in spec.get("containers", []))
+        return max([*inits, mains]) if (inits or mains) else 0
+
+    return JobSizing(cpu=_charge("cpu", to_cores),
+                     memory=int(_charge("memory", to_bytes)))
+
+
+def _pin_to(manifest: dict, node_id) -> dict:
+    """Confine the pod to the operator's node pool, then to the node admission granted.
+
+    The pin is what makes the grant mean something: the queue found room on a particular
+    machine, and a pod free to land anywhere can still arrive at a full one -- which is the
+    ``Unschedulable`` this path exists to avoid. The pool must reach the pod for the reason
+    the trial path gives: the budget provider counts only nodes inside it, so a pod outside
+    would run on capacity nothing reserved.
+    """
+    spec = manifest["spec"]["template"]["spec"]
+    selector = {**(spec.get("nodeSelector") or {}), **job_node_pool()}
+    if node_id:
+        selector[NODE_ID_LABEL] = node_id
+    if selector:
+        spec["nodeSelector"] = selector
+    return manifest
+
+
+def await_admission(admission, campaign_id: str, name: str, manifest: dict,
+                    timeout: float = _DEFAULT_TIMEOUT, poll: float = _POLL_SECONDS) -> tuple:
+    """Wait for the queue to find room for this pod. Returns ``(ok, node_id, message)``.
+
+    **Why this pod queues at all.** Its cpu request equals its limit, so on a cluster kept
+    full by other campaigns' trials -- which pack by request and burst past it -- no node has
+    that much *free*, and a pod created regardless is simply ``Unschedulable``. Leaving it
+    Pending for Kubernetes to place later is not the alternative it looks like: this
+    deployment reads an unschedulable pod as a failure and says so, which is right for a pod
+    that can never fit and wrong for one waiting behind work that will finish. The queue is
+    what tells those apart -- :meth:`~.node_admission.AdmissionController.preflight` refuses
+    the first permanently, and the second is an ordinary wait.
+
+    The grant is recorded here and the Job created by the caller immediately after, rather
+    than from inside the callback: everything the create has to get right -- adopting a Job
+    already in flight, replacing a finished one of the same name, owning the ConfigMap it
+    mounts -- is a sequence this must not be threaded through. The reservation is held from
+    the grant until :func:`run_conversion_job` releases it, so it spans the pod's whole life;
+    the window in which the queue believes a pod exists slightly before it does is the width
+    of one API call, and the next budget reading reconciles it against the real pod anyway.
+    """
+    from .node_admission import CREATED, AdmissionRefused  # noqa: PLC0415
+    from .node_admission import campaign_start_key  # noqa: PLC0415
+
+    sizing = pod_sizing(manifest)
+    granted = {}
+
+    try:
+        # Permanent, so it raises rather than waits: a pod larger than any node in the
+        # cluster is a figure to change, and waiting for a machine that does not exist would
+        # hold the campaign's results forever with nothing said.
+        admission.preflight(sizing)
+    except AdmissionRefused as exc:
+        return False, None, (
+            f"postprocessing needs {sizing.cpu:g} cpu / {sizing.memory // 1024 ** 2}Mi and "
+            f"no node in this cluster is that large. Lower results_processing.resources for "
+            f"this campaign. ({exc})")
+
+    def _record_grant(node_id):
+        granted["node_id"] = node_id
+
+    owner = f"{campaign_id}{_POSTPROCESS_OWNER_SUFFIX}"
+    admission.submit(owner, [(name, sizing, _record_grant)],
+                     started_at=campaign_start_key(campaign_id),
+                     priority=POSTPROCESS_PRIORITY)
+
+    deadline = time.monotonic() + timeout
+    logged = 0.0
+    while time.monotonic() < deadline:
+        # Works the GLOBAL queue, like every other caller: whichever thread is awake advances
+        # everybody, which is what keeps the queue free of a thread of its own.
+        admission.drain()
+        if admission.states(owner).get(name) == CREATED:
+            return True, granted.get("node_id"), ""
+        reason = admission.refusal(owner)
+        if reason and time.monotonic() - logged > 60:
+            logged = time.monotonic()
+            logger.info("Postprocessing of %s is queued for capacity: %s", campaign_id,
+                        reason)
+        time.sleep(poll)
+
+    admission.finished(name)
+    return False, None, (
+        f"postprocessing waited {timeout:g}s for {sizing.cpu:g} cpu / "
+        f"{sizing.memory // 1024 ** 2}Mi and the cluster stayed full. The campaign's runs "
+        f"are published; re-run postprocessing when there is room, or lower "
+        f"results_processing.resources.")
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -585,8 +736,12 @@ def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
 def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=unused-argument
                          campaign_root: str, namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False,
-                         kube_context=None, state=None) -> tuple:
+                         kube_context=None, state=None, admission=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
+
+    ``ok`` carries :func:`run_conversion_job`'s three values through unchanged, ``None``
+    among them: this process losing sight of the Job is not the Job failing, and the
+    persisting callers key off ``None`` to leave the campaign's recorded outcome alone.
 
     The single implementation behind both entry points — the per-campaign controller
     (auto-chain) and the service (explicit re-run). All of the work happens in the Job:
@@ -613,8 +768,6 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     and its log is synced, and a live ``stage`` marker fed from here would be a marker
     that only ever moves after the phase it describes is over.
     """
-    import os  # noqa: PLC0415
-
     rosbag_cmds, image, tolerate_under, convert_resources = _submit_inputs(
         cluster_config, campaign_id, campaign_root, skip=skip, skip_rosout=skip_rosout)
     if not rosbag_cmds:
@@ -623,7 +776,22 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     ok, message = run_conversion_job(
         cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
         kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
-        convert_resources=convert_resources)
+        convert_resources=convert_resources, admission=admission)
+    return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message,
+                              force=force)
+
+
+def record_job_outputs(cluster_config, campaign_id: str, campaign_root: str,
+                       ok: bool, message: str, force: bool = False) -> tuple:
+    """Pull down what the Job produced and turn its verdict into ``(ok, message)``.
+
+    Everything a postprocessing Job's outcome means for the campaign tree, in one place, so
+    a process that submitted the Job and one that only waited for it leave the campaign in
+    the same state. Split from :func:`postprocess_campaign` for that second caller: a
+    re-attach has no submit half and must not grow a second account of a failure.
+    """
+    import os  # noqa: PLC0415
+
     # Sync the Job's outputs regardless of outcome. The pod tees its stdout/stderr to
     # postprocessing.log and uploads what it produced even on failure, so this lands the
     # POSTPROCESSING section (with the error) in the campaign log the web UI shows and
@@ -637,6 +805,13 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     publish_postprocessing_log(cluster_config, campaign_id, campaign_root)
     if ok:
         return True, message
+    if ok is None:
+        # Passed through untouched, and in particular no failure log is authored: that log
+        # is the account of a fault, and there is no fault to account for -- the Job may be
+        # converting still. The synced log above is whatever the Job has written so far,
+        # which is exactly what a reader wants while the outcome is open.
+        logger.warning("Postprocessing outcome unknown: %s", message)
+        return None, message
     # Echo the error to the service console too. The web UI already has it via the
     # synced postprocessing.log (POSTPROCESSING section); no campaign log handler is
     # attached at this point, so this reaches the ``vast serve`` stdout only — not
@@ -670,6 +845,11 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     *state*, when given, also receives each step's line as the live ``stage`` marker — the
     same wiring the local lane uses, so the campaign view narrates this phase identically on
     both. ``None`` leaves it logging only.
+
+    This is the CAMPAIGN-level pass, and it reads ``results_processing.postprocessing``.
+    A search's per-batch pass is a different list -- ``search.postprocessing`` -- and runs
+    through :func:`~robovast.results_processing.postprocessing.run_postprocessing_commands`
+    instead, which is the function both lists share.
     """
     from robovast.execution.control_server import stage_output_callback  # noqa: PLC0415
     from robovast.results_processing.postprocessing import ROSBAG_JOB_NAMES  # noqa: PLC0415
@@ -766,6 +946,11 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
         "  set -e",
         "\n".join("  " + c for c in convert),
         f') 2>&1 | tee -a "{log}" || rc=$?',
+        # AFTER the tee'd block and outside it, on purpose. What the conversion used is
+        # worth recording whether or not it succeeded -- a conversion killed for exceeding
+        # its memory is exactly the case the record exists for -- and it must not be able to
+        # change `rc`, which is the conversion's own verdict.
+        postprocess_usage.shell_record(root, CONVERT_CONTAINER),
         "exit $rc",
     ]
     return "\n".join(lines)
@@ -839,13 +1024,21 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
         raise RuntimeError(
             "conversion scripts not found in robovast.results_processing.data; "
             "cannot build the postprocessing ConfigMap")
+
+    # The resource sampler travels with them, from the package that owns it rather than a
+    # copy: the conversion container is the campaign's own image, so it can import nothing
+    # of robovast, and this is the only way it can report what it cost. Its container-level
+    # probes are stdlib-only -- psutil is imported inside the per-process loop and that loop
+    # is not what `--once` runs -- so it works in an image that has no psutil.
+    sampler = files("robovast.execution.data") / "monitor_resources.py"
+    payload["monitor_resources.py"] = sampler.read_text(encoding="utf-8")
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
             "name": _scripts_cm_name(campaign_id, discriminator),
             "namespace": namespace,
-            "labels": {"jobgroup": "postprocessing",
+            "labels": {"jobgroup": POSTPROCESS_JOBGROUP,
                        "campaign-id": _label_safe_campaign(campaign_id)},
         },
         "data": payload,
@@ -921,8 +1114,42 @@ def with_log_pointer(message: str, log_path) -> str:
     return message.replace(POINTER_SLOT, pointer)
 
 
-def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
-    """Keep a still-running Job; delete and re-create a finished one. False if neither held.
+#: :func:`_adopt_or_replace` kept a live Job and the caller is now a waiter on someone
+#: else's Job. It decides ownership, not just control flow: everything that Job mounts --
+#: the scripts ConfigMap above all -- belongs to the attempt that created it, and a waiter
+#: must write none of it and delete none of it.
+_JOB_ADOPTED = "adopted"
+
+#: The Job answering to this name was finished and has been deleted and re-created, so the
+#: caller owns this one and the resources it mounts.
+_JOB_RECREATED = "recreated"
+
+
+def _live_job(batch, namespace: str, name: str) -> bool:
+    """Is a Job of this name present AND still active?
+
+    Separate from :func:`_adopt_or_replace` because the answer is needed *before* anything
+    is written: a live Job's mounted resources are not ours to touch, and that has to be
+    known before the first write rather than discovered from a 409 after it.
+
+    A Job that cannot be read -- absent, or an API error -- is not live. Nothing is adopted
+    on a maybe: the create that follows is the authority on whether the name is free.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        existing = batch.read_namespaced_job(name=name, namespace=namespace)
+    except ApiException:
+        return False
+    return bool(getattr(getattr(existing, "status", None), "active", None))
+
+
+def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
+    """Keep a still-running Job; delete and re-create a finished one.
+
+    Returns :data:`_JOB_ADOPTED`, :data:`_JOB_RECREATED`, or ``""`` if neither held. The
+    caller needs the two apart rather than a bare success: only the re-created case owns
+    the Job's mounted resources -- see :data:`_JOB_ADOPTED`.
 
     A conversion Job's name comes from the campaign, so the same name is reused every time
     postprocessing is retriggered. Waiting on whatever answers to it means a reaped-but-not-
@@ -941,15 +1168,15 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
         if e.status == 404:
             try:
                 batch.create_namespaced_job(namespace=namespace, body=manifest)
-                return True
+                return _JOB_RECREATED
             except ApiException:
-                return False
-        return False
+                return ""
+        return ""
 
     status = getattr(existing, "status", None)
     if getattr(status, "active", None):
         logger.info("Postprocessing job %s is already running; waiting on it", name)
-        return True
+        return _JOB_ADOPTED
 
     logger.info("Replacing finished postprocessing job %s", name)
     try:
@@ -958,7 +1185,7 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
     except ApiException as e:
         if e.status != 404:
             logger.warning("Could not delete %s: %s", name, e)
-            return False
+            return ""
 
     deadline = time.time() + 120
     while time.time() < deadline:
@@ -967,18 +1194,18 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> bool:
         except ApiException as e:
             if e.status == 404:
                 break
-            return False
+            return ""
         time.sleep(_POLL_SECONDS)
     else:
         logger.warning("Postprocessing job %s did not go away", name)
-        return False
+        return ""
 
     try:
         batch.create_namespaced_job(namespace=namespace, body=manifest)
     except ApiException as e:
         logger.warning("Could not re-create %s: %s", name, e)
-        return False
-    return True
+        return ""
+    return _JOB_RECREATED
 
 
 #: How often the Job's own log is published to the campaign's phase file while it runs.
@@ -1214,7 +1441,7 @@ def _index_env(namespace: str) -> list:
 def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
-                   tolerate_under=(), skip=None, host_stage: bool = True,
+                   tolerate_under=(), skip=None, batch_commands=None,
                    convert_resources=None) -> dict:
     """Build the postprocessing Job manifest.
 
@@ -1241,13 +1468,15 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             -- the campaign's ``results_processing.resources`` over that function's defaults.
             ``None`` takes those defaults, which is what a caller with no ``.vast`` in reach
             must do.
-        host_stage: Whether this Job runs the host step. ``False`` builds a
-            conversion-only Job, for a caller converting the batches of a campaign that is
-            still growing: the host step writes the campaign's provenance marker and drives
-            the index ingest, so running it per batch would mark a partial campaign
-            postprocessed, repeatedly. With it off the conversion is the pod's *main*
-            container rather than an initContainer — a pod needs one to complete, and it
-            is also where ``get_job_log`` looks.
+        batch_commands: The ``search.postprocessing`` commands the host must run, for a
+            per-batch Job. ``None`` is the campaign-level Job, whose host runs the whole
+            ``results_processing.postprocessing`` pass and completes the campaign — index
+            ingest, metadata, provenance record. Given, the host runs exactly these and
+            completes nothing, because a search reaches this once per batch on a campaign
+            that is still growing. The two lists are DIFFERENT blocks of the ``.vast``, so
+            a batch Job left to find its own would run the campaign-level one; passing them
+            is what keeps the batch running what the controller resolved for it.
+            The pod's shape does not change either way; only what the host is asked for does.
         pull_secret_name: Secret for this pod's OWN image pulls -- the controller image
             both robovast containers run, and the campaign's execution image. Without it a
             private-registry deployment sits in ``ImagePullBackOff`` while the Job stays
@@ -1261,7 +1490,8 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     mounted, and the ConfigMap volume declared, only where a conversion container exists.
     """
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
-    from .postprocess_host import ENV_FORCE, ENV_SKIP  # noqa: PLC0415
+    from .postprocess_host import (ENV_COMMANDS, ENV_FORCE,  # noqa: PLC0415
+                                   ENV_SKIP)
     from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
                                     ENV_STAGE_DEST)
 
@@ -1281,6 +1511,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         {"name": "S3_SECRET_KEY", "value": secret_key},
         {"name": "S3_CAMPAIGN_PREFIX", "value": campaign_prefix},
     ]
+    # Every container in this pod, because the campaign log is read from the pod's stdout
+    # (see publish_live_log) and stdout here is a pipe rather than a terminal. Python
+    # block-buffers a pipe, so without this a step's output reaches the log in ~8 KB clumps
+    # long after it happened -- and the reason to publish a running postprocess at all is
+    # that someone is watching it. Logging handlers flush per record and are unaffected;
+    # what this recovers is `print` and the conversion's own progress output.
+    unbuffered_env = [{"name": "PYTHONUNBUFFERED", "value": "1"}]
     # The two robovast containers talk to the store and the index; the conversion does
     # neither, and gets none of this. See the conversion container below.
     robovast_env = s3_env + _pod_env(_CLUSTER_CONFIG_ENV) + [
@@ -1305,7 +1542,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # conversion container stages the campaign tree WITHOUT its rosbags, which is the
         # bulk of a campaign by orders of magnitude. Staging them anyway would spend the
         # whole download and the whole node disk on data nothing in the pod reads.
-        "env": robovast_env + ([] if rosbag_cmds
+        "env": unbuffered_env + robovast_env + ([] if rosbag_cmds
                                else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
         "volumeMounts": [campaign_mount],
         "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
@@ -1321,7 +1558,10 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # **No store credentials, deliberately.** This container reads and writes the
         # shared campaign mount and nothing else, and it is an arbitrary user image -- the
         # campaign's own -- so it is the one container in this pod that must hold nothing
-        # that would let it reach the store or the index.
+        # that would let it reach the store or the index. Buffering is not a credential:
+        # this is where the conversion's progress output comes from, and it is the longest
+        # step, so it is the one whose output most needs to arrive while it runs.
+        "env": unbuffered_env,
         "volumeMounts": [
             {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
             campaign_mount,
@@ -1340,21 +1580,28 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                     "robovast.execution.cluster_execution.postprocess_host"],
         # The index DSN is injected HERE and nowhere else: this is the only container that
         # writes to the index.
-        "env": robovast_env + _index_env(namespace) + [
+        "env": unbuffered_env + robovast_env + _index_env(namespace) + [
             {"name": ENV_FORCE, "value": "1" if force else "0"},
             {"name": ENV_SKIP, "value": ",".join(sorted(set(skip or ())))},
+            *([{"name": ENV_COMMANDS, "value": json.dumps(batch_commands)}]
+              if batch_commands is not None else []),
         ],
         "volumeMounts": [campaign_mount],
         "resources": host_block,
     }
 
     init_containers = [stage]
-    if rosbag_cmds and host_stage:
+    if rosbag_cmds:
         init_containers.append(convert)
     # initContainers run sequentially to completion in declaration order and the main
     # containers start only after they all succeed. That ordering IS the orchestration
     # here; there is no code sequencing these steps.
-    containers = [host] if host_stage else [convert]
+    #
+    # The host container runs in BOTH shapes, and the shape decides only what it is asked
+    # for. It is the only container given the store, deliberately -- the conversion runs
+    # the campaign's own image -- so a Job that ended at the conversion could not send its
+    # outputs anywhere, and they would go with the pod's emptyDir.
+    containers = [host]
 
     volumes = [
         # One copy of the campaign, shared by every container.
@@ -1379,7 +1626,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             "name": _short_job_name("robovast-postproc-", campaign_id, discriminator),
             "namespace": namespace,
             "labels": {
-                "jobgroup": "postprocessing",
+                "jobgroup": POSTPROCESS_JOBGROUP,
                 "campaign-id": safe,
             },
         },
@@ -1388,15 +1635,16 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             "ttlSecondsAfterFinished": 300,
             "template": {
                 "metadata": {
-                    "labels": {"jobgroup": "postprocessing", "campaign-id": safe},
+                    "labels": {"jobgroup": POSTPROCESS_JOBGROUP, "campaign-id": safe},
                 },
                 "spec": {
                     "restartPolicy": "Never",
                     # Campaign nodes are where the bags already are and where this is
                     # allowed to run; without the toleration a deployment that dedicates
                     # its nodes to campaigns has nowhere to put this at all, and the Job
-                    # sits Pending until its three-hour timeout. Easy to miss here, because
-                    # this Job is created outside the admission path entirely.
+                    # sits Pending until its three-hour timeout. The toleration is what
+                    # gets it onto those nodes; `await_admission` is what waits until one
+                    # of them has room.
                     # One tree, written by containers that run as different users -- see
                     # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose
                     # own user is not the family's.
@@ -1414,20 +1662,207 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     }
 
 
+def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, name: str,
+              timeout: int = _DEFAULT_TIMEOUT,
+              batch_commands=None) -> tuple:
+    """Wait for the postprocessing Job *name* and return its ``(ok, message)``.
+
+    A pure waiter: it creates nothing, replaces nothing and deletes nothing, so it is
+    equally correct for the attempt that created the Job and for a process that only found
+    it running. That is what lets the submit path and the re-attach path share one
+    definition of a verdict -- two waiters would be two answers to "did this postprocess
+    succeed?", and a campaign only has one record to write them into.
+
+    ``ok`` is three-valued: ``True`` the Job was read as succeeded, ``False`` it was read
+    as failed, ``None`` **this process can no longer see what the Job is doing** -- the API
+    server would not answer, or the deadline passed while the Job was still active. The
+    Job is a cluster object that outlives any waiter, so a waiter that loses sight of it
+    has learned nothing; ``None`` keeps that apart from a failure so the campaign keeps
+    whatever it already says instead of being marked failed over a conversion that may be
+    finishing.
+
+    *batch_commands* names what the Job was asked to do, and so what its success means: a
+    batch Job has derived one batch's tables and completed no campaign.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    deadline = time.time() + timeout
+    # Published from here because this is the only place that knows the Job is still
+    # running. Nothing the pod writes leaves it until it exits, so without this the
+    # POSTPROCESSING section stays empty for the whole of a conversion measured in
+    # minutes -- and the only way to watch one is a pod name nobody off-cluster has.
+    next_live_log = 0.0
+    while time.time() < deadline:
+        if time.time() >= next_live_log:
+            publish_live_log(core, cluster_config, campaign_id, namespace, name)
+            next_live_log = time.time() + _LIVE_LOG_INTERVAL
+        try:
+            status = batch.read_namespaced_job_status(
+                name=name, namespace=namespace).status
+        except ApiException as e:
+            if e.status == 404:  # reaped (ttl) — treat as finished
+                return True, "postprocessing job finished (reaped)"
+            # Unknown, not failed: the Job is a cluster object and keeps converting
+            # while this process cannot read it. What is lost here is the observation,
+            # and an observation that did not happen is not a negative result.
+            return None, (f"could not read the status of postprocessing job {name}, "
+                          f"so what it did is unknown; the Job may still be running: "
+                          f"{e}")
+        if not status.active:
+            if status.succeeded:
+                logger.info("Postprocessing job %s succeeded", name)
+                return True, ("batch postprocessing complete" if batch_commands is not None
+                              else "postprocessing complete")
+            if status.failed:
+                # The only place a postprocess is reported as failed, because it is the
+                # only place a failure was actually READ: `backoffLimit: 0` makes one
+                # container exit terminal, so this field is the Job controller's own
+                # verdict. Every other exit from this loop is an unknown.
+                #
+                # Read before the message is built: ttlSecondsAfterFinished reaps this
+                # Job 300 s after it fails, and by the time anyone reads the campaign
+                # the pod that knows why is gone.
+                return False, job_failed_message(
+                    name, pod_reason=pod_failure_reason(core, namespace, name))
+        # A pod that CANNOT start leaves the Job `active` forever, so the polling above
+        # never sees a verdict and this returns "timed out" -- naming a duration where the
+        # cause was an unpullable image or an unschedulable pod. The same signal the run
+        # loop and the image build already act on.
+        blocked = _blocked_reason(core, namespace, name)
+        if blocked:
+            return False, (
+                f"postprocessing job {name} cannot start: {blocked}. Its containers "
+                f"run the controller image and, where the campaign has rosbags, the "
+                f"campaign's own execution image, so this is about pulling or "
+                f"scheduling those -- not about postprocessing, which has not run. "
+                f"Nothing about the campaign's results is wrong; re-run "
+                f"postprocessing once the pod can start.")
+        time.sleep(_POLL_SECONDS)
+    # The deadline is this process's patience, not a verdict about the Job: nothing here
+    # stops it, and a conversion measured in hours is still running when the wait gives
+    # up. Reported as unknown so the campaign keeps whatever it already says about
+    # postprocessing, and re-reading the Job (a retrigger) settles it.
+    return None, (f"stopped waiting for postprocessing job {name} after {timeout}s; "
+                  f"it was still running, so its outcome is unknown -- re-run "
+                  f"postprocessing to read it")
+
+
+def campaign_job_name(campaign_id: str) -> str:
+    """The name of *campaign_id*'s campaign-level postprocessing Job.
+
+    Deterministic from the campaign id alone, because the campaign-level postprocess passes
+    no discriminator (see :func:`run_conversion_job`) -- which is what makes a Job found
+    running attributable to the campaign whose record it is owed to. A discriminated Job is
+    a search's per-batch conversion: it answers to its batch's driver and to no campaign
+    record, so an equality test against this name is what keeps one from being written into
+    the campaign's postprocessing verdict.
+    """
+    return _short_job_name("robovast-postproc-", campaign_id)
+
+
+def live_campaign_jobs(namespace: str, kube_context=None) -> dict:
+    """``{label-safe campaign: job name}`` for every postprocessing Job still active.
+
+    One labelled listing, not a read per campaign: the Job carries
+    ``jobgroup=postprocessing`` and its campaign's label-safe id (see
+    :func:`build_manifest`), so what is running can be asked of the cluster rather than
+    guessed from the set of campaigns anyone happens to know about.
+
+    The label is the *sanitized* id and several ids can sanitize to one label, so the
+    caller resolves it against the campaigns it knows and confirms the name with
+    :func:`campaign_job_name`. Returns empty when the cluster cannot be listed: a Job that
+    cannot be read is not a Job whose outcome anyone may record.
+    """
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(kube_context)
+    jobs = client.BatchV1Api().list_namespaced_job(
+        namespace=namespace, label_selector=f"jobgroup={POSTPROCESS_JOBGROUP}")
+    live = {}
+    for job in getattr(jobs, "items", None) or []:
+        if not getattr(getattr(job, "status", None), "active", None):
+            continue
+        labels = getattr(job.metadata, "labels", None) or {}
+        campaign = labels.get("campaign-id")
+        if campaign:
+            live[campaign] = job.metadata.name
+    return live
+
+
+def reattach_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
+                            namespace: str, job_name: str,
+                            timeout: int = _DEFAULT_TIMEOUT,
+                            kube_context=None) -> tuple:
+    """Wait for a postprocessing Job this process did not submit. ``(ok, message)``.
+
+    Returns ``ok is None`` when the Job could not be confirmed live, and then *message*
+    says why. That third answer is the point of this function: the Job outlives the service
+    process, so the only thing worse than not recording its outcome is recording one it did
+    not have -- a campaign whose conversion succeeded must not be marked failed because the
+    API server was briefly unreadable.
+
+    Nothing is created or replaced. The Job already mounts the scripts it was created with,
+    and the kubelet syncs a ConfigMap's new content into every mount of it, so writing them
+    again would swap the script out from under the running interpreter (see
+    :func:`run_conversion_job`).
+    """
+    from kubernetes import client  # noqa: PLC0415
+
+    from robovast.common.errors import ClusterUnreachableError  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    # Explicit, for the reason the submit path loads it explicitly: these clients read
+    # whatever context is loaded when they are constructed, and the campaign's Jobs went to
+    # the service's --context cluster rather than the ambient kubeconfig.
+    load_kube_config(kube_context)
+    core = client.CoreV1Api()
+    batch = client.BatchV1Api()
+    try:
+        with api_transport_errors("re-attaching to the postprocessing job"):
+            if not _live_job(batch, namespace, job_name):
+                return None, (f"postprocessing job {job_name} is no longer active, so this "
+                              f"process has no outcome to record for {campaign_id}")
+    except ClusterUnreachableError as e:
+        return None, f"the postprocessing job {job_name} could not be read: {e}"
+    logger.info("Re-attached to the postprocessing job %s already in flight; its scripts "
+                "are untouched", job_name)
+    ok, message = await_job(core, batch, cluster_config, campaign_id, namespace, job_name,
+                            timeout=timeout)
+    return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message)
+
+
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
-                       host_stage: bool = True, convert_resources=None) -> tuple:
+                       batch_commands=None, convert_resources=None,
+                       admission=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
+
+    ``ok`` is three-valued, and the third value is the point of it: ``True`` the Job was
+    read as succeeded, ``False`` it was read as failed, ``None`` **this process can no
+    longer see what the Job is doing** -- the API server would not answer, or the wait
+    reached its deadline while the Job was still active. ``None`` is not a synonym for
+    ``False``: the Job runs in the cluster and outlives this process, so a driver that
+    loses sight of it has learned nothing about the conversion. Recorded as a failure it
+    sends someone to redo hours of work over a conversion that finished, and marks a
+    campaign whose derived data is complete as carrying none.
 
     *image* is the campaign's execution image, and is needed only for the conversion: an
     empty *rosbag_cmds* builds a Job that never pulls it. Callers that cannot know in
     advance whether it is needed should pass ``None`` and let *rosbag_cmds* decide, so a
     campaign whose image has gone from the registry still postprocesses.
 
-    *host_stage* off makes this a conversion-only Job -- see :func:`build_manifest`. With
-    it off and nothing to convert there is no work at all, which is a no-op success.
+    *batch_commands* makes this a per-batch Job -- see :func:`build_manifest`. With an
+    empty list and nothing to convert there is no work at all, which is a no-op success.
+
+    *admission* is the deployment's queue. Given, this pod waits for room like every other
+    pod on the cluster rather than being created against a cluster that has none -- see
+    :func:`await_admission`. ``None`` creates it directly, which is what a lane with no queue
+    (a local service, an off-cluster driver) must do.
 
     *discriminator* names WHICH conversion of this campaign this is, and must be set by
     any caller that converts the same campaign more than once -- a search, which converts
@@ -1437,7 +1872,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     campaign-level name, where the 409 fallthrough is right: a retry of a single conversion
     should wait on the Job already in flight rather than launch a second copy.
     """
-    if not rosbag_cmds and not host_stage:
+    if not rosbag_cmds and batch_commands is not None and not batch_commands:
         return True, "no rosbag conversion configured; nothing to run"
     if rosbag_cmds and not image:
         # Refused rather than defaulted: converting in the wrong image deserializes the
@@ -1473,8 +1908,44 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
-        host_stage=host_stage, convert_resources=convert_resources)
+        batch_commands=batch_commands, convert_resources=convert_resources)
     name = manifest["metadata"]["name"]
+
+    # Whether a Job of this name is already running is decided HERE, ahead of every write,
+    # and that order is load-bearing. The Job name comes from the campaign, so a second
+    # attempt -- a retrigger, or a service restart resuming the campaign -- meets the first
+    # attempt's Job still converting. Its conversion container has the scripts ConfigMap
+    # below mounted at /scripts and is executing out of that mount, and the kubelet syncs a
+    # ConfigMap's new content into every mount of it: writing the ConfigMap swaps the script
+    # out from under the running interpreter, which exits 1, and deleting it on the way out
+    # takes the mount away entirely. Either one destroys a healthy conversion, and the
+    # attempt that did it is the one that then reports the failure as the campaign's.
+    #
+    # So a live Job is adopted with nothing written: it already carries the scripts it was
+    # created with, generated by this same driver package, so there is nothing this attempt
+    # could add. Only an attempt that creates or re-creates the Job owns what it mounts.
+    #
+    # First call to touch the API server, so it is where an unreachable cluster surfaces.
+    # Reported as a reason on the campaign's postprocessing_error and re-runnable once the
+    # cluster is back -- the runs themselves are already published -- rather than reaching
+    # the caller as a urllib3 traceback.
+    try:
+        with api_transport_errors("submitting the postprocessing job"):
+            adopted = _live_job(batch, namespace, name)
+    except ClusterUnreachableError as e:
+        return False, f"postprocessing cannot be scheduled: {e}"
+
+    # Queued for capacity BEFORE anything is written, and only when this attempt is the one
+    # creating the Job: an adopted Job already holds real capacity on a real node, so
+    # admitting it a second time would charge the cluster twice for one pod.
+    admitted = False
+    if admission is not None and not adopted:
+        granted, node_id, message = await_admission(admission, campaign_id, name, manifest,
+                                                    timeout=timeout)
+        if not granted:
+            return False, message
+        admitted = True
+        _pin_to(manifest, node_id)
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
@@ -1482,14 +1953,14 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     # it once the Job is done. Only where something mounts it: a Job with no conversion
     # container declares no such volume, and creating the ConfigMap anyway would leave one
     # behind for every host-only postprocess.
-    cm_name = ""
-    if rosbag_cmds:
+    #
+    # `owned_cm_name` is the ConfigMap this attempt created or replaced, and it is the only
+    # thing the cleanup below deletes -- deletion follows creation, explicitly, so that an
+    # adopting waiter cannot remove the scripts of the Job it is waiting on.
+    owned_cm_name = ""
+    if rosbag_cmds and not adopted:
         cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
         cm_name = cm["metadata"]["name"]
-        # First call that actually touches the API server, so it is where an unreachable
-        # cluster surfaces. Reported as a reason on the campaign's postprocessing_error and
-        # re-runnable once the cluster is back -- the runs themselves are already
-        # published -- rather than reaching the caller as a urllib3 traceback.
         try:
             with api_transport_errors("submitting the postprocessing job"):
                 try:
@@ -1501,82 +1972,60 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                     else:
                         return False, ("could not create postprocessing scripts "
                                        f"ConfigMap: {e}")
+            owned_cm_name = cm_name
         except ClusterUnreachableError as e:
             return False, f"postprocessing cannot be scheduled: {e}"
 
     try:
-        try:
-            # Wrapped even though the ConfigMap create above usually gets there first: a
-            # host-only Job creates none, so this is then the first call to touch the API
-            # server and the one place an unreachable cluster can surface.
-            with api_transport_errors("submitting the postprocessing job"):
-                batch.create_namespaced_job(namespace=namespace, body=manifest)
-        except ClusterUnreachableError as e:
-            return False, f"postprocessing cannot be scheduled: {e}"
-        except ApiException as e:
-            if e.status != 409:
-                return False, f"could not create postprocessing job: {e}"
-            # 409 means a Job of this name is already here, and the name is derived from
-            # the campaign -- so a FINISHED one from an earlier attempt is indistinguishable
-            # from a running one until it is read. Falling through to wait on it reported
-            # that earlier attempt's outcome as this attempt's: a retrigger that changed
-            # nothing, against a pod whose containers ran a previous version of this
-            # script, presented as a fresh result. Adopt a live one; replace a finished one.
-            if not _adopt_or_replace(batch, namespace, name, manifest):
-                return False, (f"postprocessing job {name} already exists and could not be "
-                               f"replaced; retry once it has been removed")
-        logger.info("Postprocessing job %s created (conversion image=%s)", name,
-                    image if rosbag_cmds else "none needed")
-
-        deadline = time.time() + timeout
-        # Published from here because this is the only place that knows the Job is still
-        # running. Nothing the pod writes leaves it until it exits, so without this the
-        # POSTPROCESSING section stays empty for the whole of a conversion measured in
-        # minutes -- and the only way to watch one was a pod name nobody off-cluster has.
-        next_live_log = 0.0
-        while time.time() < deadline:
-            if time.time() >= next_live_log:
-                publish_live_log(core, cluster_config, campaign_id, namespace, name)
-                next_live_log = time.time() + _LIVE_LOG_INTERVAL
+        if adopted:
+            logger.info("Waiting on the postprocessing job %s already in flight; its "
+                        "scripts are untouched", name)
+        else:
             try:
-                status = batch.read_namespaced_job_status(
-                    name=name, namespace=namespace).status
+                # Wrapped even though the read above gets there first on every reachable
+                # cluster: a cluster can go away between the two, and then this is where an
+                # unreachable one has to surface.
+                with api_transport_errors("submitting the postprocessing job"):
+                    batch.create_namespaced_job(namespace=namespace, body=manifest)
+            except ClusterUnreachableError as e:
+                return False, f"postprocessing cannot be scheduled: {e}"
             except ApiException as e:
-                if e.status == 404:  # reaped (ttl) — treat as finished
-                    return True, "postprocessing job finished (reaped)"
-                return False, f"could not read postprocessing job status: {e}"
-            if not status.active:
-                if status.succeeded:
-                    logger.info("Postprocessing job %s succeeded", name)
-                    return True, ("postprocessing complete" if host_stage
-                                  else "rosbag conversion complete")
-                if status.failed:
-                    # Read before the message is built: ttlSecondsAfterFinished reaps this
-                    # Job 300 s after it fails, and by the time anyone reads the campaign
-                    # the pod that knows why is gone.
-                    return False, job_failed_message(
-                        name, pod_reason=pod_failure_reason(core, namespace, name))
-            # A pod that CANNOT start leaves the Job `active` forever, so the polling above
-            # never sees a verdict and this returns "timed out" -- naming a duration where the
-            # cause was an unpullable image or an unschedulable pod. The same signal the run
-            # loop and the image build already act on.
-            blocked = _blocked_reason(core, namespace, name)
-            if blocked:
-                return False, (
-                    f"postprocessing job {name} cannot start: {blocked}. Its containers "
-                    f"run the controller image and, where the campaign has rosbags, the "
-                    f"campaign's own execution image, so this is about pulling or "
-                    f"scheduling those -- not about postprocessing, which has not run. "
-                    f"Nothing about the campaign's results is wrong; re-run "
-                    f"postprocessing once the pod can start.")
-            time.sleep(_POLL_SECONDS)
-        return False, f"postprocessing job {name} timed out after {timeout}s"
+                if e.status != 409:
+                    return False, f"could not create postprocessing job: {e}"
+                # 409 with no live Job seen above: either a FINISHED Job of this name is
+                # still here -- the name is derived from the campaign, so waiting on it
+                # would report an earlier attempt's outcome as this attempt's, against a
+                # pod whose containers ran a previous version of this script -- or a Job
+                # started between that read and this create. Replace the finished one;
+                # adopt the one that raced us, and drop ownership of the ConfigMap with it,
+                # because from here on this attempt is a waiter on someone else's Job.
+                outcome = _adopt_or_replace(batch, namespace, name, manifest)
+                if not outcome:
+                    return False, (f"postprocessing job {name} already exists and could "
+                                   f"not be replaced; retry once it has been removed")
+                if outcome == _JOB_ADOPTED:
+                    owned_cm_name = ""
+            logger.info("Postprocessing job %s created (conversion image=%s)", name,
+                        image if rosbag_cmds else "none needed")
+
+        return await_job(core, batch, cluster_config, campaign_id, namespace, name,
+                         timeout=timeout, batch_commands=batch_commands)
     finally:
-        # Best-effort cleanup of the scripts ConfigMap (labeled for manual sweep if the
-        # driver dies before this runs). The Job's own ttlSecondsAfterFinished reaps it.
-        if cm_name:
+        # Release the reservation the moment the pod is gone, so what it held is spendable on
+        # the next drain. In the `finally` because every exit from here -- finished, failed
+        # or timed out -- ends the pod's claim, and a reservation left behind would shrink
+        # the cluster by a pod that no longer exists for as long as this service runs.
+        if admitted:
+            admission.finished(name)
+        # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
+        # manual sweep if the driver dies before this runs). The Job's own
+        # ttlSecondsAfterFinished reaps it. Empty for an adopted Job: those scripts are
+        # mounted in a container this attempt did not start, and deleting them out from
+        # under it is how a waiter breaks the conversion it is waiting on.
+        if owned_cm_name:
             try:
-                core.delete_namespaced_config_map(name=cm_name, namespace=namespace)
+                core.delete_namespaced_config_map(name=owned_cm_name, namespace=namespace)
             except ApiException as e:
                 if e.status != 404:
-                    logger.warning("Could not delete scripts ConfigMap %s: %s", cm_name, e)
+                    logger.warning("Could not delete scripts ConfigMap %s: %s",
+                                   owned_cm_name, e)

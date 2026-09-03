@@ -592,7 +592,9 @@ def test_a_running_job_is_adopted_not_replaced():
     """Two postprocesses of one campaign must not race each other's pods."""
     batch = _FakeBatch(active=1)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    # Reported as adoption rather than as bare success: the caller has to know it is a
+    # waiter on someone else's Job, because that decides what it may write and delete.
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
 
@@ -603,7 +605,7 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     """
     batch = _FakeBatch(active=None)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) is True
+    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
 
 
@@ -991,20 +993,18 @@ def test_raising_the_block_does_raise_what_the_pod_reserves():
 
 
 def test_a_search_batch_is_sized_by_the_same_block(monkeypatch):
-    """The conversion-only Job a search submits per batch takes the same figure.
+    """The per-batch Job a search submits takes the same figure.
 
-    Its shape differs -- with no host step the conversion is the pod's MAIN container
-    rather than an initContainer -- so the charge is computed over a different arrangement
-    of the same steps, and the figure has to survive that. This is also the Job a campaign
-    gets most of: one per batch, for the length of the search.
+    This is the Job a campaign gets most of: one per batch, for the length of the search,
+    so a conversion left at the default here would be the one place a campaign's declared
+    size did not apply -- on the path that runs it most.
     """
-    batch = _manifest(host_stage=False, convert_resources={"cpu": 6, "memory": "12Gi"})
+    batch = _manifest(batch_commands=[], convert_resources={"cpu": 6, "memory": "12Gi"})
     containers = _containers(batch)
-    assert [c["name"] for c in batch["spec"]["template"]["spec"]["containers"]] == ["convert"]
     assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
     assert _pod_charge(batch, "cpu") == 6
     # And the same floor applies in this shape, for the same reason.
-    small = _manifest(host_stage=False, convert_resources={"cpu": 1, "memory": "512Mi"})
+    small = _manifest(batch_commands=[], convert_resources={"cpu": 1, "memory": "512Mi"})
     assert _pod_charge(small, "cpu") == to_cores(pj.POSTPROCESS_HOST_FLOOR["cpu"])
 
 
@@ -1076,3 +1076,320 @@ def test_raised_to_compares_quantities_rather_than_strings():
     # An unparseable quantity keeps the floor rather than raising to nonsense.
     assert pj.raised_to({"cpu": 2, "memory": "4Gi"}, {"cpu": "lots"})["cpu"] == 2
 
+
+
+class _SubmitBatch:
+    """Enough of BatchV1Api to drive a whole `run_conversion_job` submit and wait."""
+
+    def __init__(self, existing_active=None, calls=None):
+        self.existing_active = existing_active
+        self.calls = [] if calls is None else calls
+
+    def read_namespaced_job(self, name, namespace):
+        self.calls.append('read-job')
+        if self.existing_active is None:
+            from kubernetes.client.rest import ApiException
+            raise ApiException(status=404)
+        return type('J', (), {'status': type('S', (), {
+            'active': self.existing_active})()})()
+
+    def create_namespaced_job(self, namespace, body):
+        self.calls.append('create-job')
+        self.existing_active = 1
+
+    def read_namespaced_job_status(self, name, namespace):
+        # Succeeded on the first poll: these tests are about what the submit writes around
+        # the Job, so the wait must end without a second of sleeping.
+        return type('J', (), {'status': type('S', (), {
+            'active': None, 'succeeded': 1, 'failed': None})()})()
+
+
+class _SubmitCore:
+    """Enough of CoreV1Api to record every write to the scripts ConfigMap."""
+
+    def __init__(self, conflict=False, calls=None):
+        self.conflict = conflict
+        self.calls = [] if calls is None else calls
+
+    def create_namespaced_config_map(self, namespace, body):
+        self.calls.append('create-cm')
+        if self.conflict:
+            from kubernetes.client.rest import ApiException
+            raise ApiException(status=409)
+
+    def replace_namespaced_config_map(self, name, namespace, body):
+        self.calls.append('replace-cm')
+
+    def delete_namespaced_config_map(self, name, namespace):
+        self.calls.append('delete-cm')
+
+
+def _submit(monkeypatch, core, batch):
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    cluster_config = types.SimpleNamespace(
+        get_s3_credentials=lambda: ("key", "secret"),
+        get_s3_endpoint=lambda: "https://store.example.com")
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("bucket", "prefix/"))
+    monkeypatch.setattr("robovast.execution.cluster_execution.cluster_execution."
+                        "resolve_pull_secret", lambda cfg, core_, ns: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: "test")
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr(pj, "publish_live_log",
+                        lambda *a, **k: None)
+    return pj.run_conversion_job(cluster_config, "camp", "ns", "img",
+                                 [{"plugins": []}])
+
+
+def test_adopting_a_live_job_does_not_touch_the_scripts_it_mounts(monkeypatch):
+    """A second attempt meeting a live Job must write NOTHING the Job mounts.
+
+    The scripts ConfigMap is mounted at /scripts in the conversion container, which is
+    executing out of that mount. The kubelet syncs new content into every mount of a
+    ConfigMap, so replacing it swaps the script out from under the running interpreter and
+    the container exits 1 -- and deleting it on the way out removes the mount entirely.
+    Either write destroys a healthy in-flight conversion, and the attempt that did it is
+    the one that reports the failure as the campaign's. So the live-Job check has to come
+    before the ConfigMap, and an adopted Job's resources belong to the attempt that created
+    them.
+    """
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=1, calls=calls)
+
+    ok, message = _submit(monkeypatch, core, batch)
+
+    assert ok is True and "complete" in message
+    # Neither created, replaced, nor deleted -- and no second Job launched at the live one.
+    assert calls == ['read-job']
+
+
+def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch):
+    """Nothing is running under this name, so this attempt owns the scripts it writes."""
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, _message = _submit(monkeypatch, core, batch)
+
+    assert ok is True
+    # The scripts land before the Job -- the pod holds in ContainerCreating until the
+    # volume source exists -- and are swept up once the Job is done.
+    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
+
+
+def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
+    """No live Job means the ConfigMap left behind is nobody's, and this attempt's Job
+    needs its own scripts there -- so the conflict is resolved by replacing it."""
+    calls = []
+    core = _SubmitCore(conflict=True, calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, _message = _submit(monkeypatch, core, batch)
+
+    assert ok is True
+    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
+
+
+# -- Unknown is not failure --------------------------------------------------
+#
+# The conversion Job is a cluster object that outlives the process waiting on it. So the
+# wait can end in three ways, not two, and the third one -- "this process can no longer
+# see what the Job is doing" -- must never be recorded as the second. A conversion that
+# succeeds while the driver is not watching, written down as a failure, sends someone to
+# redo hours of work and marks a campaign whose derived data is complete as carrying none.
+
+
+def _waiting_on_a_job(monkeypatch, batch, core=None):
+    """Everything :func:`run_conversion_job` touches before its wait loop, faked.
+
+    Returns nothing: the point is the wait, and every seam in front of it -- kubeconfig,
+    the object store, the pull secret, the live-log publish -- is stubbed so the only
+    thing a test in this group varies is what the API server answers about the Job.
+    """
+    from unittest import mock
+
+    core = core or mock.Mock()
+    monkeypatch.setattr(pj, "publish_live_log", lambda *a, **k: False)
+    monkeypatch.setattr(pj, "_POLL_SECONDS", 0)
+    return [
+        mock.patch("robovast.execution.cluster_execution.in_pod_storage."
+                   "campaign_storage_location", return_value=("bucket", "prefix/")),
+        mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"),
+        mock.patch("kubernetes.client.CoreV1Api", return_value=core),
+        mock.patch("kubernetes.client.BatchV1Api", return_value=batch),
+        mock.patch("robovast.execution.cluster_execution.cluster_execution."
+                   "resolve_pull_secret", return_value=""),
+    ]
+
+
+def _job_status(**fields):
+    from unittest import mock
+    absent = {"active": None, "succeeded": None, "failed": None}
+    return mock.Mock(status=types.SimpleNamespace(**{**absent, **fields}))
+
+
+def _run_the_wait(monkeypatch, batch, core=None, **kwargs):
+    import contextlib
+    from unittest import mock
+
+    cluster_config = mock.Mock()
+    cluster_config.get_s3_credentials.return_value = ("key", "secret")
+    with contextlib.ExitStack() as stack:
+        for patch in _waiting_on_a_job(monkeypatch, batch, core):
+            stack.enter_context(patch)
+        return pj.run_conversion_job(cluster_config, "camp", "ns", "img",
+                                     [{"plugins": []}], **kwargs)
+
+
+def test_a_job_status_that_cannot_be_read_is_unknown_not_failed(monkeypatch):
+    """An API server that will not answer costs the observation, not the conversion.
+
+    The Job keeps converting while this process cannot see it, so there is no negative
+    result to record -- only an open question, which is what ``ok is None`` says.
+    """
+    from unittest import mock
+
+    from kubernetes.client.rest import ApiException
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.side_effect = ApiException(status=500,
+                                                               reason="Internal")
+
+    ok, message = _run_the_wait(monkeypatch, batch)
+
+    assert ok is None, "the Job was never read as failed"
+    assert "unknown" in message and "may still be running" in message
+    assert "failed" not in message
+
+
+def test_giving_up_on_the_wait_is_unknown_not_failed(monkeypatch):
+    """The deadline is this process's patience. Nothing here stops the Job, so a wait that
+    ends is a wait that ended -- the conversion is still running and its outcome is open.
+    """
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=1)
+
+    ok, message = _run_the_wait(monkeypatch, batch, timeout=0)
+
+    assert ok is None
+    assert "unknown" in message
+    assert "failed" not in message
+
+
+def test_a_job_read_as_failed_is_still_reported_in_full(monkeypatch):
+    """The genuine failure keeps every part of its report: the Job controller's own
+    verdict (``backoffLimit: 0`` makes one container exit terminal), the pod's cause of
+    death, and the slot the log pointer is filled into once the sync has run."""
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=0, failed=1)
+    core = mock.Mock()
+    core.list_namespaced_pod.return_value = types.SimpleNamespace(items=[
+        types.SimpleNamespace(status=types.SimpleNamespace(
+            phase="Failed", reason=None, conditions=[], init_container_statuses=[],
+            container_statuses=[types.SimpleNamespace(
+                name="convert",
+                state=types.SimpleNamespace(terminated=types.SimpleNamespace(
+                    exit_code=1, reason="Error")))]))])
+
+    ok, message = _run_the_wait(monkeypatch, batch, core)
+
+    assert ok is False
+    assert "container convert exited 1 (Error)" in message
+    assert pj.POINTER_SLOT in message
+    assert "see the POSTPROCESSING section" in pj.with_log_pointer(message, __file__)
+
+
+def test_an_unknown_outcome_reaches_the_caller_without_a_failure_log(monkeypatch,
+                                                                    tmp_path):
+    """``postprocess_campaign`` carries the third value through rather than collapsing it.
+
+    The failure log is the account of a fault; authoring one for a conversion that may be
+    finishing writes a fault into the campaign log that nobody found.
+    """
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", (), None))
+    monkeypatch.setattr(pj, "run_conversion_job",
+                        lambda *a, **k: (None, "outcome unknown"))
+    monkeypatch.setattr(pj, "sync_outputs", lambda cfg, cid, cr, force=False: 1)
+    monkeypatch.setattr(pj, "publish_postprocessing_log", lambda *a, **k: None)
+    authored = []
+    monkeypatch.setattr(pj, "_write_failure_log",
+                        lambda *a, **k: authored.append(a))
+
+    ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns")
+
+    assert ok is None and message == "outcome unknown"
+    assert not authored
+
+
+# -- re-attaching to a Job this process did not submit -----------------------
+#
+# The Job outlives the service process, and only the waiter writes the campaign's verdict.
+# So a waiter that has no submit half is needed, and it has to be a waiter and nothing
+# more: everything the Job mounts belongs to the attempt that created it.
+
+
+def _reattach(monkeypatch, core, batch, published):
+    cluster_config = types.SimpleNamespace(
+        get_s3_credentials=lambda: ("key", "secret"),
+        get_s3_endpoint=lambda: "https://store.example.com")
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: "test")
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr(pj, "publish_live_log",
+                        lambda *a, **k: published.append("log"))
+    monkeypatch.setattr(pj, "record_job_outputs",
+                        lambda cfg, cid, root, ok, message, force=False: (ok, message))
+    return pj.reattach_conversion_job(cluster_config, "camp", "/nonexistent", "ns",
+                                     pj.campaign_job_name("camp"))
+
+
+def test_reattaching_waits_and_records_without_submitting_anything(monkeypatch):
+    """A live Job's outcome is recorded, and nothing about the Job is written.
+
+    No second Job, and no touch of the scripts ConfigMap it is executing out of: the
+    kubelet syncs new ConfigMap content into every mount of it, so a waiter that wrote them
+    would kill the healthy conversion it is waiting for and then report the failure as the
+    campaign's.
+    """
+    calls = []
+    published = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=1, calls=calls)
+
+    ok, message = _reattach(monkeypatch, core, batch, published)
+
+    assert ok is True and "complete" in message
+    assert calls == ['read-job']
+    # And the live log keeps being published while it waits: nothing the pod writes leaves
+    # it until it exits, so this is the only account of a running conversion anyone has.
+    assert published == ["log"]
+
+
+def test_a_job_that_cannot_be_read_yields_no_verdict(monkeypatch):
+    """``ok is None``, so the caller writes nothing.
+
+    A Job that is absent, finished, or on an unreadable API server is one this process did
+    not observe. Recording a failure for it would mark a campaign whose conversion
+    succeeded as having derived nothing -- worse than the stale record it replaces, because
+    it reads as a fresh finding.
+    """
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    ok, message = _reattach(monkeypatch, core, batch, [])
+
+    assert ok is None
+    assert "no longer active" in message
+    assert calls == ['read-job']

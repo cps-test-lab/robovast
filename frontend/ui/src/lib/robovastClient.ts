@@ -107,6 +107,31 @@ export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocess
 export const hasRecordedRuns = (c: CampaignSummary) =>
   c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
+// The phases in which a campaign can already have finished runs on disk. The earlier live phases
+// (`initializing`, `building`, `variation`, …) run nothing, so offering a preview there would be an
+// invitation to an empty view for a reason that has not happened yet. `finishing` and
+// `postprocessing` still qualify: the runs are all there and the index is not written until
+// postprocessing ends, so a preview is still the only way to see them.
+const PREVIEWABLE_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'running', 'finishing', 'postprocessing',
+])
+
+// Whether the Run view may replay this campaign's finished runs *while it is still running*.
+// A preview: the 3D scene replays from each run's own capture file, and nothing else works, because
+// a running campaign has no rows in the index at all (they are written by postprocessing).
+//
+// Deliberately NOT gated on `num_runs`, and this is the whole point of the predicate rather than a
+// detail: those counts come from the `run` rows of `campaign.db`, which the controller writes only
+// once a batch has FINISHED — a batch-mode campaign has exactly one batch, so `num_runs` is 0 for
+// its entire life. Gating on it made the preview unreachable for exactly the campaigns it exists
+// for, while looking correct, because the file is read live even though it is not written live.
+//
+// So this asks only whether runs can exist yet. Whether any actually do is answered where it can be
+// answered honestly — by the run listing, which is the picker's source anyway. A campaign on its
+// first run is offered and says "no run has finished yet", a state that resolves itself within one
+// run; that is the deliberate cost of not asking a question no cheap signal can answer.
+export const isPreviewable = (c: CampaignSummary) => PREVIEWABLE_PHASES.has(c.phase)
+
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
 // Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from
@@ -356,11 +381,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 // Read any address in the space above, whichever namespace it is in — the campaign-config viewer
 // reads `/results/<id>/_config/...` with the same two calls the workspace editor uses for
-// `/sources/<ws>/...`. Recursive and undetailed: every consumer builds a path tree and none shows a
-// size, so ask for the names only. Deliberately read-only: there is no `writeFileAt`, because only
-// `/sources` accepts writes and the write calls below name a workspace id for that reason.
-const listFilesAt = (address: string) =>
-  request<FileListing>('GET', `${address}?recursive=1&limit=0`)
+// `/sources/<ws>/...`. Recursive by default and undetailed: those consumers build a path tree and none
+// shows a size, so ask for the names only. Deliberately read-only: there is no `writeFileAt`, because
+// only `/sources` accepts writes and the write calls below name a workspace id for that reason.
+//
+// `recursive: false` lists ONE level, files and directories, with a trailing `/` on each directory —
+// which is what a caller walking down a large tree wants. The difference is not cosmetic: a recursive
+// listing returns every file beneath the address, so over a campaign of thousands of runs it is tens
+// of thousands of paths (and a full prefix listing on the cluster), where one level is a handful of
+// names. Walk down deliberately rather than fetching the tree to look at its top.
+const listFilesAt = (address: string, opts: { recursive?: boolean } = {}) =>
+  request<FileListing>(
+    'GET', `${address}?recursive=${opts.recursive === false ? 0 : 1}&limit=0`)
 
 const readFileAt = (address: string) =>
   request<FileText>('GET', `${address}?as=text&lines=0`)
@@ -557,12 +589,23 @@ export const robovast = {
   // robovast/common/file_address.py): /sources/<workspace>/<path> for the inputs a user
   // authors, /results/<campaign>/<path> for a campaign's outputs (read-only). The path
   // segments are encoded individually so the '/' separators survive.
-  // Recursive and undetailed: every consumer builds a path tree, and none of them shows
-  // a size — so ask for the names only.
+  // Recursive and undetailed by default: those consumers build a path tree, and none of
+  // them shows a size — so ask for the names only.
   listFilesAt,
   readFileAt,
 
   listProjectFiles: (id: string) => listFilesAt(sourcesUrl(id, '')),
+
+  // One level of a campaign's output tree: the child directories (trailing `/`) and files of
+  // `<campaign>/<path>`. The Run view's preview picker walks the tree down this way — root for
+  // the configurations, then one call per configuration for its runs — because a running
+  // campaign has no index rows to ask instead, and a recursive listing of a large campaign is
+  // tens of thousands of paths to learn a few dozen names.
+  // A trailing slash is what makes the address a *directory* in this space (`/results/<c>/nav/`
+  // lists, `/results/<c>/nav` reads), so it is appended here rather than left to every caller.
+  listResultsDir: (campaignId: string, path: string, opts: { recursive?: boolean } = {}) =>
+    listFilesAt(resultsUrl(campaignId, path.endsWith('/') || !path ? path : `${path}/`),
+                { recursive: opts.recursive === true }),
 
   readProjectFile: (id: string, path: string) => readFileAt(sourcesUrl(id, path)),
 

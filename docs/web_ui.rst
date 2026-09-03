@@ -137,12 +137,21 @@ It provides four views:
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has
   not started, and a blocked one has a cause (no quota, an unpullable image) that deleting
-  it does not fix. Nor on a node-calibration probe: on a cluster campaign that calibrates its
-  sizing (see :ref:`cluster-node-calibration`) the Jobs list also carries one row per node
-  being measured, marked with a ``calibration`` chip beside its status and named for its node.
-  Those rows are the campaign's *infrastructure*, not its trials — they are kept out of the
-  job counts, out of the run meter and out of the ETA — and they cannot be stopped one at a
-  time, because there is no run to record as killed.
+  it does not fix. Nor on the two rows that are not trials. On a cluster campaign that
+  calibrates its sizing (see :ref:`cluster-node-calibration`) the Jobs list carries one row
+  per node being measured, marked with a ``calibration`` chip beside its status and named for
+  its node; and while a cluster campaign is in its ``postprocessing`` phase it carries the
+  conversion of its rosbags, marked with a ``postprocessing`` chip and named ``rosbag
+  conversion``. It is the phase's only job, so without the row a campaign that is busy
+  converting gigabytes of bags shows an empty Jobs list. That row is the one that does **not**
+  open: its work runs in init containers, which a pod log does not carry, and its output is
+  published to the campaign log's ``POSTPROCESSING`` section every few seconds while it runs
+  — where it stays once the cluster has removed the job, which is when a failed postprocess is
+  usually read. The row says so, and the Log tab beside it is where to look. Both rows are the campaign's
+  *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
+  and out of the ETA — and neither can be stopped one at a time, because there is no run to
+  record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing
+  runs inside the service process, where there is no job to list.
   Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
@@ -1224,7 +1233,10 @@ Each campaign card in **Campaigns** also offers shortcuts — in its **actions m
 button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
 offers what it can deliver: **Open in Results Explorer** once the campaign is finished **and**
 postprocessed (the same gate the Results tab itself applies), and **Open in Run
-view** only if the campaign also recorded runs to replay. They are named lines in a menu rather
+view** only if the campaign also recorded runs to replay. The Run view's entry appears
+**while the campaign is still running** too, reading **Open in Run View (preview)** — it leads to a
+replay of the runs that have already finished (see :ref:`run-view-preview`), and it is the only
+route to one, since the jobs list above drops a run as soon as it completes. They are named lines in a menu rather
 than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
 same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
 step, so **Back** always returns to where you came from in one press; a jump *between* views is a
@@ -1384,6 +1396,65 @@ The run picker lists only campaigns that actually **recorded runs** (``num_runs 
 tallied from ``campaign.db``). A campaign that never started, or that ended before its
 store was written, has nothing to replay, so it is not offered here at all — rather
 than being selectable and then answering with an empty view.
+
+.. _run-view-preview:
+
+Previewing a campaign that is still running
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A campaign's finished runs can be replayed **while the rest of it is still running**, as a
+**preview**. This is the only way to see one at all before the campaign ends: the Monitor's jobs
+list is live-only, so a run leaves it the moment it completes, and the other Results views wait for
+postprocessing.
+
+Only the **3D replay** works. ``scene3d`` reads a run's own ``capture/capture.json`` and a scene
+descriptor compiled on demand, neither of which needs postprocessing; every other panel reads the
+index, and a running campaign has **no rows there at all** — they are written when postprocessing
+ingests the campaign. So the preview mounts the 3D scene and the playback transport and leaves the
+rest out, rather than mounting panels that could only report the same failure once each per run.
+
+That is also why a campaign is offered as a preview **only if it has a scene to replay**. A
+simulator that records no capture contributes no ``scene3d``, so there would be nothing at all to
+show; such a campaign simply does not appear — in the run picker or in its card's menu — until it
+has finished, when its real results exist. Both surfaces ask the campaign's served panel list, so
+neither can offer what the other refuses.
+
+Having a scene is the *only* extra condition: a campaign is offered as soon as it is running,
+without asking how many runs it has recorded. That question has no cheap honest answer while a
+campaign runs — the run counts come from ``campaign.db``, which the controller writes only once a
+**batch** has finished, and a batch-mode campaign has exactly one batch — so a preview gated on them
+was unreachable for the entire life of exactly the campaigns it exists for. What runs there are is
+answered where it can be answered: by the listing that fills the picker. A campaign on its first run
+is therefore offered, and says so.
+For the same reason there is no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>`
+reports nothing to trim, and **Edit visualization** is disabled — saving writes a ``.vast`` override
+into the campaign's own ``_config/``, which its remaining runs are configured from, so editing the
+view would edit the experiment.
+
+It says so in both places it can be misread: a **Preview** chip at the top right of the scene, whose
+hover explains what is and is not available, and the word ``preview`` beside the campaign in the run
+picker, where the campaign is actually chosen.
+
+The picker's rows come from the campaign's **output directories**, because the query the Explorer
+uses answers nothing for a campaign that has not been ingested: one listing for its configurations,
+then one *recursive* listing per configuration. That second listing is where the trade is made — a
+request per configuration either way, and the recursive answer says not only which runs exist but
+which have written a recording, so it costs response size rather than round trips, bounded by one
+configuration rather than the whole campaign.
+
+**Only runs that can be replayed are offered**, and a configuration with none of them is not shown
+at all. A run still in progress has a directory and no recording; listing it would fill the picker
+with rows that report they have nothing to show once they are opened, which on a campaign of several
+configurations is most of the tree. The presence of the recording is exact — it is written once, at
+a run's clean stop — so this neither offers a half-written run nor hides a finished one.
+
+The rows carry no verdict: pass/fail lives in each run's own report, so colouring the dots would
+cost a read per run, the shape that does not scale. The dot therefore stays neutral, and a
+configuration shows how many runs it has rather than a ``0/N`` that would be indistinguishable from
+every run having failed.
+
+When the campaign finishes, nothing swaps under the reader: the **Refresh** button beside the picker
+reports that there is something new, and taking it re-reads the campaign with all of its panels.
 
 .. _shutdown-toggle:
 

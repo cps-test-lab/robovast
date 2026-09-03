@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { JobSummary } from './robovastClient'
-import { calibrationFirst, isCalibrationJob } from './jobKind'
+import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from './jobKind'
 
 function job(job_name: string, kind?: string): JobSummary {
   // `kind` omitted models a service older than the field, which the generated type says cannot
@@ -20,28 +20,42 @@ describe('isCalibrationJob', () => {
   it('is true only for a calibration probe', () => {
     expect(isCalibrationJob(job('a', 'calibration'))).toBe(true)
     expect(isCalibrationJob(job('b', 'run'))).toBe(false)
+    expect(isCalibrationJob(job('c', 'postprocessing'))).toBe(false)
   })
 
   it('reads a job from a service older than the field as a run', () => {
-    expect(isCalibrationJob(job('c'))).toBe(false)
+    expect(isCalibrationJob(job('d'))).toBe(false)
   })
 
   it('reads an unfamiliar kind as a run, not as a probe', () => {
-    expect(isCalibrationJob(job('d', 'something-later'))).toBe(false)
+    expect(isCalibrationJob(job('e', 'something-later'))).toBe(false)
   })
 })
 
-describe('calibrationFirst', () => {
-  it('hoists probes and leaves the runs in the order the service returned them', () => {
+describe('isPostprocessingJob', () => {
+  it('is true only for the postprocessing conversion', () => {
+    expect(isPostprocessingJob(job('a', 'postprocessing'))).toBe(true)
+    expect(isPostprocessingJob(job('b', 'run'))).toBe(false)
+    expect(isPostprocessingJob(job('c', 'calibration'))).toBe(false)
+  })
+
+  it('reads a job from a service older than the field as a run', () => {
+    expect(isPostprocessingJob(job('d'))).toBe(false)
+    expect(isPostprocessingJob(job('e', 'something-later'))).toBe(false)
+  })
+})
+
+describe('nonRunsFirst', () => {
+  it('hoists what is not a trial and leaves the runs in the order the service returned them', () => {
     const jobs = [job('r1', 'run'), job('p1', 'calibration'), job('r2', 'run'),
-                  job('p2', 'calibration'), job('r3', 'run')]
-    expect(calibrationFirst(jobs).map((j) => j.job_name))
-      .toEqual(['p1', 'p2', 'r1', 'r2', 'r3'])
+                  job('pp', 'postprocessing'), job('r3', 'run')]
+    expect(nonRunsFirst(jobs).map((j) => j.job_name))
+      .toEqual(['p1', 'pp', 'r1', 'r2', 'r3'])
   })
 
   it('does not mutate its argument', () => {
     const jobs = [job('r1', 'run'), job('p1', 'calibration')]
-    calibrationFirst(jobs)
+    nonRunsFirst(jobs)
     expect(jobs.map((j) => j.job_name)).toEqual(['r1', 'p1'])
   })
 })

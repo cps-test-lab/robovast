@@ -63,6 +63,51 @@ def test_run_share_dispatches_in_the_sharing_phase(svc, monkeypatch):
     assert callable(seen["work"])
 
 
+def _archiving_order(svc, monkeypatch):
+    """Record whether the finished sections were archived before the dispatch."""
+    order = []
+    monkeypatch.setattr(svc, "_archive_repeatable_sections",
+                        lambda cid: order.append(("archive", cid)))
+
+    def _dispatch(campaign_id, *, phase, work, elsewhere_written_phase_files=frozenset()):
+        order.append(("dispatch", campaign_id))
+        return ActionResult(ok=True, message="dispatched")
+
+    monkeypatch.setattr(svc, "_dispatch_background", _dispatch)
+    return order
+
+
+def test_a_retriggered_postprocess_archives_the_finished_sections_first(svc, monkeypatch):
+    """The assembled campaign log may only grow at its end, so a repeatable phase's
+    previous run is moved aside *before* the new one can write over it -- afterwards the
+    writer is already running and the bytes it replaced are ones a reader consumed."""
+    order = _archiving_order(svc, monkeypatch)
+
+    svc.run_postprocessing(RunPostprocessingRequest(campaign_id="camp-1"))
+
+    assert order == [("archive", "camp-1"), ("dispatch", "camp-1")]
+
+
+def test_a_retriggered_share_archives_the_finished_sections_first(svc, monkeypatch):
+    """And the export, which appends to share.log: an earlier one left in place would
+    become the head of this one's section."""
+    order = _archiving_order(svc, monkeypatch)
+
+    svc.run_share(RunShareRequest(campaign_id="camp-1"))
+
+    assert order == [("archive", "camp-1"), ("dispatch", "camp-1")]
+
+
+def test_an_unarchivable_section_does_not_block_the_operation(svc, monkeypatch):
+    """These tests run against a service with no reachable store, which is the fail-soft
+    case itself: the runs are already paid for, and the account of the previous attempt is
+    worth less than the operation."""
+    seen = _capture(svc, monkeypatch)
+
+    assert svc.run_postprocessing(RunPostprocessingRequest(campaign_id="camp-1")).ok
+    assert seen["phase"] == "postprocessing"
+
+
 def test_postprocess_job_loads_the_given_context(monkeypatch):
     """Postprocessing must dial the context the campaign's Jobs were submitted with.
 

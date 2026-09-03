@@ -12,6 +12,7 @@ import json
 import tempfile
 import types
 import time
+from pathlib import Path
 
 import pytest
 
@@ -709,12 +710,17 @@ def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
 
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None,
+         jobgroup="scenario-runs"):
     ann = {"job-name-full": full} if full is not None else {}
-    # No ``labels`` attribute at all unless a kind is asked for: that is a Job created before
-    # the label existed, and the listing has to read it as one of the campaign's runs.
-    meta = ({"name": name} if kind is None
-            else {"name": name, "labels": {"jobgroup": "scenario-runs", "job-kind": kind}})
+    # No ``labels`` attribute at all unless a kind or a jobgroup other than the batch's is
+    # asked for: that is a Job created before the label existed, and the listing has to read
+    # it as one of the campaign's runs.
+    labels = {"jobgroup": jobgroup}
+    if kind is not None:
+        labels["job-kind"] = kind
+    meta = ({"name": name} if kind is None and jobgroup == "scenario-runs"
+            else {"name": name, "labels": labels})
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(**meta),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
@@ -791,7 +797,10 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     resp = cs.list_jobs("camp-2026-07-17-120000")
 
     assert seen["namespace"] == "ns1"
-    assert "jobgroup=scenario-runs" in seen["label_selector"]
+    # One selector for both of the campaign's jobgroups -- its trials and its conversion --
+    # because this is polled every couple of seconds per live campaign and a second listing
+    # would double the Job and pod reads behind it.
+    assert "jobgroup in (scenario-runs,postprocessing)" in seen["label_selector"]
     assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
     assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
             resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
@@ -836,6 +845,40 @@ def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch)
     assert (resp.counts.running, resp.counts.total) == (1, 1)
 
 
+def test_the_postprocessing_conversion_is_listed_but_not_counted_as_a_run(cs, monkeypatch):
+    """The conversion is what a campaign in its ``postprocessing`` phase is doing, and the
+    only thing it is doing: without it the jobs list is empty for as long as the conversion
+    takes, which reads as an idle campaign rather than a busy one.
+
+    It is not a trial, so it stays out of the counts on the same terms as a probe -- they
+    feed the run meter, the ``done/total`` label and the ETA's divisor -- and it is named for
+    the work rather than for its Job, whose name is the campaign id with a hash on it.
+    """
+    jobs = [
+        _job("j-run", succeeded=1, full="camp-2026-07-17-120000-batch-0-job-0"),
+        _job("robovast-postproc-camp-2026-07-17-120000", active=1,
+             jobgroup="postprocessing"),
+    ]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods(
+        [_job_pod("robovast-postproc-camp-2026-07-17-120000")]))
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    conversion = next(j for j in resp.jobs
+                      if j.job_name == "robovast-postproc-camp-2026-07-17-120000")
+    assert conversion.kind == "postprocessing"
+    assert conversion.status == "running"
+    assert conversion.display_name == "rosbag conversion"
+    assert resp.counts.postprocessing == 1
+    assert resp.counts.running == 0, "the conversion is not a running trial"
+    assert (resp.counts.completed, resp.counts.total) == (1, 1)
+
+
 def _job_pod(job_name, phase="Running"):
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
@@ -857,6 +900,41 @@ class _CoreWithPods:
 
     def list_node(self):
         return self._nodes
+
+
+def test_get_job_log_resolves_a_pod_by_campaign_and_job_alone(cs, monkeypatch):
+    """Every row the jobs list shows has to open, the conversion's included.
+
+    The pair (campaign, Job name) already identifies one pod, so the selector carries no
+    jobgroup term: adding one would decide which of the campaign's own jobs may be read
+    here, and a row whose log 404s is worse than no row at all.
+    """
+    from contextlib import nullcontext
+
+    seen = {}
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            seen["label_selector"] = label_selector
+            return types.SimpleNamespace(
+                items=[_job_pod("robovast-postproc-camp-2026-07-17-120000")])
+
+    class _Tail:
+        lock = nullcontext()
+        merged = types.SimpleNamespace(slice_from=lambda offset: ("converting 3 bags\n", 18))
+
+        def read(self, core, pod, namespace, now):
+            return True
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    monkeypatch.setattr(cs, "_job_log_tail", lambda campaign_id, job_name: _Tail())
+    chunk = cs.get_job_log("camp-2026-07-17-120000",
+                           "robovast-postproc-camp-2026-07-17-120000")
+
+    assert "jobgroup" not in seen["label_selector"]
+    assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
+    assert "job-name=robovast-postproc-camp-2026-07-17-120000" in seen["label_selector"]
+    assert chunk.text == "converting 3 bags\n"
 
 
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
@@ -2090,8 +2168,6 @@ def test_a_campaign_worlds_neighbours_travel_with_it(tmp_path):
     Mounting the tree rather than enumerating the world's dependencies is deliberate: an
     enumeration that under-reports (roqsim's own walks `extends` and MJCF assets, never a
     plugin's config values) reproduces exactly the failure this replaced."""
-    from pathlib import Path
-
     mesh = tmp_path / "_config" / "environments" / "hex" / "3d-mesh" / "hex.stl"
     mesh.parent.mkdir(parents=True)
     mesh.write_bytes(b"solid\n")
@@ -2355,8 +2431,9 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
     pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
     core, lane = _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
-        types.SimpleNamespace(job_name="scenario-abc", status="running"),
-        types.SimpleNamespace(job_name="scenario-def", status="completed"),
+        # ``kind`` as the service always sets it: the sweep skips what is not a run.
+        types.SimpleNamespace(job_name="scenario-abc", status="running", kind="run"),
+        types.SimpleNamespace(job_name="scenario-def", status="completed", kind="run"),
     ]))
 
     targets = cs._health_targets("camp-1")
@@ -2507,7 +2584,7 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
     the campaign's other jobs their check."""
     _cluster_job_state(cs, monkeypatch, pods=[])
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
-        types.SimpleNamespace(job_name="scenario-abc", status="running")]))
+        types.SimpleNamespace(job_name="scenario-abc", status="running", kind="run")]))
 
     assert cs._health_targets("camp-1") == []
 
@@ -2530,8 +2607,13 @@ def _tracked(cs, campaign_id, results_dir, terminal=True, elsewhere=frozenset())
         state=types.SimpleNamespace(snapshot=lambda: types.SimpleNamespace(phase=phase)))
 
 
-def _fake_store(cs, monkeypatch, objects):
-    """Point the durable half of the log reader at *objects* (key -> bytes)."""
+def _fake_store(cs, monkeypatch, objects, cache_dir=None):
+    """Point the durable half of the log reader at *objects* (key -> bytes).
+
+    Also roots the cache dir -- where a re-triggered operation works, and so where its
+    archived log sections land -- inside the test, so nothing the reader answers depends on
+    what an earlier run of anything left in the host's scratch.
+    """
     reads = []
 
     class _Store:
@@ -2539,6 +2621,14 @@ def _fake_store(cs, monkeypatch, objects):
             reads.append(key)
             return objects.get(key)
 
+        def list_keys(self, bucket, prefix=""):
+            return sorted(k for k in objects if k.startswith(prefix.rstrip("/") + "/"))
+
+        def upload_file(self, local_path, bucket, key):
+            objects[key] = Path(local_path).read_bytes()
+
+    monkeypatch.setattr(cs, "_cache_dir",
+                        lambda cid: Path(cache_dir or tempfile.mkdtemp()) / cid)
     monkeypatch.setattr(cs, "_cluster_config", lambda: object())
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.in_pod_storage.campaign_storage_location",
@@ -2692,3 +2782,149 @@ def test_a_postprocess_that_ran_elsewhere_is_read_from_the_store(cs, monkeypatch
 
     assert "what the pod wrote" in text and "an older attempt" not in text
     assert "live run" in text and "lagging run" not in text
+
+
+# -- the campaign log may only ever grow at its end -------------------------
+#
+# A reader streams it by byte offset, so a repeatable phase run again must land after
+# everything already written. Each finished run is archived under
+# ``_execution/sections/<seq>-<phase>.log`` before the next one starts writing.
+
+
+def test_a_rerun_archives_the_finished_section_before_it_starts(cs, monkeypatch, tmp_path):
+    """The durable copy of the previous run is moved aside, and the base object is left
+    empty for the new run to grow into -- so the section a reader has already consumed
+    keeps the bytes and the offset it had."""
+    _fake_store(cs, monkeypatch, objects := {
+        "camp-1/_execution/postprocessing.log": b"the first postprocess\n",
+        "camp-1/_execution/share.log": b"the export that followed it\n"})
+
+    cs._archive_repeatable_sections("camp-1")
+
+    assert objects["camp-1/_execution/sections/0001-postprocessing.log"] == \
+        b"the first postprocess\n"
+    assert objects["camp-1/_execution/sections/0002-share.log"] == \
+        b"the export that followed it\n"
+    # Present and empty, not gone: the only delete this store API offers is by prefix.
+    assert objects["camp-1/_execution/postprocessing.log"] == b""
+    assert objects["camp-1/_execution/share.log"] == b""
+
+
+def test_a_second_rerun_continues_the_sequence(cs, monkeypatch, tmp_path):
+    """The sequence is the campaign's order, so it counts across phases and across runs --
+    a name reused would overwrite a finished section."""
+    _fake_store(cs, monkeypatch, objects := {
+        "camp-1/_execution/sections/0001-postprocessing.log": b"first\n",
+        "camp-1/_execution/postprocessing.log": b"second\n"})
+
+    cs._archive_repeatable_sections("camp-1")
+
+    assert objects["camp-1/_execution/sections/0002-postprocessing.log"] == b"second\n"
+    assert objects["camp-1/_execution/sections/0001-postprocessing.log"] == b"first\n"
+
+
+def test_a_phase_that_never_ran_burns_no_sequence_number(cs, monkeypatch, tmp_path):
+    """A gap in the numbering would say something happened between two sections that did
+    not, and the sequence is the only record of the order."""
+    _fake_store(cs, monkeypatch, objects := {
+        "camp-1/_execution/postprocessing.log": b"a postprocess, no export\n"})
+
+    cs._archive_repeatable_sections("camp-1")
+    objects["camp-1/_execution/postprocessing.log"] = b"another postprocess\n"
+    cs._archive_repeatable_sections("camp-1")
+
+    assert sorted(k for k in objects if "/sections/" in k) == [
+        "camp-1/_execution/sections/0001-postprocessing.log",
+        "camp-1/_execution/sections/0002-postprocessing.log"]
+
+
+def test_the_tracked_reader_puts_a_rerun_after_the_phase_that_followed_it(cs, monkeypatch,
+                                                                          tmp_path):
+    """Postprocess, share, postprocess again -- driven through the archiving the two
+    dispatches perform. The second postprocess must read *after* the share, not back in the
+    slot the first one occupied: a fixed phase order put its bytes ahead of an offset the
+    reader had consumed, and a live viewer never saw them."""
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"ran the campaign\n")
+    _fake_store(cs, monkeypatch, objects := {
+        "camp-1/_execution/postprocessing.log": b"first postprocess\n"},
+        cache_dir=tmp_path / "cache")
+
+    # A share is retriggered: the finished postprocess is archived, then the export writes
+    # its own phase file into the materialised root it works against.
+    cs._archive_repeatable_sections("camp-1")
+    share = tmp_path / "cache" / "camp-1" / "_execution" / "share.log"
+    share.parent.mkdir(parents=True, exist_ok=True)
+    share.write_bytes(b"the export\n")
+    # ...and then a postprocess is retriggered, which archives that export in turn.
+    cs._archive_repeatable_sections("camp-1")
+    objects["camp-1/_execution/postprocessing.log"] = b"postprocessing again\n"
+    _tracked(cs, "camp-1", tmp_path, terminal=False, elsewhere={"postprocessing.log"})
+
+    text = cs.get_campaign_logs("camp-1").text
+
+    assert text.index("first postprocess") < text.index("the export")
+    assert text.index("the export") < text.index("postprocessing again")
+
+
+def test_a_tracked_reader_sees_the_sections_left_in_the_cache_dir(cs, monkeypatch, tmp_path):
+    """A re-triggered operation works against the cache dir, not the tracked root, so that
+    is where its archived sections land. Listing only the tracked root would drop them from
+    the stream -- and a stream that loses a section is one that shrank."""
+    (tmp_path / "camp-1" / "_execution").mkdir(parents=True)
+    (tmp_path / "camp-1" / "_execution" / "controller.log").write_bytes(b"ran\n")
+    cache = tmp_path / "cache" / "camp-1" / "_execution" / "sections"
+    cache.mkdir(parents=True)
+    (cache / "0001-share.log").write_bytes(b"the first export\n")
+    _tracked(cs, "camp-1", tmp_path, elsewhere={"share.log"})
+    _fake_store(cs, monkeypatch, {}, cache_dir=tmp_path / "cache")
+
+    text = cs.get_campaign_logs("camp-1").text
+
+    assert "the first export" in text
+    assert text.index("ran") < text.index("the first export")
+
+
+def test_an_untracked_campaign_orders_its_sections_from_the_store_listing(cs, monkeypatch):
+    """Nothing local is left to enumerate, and the sequence that orders the sections lives
+    in their names -- so the reader has to list the durable execution dir to find them."""
+    _fake_store(cs, monkeypatch, {
+        "camp-9/_execution/controller.log": b"ran\n",
+        "camp-9/_execution/sections/0001-postprocessing.log": b"first postprocess\n",
+        "camp-9/_execution/sections/0002-share.log": b"the export\n",
+        "camp-9/_execution/postprocessing.log": b"the latest postprocess\n"})
+
+    chunk = cs.get_campaign_logs("camp-9")
+
+    assert chunk.eof is True
+    assert chunk.text.index("first postprocess") < chunk.text.index("the export")
+    assert chunk.text.index("the export") < chunk.text.index("the latest postprocess")
+
+
+def test_an_unreachable_store_does_not_stop_the_operation(cs, monkeypatch, tmp_path):
+    """Archiving is bookkeeping about the account of an operation; the operation itself is
+    the thing that must happen. A failure costs a duplicated section until the new run
+    publishes over the base file, which is worth strictly less than the postprocess it
+    would otherwise block."""
+    monkeypatch.setattr(cs, "_cache_dir", lambda cid: tmp_path / "cache" / cid)
+    monkeypatch.setattr(cs, "_cluster_config",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no store")))
+
+    cs._archive_repeatable_sections("camp-1")  # must not raise
+
+
+def test_a_local_section_that_cannot_be_moved_does_not_stop_the_operation(cs, monkeypatch,
+                                                                          tmp_path):
+    """Same rule one level down: the disk half fails on its own terms (a read-only mount,
+    a vanished root) and the operation still runs."""
+    exec_dir = tmp_path / "cache" / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "share.log").write_bytes(b"an earlier export\n")
+    _fake_store(cs, monkeypatch, {}, cache_dir=tmp_path / "cache")
+    monkeypatch.setattr(Path, "replace",
+                        lambda self, target: (_ for _ in ()).throw(OSError("read-only")))
+
+    cs._archive_repeatable_sections("camp-1")  # must not raise
+
+    assert (exec_dir / "share.log").exists()
