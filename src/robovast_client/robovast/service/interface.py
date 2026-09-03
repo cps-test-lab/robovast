@@ -562,6 +562,32 @@ class JobKind(StrEnum):
     POSTPROCESSING = "postprocessing"
 
 
+class JobUsage(BaseModel):
+    """What one running job is consuming, against what it was given.
+
+    Both denominators, because they answer different questions and routinely differ. The
+    **request** is what the scheduler set aside, so measured-against-request answers "did we
+    reserve the right amount?" -- the sizing question, and the one the capacity meter and node
+    calibration are both about. The **limit** is the ceiling the kernel enforces, so
+    measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
+    may legitimately sit anywhere between the two.
+
+    Every field is optional, and absent means *not known* -- never zero. A lane that sets no
+    container limits has no ceiling to state; a container whose cpu limit was left open may use
+    the whole node, so no finite number is the truth; a cluster with no metrics API measures
+    nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
+    numbers are missing, when there is a reason worth reporting, is on
+    :attr:`ListJobsResponse.metrics_unavailable`.
+    """
+
+    cpu_cores: Optional[float] = None
+    cpu_request: Optional[float] = None
+    cpu_limit: Optional[float] = None
+    memory_bytes: Optional[int] = None
+    memory_request_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
+
+
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
@@ -595,6 +621,20 @@ class JobSummary(BaseModel):
     # reason worth reading. So a detail here is not by itself a sign of trouble —
     # ``status`` is what says whether anyone needs to act.
     detail: Optional[str] = None
+    #: What this job is consuming right now, where the lane can measure it -- see
+    #: :class:`JobUsage`. ``None`` on a job that is not running (a sample outlives the pod it
+    #: came from, and a finished job carrying one reads as still burning cores) and on any lane
+    #: with nothing to measure. Never a zeroed record: absent is the honest answer.
+    usage: Optional[JobUsage] = None
+    #: When this job started, epoch seconds, or ``None`` where the lane cannot say.
+    #:
+    #: The *job's* start, not its containers': it is stamped before the pod is scheduled and
+    #: before the inputs are staged, so it answers "how long has this trial been going" rather
+    #: than "how long has it been executing", and it is defined for a job still pending or
+    #: blocked -- which is exactly where the question is worth asking. A timestamp rather than
+    #: an age, so a client subtracts against its own clock; an age is stale the moment it is
+    #: serialised.
+    started_at: Optional[float] = None
 
 
 class JobCounts(BaseModel):
@@ -655,6 +695,15 @@ class ListJobsResponse(BaseModel):
 
     jobs: list[JobSummary] = Field(default_factory=list)
     counts: JobCounts = Field(default_factory=JobCounts)
+    #: Why no job here carries :attr:`JobSummary.usage`, when the absence has a cause worth
+    #: reporting -- no metrics API on the cluster, or a service role that predates the grant it
+    #: needs. ``None`` when usage is available, and when its absence needs no explaining (a lane
+    #: that measures nothing by design says so once, in its documentation, not on every read).
+    #:
+    #: One reason for the response rather than one per job, because the cause is always the
+    #: whole read failing and never a single job's. Without it, a listing whose rows simply
+    #: carry no numbers cannot be told from a cluster sitting idle.
+    metrics_unavailable: Optional[str] = None
 
 
 class BatchObjective(BaseModel):

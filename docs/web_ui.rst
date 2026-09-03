@@ -133,6 +133,22 @@ It provides four views:
   and colored per container when the job has more than one. That matters in the ROS
   shape, where the simulator and the system under test have their own containers and a
   failure is only legible when their output is read against the scenario's.
+  Every row carries **how long that job has been going**, on the right, and that clock starts
+  when the *job* does -- before its pod is scheduled and before its inputs are staged -- so a
+  row that is still ``pending`` or ``blocked`` has one too, which is where "how long has this
+  been stuck?" is the question worth asking.
+  Beside it, a **running** job on the cluster carries two small meters, cpu and memory. The
+  track is the container's **limit**, the fill is what it is **using**, and the hairline is
+  what it **reserved**: so the fill against the hairline says whether the reservation was the
+  right size, and the fill against the track's end says whether the job is near being throttled
+  or OOM-killed -- which is also when the meter turns amber and then red. The exact figures are
+  on the hover. Where a container states no cpu limit it may use the whole node, so there is no
+  ceiling to draw and the bar is scaled to the reservation instead, which the hover says.
+  A job that is **not measured** shows no meter at all rather than an empty one: an empty track
+  reads as an idle job, which is a stronger claim than "not measured". That is the case for the
+  whole local Docker lane, which sets no container limits and measures nothing per container,
+  and on a cluster with no metrics-server or a service whose RBAC predates the
+  ``metrics.k8s.io/pods`` grant -- see :doc:`deployment`, and the Jobs tab says which.
   A **running** job's row also carries a red **Stop** button, which kills *that job alone*
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has

@@ -8,6 +8,7 @@ the launch *hooks* it overrides on LocalTransport plus the aux-pod manifest that
 replaced the old controller-pod sidecar.
 """
 
+import datetime
 import json
 import tempfile
 import types
@@ -38,6 +39,11 @@ def cs():
     # has, and which *blocks* rather than failing. Tests that exercise discovery use the
     # ``indexed`` fixture below, which installs a fake store and clears this.
     svc._index_cache = (time.monotonic(), {}, {})
+    # No unit test may reach metrics.k8s.io. ``list_jobs`` reads pod metrics on every call, and
+    # an unfaked client builds a real one and waits out its timeout against whatever kubeconfig
+    # this machine happens to have -- a slow test whose result depends on the developer's
+    # laptop. Tests that care about the reading install their own with ``_stub_metrics``.
+    svc._k8s_custom = _MetricsApi
     return svc
 
 
@@ -1544,10 +1550,13 @@ class _MetricsApi:
     absent metrics-server six times a minute forever.
     """
 
-    def __init__(self, usage_by_node=None, error=None):
+    def __init__(self, usage_by_node=None, error=None, pods=None, pod_error=None):
         self._usage = usage_by_node or {}
         self._error = error
+        self._pods = list(pods or [])
+        self._pod_error = pod_error
         self.calls = 0
+        self.pod_calls = 0
 
     def list_cluster_custom_object(self, group, version, plural, **kwargs):
         assert (group, version, plural) == ("metrics.k8s.io", "v1beta1", "nodes")
@@ -1559,14 +1568,31 @@ class _MetricsApi:
         return {"items": [{"metadata": {"name": name}, "usage": usage}
                           for name, usage in self._usage.items()]}
 
+    def list_namespaced_custom_object(self, group, version, namespace, plural, **kwargs):
+        """Pod metrics, counted separately from the node read.
 
-def _stub_metrics(cs, monkeypatch, usage_by_node=None, error=None):
+        Two counters and two error slots because the two grants are given independently: a
+        role may carry ``nodes`` and not ``pods``, and one fake answering both identically
+        could not tell a shared memo from a separate one.
+        """
+        assert (group, version, plural) == ("metrics.k8s.io", "v1beta1", "pods")
+        assert kwargs.get("_request_timeout")
+        # Every campaign's jobs are read in one list; a per-campaign selector would make the
+        # cost grow with the number of open campaign cards.
+        assert "campaign-id" not in (kwargs.get("label_selector") or "")
+        self.pod_calls += 1
+        if self._pod_error is not None:
+            raise self._pod_error
+        return {"items": list(self._pods)}
+
+
+def _stub_metrics(cs, monkeypatch, usage_by_node=None, error=None, pods=None, pod_error=None):
     """Install the metrics fake and hand it back.
 
     Every test that reads usage needs one: without it ``_measured_cpu_mem`` builds a real
     client and tries the live cluster, which turns a unit test into a two-second timeout.
     """
-    api = _MetricsApi(usage_by_node, error)
+    api = _MetricsApi(usage_by_node, error, pods, pod_error)
     monkeypatch.setattr(cs, "_k8s_custom", lambda: api)
     return api
 
@@ -2928,3 +2954,265 @@ def test_a_local_section_that_cannot_be_moved_does_not_stop_the_operation(cs, mo
     cs._archive_repeatable_sections("camp-1")  # must not raise
 
     assert (exec_dir / "share.log").exists()
+
+
+# --- per-job live usage ------------------------------------------------------------------
+#
+# What a running job is consuming, against what it was given, on the campaign's job listing.
+# The failures worth pinning are all the same shape: a number that is WRONG but plausible --
+# a stale sample on a finished job, a ceiling summed over the wrong containers, an absence
+# that reads as an idle cluster.
+
+
+def _pod_metrics_item(job_name, containers, window="12s"):
+    """One ``PodMetrics``, shaped as metrics-server returns it.
+
+    The ``job-name`` label is the join: the item names the POD, and only its labels say which
+    Job that pod belongs to. Written here as the real thing writes it, both keys included,
+    because the older ``job-name`` is all an older cluster sets.
+    """
+    return {"metadata": {"name": f"{job_name}-pod",
+                         "labels": {"batch.kubernetes.io/job-name": job_name,
+                                    "job-name": job_name, "jobgroup": "scenario-runs"}},
+            "window": window,
+            "containers": [{"name": name, "usage": {"cpu": cpu, "memory": memory}}
+                           for name, (cpu, memory) in containers.items()]}
+
+
+def _sized(job, containers):
+    """Give a Job fake the container spec a real one carries, as ``(name, sidecar, req, lim)``."""
+    job.spec.template.spec = types.SimpleNamespace(
+        containers=[types.SimpleNamespace(name=n, restart_policy=None,
+                                          resources={"requests": req, "limits": lim})
+                    for n, side, req, lim in containers if not side],
+        init_containers=[types.SimpleNamespace(name=n, restart_policy="Always",
+                                               resources={"requests": req, "limits": lim})
+                         for n, side, req, lim in containers if side])
+    return job
+
+
+def _one_running_job(cs, monkeypatch, *, job=None, pods=None, phase="Running", **fake):
+    """A campaign of exactly one job, with the metrics fake installed. Returns the fake."""
+    job = job if job is not None else _job("j-1", active=1)
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[job])
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-1", phase=phase)]))
+    return _stub_metrics(cs, monkeypatch, pods=pods, **fake)
+
+
+def test_list_jobs_reports_what_a_running_job_uses_against_both_figures_it_was_given(
+        cs, monkeypatch):
+    """Measured, requested and limited -- all three, and the sidecars counted in the last two.
+
+    The request and the limit answer different questions ("was the reservation right?" against
+    "is this near being throttled?") and differ in practice, so neither stands in for the
+    other. And the ceiling has to include the native sidecars: summing ``spec.containers``
+    alone would report 2 cores for a pod that holds 6.5.
+    """
+    job = _sized(_job("j-1", active=1), [
+        ("robovast", False, {"cpu": "1.429", "memory": "1Gi"}, {"cpu": "2", "memory": "1Gi"}),
+        ("sut", True, {"cpu": "2.495", "memory": "2Gi"}, {"cpu": "2.495", "memory": "2Gi"}),
+        ("simulation", True, {"cpu": "425m", "memory": "1Gi"}, {"cpu": "2", "memory": "1Gi"}),
+    ])
+    _one_running_job(cs, monkeypatch, job=job, pods=[_pod_metrics_item("j-1", {
+        "robovast": ("194517872n", "219580Ki"),
+        "sut": ("537237547n", "307968Ki"),
+        "simulation": ("212990095n", "130856Ki")})])
+
+    usage = cs.list_jobs("camp-2026-07-17-120000").jobs[0].usage
+
+    assert usage.cpu_cores == pytest.approx(0.944745514)
+    assert usage.cpu_request == pytest.approx(4.349)
+    assert usage.cpu_limit == pytest.approx(6.495)
+    assert usage.memory_bytes == (219580 + 307968 + 130856) * 1024
+    assert usage.memory_limit_bytes == 4 * 1024 ** 3
+
+
+def test_list_jobs_withholds_usage_from_a_job_that_is_no_longer_running(cs, monkeypatch):
+    """A sample outlives the pod that produced it.
+
+    metrics-server keeps serving a reading for a pod that has just finished, so a completed row
+    carrying one shows a job apparently still burning cores. The status is the gate, not the
+    presence of a sample -- which is why the fake here HAS one for this job.
+    """
+    _one_running_job(cs, monkeypatch, phase="Succeeded",
+                     pods=[_pod_metrics_item("j-1", {"robovast": ("1", "1Gi")})])
+
+    job = cs.list_jobs("camp-2026-07-17-120000").jobs[0]
+
+    assert job.status == "completed"
+    assert job.usage is None
+
+
+def test_list_jobs_reports_when_a_job_started_even_before_it_runs(cs, monkeypatch):
+    """Age comes from the JOB, so a job that has not started executing still has one.
+
+    That is the point of taking it here rather than from the pod's containers: "how long has
+    this been stuck?" is the question a pending or blocked row raises, and a start time that
+    only existed once execution began could not answer it.
+    """
+    job = _job("j-1", active=1)
+    job.status.start_time = datetime.datetime(2026, 9, 3, 8, 40, 45,
+                                              tzinfo=datetime.timezone.utc)
+    _one_running_job(cs, monkeypatch, job=job, phase="Pending")
+
+    listed = cs.list_jobs("camp-2026-07-17-120000").jobs[0]
+
+    assert listed.status == "pending"
+    assert listed.started_at == job.status.start_time.timestamp()
+
+
+def test_a_job_the_cluster_gave_no_start_time_reports_none(cs, monkeypatch):
+    """Absent, not zero: an epoch-zero start renders as fifty-six years of runtime."""
+    _one_running_job(cs, monkeypatch)
+
+    assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].started_at is None
+
+
+def test_the_denominator_covers_only_the_containers_that_were_measured(cs, monkeypatch):
+    """Numerator and denominator must describe the same containers.
+
+    A metrics-server that reported one container of three, divided by the whole pod's ceiling,
+    is a ratio between two different things -- and it reads as a comfortably idle job.
+    """
+    job = _sized(_job("j-1", active=1), [
+        ("robovast", False, {"cpu": "1", "memory": "1Gi"}, {"cpu": "2", "memory": "1Gi"}),
+        ("sut", True, {"cpu": "4", "memory": "8Gi"}, {"cpu": "4", "memory": "8Gi"}),
+    ])
+    _one_running_job(cs, monkeypatch, job=job,
+                     pods=[_pod_metrics_item("j-1", {"robovast": ("1", "1Gi")})])
+
+    usage = cs.list_jobs("camp-2026-07-17-120000").jobs[0].usage
+
+    assert usage.cpu_limit == pytest.approx(2), "the unmeasured sidecar is not in the ceiling"
+    assert usage.memory_limit_bytes == 1024 ** 3
+
+
+def test_a_job_with_no_measurement_reports_no_usage_rather_than_zeros(cs, monkeypatch):
+    """Zero is a claim about an idle job; this is the absence of a reading."""
+    _one_running_job(cs, monkeypatch, pods=[_pod_metrics_item("someone-elses-job",
+                                                             {"robovast": ("1", "1Gi")})])
+
+    assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].usage is None
+
+
+def test_one_metrics_read_serves_repeated_listings(cs, monkeypatch):
+    """The job list is polled every couple of seconds; the sample changes far more slowly.
+
+    Without the snapshot every poll of every open campaign card would be another round trip to
+    be handed the same numbers back.
+    """
+    api = _one_running_job(cs, monkeypatch,
+                           pods=[_pod_metrics_item("j-1", {"c": ("1", "1Gi")}, window="12s")])
+
+    for _ in range(3):
+        assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].usage is not None
+
+    assert api.pod_calls == 1
+
+
+def test_the_snapshot_is_held_for_the_window_the_cluster_states(cs, monkeypatch):
+    """The TTL is read from the data, not chosen here.
+
+    Each sample says which window it covers, and that is how often the cluster can have a new
+    one. A cluster reporting a long window must not be polled at some rate we picked, and the
+    SHORTEST window wins so no sample is served past its own life.
+    """
+    api = _one_running_job(cs, monkeypatch, pods=[
+        _pod_metrics_item("j-1", {"c": ("1", "1Gi")}, window="30s"),
+        _pod_metrics_item("j-2", {"c": ("1", "1Gi")}, window="11s")])
+
+    cs.list_jobs("camp-2026-07-17-120000")
+    held_until, _ = cs._pod_metrics_snapshot
+    remaining = held_until - time.monotonic()
+
+    assert 10 < remaining <= 11, "the shortest window sets the life of the snapshot"
+    assert api.pod_calls == 1
+
+
+def test_an_unreadable_window_falls_back_rather_than_reading_every_poll(cs, monkeypatch):
+    """A cluster that states no window still gets a sane cadence.
+
+    Zero would mean re-reading on every poll of every campaign card, which is the cost this
+    whole snapshot exists to avoid.
+    """
+    _one_running_job(cs, monkeypatch,
+                     pods=[_pod_metrics_item("j-1", {"c": ("1", "1Gi")}, window="soon")])
+
+    cs.list_jobs("camp-2026-07-17-120000")
+    held_until, _ = cs._pod_metrics_snapshot
+
+    assert held_until - time.monotonic() > cs._POD_METRICS_TTL_MIN - 1
+
+
+def test_a_cluster_without_metrics_server_says_so_and_stops_asking(cs, monkeypatch):
+    """Rows carry no numbers, and the response says why.
+
+    Silence alone is indistinguishable from an idle cluster, which is the reading this field
+    exists to prevent. And the failure is memoised: a 404 here means an add-on nobody
+    installed, so asking again every poll spends a round trip to learn the same thing.
+    """
+    api = _one_running_job(cs, monkeypatch, pod_error=_api_exception(404),
+                           pods=[_pod_metrics_item("j-1", {"c": ("1", "1Gi")})])
+
+    first = cs.list_jobs("camp-2026-07-17-120000")
+    second = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert first.jobs[0].usage is None
+    assert "metrics-server" in first.metrics_unavailable
+    assert second.metrics_unavailable == first.metrics_unavailable
+    assert api.pod_calls == 1, "a missing add-on is remembered, not re-probed every poll"
+
+
+def test_rbac_that_predates_the_grant_names_the_command_that_fixes_it(cs, monkeypatch):
+    """A 403 is a deployment that was never upgraded, not a broken cluster.
+
+    The reason names ``pods`` specifically: the two metrics grants are given independently, and
+    a message naming the wrong sub-resource sends a reader to reconcile something already there.
+    """
+    _one_running_job(cs, monkeypatch, pod_error=_api_exception(403))
+
+    reason = cs.list_jobs("camp-2026-07-17-120000").metrics_unavailable
+
+    assert "metrics.k8s.io/pods" in reason
+    assert "vast service upgrade" in reason
+
+
+def test_a_transient_failure_is_reported_but_not_remembered(cs, monkeypatch):
+    """A timeout fixes itself; memoising it would blank the numbers for ten minutes.
+
+    Only settled facts about the cluster -- an absent add-on, an unreconciled role -- are worth
+    remembering. Anything else is asked again.
+    """
+    api = _one_running_job(cs, monkeypatch, pod_error=TimeoutError("aggregated API is slow"))
+
+    first = cs.list_jobs("camp-2026-07-17-120000")
+    cs.list_jobs("camp-2026-07-17-120000")
+
+    assert first.jobs[0].usage is None
+    assert "could not be read" in first.metrics_unavailable
+    assert api.pod_calls == 2, "a transient failure must not stop the service asking"
+
+
+def test_a_pods_403_does_not_blind_the_capacity_meter(cs, monkeypatch):
+    """The two metrics reads memoise separately, because the two grants are separate.
+
+    A shared memo would take the Admin chart's measured fill down with a missing per-job grant,
+    and explain it with a reason naming the wrong sub-resource.
+    """
+    api = _stub_metrics(cs, monkeypatch, {"n1": {"cpu": "1", "memory": "1Gi"}},
+                        pod_error=_api_exception(403))
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
+    monkeypatch.setattr(
+        cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [], []))
+
+    assert cs._pod_metrics()[1] is not None
+    usage = cs.resource_usage()
+
+    assert usage.cpu_measured == pytest.approx(1)
+    assert usage.metrics_unavailable is None
+    assert api.calls == 1
