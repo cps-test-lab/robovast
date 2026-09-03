@@ -34,7 +34,10 @@ declaration order before the regular containers start:
   test's *custom ROS2 message types* and only deserialize in its image, which is also
   why nothing else may be asked of that image.
 * ``host`` (container, controller image) runs everything after the conversion — the
-  index ingest and metadata — and is what uploads the results.
+  derived tables, and for a campaign-level Job the index ingest and metadata — and is what
+  uploads the results. It is the pod's main container in both shapes of this Job, because
+  it is the only one given the store: a Job that ended at its conversion could send
+  nothing anywhere. A per-batch Job (a search's) runs it without the completing steps.
 
 **Nothing is baked into the execution image.** The conversion scripts are mounted in
 from a per-campaign ConfigMap (the K8s analog of ``-v $SCRIPT_DIR:/scripts:ro``), so
@@ -78,18 +81,22 @@ POSTPROC_PREFIX = "_postproc"
 #: still running.
 POSTPROCESS_JOBGROUP = "postprocessing"
 
-#: Campaign-relative path of the manifest the Job writes listing every file it produced,
-#: one path per line. Riding inside the campaign tree means whatever carries the outputs
-#: carries the index of them, so the two cannot disagree.
+#: Campaign-relative path of the manifest listing every file the Job uploaded, one path
+#: per line. Riding inside the campaign tree means whatever carries the outputs carries the
+#: index of them, so the two cannot disagree.
 #:
-#: Describes whatever the Job produced rather than what any one plugin was expected to
-#: produce. The payload is whatever declared
-#: ``needs_execution_image`` -- the rosbag conversion today, and that flag exists on the
-#: plugin base class precisely so it will not always be only that.
+#: Written by the ``host`` container as it uploads (:func:`~.postprocess_host._upload_derived`),
+#: which is the only place that knows what went up. Describes whatever the Job produced
+#: rather than what any one plugin was expected to produce.
 #:
 #: This is what lets the outputs go straight to the canonical prefix: the service reads one
 #: known key and then fetches exactly the objects it names, instead of listing a prefix
 #: whose bulk is rosbags it does not want.
+#:
+#: An ABSENT manifest is not an empty one. Absent means no Job ever said, and the fetch
+#: falls back to the legacy prefix for a campaign converted by an older service; empty means
+#: a Job ran and derived nothing. Reading the first as the second is how a batch that
+#: produced no metrics came to look like a batch whose metrics were simply not interesting.
 OUTPUT_MANIFEST = "_execution/conversion_outputs.txt"
 
 #: Where the campaign tree lives inside the Job's pod, mounted from one ``emptyDir`` into
@@ -838,6 +845,11 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     *state*, when given, also receives each step's line as the live ``stage`` marker — the
     same wiring the local lane uses, so the campaign view narrates this phase identically on
     both. ``None`` leaves it logging only.
+
+    This is the CAMPAIGN-level pass, and it reads ``results_processing.postprocessing``.
+    A search's per-batch pass is a different list -- ``search.postprocessing`` -- and runs
+    through :func:`~robovast.results_processing.postprocessing.run_postprocessing_commands`
+    instead, which is the function both lists share.
     """
     from robovast.execution.control_server import stage_output_callback  # noqa: PLC0415
     from robovast.results_processing.postprocessing import ROSBAG_JOB_NAMES  # noqa: PLC0415
@@ -1429,7 +1441,7 @@ def _index_env(namespace: str) -> list:
 def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
-                   tolerate_under=(), skip=None, host_stage: bool = True,
+                   tolerate_under=(), skip=None, batch_commands=None,
                    convert_resources=None) -> dict:
     """Build the postprocessing Job manifest.
 
@@ -1456,13 +1468,15 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
             -- the campaign's ``results_processing.resources`` over that function's defaults.
             ``None`` takes those defaults, which is what a caller with no ``.vast`` in reach
             must do.
-        host_stage: Whether this Job runs the host step. ``False`` builds a
-            conversion-only Job, for a caller converting the batches of a campaign that is
-            still growing: the host step writes the campaign's provenance marker and drives
-            the index ingest, so running it per batch would mark a partial campaign
-            postprocessed, repeatedly. With it off the conversion is the pod's *main*
-            container rather than an initContainer — a pod needs one to complete, and it
-            is also where ``get_job_log`` looks.
+        batch_commands: The ``search.postprocessing`` commands the host must run, for a
+            per-batch Job. ``None`` is the campaign-level Job, whose host runs the whole
+            ``results_processing.postprocessing`` pass and completes the campaign — index
+            ingest, metadata, provenance record. Given, the host runs exactly these and
+            completes nothing, because a search reaches this once per batch on a campaign
+            that is still growing. The two lists are DIFFERENT blocks of the ``.vast``, so
+            a batch Job left to find its own would run the campaign-level one; passing them
+            is what keeps the batch running what the controller resolved for it.
+            The pod's shape does not change either way; only what the host is asked for does.
         pull_secret_name: Secret for this pod's OWN image pulls -- the controller image
             both robovast containers run, and the campaign's execution image. Without it a
             private-registry deployment sits in ``ImagePullBackOff`` while the Job stays
@@ -1476,7 +1490,8 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     mounted, and the ConfigMap volume declared, only where a conversion container exists.
     """
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
-    from .postprocess_host import ENV_FORCE, ENV_SKIP  # noqa: PLC0415
+    from .postprocess_host import (ENV_COMMANDS, ENV_FORCE,  # noqa: PLC0415
+                                   ENV_SKIP)
     from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
                                     ENV_STAGE_DEST)
 
@@ -1568,18 +1583,25 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         "env": unbuffered_env + robovast_env + _index_env(namespace) + [
             {"name": ENV_FORCE, "value": "1" if force else "0"},
             {"name": ENV_SKIP, "value": ",".join(sorted(set(skip or ())))},
+            *([{"name": ENV_COMMANDS, "value": json.dumps(batch_commands)}]
+              if batch_commands is not None else []),
         ],
         "volumeMounts": [campaign_mount],
         "resources": host_block,
     }
 
     init_containers = [stage]
-    if rosbag_cmds and host_stage:
+    if rosbag_cmds:
         init_containers.append(convert)
     # initContainers run sequentially to completion in declaration order and the main
     # containers start only after they all succeed. That ordering IS the orchestration
     # here; there is no code sequencing these steps.
-    containers = [host] if host_stage else [convert]
+    #
+    # The host container runs in BOTH shapes, and the shape decides only what it is asked
+    # for. It is the only container given the store, deliberately -- the conversion runs
+    # the campaign's own image -- so a Job that ended at the conversion could not send its
+    # outputs anywhere, and they would go with the pod's emptyDir.
+    containers = [host]
 
     volumes = [
         # One copy of the campaign, shared by every container.
@@ -1641,7 +1663,8 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
 
 
 def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, name: str,
-              timeout: int = _DEFAULT_TIMEOUT, host_stage: bool = True) -> tuple:
+              timeout: int = _DEFAULT_TIMEOUT,
+              batch_commands=None) -> tuple:
     """Wait for the postprocessing Job *name* and return its ``(ok, message)``.
 
     A pure waiter: it creates nothing, replaces nothing and deletes nothing, so it is
@@ -1658,8 +1681,8 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
     whatever it already says instead of being marked failed over a conversion that may be
     finishing.
 
-    *host_stage* names what the Job was asked to do, and so what its success means: a
-    conversion-only Job has converted bags and postprocessed nothing.
+    *batch_commands* names what the Job was asked to do, and so what its success means: a
+    batch Job has derived one batch's tables and completed no campaign.
     """
     from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
@@ -1688,8 +1711,8 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
         if not status.active:
             if status.succeeded:
                 logger.info("Postprocessing job %s succeeded", name)
-                return True, ("postprocessing complete" if host_stage
-                              else "rosbag conversion complete")
+                return True, ("batch postprocessing complete" if batch_commands is not None
+                              else "postprocessing complete")
             if status.failed:
                 # The only place a postprocess is reported as failed, because it is the
                 # only place a failure was actually READ: `backoffLimit: 0` makes one
@@ -1815,7 +1838,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
-                       host_stage: bool = True, convert_resources=None,
+                       batch_commands=None, convert_resources=None,
                        admission=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
@@ -1833,8 +1856,8 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     advance whether it is needed should pass ``None`` and let *rosbag_cmds* decide, so a
     campaign whose image has gone from the registry still postprocesses.
 
-    *host_stage* off makes this a conversion-only Job -- see :func:`build_manifest`. With
-    it off and nothing to convert there is no work at all, which is a no-op success.
+    *batch_commands* makes this a per-batch Job -- see :func:`build_manifest`. With an
+    empty list and nothing to convert there is no work at all, which is a no-op success.
 
     *admission* is the deployment's queue. Given, this pod waits for room like every other
     pod on the cluster rather than being created against a cluster that has none -- see
@@ -1849,7 +1872,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     campaign-level name, where the 409 fallthrough is right: a retry of a single conversion
     should wait on the Job already in flight rather than launch a second copy.
     """
-    if not rosbag_cmds and not host_stage:
+    if not rosbag_cmds and batch_commands is not None and not batch_commands:
         return True, "no rosbag conversion configured; nothing to run"
     if rosbag_cmds and not image:
         # Refused rather than defaulted: converting in the wrong image deserializes the
@@ -1885,7 +1908,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
-        host_stage=host_stage, convert_resources=convert_resources)
+        batch_commands=batch_commands, convert_resources=convert_resources)
     name = manifest["metadata"]["name"]
 
     # Whether a Job of this name is already running is decided HERE, ahead of every write,
@@ -1986,7 +2009,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                         image if rosbag_cmds else "none needed")
 
         return await_job(core, batch, cluster_config, campaign_id, namespace, name,
-                         timeout=timeout, host_stage=host_stage)
+                         timeout=timeout, batch_commands=batch_commands)
     finally:
         # Release the reservation the moment the pod is gone, so what it held is spendable on
         # the next drain. In the `finally` because every exit from here -- finished, failed

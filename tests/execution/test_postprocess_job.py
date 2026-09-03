@@ -993,20 +993,18 @@ def test_raising_the_block_does_raise_what_the_pod_reserves():
 
 
 def test_a_search_batch_is_sized_by_the_same_block(monkeypatch):
-    """The conversion-only Job a search submits per batch takes the same figure.
+    """The per-batch Job a search submits takes the same figure.
 
-    Its shape differs -- with no host step the conversion is the pod's MAIN container
-    rather than an initContainer -- so the charge is computed over a different arrangement
-    of the same steps, and the figure has to survive that. This is also the Job a campaign
-    gets most of: one per batch, for the length of the search.
+    This is the Job a campaign gets most of: one per batch, for the length of the search,
+    so a conversion left at the default here would be the one place a campaign's declared
+    size did not apply -- on the path that runs it most.
     """
-    batch = _manifest(host_stage=False, convert_resources={"cpu": 6, "memory": "12Gi"})
+    batch = _manifest(batch_commands=[], convert_resources={"cpu": 6, "memory": "12Gi"})
     containers = _containers(batch)
-    assert [c["name"] for c in batch["spec"]["template"]["spec"]["containers"]] == ["convert"]
     assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
     assert _pod_charge(batch, "cpu") == 6
     # And the same floor applies in this shape, for the same reason.
-    small = _manifest(host_stage=False, convert_resources={"cpu": 1, "memory": "512Mi"})
+    small = _manifest(batch_commands=[], convert_resources={"cpu": 1, "memory": "512Mi"})
     assert _pod_charge(small, "cpu") == to_cores(pj.POSTPROCESS_HOST_FLOOR["cpu"])
 
 

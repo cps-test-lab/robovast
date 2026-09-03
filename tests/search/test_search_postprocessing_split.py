@@ -226,7 +226,7 @@ def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch, campaign
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
-    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+    obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [])
 
     assert calls == ['job', 'sync'], f'expected run then sync, got {calls}'
 
@@ -253,7 +253,7 @@ def test_the_sync_happens_even_when_the_job_failed(monkeypatch, campaign_root):
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
-    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+    obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [])
 
     assert calls == ['job', 'sync']
 
@@ -290,9 +290,9 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch, campaign_
     obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
     cmds = [{'rosbags_process': {'plugins': []}}]
-    obj._convert_bags_in_cluster(cmds, 'batch-0')
-    obj._convert_bags_in_cluster(cmds, 'batch-1')
-    obj._convert_bags_in_cluster(cmds, 'batch-1/reps-5')
+    obj._postprocess_batch_in_cluster(cmds, [], 'batch-0')
+    obj._postprocess_batch_in_cluster(cmds, [], 'batch-1')
+    obj._postprocess_batch_in_cluster(cmds, [], 'batch-1/reps-5')
 
     assert len(set(seen)) == 3, f'conversions shared a Job identity: {seen}'
 
@@ -307,8 +307,8 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch, campaign_root):
     obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}}]
     obj.vast_dir = '/tmp'
     obj.campaign_root = campaign_root
-    monkeypatch.setattr(ctrl.CampaignController, '_convert_bags_in_cluster',
-                        lambda self, cmds, tag: passed.append(tag))
+    monkeypatch.setattr(ctrl.CampaignController, '_postprocess_batch_in_cluster',
+                        lambda self, cmds, local, tag: passed.append(tag))
     monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
                         lambda *a, **kw: None)
     obj._run_postprocessing('batch-2/reps-3')
@@ -347,7 +347,7 @@ def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch, cam
     obj.vast_dir = '/tmp'
 
     with pytest.raises(RuntimeError) as excinfo:
-        obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')
+        obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [], 'batch-0')
     message = str(excinfo.value)
     assert "execution image" in message, "the original cause must survive in the message"
     assert "could not" in message.lower() or "cannot" in message.lower()
@@ -372,7 +372,7 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
     obj.vast_dir = '/tmp'
-    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')  # no raise
+    obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [], 'batch-0')  # no raise
 
 
 def test_the_drivers_records_are_published_before_postprocessing_reads_them(monkeypatch,
@@ -453,6 +453,135 @@ def test_a_batch_conversion_runs_at_the_campaigns_declared_size(monkeypatch, tmp
     obj.campaign_id = 'c'
     obj.campaign_root = str(campaign)
     obj.vast_dir = str(campaign / "_config")
-    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+    obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [])
 
     assert seen["convert_resources"] == {"cpu": 6, "memory": "12Gi"}
+
+
+# -- who derives: the pod, or this process ------------------------------------
+
+def _controller_with_backend(monkeypatch, campaign_root, backend, job_ok=True):
+    from robovast.execution import controller as ctrl
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (lambda *a, **kw: (job_ok, 'batch postprocessing complete'),
+                                 lambda *a, **kw: None,
+                                 lambda root: 'img', lambda m, _p: m))
+    monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
+                        lambda *a, **kw: None)
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = backend
+    obj.campaign_id = 'c'
+    obj.campaign_root = campaign_root
+    obj.vast_dir = '/tmp'
+    obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}},
+                          {'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}]
+    return obj
+
+
+def test_the_pod_derives_and_this_process_does_not_repeat_it(monkeypatch, campaign_root):
+    """The batch Job runs BOTH halves beside the data; running the local half again here
+    would re-derive from files that are now the Job's own output.
+
+    It is also the whole point of doing it there: what comes back is the few rows per run
+    the local half derives, not the per-run tracks it derives them from.
+    """
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+        admission = None
+
+    ran_here = []
+    monkeypatch.setattr('robovast.results_processing.postprocessing.'
+                        'run_postprocessing_commands',
+                        lambda *a, **kw: ran_here.append(a))
+
+    _controller_with_backend(monkeypatch, campaign_root, _Backend())._run_postprocessing('b')
+
+    assert ran_here == [], 'the pod already derived; this process must not derive again'
+
+
+
+def test_the_local_lane_still_derives_here(monkeypatch, campaign_root):
+    """No cluster, no Job: the conversion runs in-process and the local half is still ours.
+
+    The two halves are split for the image the conversion needs, not for where the work
+    happens, so a lane with no Job to submit has to do both.
+    """
+    class _Backend:
+        cluster_config = None
+        kube_context = None
+
+    ran_here = []
+    monkeypatch.setattr('robovast.results_processing.postprocessing.'
+                        'run_postprocessing_commands',
+                        lambda *a, **kw: ran_here.append(a))
+
+    _controller_with_backend(monkeypatch, campaign_root, _Backend())._run_postprocessing('b')
+
+    assert len(ran_here) == 2, 'the local lane runs the conversion and then derives'
+
+
+def test_a_job_that_failed_leaves_the_derivation_to_this_process(monkeypatch,
+                                                                 campaign_root):
+    """Skipping the local half is earned by a Job that did it, not by one that was asked to.
+
+    A failed Job may still have synced part of what it converted, and deriving from that is
+    better than deriving from nothing -- the extractor is what decides whether the batch is
+    scorable.
+    """
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+        admission = None
+
+    ran_here = []
+    monkeypatch.setattr('robovast.results_processing.postprocessing.'
+                        'run_postprocessing_commands',
+                        lambda *a, **kw: ran_here.append(a))
+
+    _controller_with_backend(monkeypatch, campaign_root, _Backend(),
+                             job_ok=False)._run_postprocessing('b')
+
+    assert len(ran_here) == 1, 'the Job did not derive, so this process must'
+
+
+def test_the_batch_carries_its_own_command_list_to_the_pod(monkeypatch, campaign_root):
+    """`search.postprocessing` and `results_processing.postprocessing` are DIFFERENT blocks.
+
+    A batch Job that looked its own commands up in the pod would find the campaign-level
+    list, because that is the one `run_postprocessing` reads. Where the two happen to be
+    written identically -- as the shipped examples do -- that substitution is invisible;
+    where they differ, the search would score a pipeline it never asked for, and where the
+    campaign declares no `results_processing` block at all it would score nothing.
+    """
+    from robovast.execution import controller as ctrl
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+        admission = None
+
+    seen = {}
+
+    def _fake_job(*a, **kw):
+        seen.update(kw)
+        return True, 'batch postprocessing complete'
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (_fake_job, lambda *a, **kw: None,
+                                 lambda root: 'img', lambda m, _p: m))
+    monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
+                        lambda *a, **kw: None)
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = campaign_root
+    obj.vast_dir = '/tmp'
+    obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}},
+                          {'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}]
+    obj._run_postprocessing('b')
+
+    assert seen['batch_commands'] == [{'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}], (
+        "the pod must run the batch's own half, not whatever it would look up")
