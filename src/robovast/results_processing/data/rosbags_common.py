@@ -439,6 +439,10 @@ def failing_bag_output(results: Sequence[Tuple[str, str]], input_root: str,
     an unfinalized bag, every one of them prints the same "failed to open", and a campaign
     with twenty such jobs would bury the real errors under twenty copies of a non-problem
     the summary's NOTE already explains. They are counted apart for the same reason.
+
+    Bags that could not be opened at all never reach here: they are listed by
+    :func:`unreadable_bag_note` under their own heading, because a block titled "bags that
+    reported errors" is the wrong place for the one outcome that is not an error.
     """
     out = []
     for bag_path, text in results:
@@ -446,6 +450,25 @@ def failing_bag_output(results: Sequence[Tuple[str, str]], input_root: str,
             continue
         out.append((os.path.relpath(bag_path, input_root), text.rstrip()))
     return out
+
+
+def unreadable_bag_note(bag_paths: Sequence[str], input_root: str,
+                        limit: int = 10) -> List[str]:
+    """The lines describing bags that could not be opened — named, and capped.
+
+    Named because "5 bags were skipped" is not actionable and "these five were skipped" is:
+    the reader can go and see whether the runs behind them mattered. Capped because a
+    campaign that lost a whole batch would otherwise print hundreds of paths and push the
+    summary off the top of the log, which is the same burying problem
+    :func:`failing_bag_output` avoids for real errors.
+    """
+    if not bag_paths:
+        return []
+    rels = sorted(os.path.relpath(p, input_root) for p in bag_paths)
+    lines = [f"  {rel}" for rel in rels[:limit]]
+    if len(rels) > limit:
+        lines.append(f"  ... and {len(rels) - limit} more")
+    return lines
 
 
 def handler_error_pointer(has_output: bool) -> str:
@@ -467,8 +490,15 @@ def handler_error_pointer(has_output: bool) -> str:
 #: own -- splitting status from count properly means changing nine ``on_end`` signatures in
 #: a module no test can import (``rosbag2_py`` at module level), which is a wide mechanical
 #: change with no way to verify it.
+#:
+#: ``UNREADABLE`` is separate from ``FAILED`` because the two demand opposite verdicts. A
+#: bag that cannot be opened is *missing input*: the recorder never wrote the sidecar that
+#: names its storage plugin, so there is nothing to convert and no amount of retrying will
+#: make one. A bag that opened and whose handlers then threw is *broken conversion*: the
+#: data was there and the step did not produce it. Only the second may fail the step.
 CACHED = -1
 FAILED = -2
+UNREADABLE = -3
 
 
 class BagResult(NamedTuple):
@@ -489,8 +519,8 @@ class BagResult(NamedTuple):
 
     #: The bag this describes.
     bag_path: str
-    #: Records written, or a sentinel: ``-1`` cache hit, ``-2`` the bag could not be
-    #: processed, ``0`` opened but produced nothing.
+    #: Records written, or a sentinel: ``-1`` cache hit, ``-2`` the handlers failed,
+    #: ``-3`` the bag could not be opened, ``0`` opened but produced nothing.
     total: int
     #: ``(record_count, output_files)`` per handler.
     handler_results: Sequence[Tuple[int, List[str]]] = ()
@@ -505,5 +535,14 @@ class BagResult(NamedTuple):
 
     @property
     def failed(self) -> bool:
-        """The bag could not be processed at all — unopenable, or no handler would start."""
+        """The bag was readable but its conversion did not happen — no handler would start."""
         return self.total == FAILED
+
+    @property
+    def unreadable(self) -> bool:
+        """The bag could not be opened, so there was no input to convert.
+
+        Distinct from :attr:`failed`: this is a gap in what the campaign recorded, not a
+        defect in the conversion, and the step describes it and carries on.
+        """
+        return self.total == UNREADABLE
