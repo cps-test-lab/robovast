@@ -137,12 +137,19 @@ It provides four views:
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has
   not started, and a blocked one has a cause (no quota, an unpullable image) that deleting
-  it does not fix. Nor on a node-calibration probe: on a cluster campaign that calibrates its
-  sizing (see :ref:`cluster-node-calibration`) the Jobs list also carries one row per node
-  being measured, marked with a ``calibration`` chip beside its status and named for its node.
-  Those rows are the campaign's *infrastructure*, not its trials — they are kept out of the
-  job counts, out of the run meter and out of the ETA — and they cannot be stopped one at a
-  time, because there is no run to record as killed.
+  it does not fix. Nor on the two rows that are not trials. On a cluster campaign that
+  calibrates its sizing (see :ref:`cluster-node-calibration`) the Jobs list carries one row
+  per node being measured, marked with a ``calibration`` chip beside its status and named for
+  its node; and while a cluster campaign is in its ``postprocessing`` phase it carries the
+  conversion of its rosbags, marked with a ``postprocessing`` chip and named ``rosbag
+  conversion``. Expanding that row streams the conversion's own log, which is the same output
+  the campaign log's ``POSTPROCESSING`` section ends up holding — read live instead of
+  afterwards. It is the phase's only job, so without the row a campaign that is busy
+  converting gigabytes of bags shows an empty Jobs list. Both rows are the campaign's
+  *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
+  and out of the ETA — and neither can be stopped one at a time, because there is no run to
+  record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing
+  runs inside the service process, where there is no job to list.
   Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see

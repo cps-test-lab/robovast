@@ -710,12 +710,17 @@ def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
 
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None,
+         jobgroup="scenario-runs"):
     ann = {"job-name-full": full} if full is not None else {}
-    # No ``labels`` attribute at all unless a kind is asked for: that is a Job created before
-    # the label existed, and the listing has to read it as one of the campaign's runs.
-    meta = ({"name": name} if kind is None
-            else {"name": name, "labels": {"jobgroup": "scenario-runs", "job-kind": kind}})
+    # No ``labels`` attribute at all unless a kind or a jobgroup other than the batch's is
+    # asked for: that is a Job created before the label existed, and the listing has to read
+    # it as one of the campaign's runs.
+    labels = {"jobgroup": jobgroup}
+    if kind is not None:
+        labels["job-kind"] = kind
+    meta = ({"name": name} if kind is None and jobgroup == "scenario-runs"
+            else {"name": name, "labels": labels})
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(**meta),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
@@ -792,7 +797,10 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     resp = cs.list_jobs("camp-2026-07-17-120000")
 
     assert seen["namespace"] == "ns1"
-    assert "jobgroup=scenario-runs" in seen["label_selector"]
+    # One selector for both of the campaign's jobgroups -- its trials and its conversion --
+    # because this is polled every couple of seconds per live campaign and a second listing
+    # would double the Job and pod reads behind it.
+    assert "jobgroup in (scenario-runs,postprocessing)" in seen["label_selector"]
     assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
     assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
             resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
@@ -837,6 +845,40 @@ def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch)
     assert (resp.counts.running, resp.counts.total) == (1, 1)
 
 
+def test_the_postprocessing_conversion_is_listed_but_not_counted_as_a_run(cs, monkeypatch):
+    """The conversion is what a campaign in its ``postprocessing`` phase is doing, and the
+    only thing it is doing: without it the jobs list is empty for as long as the conversion
+    takes, which reads as an idle campaign rather than a busy one.
+
+    It is not a trial, so it stays out of the counts on the same terms as a probe -- they
+    feed the run meter, the ``done/total`` label and the ETA's divisor -- and it is named for
+    the work rather than for its Job, whose name is the campaign id with a hash on it.
+    """
+    jobs = [
+        _job("j-run", succeeded=1, full="camp-2026-07-17-120000-batch-0-job-0"),
+        _job("robovast-postproc-camp-2026-07-17-120000", active=1,
+             jobgroup="postprocessing"),
+    ]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods(
+        [_job_pod("robovast-postproc-camp-2026-07-17-120000")]))
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    conversion = next(j for j in resp.jobs
+                      if j.job_name == "robovast-postproc-camp-2026-07-17-120000")
+    assert conversion.kind == "postprocessing"
+    assert conversion.status == "running"
+    assert conversion.display_name == "rosbag conversion"
+    assert resp.counts.postprocessing == 1
+    assert resp.counts.running == 0, "the conversion is not a running trial"
+    assert (resp.counts.completed, resp.counts.total) == (1, 1)
+
+
 def _job_pod(job_name, phase="Running"):
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
@@ -858,6 +900,41 @@ class _CoreWithPods:
 
     def list_node(self):
         return self._nodes
+
+
+def test_get_job_log_resolves_a_pod_by_campaign_and_job_alone(cs, monkeypatch):
+    """Every row the jobs list shows has to open, the conversion's included.
+
+    The pair (campaign, Job name) already identifies one pod, so the selector carries no
+    jobgroup term: adding one would decide which of the campaign's own jobs may be read
+    here, and a row whose log 404s is worse than no row at all.
+    """
+    from contextlib import nullcontext
+
+    seen = {}
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            seen["label_selector"] = label_selector
+            return types.SimpleNamespace(
+                items=[_job_pod("robovast-postproc-camp-2026-07-17-120000")])
+
+    class _Tail:
+        lock = nullcontext()
+        merged = types.SimpleNamespace(slice_from=lambda offset: ("converting 3 bags\n", 18))
+
+        def read(self, core, pod, namespace, now):
+            return True
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    monkeypatch.setattr(cs, "_job_log_tail", lambda campaign_id, job_name: _Tail())
+    chunk = cs.get_job_log("camp-2026-07-17-120000",
+                           "robovast-postproc-camp-2026-07-17-120000")
+
+    assert "jobgroup" not in seen["label_selector"]
+    assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
+    assert "job-name=robovast-postproc-camp-2026-07-17-120000" in seen["label_selector"]
+    assert chunk.text == "converting 3 bags\n"
 
 
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
@@ -2354,8 +2431,9 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
     pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
     core, lane = _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
-        types.SimpleNamespace(job_name="scenario-abc", status="running"),
-        types.SimpleNamespace(job_name="scenario-def", status="completed"),
+        # ``kind`` as the service always sets it: the sweep skips what is not a run.
+        types.SimpleNamespace(job_name="scenario-abc", status="running", kind="run"),
+        types.SimpleNamespace(job_name="scenario-def", status="completed", kind="run"),
     ]))
 
     targets = cs._health_targets("camp-1")
@@ -2506,7 +2584,7 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
     the campaign's other jobs their check."""
     _cluster_job_state(cs, monkeypatch, pods=[])
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
-        types.SimpleNamespace(job_name="scenario-abc", status="running")]))
+        types.SimpleNamespace(job_name="scenario-abc", status="running", kind="run")]))
 
     assert cs._health_targets("camp-1") == []
 

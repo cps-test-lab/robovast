@@ -3348,6 +3348,10 @@ class LocalTransport(RobovastInterface):
         for job in self.list_jobs(campaign_id).jobs:
             if job.status != "running":
                 continue
+            # A probe and a postprocessing conversion are running jobs that carry no run, so
+            # there is no run health to ask them for and the target below cannot resolve.
+            if job.kind in (JobKind.CALIBRATION, JobKind.POSTPROCESSING):
+                continue
             try:
                 target, run_dir = self._job_state_target(
                     campaign_id, job.job_name, SCENARIO_CONTAINER)
@@ -3844,12 +3848,13 @@ class LocalTransport(RobovastInterface):
         for a job that does not exist, ``RuntimeError`` naming the phase for one that
         exists but is not running: only a job that is *underway* has something to kill.
 
-        A node-calibration probe is refused outright, whatever its status. Stopping a job
-        records a ``killed`` intervention against the runs it was carrying, and a probe
-        carries none -- it is not one of the campaign's runs, and is deliberately absent from
-        the job-links manifest that resolves them -- so the record would name runs that do
-        not exist. Refused here rather than in the cluster lane's ``stop_job`` because this
-        is the precondition both lanes share and the one the web UI mirrors when it decides
+        A job that is not one of the campaign's runs is refused outright, whatever its
+        status: a node-calibration probe, and the postprocessing conversion. Stopping a job
+        records a ``killed`` intervention against the runs it was carrying, and neither
+        carries any -- they are not the campaign's runs, and are deliberately absent from the
+        job-links manifest that resolves them -- so the record would name runs that do not
+        exist. Refused here rather than in the cluster lane's ``stop_job`` because this is
+        the precondition both lanes share and the one the web UI mirrors when it decides
         whether to offer the button.
         """
         jobs = self.list_jobs(campaign_id).jobs
@@ -3863,6 +3868,12 @@ class LocalTransport(RobovastInterface):
                 f"job {job_name!r} is a node-calibration probe, not one of the campaign's "
                 f"runs — it cannot be stopped individually: there is no run to record as "
                 f"killed, and the batch abandons its own probes when it ends")
+        if job.kind == JobKind.POSTPROCESSING:
+            raise RuntimeError(
+                f"job {job_name!r} is the campaign's postprocessing conversion, not one of "
+                f"its runs — it cannot be stopped individually: there is no run to record as "
+                f"killed, and the runs it converts are already recorded. Stopping the "
+                f"campaign ends it; re-running postprocessing replaces what this produced")
         if job.status != "running":
             running = [j.job_name for j in jobs if j.status == "running"]
             hint = f"; running now: {', '.join(running)}" if running else ""
