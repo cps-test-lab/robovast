@@ -142,10 +142,12 @@ It provides four views:
   per node being measured, marked with a ``calibration`` chip beside its status and named for
   its node; and while a cluster campaign is in its ``postprocessing`` phase it carries the
   conversion of its rosbags, marked with a ``postprocessing`` chip and named ``rosbag
-  conversion``. Expanding that row streams the conversion's own log, which is the same output
-  the campaign log's ``POSTPROCESSING`` section ends up holding — read live instead of
-  afterwards. It is the phase's only job, so without the row a campaign that is busy
-  converting gigabytes of bags shows an empty Jobs list. Both rows are the campaign's
+  conversion``. It is the phase's only job, so without the row a campaign that is busy
+  converting gigabytes of bags shows an empty Jobs list. That row is the one that does **not**
+  open: its work runs in init containers, which a pod log does not carry, and its output is
+  published to the campaign log's ``POSTPROCESSING`` section every few seconds while it runs
+  — where it stays once the cluster has removed the job, which is when a failed postprocess is
+  usually read. The row says so, and the Log tab beside it is where to look. Both rows are the campaign's
   *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
   and out of the ETA — and neither can be stopped one at a time, because there is no run to
   record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing

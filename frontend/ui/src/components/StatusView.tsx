@@ -1000,72 +1000,91 @@ function JobRow({
   // neither carries a run, so the service refuses to record one as killed.
   const canStop =
     Boolean(onStopJob) && job.status === 'running' && !calibration && !postprocessing
-  return (
-    <CollapsibleBox
-      variant="row"
-      open={open}
-      onToggle={onToggle}
-      actions={
-        canStop ? (
-          <Tooltip title="Stop this job. The campaign continues; this run is recorded as killed.">
-            <IconButton
-              size="small"
-              color="error"
-              aria-label={`Stop job ${job.display_name || job.job_name}`}
-              disabled={stopping}
-              onClick={() => onStopJob?.(job)}
-              sx={{ p: 0.25 }}
-            >
-              <StopRoundedIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        ) : null
-      }
-      leading={
-        <>
-          {calibration ? (
-            <NonRunChip
-              label="calibration"
-              title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one."
-            />
-          ) : null}
-          {postprocessing ? (
-            <NonRunChip
-              label="postprocessing"
-              title="The campaign's postprocessing: it converts the finished runs' rosbags in the execution image they were recorded with. Not one of the campaign's runs, and not counted as one — expand it for the conversion's live log."
-            />
-          ) : null}
-          <Chip
-            label={job.status}
-            size="small"
-            color={JOB_STATUS_COLOR[job.status] ?? 'default'}
-            variant="outlined"
-            sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
-          />
-        </>
-      }
-      // Left a plain string, and the chip carries the distinction on its own: CollapsibleBox
-      // derives its toggle's aria-label from the title only when it IS a string, so wrapping
-      // this to mute the colour would take the accessible name off every job row.
-      title={job.display_name || job.job_name}
-      // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
-      // that can never start is legible without opening its (empty) log.
-      note={
-        job.detail ? (
-          <Typography
-            variant="caption"
-            sx={{
-              display: 'block',
-              color: 'error.main',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {job.detail}
-          </Typography>
-        ) : null
-      }
+  // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
+  // that can never start is legible without opening its (empty) log.
+  const detail = job.detail ? (
+    <Typography
+      variant="caption"
+      sx={{
+        display: 'block',
+        color: 'error.main',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
     >
+      {job.detail}
+    </Typography>
+  ) : null
+  // Where the conversion's output is, said on the row itself. A row that cannot be opened has
+  // to answer the question the missing chevron raises, or it reads as a job nobody can see
+  // into.
+  const where = postprocessing ? (
+    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+      output is in the Log tab, under POSTPROCESSING — where it stays after this job is gone
+    </Typography>
+  ) : null
+  const note = detail || where ? (
+    <>
+      {detail}
+      {where}
+    </>
+  ) : null
+  const header = {
+    variant: 'row' as const,
+    actions: canStop ? (
+      <Tooltip title="Stop this job. The campaign continues; this run is recorded as killed.">
+        <IconButton
+          size="small"
+          color="error"
+          aria-label={`Stop job ${job.display_name || job.job_name}`}
+          disabled={stopping}
+          onClick={() => onStopJob?.(job)}
+          sx={{ p: 0.25 }}
+        >
+          <StopRoundedIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+    ) : null,
+    leading: (
+      <>
+        {calibration ? (
+          <NonRunChip
+            label="calibration"
+            title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one."
+          />
+        ) : null}
+        {postprocessing ? (
+          <NonRunChip
+            label="postprocessing"
+            title="The campaign's postprocessing: it converts the finished runs' rosbags in the execution image they were recorded with. Not one of the campaign's runs, and not counted as one. What it prints goes to the campaign log's POSTPROCESSING section, which is why this row does not open."
+          />
+        ) : null}
+        <Chip
+          label={job.status}
+          size="small"
+          color={JOB_STATUS_COLOR[job.status] ?? 'default'}
+          variant="outlined"
+          sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
+        />
+      </>
+    ),
+    // Left a plain string, and the chip carries the distinction on its own: CollapsibleBox
+    // derives its toggle's aria-label from the title only when it IS a string, so wrapping
+    // this to mute the colour would take the accessible name off every job row.
+    title: job.display_name || job.job_name,
+    note,
+  }
+  // The postprocessing row is a header and nothing else, because the log it would open is not
+  // this pod's to serve. The conversion runs in initContainers -- the bag download, then the
+  // conversion itself -- and a pod log reader reports the containers that run for the pod's
+  // whole life, so through the entire conversion the panel had nothing to show and said so.
+  // The output is not missing: every container's, init ones included, is published to the
+  // campaign's POSTPROCESSING section as it runs, and that copy is in the object store, so it
+  // is still there minutes later when `ttlSecondsAfterFinished` has taken the pod away --
+  // which is exactly when someone reads a failed postprocess.
+  if (postprocessing) return <CollapsibleBox {...header} collapsible={false} />
+  return (
+    <CollapsibleBox {...header} open={open} onToggle={onToggle}>
       <LogPanel
         resetKey={`${campaignId}/${job.job_name}`}
         streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
