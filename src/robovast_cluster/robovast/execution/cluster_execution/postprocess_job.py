@@ -1492,7 +1492,8 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
     from .postprocess_host import (ENV_COMMANDS, ENV_FORCE,  # noqa: PLC0415
                                    ENV_SKIP)
-    from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
+    from .postprocess_stage import (ENV_BATCH_JOBS,  # noqa: PLC0415
+                                    ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,
                                     ENV_STAGE_DEST)
 
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
@@ -1542,8 +1543,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # conversion container stages the campaign tree WITHOUT its rosbags, which is the
         # bulk of a campaign by orders of magnitude. Staging them anyway would spend the
         # whole download and the whole node disk on data nothing in the pod reads.
-        "env": unbuffered_env + robovast_env + ([] if rosbag_cmds
-                               else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
+        "env": (unbuffered_env + robovast_env
+                + ([] if rosbag_cmds else [{"name": ENV_SKIP_BAGS, "value": "1"}])
+                # One batch's job artifacts, for a per-batch Job. The bags are the bulk of
+                # a campaign and every batch's sit under the same prefix, so without this a
+                # search stages every earlier batch again on every batch.
+                + ([{"name": ENV_BATCH_JOBS, "value": discriminator}]
+                   if batch_commands is not None and discriminator else [])),
         "volumeMounts": [campaign_mount],
         "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
     }
