@@ -31,7 +31,7 @@ import {
   noResultRuns,
   ringBudget,
 } from '@/lib/eta'
-import { calibrationFirst, isCalibrationJob } from '@/lib/jobKind'
+import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from '@/lib/jobKind'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { runMeterFailedText, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
@@ -585,6 +585,10 @@ export function StatusView({
     // that has started nothing because it is still measuring its nodes otherwise reads as
     // `waiting N` with nothing anywhere saying what it is waiting for.
     counts && counts.calibration > 0 ? `calibrating ${counts.calibration}` : null,
+    // Beside them for the same reason, and with the opposite problem to solve: by the time
+    // the conversion runs every run state is zero, so a summary without this is an empty
+    // line on a campaign that is still working.
+    counts && counts.postprocessing > 0 ? 'converting rosbags' : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -876,22 +880,24 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   blocked: 'error',
 }
 
-// A node-calibration probe measures the machine the campaign's runs will be sized against.
-// It is listed because it holds real capacity on a real node, and marked because it is not
-// one of the trials — without this it arrives carrying batch job 0's display name.
+// Two of the campaign's jobs are not trials: a node-calibration probe, which measures the
+// machine the runs will be sized against, and the postprocessing conversion, which turns the
+// finished runs' rosbags into CSV. Both are listed because they hold real capacity, and both
+// are marked because they are not runs — unmarked, a probe arrives carrying batch job 0's
+// display name and a conversion reads as a run that outlived the batch.
 //
-// Marked with a second chip rather than by recolouring the status one, for two reasons. The
-// probe's `status` is telling the truth — a failed probe must still read as failed, and that
-// is the one probe worth looking at. And the four status hues are the only colours on this
+// Marked with a second chip rather than by recolouring the status one, for two reasons. Their
+// `status` is telling the truth — a failed probe must still read as failed, and that is the
+// one probe worth looking at. And the four status hues are the only colours on this
 // screen that carry a meaning (see `colors.ts`): the band is held to one lightness on purpose
 // so no status shouts, and `data.series` is a brighter register tuned for 1px chart lines
 // rather than filled chips. Muted neutral is what this file already uses to say "listed, but
 // not a trial outcome" — see `killed` in JOB_STATUS_COLOR above.
-function CalibrationChip() {
+function NonRunChip({ label, title }: { label: string; title: string }) {
   return (
-    <Tooltip title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one.">
+    <Tooltip title={title}>
       <Chip
-        label="calibration"
+        label={label}
         size="small"
         variant="outlined"
         sx={{
@@ -929,10 +935,11 @@ function JobsSection({
   onStopJob?: (job: JobSummary) => void
   stoppingJob?: string | null
 }) {
-  // Probes ahead of the cap, not behind it: a batch wide enough to truncate is exactly the
-  // one where a probe is both the reason nothing has started and the row that falls off the
-  // end. There is at most one per node, so the runs lose nothing.
-  const shown = calibrationFirst(jobs).slice(0, JOBS_RENDER_CAP)
+  // What is not a trial goes ahead of the cap, not behind it: a batch wide enough to truncate
+  // is exactly the one where a probe is both the reason nothing has started and the row that
+  // falls off the end, and where the conversion is the one row saying what the campaign is
+  // doing. There is at most one probe per node and one conversion, so the runs lose nothing.
+  const shown = nonRunsFirst(jobs).slice(0, JOBS_RENDER_CAP)
   // The empty state is the reason this renders at all now. As a foldable section it simply
   // vanished when the live set emptied -- which happens between every pair of runs on the local
   // lane, where runs are sequential. A TAB that vanished would take the tab bar's shape with it,
@@ -986,11 +993,13 @@ function JobRow({
   stopping?: boolean
 }) {
   const calibration = isCalibrationJob(job)
+  const postprocessing = isPostprocessingJob(job)
   // Offered only on a `running` job — the same rule the service enforces, so the UI never
   // shows a button the server would refuse. A pending or queued job has not started, and a
-  // blocked one has a cause that deleting it does not fix. Nor on a calibration probe: it
-  // carries no run, so the service refuses to record one as killed.
-  const canStop = Boolean(onStopJob) && job.status === 'running' && !calibration
+  // blocked one has a cause that deleting it does not fix. Nor on a probe or a conversion:
+  // neither carries a run, so the service refuses to record one as killed.
+  const canStop =
+    Boolean(onStopJob) && job.status === 'running' && !calibration && !postprocessing
   return (
     <CollapsibleBox
       variant="row"
@@ -1014,7 +1023,18 @@ function JobRow({
       }
       leading={
         <>
-          {calibration ? <CalibrationChip /> : null}
+          {calibration ? (
+            <NonRunChip
+              label="calibration"
+              title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one."
+            />
+          ) : null}
+          {postprocessing ? (
+            <NonRunChip
+              label="postprocessing"
+              title="The campaign's postprocessing: it converts the finished runs' rosbags in the execution image they were recorded with. Not one of the campaign's runs, and not counted as one — expand it for the conversion's live log."
+            />
+          ) : null}
           <Chip
             label={job.status}
             size="small"
