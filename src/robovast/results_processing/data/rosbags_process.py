@@ -81,10 +81,11 @@ import rosbag2_py
 import yaml
 from rclpy.serialization import deserialize_message
 from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
-                            DEFAULT_CLOCK_TOLERANCE_S, BagResult, ClockDecimator,
+                            DEFAULT_CLOCK_TOLERANCE_S, UNREADABLE, BagResult, ClockDecimator,
                             available_cpus, failing_bag_output, find_rosbags, gen_msg_values,
                             handler_error_pointer, is_under_tolerated_root, register_video,
-                            resolve_tolerated_roots, write_provenance_entry)
+                            resolve_tolerated_roots, unreadable_bag_note,
+                            write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 from tf2_ros import Buffer
@@ -1195,8 +1196,13 @@ def process_rosbag_worker(args: tuple) -> BagResult:
                 t.name: t.type for t in reader.get_all_topics_and_types()
             }
         except Exception as e:
+            # UNREADABLE, not FAILED. There is no input here to convert: a recorder that
+            # went down before finalizing leaves the payload without the sidecar naming its
+            # storage plugin, so the reader cannot choose one and never will. The campaign
+            # is short that bag's data whatever we do, and failing the step over it throws
+            # away the converted results of every bag that *was* readable.
             print(f"✗ {bag_path}: failed to open — {e}")
-            return BagResult(bag_path, FAILED, output=captured.getvalue())
+            return BagResult(bag_path, UNREADABLE, output=captured.getvalue())
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -1411,6 +1417,9 @@ def main() -> int:
     # ``error_bags`` rather than ignored, so "we skipped 1 unreadable bag" stays visible
     # instead of a campaign quietly having less data than it looks like it has.
     expected_error_bags = 0
+    # Bags that could not be opened. Skipped and named, never fatal: see UNREADABLE in the
+    # worker. Held as paths rather than a count so the note can say *which*.
+    unreadable_bags: List[str] = []
     failed_bags = 0
     completed = 0
     all_results: List[BagResult] = []
@@ -1445,11 +1454,13 @@ def main() -> int:
         if result.cached:
             cached_bags += 1
             continue
-        if result.failed:
+        if result.unreadable:
+            unreadable_bags.append(bag_path)
             if _is_tolerated(bag_path):
                 expected_error_bags += 1
-            else:
-                error_bags += 1
+            continue
+        if result.failed:
+            error_bags += 1
             continue
 
         source_rel = os.path.relpath(bag_path, input_root)
@@ -1490,11 +1501,12 @@ def main() -> int:
             failed_bags += 1
 
     # The failing bags' own output, held back until the bar finished rather than dropped.
-    # Tolerated bags are excluded: they are expected, counted apart, and explained by the
-    # NOTE below -- repeating a stopped job's "failed to open" per bag would bury the real
-    # errors this block exists to surface.
+    # Unreadable and tolerated bags are excluded: they are expected, counted apart, and
+    # named by the note below -- repeating an unfinalized bag's "failed to open" per bag
+    # would bury the real errors this block exists to surface.
     failure_output = failing_bag_output(
-        [(r.bag_path, r.output) for r in all_results], input_root, _tolerated_roots)
+        [(r.bag_path, r.output) for r in all_results if not r.unreadable],
+        input_root, _tolerated_roots)
     if failure_output:
         print(f"\n-- output from {len(failure_output)} bag(s) that reported errors --")
         for bag_rel, out in failure_output:
@@ -1505,22 +1517,31 @@ def main() -> int:
 
     elapsed = time.time() - start
     cached_str = f", {cached_bags} cached" if cached_bags else ""
-    killed_str = f", {expected_error_bags} from stopped job(s)" if expected_error_bags else ""
+    unreadable_str = f", {len(unreadable_bags)} unreadable" if unreadable_bags else ""
     print(
         f"Summary: {len(rosbag_paths)} rosbags "
-        f"({processed_bags} success{cached_str}, {error_bags} errors{killed_str}, "
+        f"({processed_bags} success{cached_str}, {error_bags} errors{unreadable_str}, "
         f"{failed_bags} no-data), {total_records} total records, {elapsed:.2f}s"
     )
-    if expected_error_bags:
-        # Stated, not silent: the campaign really does have less data than its run count
-        # suggests, and the reason is a decision somebody made rather than a defect.
-        print(f"NOTE: {expected_error_bags} unreadable bag(s) belong to job(s) stopped by "
-              f"hand — expected, not counted as failures")
+    if unreadable_bags:
+        # Stated and named, not silent: the campaign really does have less data than its run
+        # count suggests. Which jobs is the part a reader can act on -- it decides whether
+        # the affected runs mattered -- and the count alone never says.
+        expected_str = (f" ({expected_error_bags} of them from job(s) stopped by hand)"
+                        if expected_error_bags else "")
+        print(f"NOTE: {len(unreadable_bags)} bag(s) could not be opened and were "
+              f"skipped{expected_str}. Their recorder went down before finalizing the bag, "
+              f"so that data is missing; every other bag was converted:")
+        for line in unreadable_bag_note(unreadable_bags, input_root):
+            print(line)
     # A handler that failed outright must not be reported as a successful postprocessing step: this
     # exit code is what the campaign's results phase reads, and returning 0 regardless meant a run
-    # could be graded on data a handler had already refused to produce. A bag left unfinalized by a
-    # deliberate kill is the one exception, and it is excluded above rather than here — so the
-    # campaign that ran a per-job stop still gets its metrics for every job that did finish.
+    # could be graded on data a handler had already refused to produce.
+    #
+    # A bag that could never be opened is not that failure and does not reach here. Missing
+    # input and broken conversion are opposite verdicts: one bag whose recorder was cut off
+    # -- by a hand-stop, an eviction, an OOM-kill -- must not cost the metrics of the
+    # thousands of bags that converted, so it is described above and the step succeeds.
     if error_bags:
         # Never point at evidence that is not there. "We looked and the workers said
         # nothing" and "we never looked" are different facts, and collapsing them is how
