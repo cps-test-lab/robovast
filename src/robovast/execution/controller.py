@@ -1109,15 +1109,26 @@ class CampaignController:
         # reads files that were never written.
         container, local = split_container_postprocessing(
             self.postprocessing, config_dir=self.vast_dir)
+        derived_in_pod = False
         if container:
-            self._convert_bags_in_cluster(container, tag)
-        if local:
+            derived_in_pod = self._postprocess_batch_in_cluster(container, local, tag)
+        if local and not derived_in_pod:
+            # Only where the pod did not already do it: on a cluster the batch Job runs
+            # BOTH halves beside the data and sends back the few rows per run they derive,
+            # rather than shipping every per-run track here so this process can derive them.
+            # Running it again here would re-derive from files that are now the Job's own
+            # output.
             run_postprocessing_commands(
                 local, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
 
-    def _convert_bags_in_cluster(self, rosbag_cmds: list, tag: str = "") -> None:
-        """Run a search batch's bag conversion the way the campaign-level path does.
+    def _postprocess_batch_in_cluster(self, rosbag_cmds: list, local_cmds: list,
+                                      tag: str = "") -> bool:
+        """Postprocess a search batch the way the campaign-level path does; did the pod derive?
+
+        Returns ``True`` when the Job ran the whole pipeline beside the data, so the caller
+        must not derive again here, and ``False`` on the local backend, where only the
+        conversion ran in-process and the pure-Python half is still the caller's to run.
 
         **One Job per conversion.** *tag* discriminates it. Naming the Job after the campaign
         alone makes the second conversion's create return 409; the wait then reads the FIRST
@@ -1135,13 +1146,17 @@ class CampaignController:
         path gives: the conversion tees its own error into ``postprocessing.log`` and mirrors
         it out, so skipping the sync on failure discards the only account of what went wrong.
 
-        **Conversion only.** The postprocessing pod also carries the host stage; a search
-        must not run it, because that stage is the campaign-level account of a *finished*
-        campaign and this runs per batch on one that is still growing. ``host_stage=False``
-        is what keeps this pod to the bags.
+        **Derive there, complete later.** The Job runs *local_cmds* -- this batch's own
+        ``search.postprocessing`` half -- beside the data, and sends back only what it
+        derived: a few rows per run, against the per-run tracks they come from. The
+        commands are passed rather than looked up in the pod, because the campaign-level
+        pass reads a DIFFERENT block of the ``.vast`` and a Job left to find its own would
+        run that one. Completing the campaign is not among them: the index ingest, the
+        metadata and the provenance record are the account of a *finished* campaign, and
+        this runs per batch on one that is still growing.
 
         On a local backend there is no Job to submit and the in-process path is already
-        correct, so the commands fall through to it. A failure is reported and does not
+        correct, so the conversion falls through to it and the caller derives. A failure is reported and does not
         raise: the extractor decides whether a batch is scorable and refuses loudly when its
         inputs are missing, which says more than an exception about a Job.
         """
@@ -1151,7 +1166,7 @@ class CampaignController:
             run_postprocessing_commands(
                 rosbag_cmds, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
-            return
+            return False
         # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
         # opened, ever, and must not fail the conversion for every job that finished. A
         # search feels that harder than the campaign-level path it is copied from: one
@@ -1170,13 +1185,10 @@ class CampaignController:
                 kube_context=getattr(self.backend, "kube_context", None),
                 discriminator=tag,
                 tolerate_under=_interrupted_job_dirs(self.campaign_root),
-                # Conversion only: the pod's host stage is the campaign-level postprocess
-                # -- index ingest, metadata, the provenance marker -- and a search reaches
-                # this once per batch, on a campaign that is still growing. Running it here
-                # would ingest a partial campaign as if it were finished (and mark it
-                # postprocessed) once per batch, and the batch needs nothing from it but
-                # the CSVs. The campaign-level chain runs the host stage after the search.
-                host_stage=False,
+                # This batch's own half of the pipeline, run in the pod. Deriving beside
+                # the data is what keeps the per-run tracks off the wire: what comes back
+                # is the few rows per run the search scores next.
+                batch_commands=local_cmds,
                 # The same sizing the campaign-level conversion uses. A search converts
                 # once per batch, so a conversion left at the default here would be the
                 # one place a campaign's declared figure did not apply -- and it is the
@@ -1190,10 +1202,11 @@ class CampaignController:
             message = complete_message(
                 message,
                 os.path.join(self.campaign_root, "_execution", "postprocessing.log"))
-            logger.info("Batch bag conversion: %s", message)
+            logger.info("Batch postprocessing: %s", message)
             if not ok:
-                logger.warning("Batch bag conversion failed; this batch's metrics will be "
+                logger.warning("Batch postprocessing failed; this batch's metrics will be "
                                "missing and the extractor will say so: %s", message)
+                return False
         except Exception as exc:  # pylint: disable=broad-except
             # RAISED, not warned. A conversion that could not START is a different failure
             # from one that ran and produced nothing, and reporting them the same way
@@ -1206,10 +1219,15 @@ class CampaignController:
             # postprocessing plugins, which are fine, while the cause sits in a warning
             # further up the log.
             raise RuntimeError(
-                f"batch bag conversion could not run at all, so no batch of this search can "
-                f"be scored: {exc}. This is not a missing measurement -- the conversion was "
+                f"batch postprocessing could not run at all, so no batch of this search can "
+                f"be scored: {exc}. This is not a missing measurement -- the Job was "
                 f"never attempted, and the extractor's own error would name the world "
                 f"instead of this.") from exc
+        # The pod derived, so the caller must not. Reached only on a Job that succeeded:
+        # a failed one returns False above, and the caller then derives from whatever the
+        # sync did bring back rather than skipping the step on the strength of a Job that
+        # did not do it.
+        return True
 
 
 
