@@ -778,7 +778,7 @@ class ClusterService(LocalTransport):
         """
         from .cluster_execution import \
             list_jobs_with_phase  # pylint: disable=import-outside-toplevel
-        phases = [phase for _job, phase, _detail in list_jobs_with_phase(
+        phases = [listed.phase for listed in list_jobs_with_phase(
             self._k8s_batch(), self._k8s(), self.namespace, "jobgroup=scenario-runs")]
         return (sum(1 for p in phases if p == "running"),
                 sum(1 for p in phases if p in ("pending", "waiting", "blocked")))
@@ -1675,15 +1675,18 @@ class ClusterService(LocalTransport):
         # image-pulling) reports pending, not running.
         usage_by_job, metrics_reason = self._pod_metrics()
         jobs = [
-            JobSummary(job_name=job.metadata.name, status=phase, kind=self._job_kind(job),
-                       display_name=self._job_display_name(campaign_id, job),
-                       detail=detail, started_at=self._job_started_at(job),
+            JobSummary(job_name=listed.job.metadata.name, status=listed.phase,
+                       kind=self._job_kind(listed.job),
+                       display_name=self._job_display_name(campaign_id, listed.job),
+                       detail=listed.detail, node=listed.node,
+                       started_at=self._job_started_at(listed.job),
                        # Usage only while it runs. A sample outlives the pod that produced it,
                        # so a job that has just finished still has one, and a completed row
                        # carrying it reads as a job still burning cores.
-                       usage=(self._job_usage(job, usage_by_job.get(job.metadata.name))
-                              if phase == "running" else None))
-            for job, phase, detail in list_jobs_with_phase(
+                       usage=(self._job_usage(
+                           listed.job, usage_by_job.get(listed.job.metadata.name))
+                           if listed.phase == "running" else None))
+            for listed in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
         # Planned jobs are the campaign's own by construction: probes queue under a separate
         # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.

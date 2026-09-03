@@ -36,7 +36,7 @@ def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
 
 
 def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason=None,
-         unschedulable=None, restarts=None, sidecar=True, limits=None):
+         unschedulable=None, restarts=None, sidecar=True, limits=None, node="a-node"):
     """A pod for *job_name*.
 
     ``waiting=(reason, message)`` puts its container in that ``waiting`` state (as
@@ -108,7 +108,7 @@ def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod", labels={"batch.kubernetes.io/job-name": job_name}),
         spec=types.SimpleNamespace(
-            node_name="a-node",
+            node_name=node,
             containers=[_container("robovast", limits={"cpu": "1.25"})],
             init_containers=[_container("s3-init")] + extra_init),
         status=types.SimpleNamespace(
@@ -199,8 +199,8 @@ def test_list_jobs_with_phase_degrades_explicitly_on_pod_error():
 
     # Does not raise; still lists the job (Job-level phase, no pod-derived detail).
     out = list_jobs_with_phase(_Batch(), _BoomCore(), "ns", "sel")
-    assert [(j.metadata.name, p) for j, p, _d in out] == [("a", "running")]
-    assert all(detail is None for _j, _p, detail in out)
+    assert [(x.job.metadata.name, x.phase) for x in out] == [("a", "running")]
+    assert all(x.detail is None for x in out)
 
 
 def test_list_jobs_with_phase_uses_pod_truth():
@@ -211,7 +211,8 @@ def test_list_jobs_with_phase_uses_pod_truth():
     core = _Core([_pod("running-job", "Running"), _pod("pending-job", "Pending")])
 
     phases = dict((j.metadata.name, p)
-                  for j, p, _ in list_jobs_with_phase(batch, core, "ns", "sel"))
+                  for j, p in ((x.job, x.phase)
+                               for x in list_jobs_with_phase(batch, core, "ns", "sel")))
     assert phases == {"running-job": "running", "pending-job": "pending",
                       "done-job": "completed"}
 
@@ -222,7 +223,8 @@ def test_list_jobs_with_phase_reports_finished_pod_of_still_active_job():
     jobs = [_job("just-finished", active=1), _job("just-failed", active=1)]
     core = _Core([_pod("just-finished", "Succeeded"), _pod("just-failed", "Failed")])
     result = {j.metadata.name: p
-              for j, p, _ in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
+              for j, p in ((x.job, x.phase)
+                           for x in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel"))}
     assert result == {"just-finished": "completed", "just-failed": "failed"}
 
 
@@ -249,7 +251,8 @@ def test_list_jobs_with_phase_marks_stuck_job_blocked_with_detail():
         _pod("stuck-job", waiting=("ErrImagePull", "not found")),
     ])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["running-job"] == ("running", None)
     assert result["stuck-job"] == ("blocked", "ErrImagePull: not found")
 
@@ -273,7 +276,8 @@ def test_list_jobs_with_phase_explains_oom_killed_failure():
     batch = _Batch(jobs)
     core = _Core([_pod("oom-job", terminated=("robovast", "OOMKilled"))])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["oom-job"] == (
         "failed", "OOMKilled: container robovast exceeded its memory limit")
 
@@ -301,7 +305,8 @@ def test_unschedulable_without_node_sizes_shows_as_blocked_in_the_listing():
     batch = _Batch([_job("gpu-job", active=1)])
     core = _Core([_pod("gpu-job", unschedulable=("Unschedulable", "Insufficient cpu."))])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["gpu-job"] == ("blocked", "Unschedulable: Insufficient cpu.")
 
 
@@ -436,7 +441,42 @@ def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
     batch = _Batch([_job("j", active=1)])
     core = _Core([_pod("j", restarts=("simulation", 2, "OOMKilled", 137))])
     result = {jb.metadata.name: (p, d)
-              for jb, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for jb, p, d in ((x.job, x.phase, x.detail)
+                             for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     phase, detail = result["j"]
     assert phase == "running"
     assert "restarted 2x after OOMKilled" in detail
+
+
+def test_a_listed_job_says_which_node_its_pod_landed_on():
+    """Where a job runs is on the pod and nowhere else.
+
+    The pod list this classifier already makes is the only place that knows, so the answer
+    rides along with the phase rather than costing a second read.
+    """
+    core = _Core([_pod("placed", node="worker-a")])
+
+    listed = list_jobs_with_phase(_Batch([_job("placed", active=1)]), core, "ns", "sel")
+
+    assert listed[0].node == "worker-a"
+
+
+def test_a_job_the_scheduler_has_not_placed_yet_reports_no_node():
+    """``None``, and that is the normal state of a pending job rather than a gap.
+
+    An unschedulable pod has no node at all -- there is nothing to create its containers on
+    -- so a caller must render its absence as "not placed", never as a blank name.
+    """
+    core = _Core([_pod("waiting", unschedulable=("Unschedulable", "0/4 nodes"), node=None)])
+
+    listed = list_jobs_with_phase(_Batch([_job("waiting", active=1)]), core, "ns", "sel")
+
+    assert listed[0].node is None
+
+
+def test_a_failed_pod_list_leaves_the_node_unknown_rather_than_wrong():
+    """The degradation path already reports Job-level phases; the node has no Job-level
+    equivalent, so it is absent for that listing and returns on the next poll."""
+    out = list_jobs_with_phase(_Batch([_job("a", active=1)]), _BoomCore(), "ns", "sel")
+
+    assert all(x.node is None for x in out)

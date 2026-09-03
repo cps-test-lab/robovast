@@ -626,6 +626,10 @@ class JobSummary(BaseModel):
     #: came from, and a finished job carrying one reads as still burning cores) and on any lane
     #: with nothing to measure. Never a zeroed record: absent is the honest answer.
     usage: Optional[JobUsage] = None
+    #: The node this job's pod is running on, or ``None`` where the lane has no nodes (local)
+    #: or the scheduler has not placed it yet. A pending job without one is the normal case,
+    #: not a gap: it is what "not placed yet" looks like.
+    node: Optional[str] = None
     #: When this job started, epoch seconds, or ``None`` where the lane cannot say.
     #:
     #: The *job's* start, not its containers': it is stamped before the pod is scheduled and
