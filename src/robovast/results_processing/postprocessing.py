@@ -34,6 +34,17 @@ from robovast.results_processing.metadata import generate_campaign_metadata
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 
+#: What a cancelled postprocessing returns as its message, and the string a caller matches
+#: to tell a cancellation from a failure.
+#:
+#: A cancelled run deliberately stops **before** the provenance record is written, which is
+#: what makes a campaign read as postprocessed (see
+#: :func:`_write_postprocessing_provenance_yaml`). So a cancelled campaign keeps every run
+#: artifact it produced, is honestly reported as not postprocessed, and re-running derives
+#: the data whenever it is wanted -- as against a half-cancelled run that claimed derived
+#: data it does not have.
+POSTPROCESSING_CANCELLED = "postprocessing cancelled by stop request"
+
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
     """Load postprocessing command plugins from entry points.
@@ -153,6 +164,28 @@ def run_postprocessing_commands(commands, results_dir: str, config_dir: str,
     return success, entries
 
 
+def _accepts(plugin_func: callable, name: str) -> bool:
+    """Whether *plugin_func* declares keyword *name* (or absorbs it with ``**kwargs``).
+
+    Plugins are user-supplied callables, so a keyword this package adds cannot simply be
+    passed to all of them: one that does not declare it raises ``TypeError`` and its step
+    fails with an argument error over a feature it was never asked to have.
+
+    An unreadable signature is treated as "does not accept": builtins and C callables have
+    none, and not passing an optional keyword only costs the plugin that feature.
+    """
+    try:
+        sig = inspect.signature(plugin_func)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == name and param.kind is not inspect.Parameter.POSITIONAL_ONLY:
+            return True
+    return False
+
+
 def execute_postprocessing_plugin(
     plugin_name: str,
     plugin_func: callable,
@@ -163,6 +196,7 @@ def execute_postprocessing_plugin(
     execution_image: Optional[str] = None,
     debug: bool = False,
     force: bool = False,
+    should_stop=None,
 ) -> Tuple[bool, str, List[dict]]:
     """Execute a postprocessing plugin with parameters.
 
@@ -174,6 +208,10 @@ def execute_postprocessing_plugin(
         config_dir: Directory containing the configuration file
         provenance_file: Optional path for container plugins to write provenance JSON
         execution_image: Optional Docker image from the execution phase
+        should_stop: Predicate a long step polls to abandon its work early. Passed only
+            to plugins whose signature accepts it, so a plugin that cannot be interrupted
+            -- including every third-party one written before this existed -- is called
+            exactly as before rather than failing on an argument it never declared.
 
     Returns:
         Tuple of (success, message, provenance_entries)
@@ -191,6 +229,8 @@ def execute_postprocessing_plugin(
         kwargs['debug'] = debug
     if force:
         kwargs['force'] = force
+    if should_stop is not None and _accepts(plugin_func, 'should_stop'):
+        kwargs['should_stop'] = should_stop
 
     try:
         result = plugin_func(**kwargs)
@@ -664,6 +704,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip_db: bool = False,
         skip_metadata: bool = False,
         campaign: Optional[str] = None,
+        should_stop=None,
 ):
     """Run postprocessing commands on **one campaign's** run results.
 
@@ -687,9 +728,26 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
         campaign: Which campaign directory to process. ``None`` uses the most
             recent one.
+        should_stop: Predicate polled to abandon the work early, for a campaign whose
+            operator stopped it while this was running. Checked between steps *and*
+            handed to the steps that can honour it mid-flight (the containerised rosbag
+            conversion), so a stop lands in seconds rather than at the end of a
+            conversion that may run for hours.
+
+            Where it is checked is what makes a cancelled campaign land clean. The
+            container step is the only one killed in flight, and it is written to be:
+            a bag's cache entry is written only once its handlers finish, and every
+            output is rewritten rather than appended, so an interrupted bag is simply
+            redone by the next run. Everything after it -- the index ingest, the
+            provenance record, the metadata -- is Python this process runs itself, and
+            is only ever cancelled *between* steps, never part-way through. So a
+            cancelled campaign is never half-indexed and never recorded as
+            postprocessed; it keeps its run artifacts and re-running derives the rest.
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str). A cancelled run returns
+        ``(False, POSTPROCESSING_CANCELLED)``, which callers match to report a stop as a
+        stop rather than as a failure.
     """
     def output(msg):
         """Helper to call output callback or print."""
@@ -819,6 +877,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         failures: List[str] = []
 
         for i, command in enumerate(commands, 1):
+            if should_stop is not None and should_stop():
+                output(f"⏹  {POSTPROCESSING_CANCELLED}")
+                return False, POSTPROCESSING_CANCELLED
             # Parse command to get plugin name and parameters
             if isinstance(command, str):
                 plugin_name = command
@@ -865,6 +926,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 execution_image=execution_image,
                 debug=debug,
                 force=force,
+                should_stop=should_stop,
             )
 
             all_provenance_entries.extend(entries)
@@ -876,6 +938,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 continue
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
+
+    # The last step may have been the one that was killed, and it reports failure like any
+    # other. Checked here so the campaign is left where a cancelled one belongs -- before the
+    # ingest that would index a part-converted campaign, and before the provenance record
+    # that would then call it postprocessed.
+    if should_stop is not None and should_stop():
+        output(f"⏹  {POSTPROCESSING_CANCELLED}")
+        return False, POSTPROCESSING_CANCELLED
 
     # Entries from work this process did not run. On the cluster lane the rosbag
     # conversions happen in a Job, and this pass runs with those steps skipped -- so

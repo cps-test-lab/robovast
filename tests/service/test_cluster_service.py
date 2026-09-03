@@ -23,6 +23,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
                                                                    DEFAULT_AUX_DEADLINE_SECONDS,
                                                                    aux_pod_name,
                                                                    build_aux_pod_manifest)
+from robovast.execution.control_server import Phase
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -1811,6 +1812,14 @@ def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
 
 # -- stop (terminates in-flight cluster workloads) --------------------------
 
+def _stop_state(flagged, phase=Phase.RUNNING):
+    """A control-channel double for stop: the flag, and the phase the reply is chosen by."""
+    return types.SimpleNamespace(
+        request_stop=lambda: flagged.update(stopped=True),
+        snapshot=lambda: types.SimpleNamespace(phase=phase))
+
+
+
 def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
     """Stop sets the cooperative flag AND deletes only this campaign's workloads.
 
@@ -1819,8 +1828,7 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
     queued/running campaigns are untouched.
     """
     flagged = {}
-    state = types.SimpleNamespace(request_stop=lambda: flagged.update(stopped=True))
-    cs._campaigns["camp-1"] = types.SimpleNamespace(state=state)
+    cs._campaigns["camp-1"] = types.SimpleNamespace(state=_stop_state(flagged))
 
     calls = {}
     monkeypatch.setattr(
@@ -1831,6 +1839,30 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
     assert res.ok and flagged.get("stopped") is True
     # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup).
     assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
+
+
+def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
+    """The postprocessing Job is in ``jobgroup=postprocessing``, so the teardown below
+    cannot reach it and the flag is what ends it (``await_job`` polls it).
+
+    The reply has to say so, because the outcome differs from stopping a run: the runs are
+    over and every result they produced is kept, so the campaign still ends as ``finished``
+    -- what the stop gives up is the derived data, and only a re-run brings it back.
+    """
+    flagged = {}
+    cs._campaigns["camp-1"] = types.SimpleNamespace(
+        state=_stop_state(flagged, phase=Phase.POSTPROCESSING))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: None)
+
+    res = cs.stop("camp-1")
+
+    assert res.ok and flagged.get("stopped") is True
+    assert "postprocessing" in res.message
+    assert "finished" in res.message and "re-run postprocessing" in res.message
+    # Not the run-phase wording: nothing of this campaign was still executing.
+    assert "in-flight jobs terminated" not in res.message
 
 
 def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
@@ -2625,7 +2657,6 @@ def _tracked(cs, campaign_id, results_dir, terminal=True, elsewhere=frozenset())
     this entry's operation writes somewhere other than *results_dir*. Empty is the campaign
     case -- a campaign this process drives writes every phase where it is tracked.
     """
-    from robovast.client.status import Phase
     phase = Phase.FINISHED if terminal else Phase.RUNNING
     cs._campaigns[campaign_id] = types.SimpleNamespace(
         results_dir=str(results_dir), thread=None,
