@@ -675,7 +675,7 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
     Returns:
         ``{jobs, counts}`` where each job is ``{job_name, kind, status, display_name,
-        detail, started_at, usage}`` and counts tallies
+        detail, node, started_at, usage}`` and counts tallies
         ``running/pending/waiting/completed/failed/blocked/total`` over the campaign's own
         runs, plus ``calibration`` and ``postprocessing`` beside them. Or ``{error}``.
 
@@ -686,6 +686,10 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         reads the conversion live. Both are listed because they hold real capacity, and
         both are counted apart because neither is one of the campaign's runs; neither can
         be stopped individually.
+
+        ``node`` is the machine the job's pod was placed on -- absent on the local lane, and on
+        a job the scheduler has not placed yet. Reading it across a listing says whether a
+        batch is spread over the cluster or piled onto one machine.
 
         ``started_at`` is epoch seconds -- subtract from now for the age; it is the JOB's
         start, stamped before the pod was scheduled and before its inputs were staged, so it

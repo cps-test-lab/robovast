@@ -3216,3 +3216,30 @@ def test_a_pods_403_does_not_blind_the_capacity_meter(cs, monkeypatch):
     assert usage.cpu_measured == pytest.approx(1)
     assert usage.metrics_unavailable is None
     assert api.calls == 1
+
+
+def test_list_jobs_says_which_node_a_job_landed_on(cs, monkeypatch):
+    """The Jobs list carries placement, so a campaign skewed onto one machine is visible.
+
+    It costs nothing: the pod list the classifier already makes is the only object that
+    knows, and a job's own row is where the answer is worth having.
+    """
+    job = _job("j-1", active=1)
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[job])
+
+    pod = _job_pod("j-1")
+    pod.spec = types.SimpleNamespace(node_name="worker-b")
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([pod]))
+
+    assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].node == "worker-b"
+
+
+def test_a_job_with_no_pod_yet_reports_no_node(cs, monkeypatch):
+    """A queued job has no placement, and absent must not render as a blank machine name."""
+    _one_running_job(cs, monkeypatch, phase="Pending")
+
+    assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].node is None

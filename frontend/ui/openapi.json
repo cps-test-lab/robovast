@@ -1708,6 +1708,17 @@
             "title": "Kind",
             "type": "string"
           },
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -1740,6 +1751,7 @@
           "display_name",
           "job_name",
           "kind",
+          "node",
           "started_at",
           "status",
           "usage"
