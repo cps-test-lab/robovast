@@ -124,13 +124,37 @@ blind.
   is the system under test, so the robot does the avoiding. Its `dwell` shifts the patrol's
   phase, which is how a campaign controls *when* the encounter happens.
 
-Both failure mechanisms are real and separable, measured across the doorway axis:
+Both failure mechanisms are real and separable, measured across the doorway axis — 32 runs
+per width, the grid's 8 repetitions at each of its 4 walker phases:
 
 | doorway | 0.4 m | 0.8 m | 1.2 m | 1.6 m |
 |---|---|---|---|---|
-| failures (of 4) | 4 | 3 | 1 | 1 |
-| collisions | 0 | 3 | 1 | 1 |
-| mechanism | planner **refuses**; never approaches | squeezes through, **hits the walker** | mostly passes | mostly passes |
+| failures (of 32) | 31 | 16 | 14 | 19 |
+| collisions | 0 | 16 | 14 | 19 |
+| mechanism | planner **refuses**; never approaches | squeezes through, **hits the walker** | | |
+
+Only the first column is a property of the doorway. At every width that the robot will
+attempt, failure and collision are **the same event** — 16 of 16, 14 of 14, 19 of 19 — so past
+0.4 m the geometry decides only whether the robot goes, and the walker decides whether it
+gets through.
+
+Which is why the axis is **not monotone**: 1.6 m fails more often than 1.2 m. Read the grid
+by column instead and the reason is plain — the walker's phase is the stronger factor, and
+`dwell: 0` is the worst column at every width, including 8 of 8 at the widest doorway:
+
+| doorway \ dwell | 0.0 s | 2.0 s | 4.0 s | 6.0 s |
+|---|---|---|---|---|
+| 0.4 m | 7 | 8 | 8 | 8 |
+| 0.8 m | 7 | 6 | 1 | 2 |
+| 1.2 m | 6 | 4 | 0 | 4 |
+| 1.6 m | 8 | 5 | 3 | 3 |
+
+**Four runs per width cannot see any of this**, and an earlier version of this table read
+them as 4/3/1/1 with the two widest widths described as mostly passing. The outcome is
+bimodal (see the objective, above): a cell has a probability of failing rather than a
+robustness, so a handful of draws per width ranks the widths by which of them happened to
+draw the bad mode. The ordering it produced was an artifact of the sample size, not a
+property of the world.
 
 ## Budgets
 

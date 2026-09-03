@@ -2686,6 +2686,11 @@ export interface components {
              */
             pending: number;
             /**
+             * Postprocessing
+             * @default 0
+             */
+            postprocessing: number;
+            /**
              * Running
              * @default 0
              */

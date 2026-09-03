@@ -3348,6 +3348,10 @@ class LocalTransport(RobovastInterface):
         for job in self.list_jobs(campaign_id).jobs:
             if job.status != "running":
                 continue
+            # A probe and a postprocessing conversion are running jobs that carry no run, so
+            # there is no run health to ask them for and the target below cannot resolve.
+            if job.kind in (JobKind.CALIBRATION, JobKind.POSTPROCESSING):
+                continue
             try:
                 target, run_dir = self._job_state_target(
                     campaign_id, job.job_name, SCENARIO_CONTAINER)
@@ -3844,12 +3848,13 @@ class LocalTransport(RobovastInterface):
         for a job that does not exist, ``RuntimeError`` naming the phase for one that
         exists but is not running: only a job that is *underway* has something to kill.
 
-        A node-calibration probe is refused outright, whatever its status. Stopping a job
-        records a ``killed`` intervention against the runs it was carrying, and a probe
-        carries none -- it is not one of the campaign's runs, and is deliberately absent from
-        the job-links manifest that resolves them -- so the record would name runs that do
-        not exist. Refused here rather than in the cluster lane's ``stop_job`` because this
-        is the precondition both lanes share and the one the web UI mirrors when it decides
+        A job that is not one of the campaign's runs is refused outright, whatever its
+        status: a node-calibration probe, and the postprocessing conversion. Stopping a job
+        records a ``killed`` intervention against the runs it was carrying, and neither
+        carries any -- they are not the campaign's runs, and are deliberately absent from the
+        job-links manifest that resolves them -- so the record would name runs that do not
+        exist. Refused here rather than in the cluster lane's ``stop_job`` because this is
+        the precondition both lanes share and the one the web UI mirrors when it decides
         whether to offer the button.
         """
         jobs = self.list_jobs(campaign_id).jobs
@@ -3863,6 +3868,12 @@ class LocalTransport(RobovastInterface):
                 f"job {job_name!r} is a node-calibration probe, not one of the campaign's "
                 f"runs — it cannot be stopped individually: there is no run to record as "
                 f"killed, and the batch abandons its own probes when it ends")
+        if job.kind == JobKind.POSTPROCESSING:
+            raise RuntimeError(
+                f"job {job_name!r} is the campaign's postprocessing conversion, not one of "
+                f"its runs — it cannot be stopped individually: there is no run to record as "
+                f"killed, and the runs it converts are already recorded. Stopping the "
+                f"campaign ends it; re-running postprocessing replaces what this produced")
         if job.status != "running":
             running = [j.job_name for j in jobs if j.status == "running"]
             hint = f"; running now: {', '.join(running)}" if running else ""
@@ -4218,19 +4229,37 @@ class LocalTransport(RobovastInterface):
 
         An **import** is dispatched through here too, and it is the one case where the
         campaign directory does not exist yet: registering the entry is exactly what makes
-        the campaign visible while its bytes are still arriving. So the two reads below are
+        the campaign visible while its bytes are still arriving. So the reads below are
         allowed to find nothing and fall back — which is also the honest answer, since a
         campaign being imported has no earlier start time than now.
         """
+        # The recorded outcome the installed entry must not blank. That entry answers for
+        # the campaign in every listing for as long as the operation runs, and an empty
+        # ControllerState answers with *no* errors: a campaign whose postprocessing failed
+        # reads as error-free the moment somebody re-triggers its upload, and
+        # `_derive_postprocessed` -- whose only guard against promoting `postprocessed`
+        # over a failure is that error field -- then promotes it, so the web UI offers
+        # Results views over a build that did not finish. Read before the lock: it is disk
+        # (and on the cluster lane, store) I/O, and nothing about it needs the map held.
+        prior = self._prior_outcome(campaign_id)
         with self._lock:
             existing = self._campaigns.get(campaign_id)
             if existing is not None and not self._is_done(existing):
+                # Named, not just "an operation": what the caller does next differs
+                # entirely between waiting out a postprocessing run and waiting out the
+                # sweep itself.
+                busy_phase = existing.state.snapshot().phase
                 return ActionResult(
                     ok=False,
-                    message=f"campaign {campaign_id!r} is busy; an operation is "
-                            "already running — wait for it to finish")
+                    message=f"campaign {campaign_id!r} is busy: it is {busy_phase!r} "
+                            "— wait for that to finish")
             state = ControllerState()
-            state.update(campaign_id=campaign_id)
+            state.update(campaign_id=campaign_id,
+                         postprocessed=prior.postprocessed,
+                         postprocessing_error=prior.postprocessing_error,
+                         share_error=prior.share_error,
+                         error=prior.error,
+                         mode=prior.mode)
             state.set_phase(phase)
             entry = _LocalCampaign(campaign_id, str(self._campaigns_root()), state)
             # A lane whose operation works against a fetched root, not the tracked one,
@@ -4292,7 +4321,11 @@ class LocalTransport(RobovastInterface):
             status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
             state.update(postprocessed=status.postprocessed,
                          postprocessing_error=status.postprocessing_error)
-            state.set_phase(Phase.FINISHED)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with the record would say
+            # `finished` until the next service restart said `stopped` -- the same fact,
+            # two answers depending on uptime.
+            state.set_phase(status.phase)
             # Same one-shot notifier as a re-triggered share: this op runs from disk with
             # no live entry to inherit one from, and it reports on a campaign that ended
             # long ago -- so neither branch is the campaign's terminal message.
@@ -4350,7 +4383,10 @@ class LocalTransport(RobovastInterface):
                 remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, share=(ok, message))
             state.update(share_error=status.share_error)
-            state.set_phase(Phase.FINISHED)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with it would answer
+            # differently until the next restart.
+            state.set_phase(status.phase)
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.SHARING, work=work)
@@ -5279,6 +5315,25 @@ class LocalTransport(RobovastInterface):
         so the override had to be written four times or not at all.
         """
         return self._campaign_dir(cid)
+
+    def _prior_outcome(self, cid: str) -> Status:
+        """The campaign's recorded Status, for an entry that is about to answer for it.
+
+        The same read :meth:`_summary_for` falls back to when nothing is tracking the
+        campaign, through the same :meth:`_record_dir` seam — so a campaign reports the
+        same errors while an operation runs on it as it did the moment before, on either
+        lane. A campaign with no record yet (an import, whose bytes are still arriving)
+        reconstructs as ``unknown`` with every field empty, which seeds nothing and is
+        the honest answer.
+
+        Never raises: this decides what a listing *says*, and a status read that fails
+        over an unreachable record dir would take the dispatch with it.
+        """
+        from robovast.execution.status_recovery import reconstruct_status_from_disk
+        try:
+            return reconstruct_status_from_disk(self._record_dir(cid))
+        except OSError:
+            return Status(phase=Phase.UNKNOWN, campaign_id=cid)
 
     def _summary_for(self, cid: str) -> CampaignSummary:
         from robovast.common.store import read_campaign_mode

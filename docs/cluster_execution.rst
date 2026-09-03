@@ -1205,6 +1205,16 @@ only as the ``waiting N`` counter, never as a row: the per-job list mirrors the 
 actually exist there (what ``k9s`` shows), and those are the ones with a pod and a log to
 read. ``list_campaign_jobs`` still returns every one of them with its reason.
 
+The listing spans the two jobgroups a campaign creates for its own work — its trials
+(``scenario-runs``) and its postprocessing conversion (``postprocessing``) — in one
+set-based selector, because it is polled while the campaign is live and a second listing
+would double both the Job read and the pod read behind it. Each row carries the
+``JobKind`` that says which it is, and only ``run`` rows reach ``JobCounts``: the counts are
+read as facts about runs, and a conversion or a probe among them would enter the run meter
+and the ETA's divisor. The conversion is the one job a campaign in its ``postprocessing``
+phase has, so listing it is the difference between a busy campaign and an apparently idle
+one; expanding its row reads its pod log like any other.
+
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
 server and the transport error, within about a minute — every API call has a 10-second

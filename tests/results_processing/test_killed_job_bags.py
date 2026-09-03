@@ -1,15 +1,20 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A job stopped by hand leaves an unreadable rosbag — and that must not fail the step.
+"""A rosbag that cannot be opened is missing data, not a failed conversion.
 
-Killing a job SIGKILLs its pod mid-write, so the rosbag it was recording is never
-finalized and can never be opened. Before this, that one bag failed the campaign's whole
-postprocessing step: using the per-job stop cost the metrics of every job that *did*
-finish, which is the opposite of what the feature is for.
+A recorder that goes down before finalizing its bag leaves the payload without the sidecar
+naming its storage plugin, so the reader can never open it. That happens whenever a job
+ends abruptly: an operator stop, a pod eviction, an OOM-kill. ``rosbags_process`` describes
+such a bag, skips it, and succeeds — failing the step over missing input would throw away
+the converted results of every bag that *was* readable, which on a large campaign is
+thousands of them for the sake of a handful.
 
-So ``rosbags_process`` is told which dirs belong to killed jobs (``--tolerate-under``) and
-counts their errors apart from real ones. It still *attempts* them — a kill that landed
-between bags leaves readable ones behind, and their data is worth having.
+Only a genuine conversion error — a bag that opened and whose handlers then refused —
+fails the step, because that is the case where the data existed and we did not produce it.
+
+``--tolerate-under`` is narrower than that rule and survives alongside it: it names the
+dirs of jobs an operator stopped, so the summary can say which of the skipped bags were
+expected rather than merely observed.
 """
 
 import json
@@ -308,6 +313,60 @@ def test_the_error_pointer_never_points_at_nothing():
 
 
 # -- a bag's outcome, and the sentinel that decides the exit code --------------------------
+
+
+def test_an_unopenable_bag_is_missing_input_not_a_failed_conversion():
+    """The distinction the exit code turns on. An unfinalized bag has nothing to convert,
+    so skipping it is correct and the step still succeeded; a bag whose handlers refused
+    had data we failed to produce, and that must fail."""
+    from robovast.results_processing.data.rosbags_common import (FAILED, UNREADABLE,
+                                                                 BagResult)
+    unreadable = BagResult("/b/rosbag2", UNREADABLE, output="✗ failed to open — no storage\n")
+    assert unreadable.unreadable is True
+    assert unreadable.failed is False and unreadable.cached is False
+
+    broken = BagResult("/b/rosbag2", FAILED)
+    assert broken.failed is True and broken.unreadable is False
+
+
+def test_an_unopenable_bag_is_named_so_the_reader_can_judge_it(tmp_path):
+    """A count says data is missing; the paths say whether the runs behind it mattered."""
+    from robovast.results_processing.data.rosbags_common import unreadable_bag_note
+    bags = [str(tmp_path / "_jobs" / "batch-16" / f"job-{n}" / "logs" / "rosout_bag")
+            for n in (38, 28, 34)]
+    assert unreadable_bag_note(bags, str(tmp_path)) == [
+        "  " + os.path.join("_jobs", "batch-16", f"job-{n}", "logs", "rosout_bag")
+        for n in (28, 34, 38)]
+
+
+def test_a_lost_batch_does_not_push_the_summary_off_the_log(tmp_path):
+    """Capped for the same reason real errors are not buried: a campaign that lost a whole
+    batch would otherwise print hundreds of paths above the line that explains them."""
+    from robovast.results_processing.data.rosbags_common import unreadable_bag_note
+    bags = [str(tmp_path / f"job-{n:03d}" / "rosbag2") for n in range(25)]
+    note = unreadable_bag_note(bags, str(tmp_path))
+    assert len(note) == 11
+    assert note[-1] == "  ... and 15 more"
+
+
+def test_nothing_unreadable_says_nothing_at_all(tmp_path):
+    from robovast.results_processing.data.rosbags_common import unreadable_bag_note
+    assert unreadable_bag_note([], str(tmp_path)) == []
+
+
+def test_an_unopenable_bag_is_not_listed_among_the_real_errors(tmp_path):
+    """It is not an error, so a block headed "bags that reported errors" is the wrong
+    place for it — and repeating the same "failed to open" per bag buries what is."""
+    from robovast.results_processing.data.rosbags_common import (UNREADABLE, BagResult,
+                                                                 failing_bag_output)
+    unreadable = BagResult(str(tmp_path / "_jobs" / "batch-16" / "job-28" / "rosout_bag"),
+                           UNREADABLE, output="✗ failed to open — no storage\n")
+    real = BagResult(str(tmp_path / "goal-1" / "0" / "rosbag2"), -2,
+                     output="  ✗ Handler X on_end error: boom\n")
+    out = failing_bag_output(
+        [(r.bag_path, r.output) for r in (unreadable, real) if not r.unreadable],
+        str(tmp_path), [])
+    assert [rel for rel, _ in out] == [os.path.join("goal-1", "0", "rosbag2")]
 
 
 def test_a_bag_no_handler_would_start_is_a_failure_not_an_empty_bag():

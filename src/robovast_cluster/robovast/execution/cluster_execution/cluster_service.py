@@ -1602,24 +1602,32 @@ class ClusterService(LocalTransport):
     # -- jobs (live) --------------------------------------------------------
 
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
-        """List the campaign's scenario-run Kubernetes Jobs with live status.
+        """List the Kubernetes Jobs a campaign has in flight, with live status.
 
-        Selects Jobs by the campaign label the backend stamps on them
-        (``jobgroup=scenario-runs,campaign-id=<label-safe>``) and classifies each
+        Selects Jobs by the campaign label the backend stamps on them and classifies each
         with :func:`list_jobs_with_phase` — the same pod-accurate logic the CLI
         monitor's aggregate counter uses, so the two never drift. ``display_name``
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
 
-        **Node-calibration probes are listed but not tallied.** A probe carries the same
-        campaign labels -- it is real work on a real node, and every selector that counts or
-        cleans up has to keep seeing it -- so it appears here, marked
-        ``kind="calibration"`` and named for the node it measures. The counts are the
-        campaign's own jobs alone, because a reader takes them as facts about *runs*: see
-        :attr:`~robovast.service.interface.JobCounts.calibration`.
+        **Two jobgroups, one listing and one selector.** The campaign's trials
+        (``scenario-runs``) and its postprocessing conversion (``postprocessing``) are
+        separate jobgroups, and both are the campaign doing its own work — a phase whose only
+        job is not listed shows a reader an empty list while the cluster is busy on their
+        behalf. A set-based requirement fetches them together because this is polled per live
+        campaign every couple of seconds, and a second selector would double both the Job
+        listing and the pod listing behind it for a row that is there at most once.
+
+        **Neither probes nor postprocessing are tallied.** Both carry the campaign's labels —
+        they are real work holding real capacity, and every selector that counts or cleans up
+        has to keep seeing them — so they appear here, marked with their
+        :class:`~robovast.service.interface.JobKind` and named for what they are. The counts
+        stay the campaign's runs alone, because a reader takes them as facts about *runs*:
+        see :attr:`~robovast.service.interface.JobCounts.calibration`.
         """
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
-        label = (f"jobgroup=scenario-runs,"
+        from .postprocess_job import POSTPROCESS_JOBGROUP
+        label = (f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP}),"
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
@@ -1632,7 +1640,8 @@ class ClusterService(LocalTransport):
         # Planned jobs are the campaign's own by construction: probes queue under a separate
         # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
         jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
-        runs = [j for j in jobs if j.kind != JobKind.CALIBRATION]
+        runs = [j for j in jobs
+                if j.kind not in (JobKind.CALIBRATION, JobKind.POSTPROCESSING)]
         counts = JobCounts(
             running=sum(1 for j in runs if j.status == "running"),
             pending=sum(1 for j in runs if j.status == "pending"),
@@ -1640,7 +1649,8 @@ class ClusterService(LocalTransport):
             completed=sum(1 for j in runs if j.status == "completed"),
             failed=sum(1 for j in runs if j.status == "failed"),
             blocked=sum(1 for j in runs if j.status == "blocked"),
-            calibration=len(jobs) - len(runs),
+            calibration=sum(1 for j in jobs if j.kind == JobKind.CALIBRATION),
+            postprocessing=sum(1 for j in jobs if j.kind == JobKind.POSTPROCESSING),
             total=len(runs))
         return ListJobsResponse(jobs=jobs, counts=counts)
 
@@ -1670,22 +1680,36 @@ class ClusterService(LocalTransport):
 
     @staticmethod
     def _job_kind(job) -> str:
-        """Which kind of ``scenario-runs`` Job this is, from the label the backend stamps.
+        """Which kind of Job this is, from the labels the backend stamps.
 
-        Unlabelled means the campaign's own work: the label is stamped by
+        The ``jobgroup`` separates postprocessing from the campaign's batch; within the
+        batch, an unlabelled Job is the campaign's own work, because
+        :data:`~.manifests.JOB_KIND_LABEL` is stamped by
         :func:`~.kubernetes_backend.probe_manifest` and by nothing else, and a Job created
         before it existed is a run.
         """
+        from .postprocess_job import POSTPROCESS_JOBGROUP
         try:
             labels = job.metadata.labels or {}
         except AttributeError:
             return JobKind.RUN
+        if labels.get("jobgroup") == POSTPROCESS_JOBGROUP:
+            return JobKind.POSTPROCESSING
         return (JobKind.CALIBRATION
                 if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
-    @staticmethod
-    def _job_display_name(campaign_id, job) -> "str | None":
-        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix."""
+    @classmethod
+    def _job_display_name(cls, campaign_id, job) -> "str | None":
+        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix.
+
+        A postprocessing Job carries no such annotation — it is not one of the batch's
+        indexed jobs — and its own name is the campaign id with a hash on it, which tells a
+        reader nothing they are not already looking at. Named for the work instead: this is
+        the conversion of the campaign's rosbags, run in the campaign's execution image
+        because only there do its custom message types deserialize.
+        """
+        if cls._job_kind(job) == JobKind.POSTPROCESSING:
+            return "rosbag conversion"
         try:
             full = job.spec.template.metadata.annotations.get("job-name-full")
         except AttributeError:
@@ -1721,8 +1745,11 @@ class ClusterService(LocalTransport):
 
         from .cluster_execution import _label_safe_campaign
         core = self._k8s()
-        label = (f"jobgroup=scenario-runs,"
-                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
+        # Campaign + Job name, with no jobgroup term: the pair already identifies one pod,
+        # and adding the group would decide which of the campaign's own jobs may be read
+        # here. Every row :meth:`list_jobs` shows has to open, including its postprocessing
+        # conversion -- a row whose log 404s is worse than no row.
+        label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
             raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
@@ -3835,7 +3862,10 @@ class ClusterService(LocalTransport):
             state.update(error=detail)
         state.update(postprocessed=status.postprocessed,
                      postprocessing_error=status.postprocessing_error)
-        state.set_phase(Phase.FINISHED)
+        # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+        # campaign ended, and a live entry that disagreed with it would answer
+        # differently until the next restart.
+        state.set_phase(status.phase)
         # Same one-shot notifier as the local lane, and it matters more here: this is
         # the detached lane the push notifications exist for.
         notifier = self._notifier(campaign_id)
@@ -3971,7 +4001,10 @@ class ClusterService(LocalTransport):
             status = record_step_outcome(campaign_root, share=(ok, message))
             self._publish_execution(request.campaign_id, campaign_root)
             state.update(share_error=status.share_error)
-            state.set_phase(Phase.FINISHED)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with it would answer
+            # differently until the next restart.
+            state.set_phase(status.phase)
 
         # Before the dispatch, for the same reason as the postprocess, and one more: the
         # handler `work` opens on share.log APPENDS, so an earlier export's copy left in the
@@ -3986,9 +4019,10 @@ class ClusterService(LocalTransport):
     def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
         """Tar the campaign's stored objects straight into the share. No scratch.
 
-        *campaign_root* supplies only the variant (``_execution/data.db`` present or
-        not), so the name an export writes and the name the campaign-end upload writes
-        are decided by the same rule.
+        *campaign_root* supplies only the variant — postprocessing's provenance record
+        (``_transient/postprocessing.yaml``) present with entries, or not — so the name
+        an export writes and the name the campaign-end upload writes are decided by the
+        same rule. That record is why it is among :data:`_SHARE_STATUS_OBJECTS`.
         """
         from robovast.common.errors import CampaignConfigError
         from robovast.execution import campaign_archive
