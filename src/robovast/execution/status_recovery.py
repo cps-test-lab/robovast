@@ -207,14 +207,22 @@ def record_step_outcome(campaign_dir: str | Path, *,
     Each of *postprocessing* / *share*, when given, is an ``(ok, message)`` pair; only
     the provided step is touched. For *postprocessing*, ``ok is None`` means the step's
     outcome could not be established, and then its recorded fields are left exactly as
-    they were -- ``False`` is reserved for a step that was read as failed. ``phase`` is normalised to ``finished`` — a re-trigger
-    runs on an already-finished campaign and never changes that.
+    they were -- ``False`` is reserved for a step that was read as failed.
+
+    **``phase`` is passed over untouched**, and that is the whole of the rule: how the
+    campaign ended is not a re-triggered step's to say. ``failed``, ``stopped`` and
+    ``crashed`` are the only record that it did not run to completion, and sharing a
+    sweep somebody stopped is an ordinary thing to do -- so writing ``finished`` here
+    would tell every later reader (the listing, the waiters, a recipient importing the
+    archive) that a stopped sweep ran to the end. There is nothing to normalise either:
+    :func:`reconstruct_status_from_disk` already resolves a record written mid-flight to
+    ``crashed`` and a missing one to ``unknown``, so what it hands back is terminal
+    however the campaign got here.
 
     Returns the written :class:`Status`.
     """
     campaign_dir = Path(campaign_dir)
     status = reconstruct_status_from_disk(campaign_dir)
-    status.phase = Phase.FINISHED
     if postprocessing is not None:
         ok, message = postprocessing
         if ok is None:

@@ -577,6 +577,39 @@ def test_stop_job_refuses_a_calibration_probe(transport, monkeypatch):
     assert _killed(cdir) == {}, "a refused stop must record nothing"
 
 
+def test_stop_job_refuses_the_postprocessing_conversion(transport, monkeypatch):
+    """Same rule as the probe above, and the same reason: the conversion carries no run, so
+    a ``killed`` record for it would name runs that do not exist -- and the runs it is
+    converting are already recorded, with their own verdicts.
+
+    The listing shows it (it is what a campaign in its ``postprocessing`` phase is doing), so
+    the precondition is the only thing standing between a row and a delete of the Job that
+    is producing the campaign's derived data.
+    """
+    from robovast.service.interface import JobCounts, JobSummary, ListJobsResponse
+
+    cid = "campaign-2026-08-13-143000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0")
+    _live(transport, cid, "running", total=1)
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: pytest.fail("nothing may be killed on a refusal"))
+    # The conversion is a cluster-lane Job; the guard belongs to the shared precondition, so
+    # the listing is what it reads and the listing is what this substitutes.
+    monkeypatch.setattr(transport, "list_jobs", lambda campaign_id: ListJobsResponse(
+        jobs=[JobSummary(job_name="robovast-postproc-camp", status="running",
+                         kind="postprocessing", display_name="rosbag conversion")],
+        counts=JobCounts(postprocessing=1)))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        transport.stop_job(cid, "robovast-postproc-camp", None, "mcp")
+
+    message = str(excinfo.value)
+    assert "postprocessing" in message, "the refusal must say what the job is"
+    assert "robovast-postproc-camp" in message
+    assert _killed(cdir) == {}, "a refused stop must record nothing"
+
+
 def test_stop_job_refuses_an_untracked_campaign(transport):
     with pytest.raises(KeyError):
         transport.stop_job("campaign-does-not-exist", "cfgA/0", None, "cli")

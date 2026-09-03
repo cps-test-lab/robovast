@@ -188,3 +188,127 @@ def test_a_crashed_reactivation_still_falls_back(transport):
     _mark_live(transport, "live-2026-06-01-120000")
     assert _listed(transport)[0] == "live-2026-06-01-120000"
     assert set(_listed(transport)[1:]) == {old, new}
+
+
+def _finished_campaign(transport, cid: str, **outcome) -> None:
+    """A campaign at rest whose durable record carries *outcome*."""
+    from robovast.common.campaign_data import write_execution_outcome
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+    from robovast.execution.control_server import Status
+
+    cdir = transport._campaigns_root() / cid
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(cid, {}, mode="batch")
+    write_execution_outcome(cdir, Status(campaign_id=cid, **outcome))
+
+
+def _summary(transport, cid: str):
+    return next(c for c in transport.list_campaigns().campaigns if c.campaign_id == cid)
+
+
+def test_dispatch_keeps_a_recorded_postprocessing_failure_visible(transport):
+    """Re-triggering the upload must not blank the error the campaign already carries.
+
+    The tracked entry answers for the campaign while the op runs, so an empty
+    ControllerState reports a failed postprocessing as error-free -- and, because
+    ``_derive_postprocessed``'s only guard against promoting ``postprocessed`` over a
+    failure is that same error field, it also flips the flag the web UI gates its
+    Results views on. A failed build would offer its results for as long as an upload
+    somebody triggered kept running.
+    """
+    cid = "camp-2026-07-17-140000"
+    _finished_campaign(transport, cid, phase=Phase.FINISHED,
+                       postprocessing_error="rosbags_costmap_to_csv: killed (exit 137)")
+
+    release = threading.Event()
+    assert transport._dispatch_background(cid, phase=Phase.SHARING,
+                                          work=lambda state: release.wait(2)).ok
+    try:
+        live = _summary(transport, cid)
+        assert live.postprocessing_error == "rosbags_costmap_to_csv: killed (exit 137)"
+        assert live.postprocessed is False
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
+def test_dispatch_keeps_a_recorded_share_failure_visible(transport):
+    """The same, the other way round: postprocessing must not hide a failed upload.
+
+    ``run_postprocessing``'s worker writes back only the postprocessing fields, so a
+    ``share_error`` the entry did not carry is not restored when the op ends either --
+    it stays blank for as long as the entry is tracked, which outlives the op.
+    """
+    cid = "camp-2026-07-17-150000"
+    _finished_campaign(transport, cid, phase=Phase.FINISHED,
+                       share_error="the share refused the credentials")
+
+    release = threading.Event()
+    assert transport._dispatch_background(cid, phase=Phase.POSTPROCESSING,
+                                          work=lambda state: release.wait(2)).ok
+    try:
+        assert _summary(transport, cid).share_error == "the share refused the credentials"
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
+def test_dispatch_keeps_how_the_campaign_ended(transport):
+    """A campaign that failed still reads as failed while an op runs on it."""
+    cid = "camp-2026-07-17-160000"
+    _finished_campaign(transport, cid, phase=Phase.FAILED, error="the sweep died")
+
+    release = threading.Event()
+    assert transport._dispatch_background(cid, phase=Phase.SHARING,
+                                          work=lambda state: release.wait(2)).ok
+    try:
+        assert _summary(transport, cid).error == "the sweep died"
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
+def test_the_busy_refusal_names_what_is_running(transport):
+    """"An operation" is not actionable: waiting out a postprocessing run and waiting
+    out the sweep itself are different waits, and the phase is what tells them apart."""
+    cid = "camp-2026-07-17-170000"
+    release = threading.Event()
+    transport._dispatch_background(cid, phase=Phase.POSTPROCESSING,
+                                   work=lambda state: release.wait(2))
+    try:
+        refused = transport._dispatch_background(cid, phase=Phase.SHARING,
+                                                 work=lambda s: None)
+        assert not refused.ok
+        assert Phase.POSTPROCESSING in refused.message
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
+def test_a_re_triggered_share_leaves_a_stopped_campaign_stopped(transport):
+    """End to end, on the real ``run_share`` worker rather than a stand-in.
+
+    Two records have to agree afterwards and both used to say ``finished``: the durable
+    ``outcome.json``, which a restart and every importer read, and the tracked entry,
+    which answers until one happens. A sweep the user stopped and then uploaded must not
+    read as one that ran to the end in either.
+    """
+    from robovast.execution.status_recovery import reconstruct_status_from_disk
+    from robovast.service.interface import RunShareRequest
+
+    cid = "camp-2026-07-17-190000"
+    _finished_campaign(transport, cid, phase=Phase.STOPPED, error="stopped by user")
+
+    shared = {}
+    transport._build_backend = lambda state: type(
+        "B", (), {"preflight_upload_to_share": lambda s: None,
+                  "share_campaign": lambda s, root, opts, progress_callback=None:
+                      shared.setdefault("root", root)})()
+
+    assert transport.run_share(RunShareRequest(campaign_id=cid)).ok
+    transport._campaigns[cid].thread.join(5)
+
+    assert shared["root"].endswith(cid), "the upload ran"
+    assert transport.get_status(cid).phase == Phase.STOPPED
+    assert reconstruct_status_from_disk(transport._campaign_dir(cid)).phase == Phase.STOPPED

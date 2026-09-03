@@ -677,12 +677,15 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         ``{jobs, counts}`` where each job is ``{job_name, kind, status, display_name,
         detail}`` and counts tallies
         ``running/pending/waiting/completed/failed/blocked/total`` over the campaign's own
-        jobs, plus ``calibration`` beside them. Or ``{error}``.
+        runs, plus ``calibration`` and ``postprocessing`` beside them. Or ``{error}``.
 
-        ``kind`` is ``run`` for one of the campaign's trials, or ``calibration`` for a
-        node-sizing probe: a cluster job that measures a machine before work is placed on
-        it, listed here because it holds real capacity but counted apart because it is not
-        one of the campaign's runs. A probe cannot be stopped individually.
+        ``kind`` is ``run`` for one of the campaign's trials, ``calibration`` for a
+        node-sizing probe (a cluster job that measures a machine before work is placed on
+        it), or ``postprocessing`` for the conversion of the campaign's rosbags, which is
+        what a campaign in its ``postprocessing`` phase is doing — ``get_job_log`` on it
+        reads the conversion live. Both are listed because they hold real capacity, and
+        both are counted apart because neither is one of the campaign's runs; neither can
+        be stopped individually.
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
         say) — ``detail`` carries the reason, and a non-zero count is the one here that
