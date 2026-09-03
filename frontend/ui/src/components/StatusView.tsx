@@ -1015,20 +1015,6 @@ function JobRow({
       {job.detail}
     </Typography>
   ) : null
-  // Where the conversion's output is, said on the row itself. A row that cannot be opened has
-  // to answer the question the missing chevron raises, or it reads as a job nobody can see
-  // into.
-  const where = postprocessing ? (
-    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-      output is in the Log tab, under POSTPROCESSING — where it stays after this job is gone
-    </Typography>
-  ) : null
-  const note = detail || where ? (
-    <>
-      {detail}
-      {where}
-    </>
-  ) : null
   const header = {
     variant: 'row' as const,
     actions: canStop ? (
@@ -1072,7 +1058,10 @@ function JobRow({
     // derives its toggle's aria-label from the title only when it IS a string, so wrapping
     // this to mute the colour would take the accessible name off every job row.
     title: job.display_name || job.job_name,
-    note,
+    // Where a postprocessing row's output is lives on its chip's tooltip, not here: `note` is
+    // a line under every such row for the life of the campaign, and it would be spent saying
+    // that nothing is missing. What belongs in this always-visible slot is a job in trouble.
+    note: detail,
   }
   // The postprocessing row is a header and nothing else, because the log it would open is not
   // this pod's to serve. The conversion runs in initContainers -- the bag download, then the
