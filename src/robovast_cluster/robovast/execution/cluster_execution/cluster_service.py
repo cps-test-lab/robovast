@@ -60,7 +60,8 @@ from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
-                                        JobSummary, ListJobsResponse, LogChunk, ResourceUsage,
+                                        JobSummary, JobUsage, ListJobsResponse, LogChunk,
+                                        ResourceUsage,
                                         DiskSpace, UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
@@ -118,6 +119,28 @@ def _pod_wait_reporter(on_wait):
     return report
 
 
+def _metrics_failure_reason(exc, resource: str) -> "str | None":
+    """Why a ``metrics.k8s.io`` read failed, or ``None`` when this cannot tell.
+
+    A string is a settled fact about the cluster -- an add-on nobody installed, a role nobody
+    reconciled -- so a caller may remember it and stop asking for a while. ``None`` says the
+    failure looks transient (a timeout, an aggregated API restarting mid-read); a caller
+    reports it but must not remember it, or one hiccup blinds the reading for the whole memo.
+
+    *resource* names the sub-resource in the message because the two grants are given
+    independently: a role may carry ``nodes`` and not ``pods``, and a reason naming the wrong
+    one sends a reader to reconcile something that is already there.
+    """
+    status = getattr(exc, "status", None)
+    if status == 403:
+        return (f"the service's ClusterRole does not grant metrics.k8s.io/{resource} -- "
+                "run `vast service upgrade` to reconcile RBAC")
+    if status == 404:
+        return ("metrics.k8s.io is not served -- install metrics-server on the cluster "
+                "to measure real cpu/memory use")
+    return None
+
+
 class ClusterService(LocalTransport):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
@@ -152,6 +175,15 @@ class ClusterService(LocalTransport):
     #: window would spend a round trip and an audit-log line six times a minute to learn the
     #: same thing. Only *failures* are memoised; a working cluster is read fresh each window.
     _METRICS_ABSENT_TTL = 600.0
+
+    #: How long one pod-metrics snapshot is served before it is read again. The window each
+    #: sample states is how often the cluster can *have* a new one, so that window is the TTL
+    #: and these only bound it -- against a cluster that states none, or an absurd one. Reading
+    #: faster than the window spends a round trip to be handed the same numbers back, and a
+    #: campaign card polls its job list every couple of seconds.
+    _POD_METRICS_TTL_DEFAULT = 15.0
+    _POD_METRICS_TTL_MIN = 10.0
+    _POD_METRICS_TTL_MAX = 60.0
 
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
@@ -216,6 +248,21 @@ class ClusterService(LocalTransport):
         # only. See ``_METRICS_ABSENT_TTL``: a cluster that does not serve metrics.k8s.io
         # must not be asked every usage window forever. Read under ``_usage_lock``.
         self._metrics_absent: "tuple[float, str] | None" = None
+        # Last pod-metrics snapshot as ``(expires_at, {job: {container: (cores, bytes)}})``.
+        # Named apart from the ``_pod_metrics`` method that fills it: an attribute assigned
+        # here shadows a method of the same name on the instance, so the reader would become
+        # uncallable the moment the service was constructed.
+        # One read serves every campaign: the Jobs all carry the same ``jobgroup``, so a
+        # second open campaign card costs nothing.
+        self._pod_metrics_snapshot: "tuple[float, dict] | None" = None
+        # Its own memo, never ``_metrics_absent``. The nodes and pods grants are given
+        # independently, so a 403 on one says nothing about the other -- sharing would blank
+        # the capacity meter over a missing job-usage grant, under a reason naming the wrong
+        # sub-resource.
+        self._pod_metrics_absent: "tuple[float, str] | None" = None
+        # Not ``_usage_lock``: that one is held across a reading that talks to every kubelet
+        # in turn, and the job listing must not wait behind it.
+        self._pod_metrics_lock = threading.Lock()
         # How far along the blocking work for each campaign currently is — the counts behind
         # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
         # dropped when they finish, so a present entry means "busy right now". In memory on
@@ -532,14 +579,9 @@ class ClusterService(LocalTransport):
                 # process-wide (see kube_client). Only the read is capped here.
                 _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
         except Exception as e:  # noqa: BLE001 - capacity must still be answerable
-            status = getattr(e, "status", None)
-            if status == 403:
-                return absent("the service's ClusterRole does not grant "
-                              "metrics.k8s.io/nodes -- run `vast service upgrade` to "
-                              "reconcile RBAC")
-            if status == 404:
-                return absent("metrics.k8s.io is not served -- install metrics-server "
-                              "on the cluster to measure real cpu/memory use")
+            settled = _metrics_failure_reason(e, "nodes")
+            if settled is not None:
+                return absent(settled)
             # Anything else (a timeout, an unavailable aggregated API mid-restart) is
             # transient as far as this can tell, so it is reported without being remembered.
             logger.debug("could not read node metrics: %s", e)
@@ -1631,10 +1673,16 @@ class ClusterService(LocalTransport):
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
+        usage_by_job, metrics_reason = self._pod_metrics()
         jobs = [
             JobSummary(job_name=job.metadata.name, status=phase, kind=self._job_kind(job),
                        display_name=self._job_display_name(campaign_id, job),
-                       detail=detail)
+                       detail=detail, started_at=self._job_started_at(job),
+                       # Usage only while it runs. A sample outlives the pod that produced it,
+                       # so a job that has just finished still has one, and a completed row
+                       # carrying it reads as a job still burning cores.
+                       usage=(self._job_usage(job, usage_by_job.get(job.metadata.name))
+                              if phase == "running" else None))
             for job, phase, detail in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
         # Planned jobs are the campaign's own by construction: probes queue under a separate
@@ -1652,7 +1700,129 @@ class ClusterService(LocalTransport):
             calibration=sum(1 for j in jobs if j.kind == JobKind.CALIBRATION),
             postprocessing=sum(1 for j in jobs if j.kind == JobKind.POSTPROCESSING),
             total=len(runs))
-        return ListJobsResponse(jobs=jobs, counts=counts)
+        return ListJobsResponse(jobs=jobs, counts=counts,
+                                metrics_unavailable=metrics_reason)
+
+    def _pod_metrics(self) -> tuple:
+        """Live per-container cpu/memory for every campaign's job pods: ``(by_job, reason)``.
+
+        ``by_job`` maps Job name to ``{container: (cores, bytes)}``, keyed off the pod's own
+        ``job-name`` label. **One list for the whole namespace**, never one per campaign: every
+        campaign's Jobs carry the same ``jobgroup``, so a single read serves all of them and a
+        second open campaign card costs nothing. A Job that is not the caller's is simply never
+        looked up.
+
+        Joined by label rather than by pod name because that is what this listing has: the
+        alternative is a pod listing of its own, a second call per window to learn a mapping
+        the metrics item already states.
+
+        Held for the window the samples themselves report, clamped by ``_POD_METRICS_TTL_*``.
+        metrics-server resamples on its own schedule, so a read faster than that window is a
+        round trip spent to be handed the same numbers back. The *shortest* window in the batch
+        is taken, so no sample is served past its own life.
+
+        Failures are memoised for ``_METRICS_ABSENT_TTL`` when they are settled facts about the
+        cluster, and reported without being remembered when they are not -- see
+        :func:`_metrics_failure_reason`.
+
+        **Never queues behind another caller's read.** A refresh already in flight yields the
+        snapshot in hand, because this decorates a listing that is polled every couple of
+        seconds: a job list must not wait on an aggregated API to say which jobs exist.
+
+        Requires ``metrics.k8s.io/pods`` get+list in the service's usage ClusterRole (see
+        ``service_deploy._service_rbac_manifests``). A deployment whose RBAC predates that
+        grant keeps working -- it gets a 403, and the reason names the command that fixes it.
+        """
+        from .kube_client import (CONNECT_TIMEOUT_SECONDS,  # pylint: disable=import-outside-toplevel
+                                  parse_duration, parse_resource)
+        from .postprocess_job import POSTPROCESS_JOBGROUP  # pylint: disable=import-outside-toplevel
+
+        if not self._pod_metrics_lock.acquire(blocking=False):
+            held = self._pod_metrics_snapshot
+            return (held[1] if held is not None else {}), None
+        try:
+            now = time.monotonic()
+            held = self._pod_metrics_snapshot
+            if held is not None and now < held[0]:
+                return held[1], None
+            remembered = self._pod_metrics_absent
+            if remembered is not None and now - remembered[0] < self._METRICS_ABSENT_TTL:
+                return {}, remembered[1]
+            try:
+                listed = self._k8s_custom().list_namespaced_custom_object(
+                    "metrics.k8s.io", "v1beta1", self.namespace, "pods",
+                    label_selector=f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP})",
+                    # A (connect, read) pair rather than a scalar, for the reason spelled out
+                    # in ``_measured_cpu_mem``.
+                    _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
+            except Exception as e:  # noqa: BLE001 - a job listing must still be answerable
+                settled = _metrics_failure_reason(e, "pods")
+                if settled is not None:
+                    self._pod_metrics_absent = (time.monotonic(), settled)
+                    return {}, settled
+                logger.debug("could not read pod metrics: %s", e)
+                return {}, f"pod metrics could not be read: {e}"
+            by_job, window = {}, None
+            for item in listed.get("items") or []:
+                labels = (item.get("metadata") or {}).get("labels") or {}
+                job = labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
+                containers = {}
+                for container in item.get("containers") or []:
+                    usage = container.get("usage") or {}
+                    cores, byts = usage.get("cpu"), usage.get("memory")
+                    # Both quantities or neither, as in ``_measured_cpu_mem``: half a
+                    # container's reading is not a reading.
+                    if cores and byts:
+                        containers[container.get("name")] = (parse_resource(cores),
+                                                             int(parse_resource(byts)))
+                if job and containers:
+                    by_job[job] = containers
+                sample = parse_duration(item.get("window"))
+                if sample is not None and (window is None or sample < window):
+                    window = sample
+            ttl = min(max(window or self._POD_METRICS_TTL_DEFAULT,
+                          self._POD_METRICS_TTL_MIN), self._POD_METRICS_TTL_MAX)
+            self._pod_metrics_snapshot = (time.monotonic() + ttl, by_job)
+            self._pod_metrics_absent = None
+            return by_job, None
+        finally:
+            self._pod_metrics_lock.release()
+
+    @staticmethod
+    def _job_usage(job, measured) -> "JobUsage | None":
+        """One job's :class:`JobUsage` from its *measured* ``{container: (cores, bytes)}``.
+
+        ``None`` when nothing was measured: a record of zeros would read as an idle job rather
+        than as an unmeasured one.
+
+        The denominators are summed over **exactly the containers the measurement covers**, so
+        numerator and denominator describe the same set. A metrics-server that reported a
+        different container set than the template declares would otherwise put one container's
+        usage under a whole pod's ceiling.
+        """
+        from .kube_client import workload_resources  # pylint: disable=import-outside-toplevel
+
+        if not measured:
+            return None
+        given = workload_resources(getattr(getattr(job, "spec", None), "template", None),
+                                   measured.keys())
+        return JobUsage(cpu_cores=sum(v[0] for v in measured.values()),
+                        memory_bytes=sum(v[1] for v in measured.values()),
+                        cpu_request=given["cpu_request"], cpu_limit=given["cpu_limit"],
+                        memory_request_bytes=given["memory_request"],
+                        memory_limit_bytes=given["memory_limit"])
+
+    @staticmethod
+    def _job_started_at(job) -> "float | None":
+        """When the Job started, epoch seconds, or ``None`` if the cluster has not said.
+
+        The *Job's* start, which Kubernetes stamps before the pod is scheduled and before its
+        inputs are staged. That makes it the answer to "how long has this trial been going"
+        rather than "how long has it been executing", and it is the only one of the two that
+        exists for a job still pending or blocked -- where the question is worth asking.
+        """
+        started = getattr(getattr(job, "status", None), "start_time", None)
+        return started.timestamp() if started is not None else None
 
     def _planned_jobs(self, campaign_id, created) -> list:
         """The campaign's admitted-but-not-yet-created jobs, as ``waiting`` summaries.

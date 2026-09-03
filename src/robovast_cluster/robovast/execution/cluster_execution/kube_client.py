@@ -52,6 +52,7 @@ import functools
 import json
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -456,3 +457,100 @@ def parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
+
+
+#: Unit table for :func:`parse_duration`, longest suffix first so ``ms`` is not read as ``m``.
+_DURATION_UNITS = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3,
+                   "s": 1.0, "m": 60.0, "h": 3600.0}
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)")
+
+
+def parse_duration(val, default=None):
+    """A Go duration string (``"10.549007488s"``, ``"1m30s"``) as seconds, else *default*.
+
+    Kubernetes states some durations as text rather than as a number -- a ``PodMetrics``
+    sample says which ``window`` it covers this way -- and the fractional part is real, so
+    this cannot round to whole units.
+
+    Deliberately not folded into :func:`parse_resource`: a quantity and a duration share no
+    syntax, and ``m`` means the opposite thing in each (milli against minutes). One function
+    answering both would read ``"5m"`` as five thousandths of a second or five minutes
+    depending on who called it.
+
+    Anything that is not a complete duration yields *default* rather than a partial sum: a
+    string this cannot read is one whose meaning is unknown, and guessing at it would put a
+    made-up number where a caller asked for a measured one.
+    """
+    if not isinstance(val, str):
+        return default
+    text = val.strip()
+    total, pos = 0.0, 0
+    for match in _DURATION_RE.finditer(text):
+        if match.start() != pos:  # a gap means the rest is not a duration
+            return default
+        total += float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+        pos = match.end()
+    if pos == 0 or pos != len(text):
+        return default
+    return total
+
+
+def _stated(resources, field):
+    """One container's ``requests`` or ``limits`` mapping, however *resources* is shaped.
+
+    The generated client gives an object; a manifest read straight from YAML gives a dict.
+    Both reach the resource arithmetic below -- a Job template built in-process is the
+    second -- so both are read here rather than at each call site.
+    """
+    if resources is None:
+        return {}
+    if isinstance(resources, dict):
+        return resources.get(field) or {}
+    return getattr(resources, field, None) or {}
+
+
+def workload_resources(spec_owner, container_names=None) -> dict:
+    """Summed cpu/memory ``requests`` and ``limits`` over *spec_owner*'s workload containers.
+
+    Returns ``{"cpu_request", "cpu_limit", "memory_request", "memory_limit"}``, each a number
+    or ``None``; memory in bytes, cpu in cores. Takes anything carrying a ``.spec`` -- a pod,
+    or a Job's ``spec.template``, which is the same shape before any pod exists.
+
+    **Each of the four is all-or-nothing.** A workload container stating no cpu limit may use
+    the whole node, so there is no ceiling to add up: the answer is ``None``, not the total of
+    the containers that did state one, which would claim a ceiling below the truth and read as
+    a job much closer to being throttled than it is. The four are decided independently, so a
+    missing cpu limit does not also hide a memory ceiling that is known.
+
+    *container_names* restricts the sum to those containers. Pass it whenever the figure will
+    be shown against a measurement covering only some of them, so that numerator and
+    denominator describe the same set -- a total over three containers under a reading from one
+    is a ratio between two different things.
+
+    Sums over :func:`pod_workload_containers`, so native sidecars count. See there for why
+    ``spec.containers`` alone is the wrong set, and what reading it cost.
+    """
+    wanted = None if container_names is None else set(container_names)
+    keys = ("cpu_request", "cpu_limit", "memory_request", "memory_limit")
+    totals = dict.fromkeys(keys, 0.0)
+    incomplete = dict.fromkeys(keys, False)
+    counted = False
+    for container in pod_workload_containers(spec_owner):
+        if wanted is not None and getattr(container, "name", None) not in wanted:
+            continue
+        counted = True
+        resources = getattr(container, "resources", None)
+        for kind, field in (("request", "requests"), ("limit", "limits")):
+            stated = _stated(resources, field)
+            for resource in ("cpu", "memory"):
+                key = f"{resource}_{kind}"
+                value = stated.get(resource)
+                if value is None:
+                    incomplete[key] = True
+                else:
+                    totals[key] += parse_resource(value)
+    if not counted:
+        return dict.fromkeys(keys)
+    return {key: None if incomplete[key]
+            else (int(totals[key]) if key.startswith("memory") else totals[key])
+            for key in keys}

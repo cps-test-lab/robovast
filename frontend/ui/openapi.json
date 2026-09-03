@@ -1708,10 +1708,31 @@
             "title": "Kind",
             "type": "string"
           },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "status": {
             "default": "pending",
             "title": "Status",
             "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1719,9 +1740,92 @@
           "display_name",
           "job_name",
           "kind",
-          "status"
+          "started_at",
+          "status",
+          "usage"
         ],
         "title": "JobSummary",
+        "type": "object"
+      },
+      "JobUsage": {
+        "description": "What one running job is consuming, against what it was given.\n\nBoth denominators, because they answer different questions and routinely differ. The\n**request** is what the scheduler set aside, so measured-against-request answers \"did we\nreserve the right amount?\" -- the sizing question, and the one the capacity meter and node\ncalibration are both about. The **limit** is the ceiling the kernel enforces, so\nmeasured-against-limit answers \"is this about to be throttled or OOM-killed?\". A container\nmay legitimately sit anywhere between the two.\n\nEvery field is optional, and absent means *not known* -- never zero. A lane that sets no\ncontainer limits has no ceiling to state; a container whose cpu limit was left open may use\nthe whole node, so no finite number is the truth; a cluster with no metrics API measures\nnothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the\nnumbers are missing, when there is a reason worth reporting, is on\n:attr:`ListJobsResponse.metrics_unavailable`.",
+        "properties": {
+          "cpu_cores": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Cores"
+          },
+          "cpu_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Limit"
+          },
+          "cpu_request": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Request"
+          },
+          "memory_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Bytes"
+          },
+          "memory_limit_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Limit Bytes"
+          },
+          "memory_request_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Request Bytes"
+          }
+        },
+        "required": [
+          "cpu_cores",
+          "cpu_limit",
+          "cpu_request",
+          "memory_bytes",
+          "memory_limit_bytes",
+          "memory_request_bytes"
+        ],
+        "title": "JobUsage",
         "type": "object"
       },
       "ListCampaignsResponse": {
@@ -1758,11 +1862,23 @@
             },
             "title": "Jobs",
             "type": "array"
+          },
+          "metrics_unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics Unavailable"
           }
         },
         "required": [
           "counts",
-          "jobs"
+          "jobs",
+          "metrics_unavailable"
         ],
         "title": "ListJobsResponse",
         "type": "object"

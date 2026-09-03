@@ -2767,11 +2767,46 @@ export interface components {
              * @default run
              */
             kind: string;
+            /** Started At */
+            started_at: number | null;
             /**
              * Status
              * @default pending
              */
             status: string;
+            usage: components["schemas"]["JobUsage"] | null;
+        };
+        /**
+         * JobUsage
+         * @description What one running job is consuming, against what it was given.
+         *
+         *     Both denominators, because they answer different questions and routinely differ. The
+         *     **request** is what the scheduler set aside, so measured-against-request answers "did we
+         *     reserve the right amount?" -- the sizing question, and the one the capacity meter and node
+         *     calibration are both about. The **limit** is the ceiling the kernel enforces, so
+         *     measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
+         *     may legitimately sit anywhere between the two.
+         *
+         *     Every field is optional, and absent means *not known* -- never zero. A lane that sets no
+         *     container limits has no ceiling to state; a container whose cpu limit was left open may use
+         *     the whole node, so no finite number is the truth; a cluster with no metrics API measures
+         *     nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
+         *     numbers are missing, when there is a reason worth reporting, is on
+         *     :attr:`ListJobsResponse.metrics_unavailable`.
+         */
+        JobUsage: {
+            /** Cpu Cores */
+            cpu_cores: number | null;
+            /** Cpu Limit */
+            cpu_limit: number | null;
+            /** Cpu Request */
+            cpu_request: number | null;
+            /** Memory Bytes */
+            memory_bytes: number | null;
+            /** Memory Limit Bytes */
+            memory_limit_bytes: number | null;
+            /** Memory Request Bytes */
+            memory_request_bytes: number | null;
         };
         /** ListCampaignsResponse */
         ListCampaignsResponse: {
@@ -2791,6 +2826,8 @@ export interface components {
             counts: components["schemas"]["JobCounts"];
             /** Jobs */
             jobs: components["schemas"]["JobSummary"][];
+            /** Metrics Unavailable */
+            metrics_unavailable: string | null;
         };
         /** ListWorkspacesResponse */
         ListWorkspacesResponse: {

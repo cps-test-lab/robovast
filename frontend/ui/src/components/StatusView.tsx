@@ -32,6 +32,7 @@ import {
   ringBudget,
 } from '@/lib/eta'
 import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from '@/lib/jobKind'
+import { jobAgeSeconds, jobMeters, type UsageMeter } from '@/lib/jobUsage'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { runMeterFailedText, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
@@ -977,6 +978,66 @@ function JobsSection({
   )
 }
 
+// A job's age and, while it runs, what it is consuming — the row's right-hand column.
+//
+// In `meta` rather than `note`: this belongs on the title's own line, and `note` is the slot for a
+// job in TROUBLE. A second line under every healthy running row would push a wide batch's list
+// past what fits on a screen, which is the one thing the Jobs tab has to stay good at.
+//
+// Redrawn by the jobs poll and not by a timer of its own. The list refetches every couple of
+// seconds while a campaign runs, which is finer than `formatDuration` resolves above a minute, so
+// a clock here would be one timer per row repainting a string that had not changed.
+function JobVitals({ job }: { job: JobSummary }) {
+  const age = jobAgeSeconds(job)
+  const { cpu, memory } = jobMeters(job)
+  if (age == null && !cpu && !memory) return null
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+      {age != null ? (
+        <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+          {formatDuration(age)}
+        </Typography>
+      ) : null}
+      <UsageMeterBar title="cpu" meter={cpu} />
+      <UsageMeterBar title="memory" meter={memory} />
+    </Stack>
+  )
+}
+
+// One resource's meter: track is the ceiling, fill is what is used, hairline is the reservation.
+// The exact figures are on the hover, following the run meter above — a ~104px track holds one
+// short label and the rest is asked of a single row.
+function UsageMeterBar({ title, meter }: { title: string; meter: UsageMeter | null }) {
+  if (!meter) return null
+  return (
+    <HoverFacts
+      title={title}
+      facts={[
+        ...meter.facts,
+        // Said only when it applies, and said as a fact rather than a caveat: an open cpu limit
+        // means the container may use the whole node, so the bar is scaled to the reservation
+        // and its right-hand end is not a ceiling.
+        ...(meter.trackIsRequest
+          ? [{ label: 'no limit', value: 'bar shows the request' }]
+          : []),
+      ]}
+    >
+      <Box sx={{ width: 104, flexShrink: 0, cursor: 'help' }}>
+        <MeterBar
+          height={14}
+          fraction={meter.fraction}
+          marker={meter.marker ?? undefined}
+          text={
+            <Box component="span" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.65rem' }}>
+              {meter.text}
+            </Box>
+          }
+        />
+      </Box>
+    </HoverFacts>
+  )
+}
+
 function JobRow({
   campaignId,
   job,
@@ -1058,6 +1119,7 @@ function JobRow({
     // derives its toggle's aria-label from the title only when it IS a string, so wrapping
     // this to mute the colour would take the accessible name off every job row.
     title: job.display_name || job.job_name,
+    meta: <JobVitals job={job} />,
     // Where a postprocessing row's output is lives on its chip's tooltip, not here: `note` is
     // a line under every such row for the life of the campaign, and it would be spent saying
     // that nothing is missing. What belongs in this always-visible slot is a job in trouble.
