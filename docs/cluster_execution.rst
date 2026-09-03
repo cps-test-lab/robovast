@@ -1213,7 +1213,12 @@ would double both the Job read and the pod read behind it. Each row carries the
 read as facts about runs, and a conversion or a probe among them would enter the run meter
 and the ETA's divisor. The conversion is the one job a campaign in its ``postprocessing``
 phase has, so listing it is the difference between a busy campaign and an apparently idle
-one; expanding its row reads its pod log like any other.
+one. Its row carries no log of its own, and that is deliberate: the conversion runs in init
+containers, which the per-job log does not report (it reports the containers that run for the
+pod's whole life), and every container's output is already published to the campaign's
+POSTPROCESSING section while the Job runs (:func:`publish_live_log`) — a copy in the object
+store, which is the one that is still readable after ``ttlSecondsAfterFinished`` has taken the
+pod away.
 
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
