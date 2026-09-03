@@ -142,3 +142,37 @@ def test_web_ui_stop_unknown_campaign_reports_not_tracked():
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is False
+
+
+def test_stop_during_postprocessing_says_what_it_leaves():
+    """A stop lands differently once the runs are over, and the reply has to say so.
+
+    The pipeline polls the flag, so the step in flight is torn down rather than run to the
+    end — but the runs are finished and every result they produced is kept, so the campaign
+    still ends as ``finished``. What the stop gives up is the derived data, which nothing
+    but a re-run brings back, and an operator told only "stop requested" would have no
+    reason to ask for one.
+    """
+    lt = _transport()
+    entry = _add_running(lt, "campaign-pp")
+    entry.state.phase = "postprocessing"
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-pp")
+
+    assert res.ok and entry.state.stopped.is_set()
+    assert "postprocessing" in res.message
+    assert "finished" in res.message and "re-run postprocessing" in res.message
+
+
+def test_stop_while_running_keeps_its_own_wording():
+    """The postprocessing sentence must not turn up on a campaign that is still running —
+    there it would promise results that the stopped runs will not produce."""
+    lt = _transport()
+    entry = _add_running(lt, "campaign-run")
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-run")
+
+    assert res.ok and res.message == "stop requested"
+    entry.state.stopped.set()  # let the fake worker exit

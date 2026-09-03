@@ -127,6 +127,38 @@ the phase survives a service restart instead of reconstructing as an ambiguous
 ``"finished"``. Every terminal-phase filter (listings, the ``--wait-and-download``
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
+A stop that arrives once the runs are **over** — during postprocessing — ends differently,
+and both halves of the difference matter. It is not reached by either lane's teardown (the
+local one removes the scenario container; the cluster one is label-scoped to
+``jobgroup=scenario-runs`` so that it cannot cancel a shared image build, and the
+postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the flag itself:
+``await_job`` deletes the Job — which makes a Job this process only *re-attached* to
+stoppable as well — and the local lane signals the conversion's process group, whose
+container tears itself down. And the campaign is **not** ``"stopped"`` — its runs all
+finished and their results are complete, so it ends ``"finished"`` with the reason on
+``postprocessing_error`` and no derived data, exactly as a postprocessing *failure* does,
+because in both cases what is missing is only the derived data and only a re-run supplies
+it. ``stop`` says which of the two stops it performed in its reply, and the reason is
+recorded as a cancellation rather than through the failure account: no failure log is
+authored, because a stop is not a fault.
+
+What a cancelled postprocess leaves is bounded by design rather than by luck, though the
+two lanes bound it differently. The rosbag conversion — the long step, and the one a stop
+is usually aimed at — is written to survive being killed on both: a bag records itself as
+converted only once its handlers have finished, and every output is rewritten rather than
+appended, so an interrupted bag is simply redone. Locally the steps after it (the index
+ingest, the metadata, the provenance record) run in this process and are cancelled only
+*between* steps, so they are never entered part-way. In the cluster's Job they run in the
+pod, so a stop landing during the ingest interrupts it — and that is survivable for the
+reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
+clears a campaign's rows before writing them, so a re-run replaces a partial load rather
+than doubling it.
+
+What neither lane leaves is a campaign that *claims* derived data it does not have. The
+provenance record is written last, after the ingest, precisely so that its presence means
+every step succeeded — so a cancelled campaign has none, reads as not postprocessed, and
+asks for the re-run that settles it.
+
 Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
 handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
 clock starts, and the layers that would otherwise fight the teardown consult it. Two

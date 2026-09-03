@@ -1115,6 +1115,15 @@ done. The web *Retrigger postprocessing* dialog therefore closes as soon as you 
 postprocess`` is the same dispatch from the CLI, so all three surfaces behave alike --
 there is no longer a local, synchronous path that behaves differently from the rest.
 
+Because it re-enters that phase as a tracked campaign, a re-trigger can also be **stopped**
+like one: ``stop`` cancels it — deleting the Job on the cluster lane — the campaign returns
+to ``finished``, and ``postprocessing_error`` says it was cancelled rather than that it
+failed. Nothing that was already derived is lost, and nothing claims to be derived that is
+not: an interrupted bag is redone next time, a partial index load is replaced rather than
+doubled, and the provenance record that says a campaign carries derived data is written
+last, so a cancelled campaign simply reads as not postprocessed (see :doc:`architecture`).
+Ask for it again whenever the derived data is wanted.
+
 Because a post-run step is separate from the runs themselves, a **failure of one of
 these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
 are the deliverable and remain downloadable) and the failure is recorded on its own

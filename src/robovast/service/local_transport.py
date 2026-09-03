@@ -56,8 +56,8 @@ from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
 from robovast.common.host_display import require_host_display
 from robovast.common.campaign_data import read_campaign_finished_at
 from robovast.common.store import read_campaign_created_at, read_campaign_description
-from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
-                                               is_terminal)
+from robovast.execution.control_server import (STOP_DURING_POSTPROCESSING, ControllerState, Phase,
+                                               Status, failure_detail, is_terminal)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
                                         UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
@@ -1464,14 +1464,17 @@ class LocalTransport(RobovastInterface):
         exactly as an auto-chained run does; without it a retrigger was the case where the
         view showed ``postprocessing`` and nothing else for the whole run.
         """
-        from robovast.execution.control_server import \
-            stage_output_callback  # pylint: disable=import-outside-toplevel
+        from robovast.execution.control_server import (  # pylint: disable=import-outside-toplevel
+            stage_output_callback, stop_checker)
         from robovast.results_processing.postprocessing import \
             run_postprocessing  # pylint: disable=import-outside-toplevel
         return run_postprocessing(
             results_dir=str(campaign_dir.parent), campaign=campaign_id,
             force=force, skip=list(skip),
-            output_callback=stage_output_callback(state, logger.info))
+            output_callback=stage_output_callback(state, logger.info),
+            # A re-run is a tracked campaign like any other while it is going, so
+            # ``stop_campaign`` reaches it -- and with this, ends it.
+            should_stop=stop_checker(state))
 
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
         """Chain postprocessing when the imported campaign has none of its own.
@@ -2820,10 +2823,14 @@ class LocalTransport(RobovastInterface):
             # Each step's line also becomes the live ``stage`` marker: this phase has no run
             # counter, so its own narration is the only thing that separates a long step from
             # a stuck one for a reader watching the campaign view.
-            from robovast.execution.control_server import stage_output_callback
+            from robovast.execution.control_server import stage_output_callback, stop_checker
             ok, message = run_postprocessing(
                 results_dir=results_dir, campaign=campaign_id,
-                output_callback=stage_output_callback(state, logger.info))
+                output_callback=stage_output_callback(state, logger.info),
+                # The stop flag is only *checked* before this step (see
+                # controller._finish_campaign), so without it here a campaign stopped
+                # once postprocessing has begun runs to the end regardless.
+                should_stop=stop_checker(state))
             if ok:
                 from robovast.results_processing.postprocessing import \
                     campaign_defines_postprocessing
@@ -2837,8 +2844,15 @@ class LocalTransport(RobovastInterface):
                 # (not a run failure) and records the reason on its own field, so it is
                 # re-triggerable and distinct from a failed run. Mirrors the cluster
                 # auto-chain in controller._chain_postprocessing.
+                #
+                # A cancelled run lands here too and keeps that shape: its runs finished
+                # and their results are complete, so the campaign is not ``stopped`` —
+                # only its derived data is missing, which is what the field says and a
+                # re-run supplies. Told apart by the flag, not by the message.
+                cancelled = state.stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
-                state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {message}")
+                state.set_phase(Phase.FINISHED, stage=(
+                    message if cancelled else f"postprocessing failed: {message}"))
         except Exception as e:  # noqa: BLE001 - surfaced via status
             logger.exception("Postprocessing for %s failed", campaign_id)
             state.update(postprocessing_error=failure_detail(e), postprocessed=False)
@@ -3165,13 +3179,22 @@ class LocalTransport(RobovastInterface):
         therefore shared, so cancelling it could strand a sibling campaign waiting on the
         same image, and the image is a cache entry rather than this campaign's property.
         ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
+
+        A campaign already **postprocessing** is stopped by the flag too: the pipeline polls
+        it, so the step in flight is torn down rather than run to the end. What that leaves
+        is said in the reply rather than left to be discovered, because the outcome differs
+        from stopping a run -- the runs are over and their results are complete, so the
+        campaign still ends as ``finished``, only without its derived data.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(ok=False, message=f"campaign {campaign_id} not tracked here")
+        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
         entry.state.request_stop()
         self._kill_scenario_container()
+        if postprocessing:
+            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
         return ActionResult(ok=True, message="stop requested")
 
     def stop_job(self, campaign_id: str, job_name: str,
@@ -4332,6 +4355,11 @@ class LocalTransport(RobovastInterface):
             notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
+            elif state.stop_requested:
+                # A re-run is a tracked campaign while it lasts, so ``stop_campaign``
+                # reaches it and ends it. What comes back then is the operator's own
+                # doing, and announcing it as a failure would file that under faults.
+                notifier.postprocessing_cancelled(message)
             else:
                 notifier.postprocessing_failed(message)
 

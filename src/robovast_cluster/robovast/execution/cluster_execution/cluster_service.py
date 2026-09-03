@@ -57,7 +57,7 @@ from pathlib import Path
 from robovast.client import file_address
 from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
-from robovast.execution.control_server import Phase, is_running
+from robovast.execution.control_server import STOP_DURING_POSTPROCESSING, Phase, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, ListJobsResponse, LogChunk, ResourceUsage,
@@ -2545,14 +2545,24 @@ class ClusterService(LocalTransport):
         build is content-addressed and therefore shared, so cancelling it could strand a
         sibling campaign waiting on the same image, and the image is a cache entry rather
         than this campaign's property. ``_await_build_image`` detaches instead.
+
+        A campaign already **postprocessing** is likewise not reached by that teardown --
+        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by the flag
+        instead: ``run_conversion_job`` polls it and deletes the Job. The reply says what
+        that leaves, because it differs from stopping a run: the runs are over and their
+        results are complete, so the campaign still ends as ``finished``, only without its
+        derived data.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
+        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
         entry.state.request_stop()
         self._teardown_campaign_jobs(campaign_id)
+        if postprocessing:
+            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
@@ -3766,12 +3776,17 @@ class ClusterService(LocalTransport):
         retrigger went through ``postprocess_campaign`` and the import chain did not, so an
         imported raw campaign was the one case that took the local path on a cluster.
         """
+        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
+
         from .postprocess_job import postprocess_campaign  # noqa: PLC0415
 
         return postprocess_campaign(
             self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
             force=force, skip=list(skip or []), kube_context=self.kube_context,
             state=state,
+            # A postprocess is a tracked campaign while it runs, so ``stop`` reaches it --
+            # and with this, ends it instead of leaving it to finish.
+            should_stop=stop_checker(state),
             # The same queue the campaign's trials went through, so this pod waits for room
             # rather than being created against a cluster that has none.
             admission=self._admission_controller())
@@ -3810,11 +3825,13 @@ class ClusterService(LocalTransport):
                 request.campaign_id, self._SHARE_STATUS_OBJECTS,
                 "the campaign's postprocessing status")
             cfg = self._cluster_config()
+            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
                 kube_context=self.kube_context, state=state,
-                admission=self._admission_controller())
+                admission=self._admission_controller(),
+                should_stop=stop_checker(state))
             # The recording re-materialises after the pod has run, because the pod is what
             # wrote the provenance marker and the run rows the reconstruction reads: from
             # the copies pulled *before* the postprocess, a campaign that was just
@@ -3921,9 +3938,11 @@ class ClusterService(LocalTransport):
             campaign_root = self._materialize(
                 campaign_id, self._SHARE_STATUS_OBJECTS,
                 "the campaign's postprocessing status")
+            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
             ok, message = reattach_conversion_job(
                 self._cluster_config(), campaign_id, str(campaign_root), self.namespace,
-                job_name, kube_context=self.kube_context)
+                job_name, kube_context=self.kube_context,
+                should_stop=stop_checker(state))
             if ok is None:
                 logger.info("Left the postprocessing record of %s alone: %s",
                             campaign_id, message)

@@ -855,8 +855,9 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign. The service owns the teardown (containers, cluster Jobs).
 
-    On a campaign still waiting for an image this detaches it rather than cancelling a
-    build a sibling campaign may also be waiting on.
+    A campaign waiting for an image is detached instead, so a build a sibling may share is
+    not cancelled. One in ``postprocessing`` has that cancelled and ends ``finished``
+    without derived data.
 
     Args:
         campaign_id: The id from ``start_campaign``.
