@@ -664,6 +664,17 @@
             "title": "Postprocessing Error",
             "type": "string"
           },
+          "results_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Results Bytes"
+          },
           "share_error": {
             "default": "",
             "title": "Share Error",
@@ -697,6 +708,7 @@
           "phase",
           "postprocessed",
           "postprocessing_error",
+          "results_bytes",
           "share_error",
           "started_at"
         ],
@@ -3374,6 +3386,17 @@
             "title": "Progress Since",
             "type": "number"
           },
+          "results_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Results Bytes"
+          },
           "runs": {
             "$ref": "#/components/schemas/RunProgress"
           },
@@ -3517,6 +3540,7 @@
           "progress_age_s",
           "progress_deadline_s",
           "progress_since",
+          "results_bytes",
           "runs",
           "search_since",
           "share_error",

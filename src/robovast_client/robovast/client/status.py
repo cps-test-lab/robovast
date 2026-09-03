@@ -347,6 +347,20 @@ class Status(BaseModel):
     # runs are the deliverable) and is re-triggerable from disk (service ``run_share``).
     # Cleared on a successful (re-)triggered upload.
     share_error: Optional[str] = None
+    # Total bytes the campaign's results occupy in their durable home -- the local results
+    # tree, or the object store on a cluster lane. Bounded state written once, at the end of
+    # the run, by the backend hook that knows where that home is
+    # (``ExecutionBackend.campaign_results_bytes``); this payload's rule permits a counter,
+    # not a series, and this is one number set once.
+    #
+    # ``None`` means **not recorded** -- a campaign that ended before this was measured, or
+    # one whose measurement failed -- which is a different fact from a campaign of zero
+    # bytes, and the reason a reader omits the figure rather than showing ``0 B``.
+    #
+    # It does not count the control-plane publish that carries it (``campaign.db`` and
+    # ``_execution/``, kilobytes against a results tree): the number is written before that
+    # upload, so it cannot include itself.
+    results_bytes: Optional[int] = None
     extra: dict = Field(default_factory=dict)
     # What the running jobs' own simulators currently report about themselves. **Attached on
     # read and never persisted**: the controller does not write this, nothing in the results

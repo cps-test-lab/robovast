@@ -5414,7 +5414,10 @@ class LocalTransport(RobovastInterface):
             postprocessing_error=snap.postprocessing_error or "",
             share_error=snap.share_error or "",
             # First line only -- see the field's note. Free here: `snap` is already in hand.
-            error=(snap.error or "").strip().splitlines()[0] if snap.error else "")
+            error=(snap.error or "").strip().splitlines()[0] if snap.error else "",
+            # From the same snapshot as everything above, so a row cannot show a size that
+            # belongs to a different reading of the campaign than its phase does.
+            results_bytes=snap.results_bytes)
         if key is not None:
             self._summary_cache[cid] = (key, summary)
         return summary

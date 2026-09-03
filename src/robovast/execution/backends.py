@@ -232,6 +232,26 @@ class ExecutionBackend(ABC):
         that are unsure should call it rather than reason about it.
         """
 
+    def campaign_results_bytes(self, campaign_root: str) -> "int | None":
+        """Total bytes this campaign's results occupy in their **durable home**.
+
+        Measured once, in the run tail, so that reading the figure later is a field lookup
+        rather than a walk of the results: a campaign is displayed far more often than it
+        finishes, and enumerating storage per view scales with the campaign while telling
+        every viewer the same thing.
+
+        The default answers for a lane whose durable home IS ``campaign_root`` -- the local
+        :class:`DockerBackend`, which materialises every artifact there. A lane that keeps
+        its results elsewhere must override this and measure *there*, because the driver's
+        own disk is not evidence about what the durable home holds.
+
+        ``None`` means the size could not be established, which a reader must render as
+        "not recorded" rather than as zero. Best-effort by contract: a campaign's results
+        are the deliverable, and failing to measure them must never fail the campaign.
+        """
+        from robovast.execution.campaign_archive import campaign_source_bytes
+        return campaign_source_bytes(campaign_root)
+
     def preflight_upload_to_share(self) -> None:
         """Validate this backend can honour ``--upload-to-share`` before the campaign runs.
 
