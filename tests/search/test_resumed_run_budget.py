@@ -67,13 +67,11 @@ class FixedRepsStrategy:
 
 
 def _rehydrate(controller, store, campaign_id=1):
-    """Seed the counters `_run_search` owns, then replay -- the resume path in isolation."""
+    """Replay the record and read back the runs it folds to -- the resume in isolation."""
     controller.store = store
-    controller._batches_done = 0                     # noqa: SLF001
-    controller._evaluations_done = 0                 # noqa: SLF001
-    controller._runs_done = 0                        # noqa: SLF001
-    controller._rehydrate_search(campaign_id)        # noqa: SLF001
-    return controller._runs_done                     # noqa: SLF001
+    position = controller._rehydrate_search(         # noqa: SLF001
+        campaign_id, lambda best, evs: best)
+    return position.runs
 
 
 def _run(tmp_path, reps, default_runs=2):
