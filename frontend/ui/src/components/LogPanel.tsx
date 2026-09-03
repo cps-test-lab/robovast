@@ -88,6 +88,33 @@ export function logFooter(o: {
   return { text: 'loading…', kind: 'busy' }
 }
 
+// The tail the panel keeps. What this bounds is not memory but the cost of *every* poll:
+// the body is rebuilt from the whole buffer on each delta (a span per line, plus the
+// container-tag scan), so an unbounded buffer makes a campaign log of tens of megabytes
+// re-render hundreds of thousands of spans twice a second, and the panel stops responding
+// to its own scrollbar. The server caps what one frame carries; this caps what accumulates
+// across them. Generous next to the ~320px window it is read through — enough that
+// scrolling back a long way still works.
+const KEEP_CHARS = 512 * 1024
+
+// What replaces the head once it is dropped. A truncation the reader cannot see is a log
+// that lies about what the campaign printed.
+const HEAD_DROPPED = '[… earlier output not shown …]'
+
+/**
+ * Keep the last {@link KEEP_CHARS} of `text`, from a line boundary, marked as trimmed.
+ *
+ * Trimming from the front is what makes this safe to apply on every append: the marker
+ * it leaves is itself part of the head, so a later trim drops it along with the rest and
+ * re-adds exactly one — the panel never accumulates a stack of notices.
+ */
+export function trimHead(text: string): string {
+  if (text.length <= KEEP_CHARS) return text
+  const cut = text.length - KEEP_CHARS
+  const nl = text.indexOf('\n', cut)
+  return `${HEAD_DROPPED}\n${text.slice(nl === -1 ? cut : nl + 1)}`
+}
+
 // How far from the bottom still counts as "at the bottom", in px. Not zero: a sub-pixel
 // scroll height (fractional line metrics, a zoomed browser) leaves a fraction of a pixel of
 // slack that would read as the reader having deliberately scrolled away.
@@ -115,7 +142,7 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
     onMessage: (e) => {
       try {
         const delta = JSON.parse(e.data) as string
-        if (delta) setText((t) => t + delta)
+        if (delta) setText((t) => trimHead(t + delta))
       } catch {
         /* malformed frame — ignore rather than break the tail */
       }
