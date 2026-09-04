@@ -378,8 +378,21 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
     # error, because someone who asked for a fixed clock and silently did not get one would
     # go on to trust measurements taken on a scaling one.
-    ensure_cpu_governor(client.AppsV1Api(), namespace,
-                        True if cpu_governor is None else cpu_governor,
+    #
+    # A provider whose nodes cannot take a governor at all moves the DEFAULT only. Attempting
+    # it there costs a readiness wait every run to rediscover the same answer, so it is not
+    # attempted and the reason is stated once. An explicit flag still reaches
+    # `ensure_cpu_governor` and still fails loudly: provider policy decides what happens when
+    # nobody said, never what happens when somebody did.
+    from .node_governor import PERFORMANCE, unavailable_message  # noqa: PLC0415
+    want_governor = True if cpu_governor is None else cpu_governor
+    if cpu_governor is None and not getattr(
+            get_cluster_config(config_name), "governor_is_settable", True):
+        logger.info("%s", unavailable_message(PERFORMANCE, config_name))
+        # Still reconciled to absent rather than skipped: setup writes the cluster's whole
+        # configuration on every run, so a DaemonSet an earlier setup left behind goes.
+        want_governor = False
+    ensure_cpu_governor(client.AppsV1Api(), namespace, want_governor,
                         explicit=cpu_governor is not None,
                         node_selector=jobs_node_labels)
 

@@ -468,6 +468,18 @@ class BaseConfig(object):
     #: The providers that mount the store from a volume this deployment chooses set it.
     store_is_placeable = False
 
+    #: Whether this provider's nodes can have their CPU governor set at all.
+    #:
+    #: ``True`` is the safe default, and the opposite direction to the flag above: setup
+    #: attempts it, and a cluster that cannot take it is reported rather than assumed. A
+    #: provider whose nodes are virtual machines sets this ``False`` -- their kernels expose
+    #: no cpufreq policy, because the hypervisor owns the clock -- so setup does not spend a
+    #: readiness wait per run discovering that again, and says once why it is not trying.
+    #:
+    #: It is a **default**, never an override: ``--performance-governor`` is obeyed and still
+    #: fails loudly, because a supplied argument may not be overruled by provider policy.
+    governor_is_settable = True
+
     @staticmethod
     def _apply_pod_node_selector(yaml_objects, node_labels):
         """Inject ``nodeSelector`` into all ``Pod`` objects.
