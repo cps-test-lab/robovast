@@ -49,7 +49,8 @@ from pathlib import Path
 
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_data import (aggregate_run_status, invalid_runs,
-                                           list_run_dirs, read_container_failures,
+                                           list_run_dirs, read_config_channels,
+                                           read_container_failures,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
@@ -554,7 +555,8 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs),
                 status=aggregate_run_status(run_dirs, invalid=invalidated),
-                result_dir=os.path.relpath(cdir, self.campaign_root))
+                result_dir=os.path.relpath(cdir, self.campaign_root),
+                channels=read_config_channels(Path(cdir)))
             outcomes = read_run_outcomes(Path(cdir), Path(self.campaign_root))
             self.store.record_runs(unit_id, outcomes)
             # The verdicts are parsed here anyway for the store; tallying them into the
@@ -1051,7 +1053,8 @@ class CampaignController:
                             batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                             params=ps.values, objectives={}, measures={},
                             n_samples=0, status="no_sample", result_dir=result_dir,
-                            n_reps=reps)
+                            n_reps=reps,
+                            channels=read_config_channels(config_dir))
                         # Unlike composition_failed, these runs HAPPENED: record them so the
                         # cell's failures are visible and counted rather than vanishing with
                         # the evaluation that could not use them.
@@ -1067,7 +1070,8 @@ class CampaignController:
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=result_dir, n_reps=reps)
+                        result_dir=result_dir, n_reps=reps,
+                        channels=read_config_channels(config_dir))
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)

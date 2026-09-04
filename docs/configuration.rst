@@ -430,6 +430,12 @@ modified. A scenario parameter whose value is the source's declared path is rewr
 that configuration's copy, so the trial launches the file belonging to the cell it is
 running.
 
+Beside them, ``<campaign>/<config>/_config/sut.config`` records the whole resolved block —
+a **record**, not an input, mirroring what ``sim:`` writes to ``sim.config`` and ``scenario:``
+to ``scenario.config``. The rewritten copies are what the cell runs; this is what a reader
+consults to see which factor produced which value, without diffing two copies of a stack's
+configuration.
+
 Two things are refused rather than left to go wrong quietly:
 
 * a source declared on the ``simulation`` or ``scenario`` container — their configuration is
