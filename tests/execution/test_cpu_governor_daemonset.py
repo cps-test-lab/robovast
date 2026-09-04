@@ -15,7 +15,8 @@ from robovast.execution.cluster_execution.node_governor import (ABSENT, DAEMONSE
                                                                 PERFORMANCE, REMOVED,
                                                                 ensure_cpu_governor,
                                                                 manifest, refusal_message,
-                                                                remove_daemonset)
+                                                                remove_daemonset,
+                                                                runtime_failure_message)
 
 
 class _ApiException(Exception):
@@ -34,9 +35,18 @@ def _api_exception(monkeypatch):
 
 
 class _Apps:
-    def __init__(self, create_error=None):
+    """A cluster that takes the DaemonSet and, by default, runs it on its one node.
+
+    *desired* / *ready* are what the DaemonSet controller reports. ``ready=0`` over a
+    non-zero *desired* is the cloud-VM case: created successfully, then CrashLoopBackOff on
+    every node because the guest has no writable cpufreq.
+    """
+
+    def __init__(self, create_error=None, desired=1, ready=1):
         self.created, self.replaced, self.deleted = [], [], []
         self._create_error = create_error
+        self._desired, self._ready = desired, ready
+        self.status_reads = 0
 
     def create_namespaced_daemon_set(self, namespace, body):
         if self._create_error:
@@ -46,8 +56,20 @@ class _Apps:
     def replace_namespaced_daemon_set(self, name, namespace, body):
         self.replaced.append(body)
 
+    def read_namespaced_daemon_set_status(self, name, namespace):
+        self.status_reads += 1
+        return types.SimpleNamespace(status=types.SimpleNamespace(
+            desired_number_scheduled=self._desired, number_ready=self._ready))
+
     def delete_namespaced_daemon_set(self, name, namespace, body=None):
         self.deleted.append(name)
+
+
+def _instant(apps, **kwargs):
+    """``ensure_cpu_governor`` with the readiness wait resolved without wall-clock time."""
+    ticks = iter(range(0, 10_000, 10))
+    return ensure_cpu_governor(apps, "default", True, sleep=lambda _s: None,
+                               clock=lambda: next(ticks), ready_timeout_s=30, **kwargs)
 
 
 # -- the manifest --------------------------------------------------------------------------
@@ -124,6 +146,63 @@ def test_the_default_warns_and_carries_on_where_the_cluster_refuses(caplog):
     with caplog.at_level(logging.WARNING):
         assert ensure_cpu_governor(apps, "default", True) is False
     assert "could not set the CPU governor" in caplog.text
+
+
+# -- accepted, and then not running --------------------------------------------------------
+
+def test_a_daemonset_that_never_runs_is_not_reported_as_applied(caplog):
+    """The cloud-VM failure, and the one the API cannot report.
+
+    A GCE or EC2 guest ACCEPTS the privileged pod -- only Autopilot-style clusters refuse it
+    -- and then has no writable cpufreq, because the hypervisor owns the clock. The pod exits
+    non-zero exactly as designed and CrashLoopBackOffs on every node, while the create call
+    returned 201. Reporting that as applied leaves the operator trusting measurements taken on
+    a scaling clock, which is the whole thing this module exists to prevent.
+    """
+    import logging
+
+    apps = _Apps(desired=3, ready=0)
+    with caplog.at_level(logging.WARNING):
+        assert _instant(apps) is False
+    assert "is not setting" in caplog.text
+    assert "node image" in caplog.text, "the remedy on a managed pool, since nothing was refused"
+    assert "cpu_governor_scaling" in caplog.text
+
+
+def test_an_explicit_request_raises_when_it_is_accepted_and_does_not_run():
+    """Same split as the refusal: someone who asked for a fixed clock and did not get one is
+    worse off than someone who never asked."""
+    with pytest.raises(RuntimeError, match="is not setting"):
+        _instant(_Apps(desired=3, ready=0), explicit=True)
+
+
+def test_a_selector_that_matches_no_node_says_so_rather_than_blaming_the_clock():
+    """Nothing is scheduled, so nothing crashed -- a different mistake with a different fix,
+    and one a message about cpufreq would send an operator hunting for."""
+    apps = _Apps(desired=0, ready=0)
+    assert _instant(apps) is False
+    problem = runtime_failure_message(PERFORMANCE, "no node was selected")
+    assert "cpufreq" not in problem
+
+
+def test_a_running_daemonset_is_reported_once_and_not_waited_on():
+    apps = _Apps(desired=2, ready=2)
+    assert _instant(apps) is True
+    assert apps.status_reads == 1, "a Ready DaemonSet must not cost the whole timeout"
+
+
+def test_a_status_that_cannot_be_read_is_not_read_as_a_failure(caplog):
+    """This runs after a successful create. Turning "could not check" into "did not work"
+    would make a missing RBAC verb look like a cluster that cannot hold its clock."""
+    import logging
+
+    class _NoStatus(_Apps):
+        def read_namespaced_daemon_set_status(self, name, namespace):
+            raise _ApiException(403, "daemonsets/status is forbidden")
+
+    with caplog.at_level(logging.WARNING):
+        assert _instant(_NoStatus()) is True
+    assert "could not read its status" in caplog.text, "unknown must not pass silently"
 
 
 def test_asking_for_nothing_removes_a_previously_configured_daemonset():

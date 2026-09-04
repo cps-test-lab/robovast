@@ -219,15 +219,15 @@ cleanup prints it rather than reporting a clean teardown.
 
 .. warning::
 
-   **On a cloud VM this usually cannot work, and the failure is not the one setup detects.**
-   Setup recognises a cluster that *refuses* the privileged pod — GKE Autopilot does — and
-   warns. GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at
-   runtime: a GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because
-   the hypervisor owns the clock. The pod exits non-zero and ``CrashLoopBackOff``\ s on every
-   node while setup reports the DaemonSet as applied. Node auto-repair would undo the setting
-   anyway. On managed Kubernetes, pass ``--no-performance-governor`` and set the governor
-   through the node image instead — and read the ``cpu_governor_scaling`` advice, which is
-   what tells you whether it took effect.
+   **On a cloud VM this usually cannot work**, and the two ways it fails are different. A
+   cluster that *refuses* the privileged pod — GKE Autopilot does — says so at create time.
+   GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at runtime: a
+   GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because the
+   hypervisor owns the clock, so the pod exits non-zero and ``CrashLoopBackOff``\ s on every
+   node. Setup waits for a Ready pod and reports both cases rather than either as applied.
+   Node auto-repair would undo the setting anyway. On managed Kubernetes, pass
+   ``--no-performance-governor`` and set the governor through the node image instead — and
+   read the ``cpu_governor_scaling`` advice, which is what tells you whether it took effect.
 
 .. _cluster-node-local-storage:
 

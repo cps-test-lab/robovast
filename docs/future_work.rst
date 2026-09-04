@@ -335,8 +335,7 @@ would make GKE honest: read the autoscaler's maximum **from the API server** rat
 shelling out to ``gcloud`` -- the service pod has no CLI tools, which is why the existing hatch
 never fires there -- re-apply node identity labels continuously rather than at ``setup``, teach
 ``preflight`` that a scale-to-zero pool is a temporary condition rather than a permanent
-refusal, and make the governor DaemonSet report a runtime failure instead of returning
-"applied". An ``eks`` provider needs S3 results storage plus the same API-server-side autoscaler
+refusal. An ``eks`` provider needs S3 results storage plus the same API-server-side autoscaler
 read (Karpenter ``NodePool`` / ASG annotations); deliberately not another subprocess.
 
 **A naming clash worth resolving if either area is touched again.** ``runs.probed`` (a campaign
