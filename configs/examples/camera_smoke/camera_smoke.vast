@@ -36,6 +36,7 @@ execution:
     scenario:
       resources:
         cpu: 2
+        memory: 2Gi
   scenario_file: scenario.osc
   runs: 1
   # Software rendering through llvmpipe is slow, and the first render also compiles the world.
