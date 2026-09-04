@@ -1334,7 +1334,7 @@ implying a position it does not have.
 
 **Data browser.** The left panel lists the campaign's tables in the results
 index — one per metric CSV, plus the ``runs`` **dimension table**
-(per-run ``status``/``duration_s`` and each scenario parameter as a ``param_*``
+(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*``
 column), with ``campaign.db`` attached as schema ``campaign``. Write **read-only SQL**
 in the editor and **Run** it; the result shows as a table and, via the chart builder,
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric
