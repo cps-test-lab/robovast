@@ -1587,6 +1587,17 @@ sizing rather than being sized from a limit: throttled past what its own statist
 or OOM-killed at all — a memory ceiling that binds kills rather than slows, so one is enough.
 Both counters come from the same file the sizing is read from.
 
+**A probe that loses a workload container stops the campaign, naming that container.** Those
+containers are native sidecars, so one that dies is *restarted* rather than ending the job:
+the probe goes on sampling a stack that keeps dying, holds its node while it does, and what
+is read out of it at the end measures the restart loop rather than a trial — surfacing as
+whichever statistic that fragment fails, with the container's own error nowhere in it. A
+probe runs one of the campaign's own configurations, so this is not a flaky trial to
+re-sample: every run would meet the same fault. The campaign therefore ends on the crash
+itself, and what the container printed before it died is captured in
+``_execution/container_failures.json``, beside the probe's own output under
+``_calibration/<node-id>/``.
+
 How much throttling a container may survive depends on **which statistic its figure comes
 from**, because clipping removes the top of the distribution. A container sized on its peak is
 spoiled by the first clipped tick, so it keeps a strict allowance covering bring-up only. One
