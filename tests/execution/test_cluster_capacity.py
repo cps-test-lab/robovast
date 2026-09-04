@@ -185,6 +185,8 @@ class _Autoscaler:
 def _with_config(nodes, pods, monkeypatch, config):
     monkeypatch.delenv(cluster_capacity.HEADROOM_CPU_ENV, raising=False)
     monkeypatch.delenv(cluster_capacity.HEADROOM_MEMORY_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.MAX_CPU_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.MAX_MEMORY_ENV, raising=False)
     core = types.SimpleNamespace(
         list_node=lambda **kw: types.SimpleNamespace(items=nodes),
         list_pod_for_all_namespaces=lambda **kw: types.SimpleNamespace(items=pods))
@@ -229,6 +231,54 @@ def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch)
 def test_no_cluster_config_is_the_ordinary_case(monkeypatch):
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
     assert p.budget().free_cpu == pytest.approx(8 - 1)
+
+
+def test_a_recorded_maximum_answers_where_the_providers_own_query_cannot(monkeypatch):
+    """The whole point of recording it. A provider reports its ceiling by running the cloud's
+    CLI, which the service image does not carry -- so in the pod that reads this, the
+    provider always fails and every managed cluster looked static."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     _Autoscaler(boom=True))
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    assert p.budget().growable is True
+
+
+def test_a_recorded_maximum_outranks_the_provider(monkeypatch):
+    """A stated ceiling that a query could overrule would not be worth stating, and the
+    provider is the source that cannot answer here anyway."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     _Autoscaler(cpu="4", memory="8Gi"))
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    assert p.budget().growable is True
+
+
+def test_a_recorded_maximum_at_the_current_size_is_not_growable(monkeypatch):
+    """A cluster already at its ceiling is static, and saying otherwise would create every
+    job unpinned against room that will never arrive."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "8")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "16Gi")
+    assert p.budget().growable is False
+
+
+def test_half_a_recorded_maximum_is_not_a_maximum(monkeypatch):
+    """Both halves or neither: a cpu ceiling with no memory ceiling is not a size."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.delenv(cluster_capacity.MAX_MEMORY_ENV, raising=False)
+    assert p.budget().growable is False
+
+
+def test_an_unparseable_recorded_maximum_raises_rather_than_meaning_static(monkeypatch):
+    """Reading a typo as "unset" would pin an elastic cluster to its current size, and the
+    symptom -- a cluster that never grows -- points nowhere near the cause."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "sixty-four")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    with pytest.raises(ValueError, match=cluster_capacity.MAX_CPU_ENV):
+        p.budget()
 
 
 # -- fail loudly rather than inventing capacity --------------------------------------

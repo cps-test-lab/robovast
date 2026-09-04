@@ -330,14 +330,17 @@ is why this is recorded rather than guessed at.
   against a 150 s trial this is roughly right. For a stack with a five-minute bring-up and a
   60 s trial, the p95 measures bring-up and the node is calibrated for the wrong thing.
 
-**Cloud.** :ref:`cluster-cloud-limits` records what does not hold on managed Kubernetes. What
-would make GKE honest: read the autoscaler's maximum **from the API server** rather than by
-shelling out to ``gcloud`` -- the service pod has no CLI tools, which is why the existing hatch
-never fires there -- re-apply node identity labels continuously rather than at ``setup``, teach
-``preflight`` that a scale-to-zero pool is a temporary condition rather than a permanent
-refusal, and make the governor DaemonSet report a runtime failure instead of returning
-"applied". An ``eks`` provider needs S3 results storage plus the same API-server-side autoscaler
-read (Karpenter ``NodePool`` / ASG annotations); deliberately not another subprocess.
+**Cloud.** :ref:`cluster-cloud-limits` records what does not hold on managed Kubernetes. The
+growth ceiling now reaches the service pod, because ``setup`` asks the provider and records the
+answer in the deployment's environment; what is still open is that the recording **ages**, so a
+resized node pool needs an ``upgrade`` before admission knows. Reading the autoscaler's maximum
+from the API server instead -- the ``cluster-autoscaler-status`` ConfigMap names each node
+group's ``maxSize``, in node counts that still have to be turned into cores -- would make it
+live, and would be the same mechanism an ``eks`` provider needs beside S3 results storage.
+
+Also open: re-apply node identity labels continuously rather than at ``setup``, so a node the
+autoscaler adds can be pinned to and probed; and make the governor DaemonSet report a runtime
+failure instead of returning "applied".
 
 **A naming clash worth resolving if either area is touched again.** ``runs.probed`` (a campaign
 run somebody read into) and a *calibration probe* (an extra run that measures a node) share a

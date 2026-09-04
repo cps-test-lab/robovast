@@ -1818,19 +1818,25 @@ headroom, per node, measured every cycle. What is built around it was designed a
 static bare-metal cluster, and these follow from that. None of them is a crash; each is
 a silent degradation, which is why they are written down.
 
-**A cluster whose configuration cannot report an autoscaler maximum is held at its current
-size.** Admission never creates a job that no current node can hold, which is correct on a
-static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
-exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
-configuration reports that maximum; admission then creates work unpinned and lets the
-autoscaler respond. A configuration that does not implement it, including the generic base
-one an unlisted provider falls back to, gets the static behaviour.
+**A cluster whose growth ceiling nothing states is held at its current size.** Admission
+never creates a job that no current node can hold, which is correct on a static cluster and
+self-defeating on an elastic one — a pod the scheduler cannot place is exactly what makes an
+autoscaler add a node. Given a ceiling, admission creates such work unpinned and lets the
+autoscaler respond, and a pool scaled to zero is a batch that waits rather than one that is
+refused.
 
-**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
-does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
-``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
-static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
-is not where admission runs.
+The ceiling is **recorded, not queried**: ``setup`` and ``upgrade`` ask the provider — on
+GKE that is ``gcloud``, summing each node pool's autoscaler maximum — and write the answer
+into the service's environment as ``ROBOVAST_CLUSTER_MAX_CPU`` / ``ROBOVAST_CLUSTER_MAX_MEMORY``.
+That is where admission reads it, because admission runs in the service pod, whose image
+ships no cloud CLI. Setting those two variables before ``setup`` states the ceiling directly,
+which is what a provider with no query of its own — an unlisted one, or one whose CLI is not
+installed here — needs.
+
+Recorded rather than live means the figure **ages**: resizing a node pool does not reach a
+running deployment. Re-run ``vast cluster upgrade`` after such a change — the same lifecycle
+the node identity labels below already have. With neither a provider answer nor the two
+variables, the cluster is treated as static, exactly as before.
 
 **Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
 is what pins a job to the node its capacity was reserved on, and what a calibration probe

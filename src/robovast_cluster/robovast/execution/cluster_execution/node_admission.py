@@ -658,6 +658,14 @@ class AdmissionController:
         Checked once before a batch is enqueued. Without it a campaign sits in the admit loop
         forever having created **zero** jobs, and every diagnosis path downstream is pod-based
         and therefore blind to it.
+
+        "Ever" is measured against a cluster that can still add nodes, not against the nodes
+        it has -- so on a growable one (:attr:`Budget.growable`) this passes whatever the
+        current machines are, including none at all. A pool scaled to zero is the ordinary
+        resting state of an autoscaled cluster, and refusing a batch against it would make
+        that state permanent: the pending pods are what would have grown it. ``drain`` is
+        where such an item is then created unpinned, under its own limit, so passing here does
+        not hand out an unbounded plan.
         """
         # A zero-cpu pod fits everything, so the queue would stop gating and create the whole
         # plan at once. The caller that builds a sizing from a manifest refuses this first and
@@ -669,11 +677,13 @@ class AdmissionController:
                 "would admit the entire plan at once. Declare "
                 "execution.containers.<name>.resources.cpu.")
         capacities = self._provider.capacities()
+        if any(c.holds(sizing) for c in capacities):
+            return
+        if self.growable():
+            return
         if not capacities:
             raise AdmissionRefused(
                 "no nodes are available to size against; the cluster reported none")
-        if any(c.holds(sizing) for c in capacities):
-            return
         biggest = max(capacities, key=lambda c: c.cpu)
         raise AdmissionRefused(
             f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and no node is "

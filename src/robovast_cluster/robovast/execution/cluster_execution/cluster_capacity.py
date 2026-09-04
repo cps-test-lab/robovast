@@ -46,6 +46,44 @@ DEFAULT_HEADROOM_CPU = "1"
 DEFAULT_HEADROOM_MEMORY = "2Gi"
 
 
+#: What this cluster may grow to, written into the service's environment at ``setup`` and
+#: ``upgrade`` rather than queried from inside the pod.
+#:
+#: The figure decides :meth:`ClusterBudgetProvider._growable`, and its only other source is a
+#: provider's ``get_cluster_allocatable_resources`` -- which on every cloud provider means a
+#: CLI the service image does not ship. That call therefore never answers where it is read,
+#: so the cluster looked static and admission held it at the size it happened to be. Setup
+#: runs on a workstation that *does* have the provider's tooling, so it asks there and records
+#: the answer here, where the pod can read it.
+#:
+#: The cost of recording rather than querying is that the figure ages: resizing a node pool
+#: does not reach a running deployment. Re-run ``vast cluster upgrade`` after such a change,
+#: the same lifecycle the node identity labels already have.
+MAX_CPU_ENV = "ROBOVAST_CLUSTER_MAX_CPU"
+MAX_MEMORY_ENV = "ROBOVAST_CLUSTER_MAX_MEMORY"
+
+
+def recorded_maximum() -> "Tuple[Optional[float], Optional[int]]":
+    """The recorded growth ceiling as ``(cpu, memory)``, or ``(None, None)`` when unset.
+
+    Unparseable raises rather than reading as "unset": a typo would leave an elastic cluster
+    silently pinned to its current size, and the symptom -- a campaign that never grows the
+    cluster -- points nowhere near the cause. Same policy as :func:`_headroom`, for the same
+    reason.
+    """
+    raw_cpu = (os.environ.get(MAX_CPU_ENV) or "").strip()
+    raw_mem = (os.environ.get(MAX_MEMORY_ENV) or "").strip()
+    if not raw_cpu or not raw_mem:
+        return None, None
+    cpu = parse_resource(raw_cpu)
+    mem = int(parse_resource(raw_mem))
+    if not cpu or not mem:
+        raise ValueError(
+            f"{MAX_CPU_ENV}={raw_cpu!r} {MAX_MEMORY_ENV}={raw_mem!r}: not resource "
+            "quantities. Use e.g. '256' and '1024Gi'.")
+    return cpu, mem
+
+
 def _headroom() -> "Tuple[float, int]":
     """The cluster-wide reserve, from the service's environment.
 
@@ -121,9 +159,17 @@ class ClusterBudgetProvider:
         the rule is about what can *never* be placed, and on an autoscaler "not yet" is not
         never.
 
-        Failure is an absence, not an error -- the override shells out to ``gcloud`` and a
-        cluster that cannot answer should fall back to counting its nodes, not stop admitting.
+        Failure is an absence, not an error -- a cluster that cannot answer should fall back
+        to counting its nodes, not stop admitting.
+
+        Read from the environment first (:data:`MAX_CPU_ENV`), because that is the only source
+        that answers in the pod this runs in: a provider override reaches for the cloud's CLI,
+        which the service image does not carry. The provider is still asked when nothing was
+        recorded, so a driver running on a workstation keeps the live figure.
         """
+        cpu, memory = recorded_maximum()
+        if cpu and memory:
+            return cpu, memory
         config = self._cluster_config
         if config is None or not hasattr(config, "get_cluster_allocatable_resources"):
             return None
