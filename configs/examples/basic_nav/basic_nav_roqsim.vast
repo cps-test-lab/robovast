@@ -137,6 +137,9 @@ execution:
       resources:
         cpu: 2
         memory: 640Mi
+  # Measured per node rather than declared: a core count is a fact about the machine it was
+  # measured on, and `resources` above is then the probe's starting point and its ceiling.
+  sizing: calibrated
   mode: ros2
   runs: 10
   timeout: 300
