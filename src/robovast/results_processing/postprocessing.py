@@ -975,13 +975,16 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             campaign_ingest  # pylint: disable=import-outside-toplevel
 
         campaign_id = os.path.basename(os.path.normpath(campaign_dir))
+        # Before the connect, not after: reaching the index is itself a step that can hang,
+        # and a marker still naming the previous plugin would attribute that wait to it.
+        output(f"Indexing {campaign_id}...")
         with index_db.connect() as conn:
             # Entries passed in rather than read back from the record, because the record
             # is written after this ingest (see below) -- so on a campaign's FIRST
             # postprocessing there is no file yet, and postprocessing_steps came out empty.
             totals = campaign_ingest.ingest_campaign(
                 conn, campaign_dir, campaign_id,
-                provenance_entries=all_provenance_entries)
+                provenance_entries=all_provenance_entries, output=output)
         rows = sum(totals.values())
         output(f"✓ Indexed {campaign_id}: {rows} rows across {len(totals)} tables")
 
