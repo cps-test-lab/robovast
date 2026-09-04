@@ -11,6 +11,9 @@ import osc.remote
 scenario test_scenario:
     robot: differential_drive_robot
     goal_pose: pose_3d
+    # Relative because it names a staged input: robovast rewrites it to the copy belonging to
+    # the configuration being run, which is what makes a nav2 parameter a factor of the .vast.
+    params_file: string = 'files/nav2_params.yaml'
 
     do serial:
         # Gate the LAUNCH, not the activation -- the one roqsim-specific difference. The Gazebo
@@ -39,7 +42,9 @@ scenario test_scenario:
             # lanes (tmpfs under compose, emptyDir in Kubernetes). Absolute path, because server-side
             # a relative one resolves against the client's scenario dir on the server's filesystem.
             ros_launch('', '/config/files/nav2_sut.launch.py',
-                [key_value('params_file', '/config/files/nav2_params.yaml'),
+                # This configuration's own copy. `params_file` arrives relative to the config
+                # mount root, which is this scenario's directory.
+                [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
                  key_value('map', '/config/files/depot.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:

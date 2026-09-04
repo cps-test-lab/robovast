@@ -14,6 +14,9 @@ metadata:
     vanilla: RoboVAST layers scenario_execution_server onto it and the scenario drives its launch
     over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
     no image of its own.
+
+    Two channels are varied. `scenario:` carries the goal, `sut:` rewrites nav2's own parameter
+    file per configuration -- 5 goals x 2 inflation radii.
   keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
@@ -27,39 +30,41 @@ configuration:
       - position: {x: 21.0, y: -2.0}
       - position: {x: 21.0, y: -4.0}
       - position: {x: 21.0, y: -6.0}
+  # Keys in the stack's own file, addressed through the source `nav2` declared below. Both
+  # costmaps in one factor: destinations pair with values POSITIONALLY, so each level is a pair.
+  - ParameterVariationList:
+      sut:
+      - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
+      - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+      values: [[0.30, 0.30], [0.55, 0.55]]
+  # Arms the rewrite that hands each cell its own copy: a parameter left at its .osc default
+  # is not one the campaign set, so the trial would launch against the unstaged original.
+  - ParameterVariationList:
+      scenario: params_file
+      values: ['files/nav2_params.yaml']
 visualization:
-  # The Config tab's third column: what each generated configuration contains, beside the editor.
+  # The Config tab's third column: what each generated configuration contains.
   config:
     panels:
     - parameters: {title: Scenario parameters, height: "35%"}
     - world: {title: World configuration, height: "15%"}
-    # The grid this campaign navigates, with this configuration's endpoints drawn on it. `map2d` and
-    # not `scene3d`: the 3D panel keys its geometry on the simulator image, and an experiment .vast
-    # names none -- the deployment's project resolves it, per campaign, after apply_backend. The
-    # config view has no campaign, so it asks the file and is refused for want of an image; there
-    # would be nothing to look at. The 2D map needs nothing but the two files below, and it is the
-    # view nav2 plans in anyway.
+    # `map2d` and not `scene3d`: the 3D panel keys its geometry on the simulator image, which
+    # the config view has no campaign to resolve. The 2D map is what nav2 plans in anyway.
     - map2d:
         title: Map
-        # The very map the scenario hands nav2 (scenario_roqsim.osc: key_value('map',
-        # '/config/files/depot.yaml')), so this is the grid the run plans on and not a look-alike.
-        # Declared because nothing contributes it: `goal_pose` is a plain ParameterVariationList,
-        # which varies a number and knows nothing about placement.
+        # The very map the scenario hands nav2, so this is the grid the run plans on.
         map: files/depot.yaml
         markers:
-        # MAP-frame, unlike the 3D scene's world-frame markers -- this panel *is* the map -- so
-        # goal_pose needs no offset here. The robot starts at the map origin: it spawns at world
-        # (-8, 0) and map = world + (8, 0), which is also where AMCL is seeded (files/nav2_params.yaml).
+        # MAP-frame -- this panel *is* the map -- so goal_pose needs no offset. The robot
+        # spawns at world (-8, 0) and map = world + (8, 0), where AMCL is seeded.
         - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
         - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
-    # Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the roqsim backend
-    # contributes it, because a campaign it runs always records the capture that panel replays.
+    # No `scene3d` entry: the roqsim backend contributes it.
     run_view:
       panels:
-      # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
-      # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
-      # half the column each; both claiming `left` would stack them on top of each other.
+      # Two trees answering different questions: what this trial did, and why nav2 recovered.
+      # Half the column each; both claiming `left` would stack them on top of each other.
       - nav2_behavior_tree:
           position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
           minimizable: true
@@ -77,25 +82,20 @@ visualization:
             global: {topic: /global_costmap/costmap}
             local: {topic: /local_costmap/costmap}
             poses: {table: poses}
-      # Every container's output merged with /rosout on the playback clock. The declared width is what
-      # makes `bottom-center` float above the playback bar instead of docking into it.
+      # The declared width is what floats `bottom-center` above the playback bar.
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
           minimizable: true
           minimized: true
-      # A `vega` panel and not `timeseries` because speed is derived: the run records poses, not
-      # velocities, so it is a finite difference computed in the spec. `datum['position.x']` rather than
-      # a `field`, because the CSV column names contain dots.
-      #
-      # `decimate_hz` because TF outruns the query's 5000-row cap in a couple of minutes, and that cap
-      # cuts at the HEAD: without it the chart would stop mid-run while looking finished. It also widens
-      # the interval the speed below is differenced over, which costs nothing here -- the raw difference
-      # of consecutive TF samples is the noise the rolling mean exists to hide.
+      # `vega` and not `timeseries` because speed is derived: the run records poses, not
+      # velocities. `datum['position.x']` rather than a `field`: the columns contain dots.
       - vega:
           title: base_link
           position: {anchor: bottom-right, width: 320, height: 380}
           minimizable: true
+          # `decimate_hz` because TF outruns the query's row cap, and that cap cuts at the
+          # HEAD: without it the chart stops mid-run while looking finished.
           source: {table: poses, filter: {frame: base_link}, decimate_hz: 5}
           vega_lite:
             resolve: {scale: {x: shared}}
@@ -110,8 +110,8 @@ visualization:
               - {op: lag, field: timestamp, as: t0}
               sort: [{field: timestamp}]
             - filter: "isValid(datum.t0)"
-            # Drop zero-length intervals rather than clamping them: two TF samples can share a receive
-            # time, and max(dt, 1e-6) would turn such a pair into a 4000 m/s spike.
+            # Dropped, not clamped: two TF samples can share a receive time, and max(dt, 1e-6)
+            # would turn such a pair into a 4000 m/s spike.
             - filter: "datum.timestamp - datum.t0 > 0"
             - calculate: >
                 sqrt(pow(datum.px - datum.px0, 2) + pow(datum.py - datum.py0, 2))
@@ -137,8 +137,7 @@ visualization:
                 x: {field: timestamp, type: quantitative, title: "t [s]"}
                 y: {field: value, type: quantitative, title: pose}
                 color: {field: series, type: nominal, legend: {title: null, orient: top}}
-    # Results-explorer notebook views, one per tree level. The same three the Gazebo half declares, so
-    # both backends are read through identical views.
+    # The same three views the Gazebo half declares, so both backends are read identically.
     explorer:
       notebooks:
       - Analysis:
@@ -147,86 +146,53 @@ visualization:
           campaign: analysis/analysis_campaign.ipynb
 execution:
   containers:
-  # roqsim in a container of its own. `roqsim` is an entry point in the `robovast.simulators`
-  # group shipped by RoboVAST's `roqsim` extra, so it resolves wherever the campaign is composed
-  # -- including the in-cluster service. Nothing about the simulator travels with the campaign.
+    # `roqsim` is an entry point in the `robovast.simulators` group, so it resolves wherever
+    # the campaign is composed. Nothing about the simulator travels with the campaign.
     simulation:
       backend: roqsim
-  # A path, because roqsim_nav2_example registers no `roqsim.worlds` provider. The backend declares it as
-  # a run file, so it is mounted at /config/<path> and archived with the campaign; the world
-  # `extends: roqsim_scenes:depot`, which is packaged and travels with the image, so only this YAML
-  # moves -- and the backend can see that from the one `extends:` key without opening anything
-  # else. A world extending a CAMPAIGN file instead has a chain only the simulator can resolve, so
-  # the backend asks `roqsim scenes inputs` in roqsim's own image and stages what it names.
-  #
-  # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
-  # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
+      # A path, because roqsim_nav2_example registers no `roqsim.worlds` provider. This is the
+      # campaign-wide DEFAULT; a configuration may resolve its own through `sim:`.
       config: world/depot_nav2.yaml
-  # No `image:` here, and that is the point: the roqsim backend supplies the family member it
-  # needs, and which registry it comes from is the deployment's business (ROBOVAST_PROJECT), not
-  # this file's. Naming a ref here pinned the example to one site's private registry and made it
-  # unrunnable for anyone who cloned the repo.
-  #
-  # To run a whole campaign against another project: `--image-project`, or ROBOVAST_PROJECT.
+      # No `image:`: the backend supplies the family member, and which registry it comes from
+      # is the deployment's business (ROBOVAST_PROJECT, --image-project), not this file's.
       resources:
-  # Request the sustained figure, cap generously. The simulator is not under test, and its
-  # peak-to-mean ratio in this world is ~18 (0.34 cores sustained, 5.98 at the startup burst
-  # where depot's geometry compiles) -- so there is no honest single number. Reserving the
-  # peak costs more than the un-tuned campaign did; capping at the sustained figure clips a
-  # burst that changes nothing the robot experiences, because realtime pacing normalises what
-  # the simulated world looks like and runs.clock_map_* records per run whether it kept pace.
+        # Request the sustained figure, cap generously: the simulator is not under test and
+        # its startup burst compiles depot's geometry, so no single honest number exists.
         cpu: 0.5
         cpu_limit: 6
         memory: 2944Mi
-  # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
-  # That is the claim this shape makes -- point it at any nav2 image and it works.
-  #
-  # It has to name an image: a `sut` is the campaign's own container, and RoboVAST has no default
-  # for one -- inventing an image for the thing under test would run something nobody chose. This
-  # names the framework image *by family member*, so it still follows ROBOVAST_PROJECT; a concrete
-  # ref here would be used verbatim, which is what you want for a real third-party nav2 image.
+    # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing
+    # of ours. It must name an image -- RoboVAST has no default for the thing under test.
     sut:
       image: family:robovast
       system_packages:
-  # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish an
-  # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
+      # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish
+      # an identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
       - ros-jazzy-nav2-minimal-tb4-description
+      # What the `sut:` channel addresses. Declaring the file is what lets a destination be
+      # checked against it before the campaign spends anything.
+      config_files:
+        nav2: files/nav2_params.yaml
       resources:
-  # NO split here -- but the property being bought is that the ceiling never BINDS, not that
-  # the same number is in force everywhere. An allocation the container never reaches cannot
-  # have shaped the run; equality is the conservative way to get there while nothing measures
-  # what it actually got. (Per-node sizing already varies the figure, so "identical in every
-  # run" was never the rule this could enforce.) Sized above its measured peak of 2.91, and
-  # run_validity_view says per run whether it held: quota_bound for this ceiling, contended
-  # for other work taking cores it had not reserved.
-  #
-  # What that peak does not cover: it comes from a pilot, and clipping is non-linear -- 0.5%
-  # of ticks over the limit cost 22% of runs. A search proposing harder configurations than
-  # the pilot can exceed it, so watch quota_bound rather than assuming the headroom holds.
+        # No cpu_limit split: an allocation the container never reaches cannot have shaped
+        # the run, and run_validity_view says per run whether the ceiling bound it.
         cpu: 3
         memory: 640Mi
     scenario:
       resources:
-  # Same reasoning as the simulator: scenario-execution is not under test. Measured 0.52
-  # sustained, 1.23 peak -- the old flat 1 was under its own peak, so it throttled.
+        # Same reasoning as the simulator: scenario-execution is not under test.
         cpu: 0.75
         cpu_limit: 2
         memory: 896Mi
   mode: ros2
   runs: 10
-  # Without it `stalled` is null, no verdict about a wedged run is possible, and
-  # `vast wait` cannot exit on one -- a campaign that hangs looks like one that is
-  # still working. 300 rather than the searches' 600 because this is batch mode: its
-  # bag conversion runs after the campaign rather than between batches, so progress
-  # never legitimately pauses mid-run. Measured: 50 trials in 373 s at ~25 concurrent,
-  # so a run takes ~150 s and this is a backstop with room, not a bound.
+  # Without it `stalled` is null and a wedged run looks like one still working. Batch mode,
+  # so progress never legitimately pauses mid-run; this is a backstop with room.
   timeout: 300
   scenario_file: scenario_roqsim.osc
   run_files:
-  # Per-extension rather than "files/*": that glob crosses '/', so it also swept
-  # files/__pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
-  # recompile perturbed it. These reach the SUT too, which is how a vanilla image can be handed
-  # nav2_sut.launch.py to run.
+  # Per-extension rather than "files/*": that glob crosses '/' and swept __pycache__, which
+  # is hashed into the config identity. These reach the SUT too.
   - "files/*.yaml"
   - "files/*.pgm"
   - "files/*.xml"
@@ -235,17 +201,13 @@ execution:
   env:
   - PYTHONUNBUFFERED: "1"
 results_processing:
-  # nav2's own operating-rate metric, graded per run into the `run_health` table.
-  # Declared rather than discovered: a health check that ran everywhere would grade
-  # campaigns it knows nothing about -- this one finds no misses in a non-nav2 stack and
-  # would write "ok" for every run of it, a clean bill for a stack that was never there.
+  # Declared rather than discovered: a check that ran everywhere would write "ok" for every
+  # run of a non-nav2 stack -- a clean bill for a stack that was never there.
   health_checks:
   - nav2_control_loop_rate
   postprocessing:
-  # `all` extracts every TF child frame that resolves against map, so a world that later gains a
-  # walker shows it without editing this file. `require` names what the analysis is measured from
-  # -- base_link, odom (places the local costmap in the map frame) and turtlebot4_base_link_gt
-  # (ground truth, shifted +8 m in x in analysis) -- and a run missing any of them fails loudly.
+  # `all` extracts every TF child frame resolving against map, so a world that later gains a
+  # walker shows it. `require` names what the analysis is measured from; a run missing one fails.
   - rosbags_tf_to_csv:
       frames: all
       require: [base_link, odom, turtlebot4_base_link_gt]
