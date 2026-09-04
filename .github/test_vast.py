@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -275,6 +276,8 @@ class LocalService:
     def __enter__(self):
         os.environ.setdefault('ROBOVAST_AUTH_TOKEN', secrets.token_urlsafe(16))
         os.environ['ROBOVAST_CONFIG'] = os.path.join(self.cwd, 'robovast-login.json')
+        self._refuse_a_foreign_service()
+        self._build_ui()
         self.log = open(os.path.join(self.cwd, 'serve.log'), 'w', encoding='utf-8')
         cmd = (f'vast serve --backend local --no-mcp '
                f'--results-dir {self.results_dir}')
@@ -285,8 +288,51 @@ class LocalService:
             stdout=self.log, stderr=subprocess.STDOUT, text=True,
             start_new_session=True,
         )
-        self._wait_until_answering()
+        try:
+            self._wait_until_answering()
+        except BaseException:
+            # A context manager whose ``__enter__`` raises never gets its ``__exit__``,
+            # so a service that came up late would keep running -- and keep the port --
+            # for the rest of the job. The next test then logs in to *that* service,
+            # runs its campaign into the previous test's results directory, and fails on
+            # a missing directory instead of on the startup that actually went wrong.
+            self.__exit__()
+            raise
         return self
+
+    def _refuse_a_foreign_service(self):
+        """Fail if the port is already served, rather than testing whatever answers.
+
+        A service that is not this one has its own results directory, so the campaign
+        this test launches would land somewhere the test never looks -- a failure that
+        names a missing directory and not the service it actually used.
+        """
+        from robovast.service.interface import DEFAULT_PORT
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(2)
+            if probe.connect_ex(('127.0.0.1', DEFAULT_PORT)) == 0:
+                raise RuntimeError(
+                    f"something is already listening on 127.0.0.1:{DEFAULT_PORT}; "
+                    "stop it before running this test, which needs the service it "
+                    "starts itself and its results directory")
+
+    def _build_ui(self):
+        """Build the web UI before the service is started, not while it is timed.
+
+        ``vast serve`` builds ``frontend/ui/dist`` itself on a source checkout whose
+        bundle is missing or stale, which on a cold tree is an npm install and a
+        bundle. Done inside the readiness wait below, that deadline is really a budget
+        for npm and expires on a service that was about to answer; done here, the
+        deadline measures the service. Once the bundle is fresh this costs an mtime
+        scan, so every service after the first pays nothing.
+        """
+        code, _ = capture_command(
+            'python -c "from robovast.common.cli.core_commands import ensure_ui_built; '
+            'ensure_ui_built()"',
+            self.repo_root, cwd=self.cwd)
+        if code != 0:
+            raise RuntimeError("the web UI build failed; its output is above")
 
     def _wait_until_answering(self, timeout=180):
         """Block until the service answers *and* this client is logged in to it.
