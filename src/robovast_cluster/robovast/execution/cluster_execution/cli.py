@@ -636,6 +636,18 @@ def _node_labels(pairs, flag):
               envvar='ROBOVAST_STORE_SIZE',
               help='Size of the object store PVC (default: 500Gi). Needs --store-class: '
                    'without one the store is a directory on the node, bounded by that disk.')
+@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
+              envvar='ROBOVAST_INDEX_CLASS',
+              help='Back the campaign index with a PVC from this StorageClass. Only for a '
+                   'provider whose campaigns live in a bucket: where the store is a volume '
+                   'this deployment places, --store-class already backs the index beside it, '
+                   'and naming a second class would separate an index from the campaigns it '
+                   'was ingested from.')
+@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_INDEX_SIZE',
+              help='Size of the campaign index PVC (default: 20Gi). Needs --index-class: '
+                   'without one the index is a directory on the node and there is no volume '
+                   'to size.')
 @click.option('--workspaces-path', default='', metavar='PATH',
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
@@ -732,6 +744,7 @@ def _node_labels(pairs, flag):
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           data_root, store_path, store_class, store_size,
+          index_storage_class, index_storage_size,
           workspaces_path, workspaces_class,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
@@ -815,6 +828,14 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    # Outside `stated` because the index has no path of its own: it is placed beside the
+    # object store it was ingested from, derived rather than stated. Only the class is a
+    # separate question, and only where the store is a bucket -- which is what makes this
+    # one check rather than another tenant.
+    if index_storage_size and not index_storage_class:
+        click.echo("Error: --index-size sizes a claim nothing will create. Pass "
+                   "--index-class, or drop it.", err=True)
+        sys.exit(1)
     placements = data_paths.resolve(stated, data_root=data_root)
 
     service_kwargs = {
@@ -830,6 +851,8 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'store_storage_class': placements['store'].storage_class,
         'store_storage_path': placements['store'].path,
         'store_storage_size': store_size,
+        'index_storage_class': index_storage_class,
+        'index_storage_size': index_storage_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one

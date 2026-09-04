@@ -309,6 +309,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
             config_name, (service_kwargs or {}).get("store_storage_path", ""),
             (service_kwargs or {}).get("store_storage_class", ""),
             get_cluster_config(config_name).get_storage_backend())
+    elif (service_kwargs or {}).get("index_storage_class"):
+        # The mirror image, and an argument error for the same reason: here the store IS a
+        # volume this deployment places, and --store-class already backs the index with it.
+        # A second class would put the index on a volume of its own, where it could outlive
+        # the campaigns every one of its rows was ingested from.
+        raise RuntimeError(
+            f"--index-class backs the campaign index on its own, but the '{config_name}' "
+            "provider places the object store as a volume, and the index takes that volume "
+            "so the two are created, moved and destroyed together. Use --store-class.")
 
     # Check if cluster is already set up — the deployed service's env is the
     # record (no local flag file), so this is correct even from another host.
@@ -484,6 +493,12 @@ def setup_server(config_name=None, list_configs=False, force=False,
         # Beside the store, never beside the workspaces: every row in the index was ingested
         # from a campaign in the store, so the two belong on one disk and move together.
         index_storage_path=index_host_path(store_storage_path),
+        # A class only a bucket-backed provider can be given (refused above for the others),
+        # and the one this deployment's own durable state needs on a managed node pool: with
+        # the campaigns in a bucket, a hostPath index is the only thing a replaced node takes
+        # with it.
+        index_storage_class=service_kwargs.pop("index_storage_class", ""),
+        index_storage_size=service_kwargs.pop("index_storage_size", ""),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
         **cluster_kwargs,
