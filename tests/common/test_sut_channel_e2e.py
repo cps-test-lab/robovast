@@ -191,6 +191,21 @@ def test_a_misspelled_destination_is_refused_before_anything_runs(tmp_path):
     """)
 
 
+def test_a_misspelled_destination_in_a_fixed_block_is_refused_too(tmp_path):
+    """A fixed value is checked like a factor is.
+
+    An assignment creates the path it is given, so an unchecked one writes a key the stack
+    never reads -- and that cell runs, succeeds and reports as though it had been
+    configured.
+    """
+    with pytest.raises(Exception, match="addresses nothing"):
+        _compose(tmp_path, """\
+        - name: typo-fixed
+          sut:
+            nav2.local_costmp.inflation_radius: 0.10
+    """)
+
+
 def test_a_source_caught_by_a_run_files_glob_is_staged_only_as_the_rewritten_copy(tmp_path):
     """Exactly one copy reaches the container.
 

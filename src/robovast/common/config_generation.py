@@ -755,8 +755,8 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     half needs nothing from either execution lane.
     """
     from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
-        ENV_SOURCE, SutChannelError, declared_sources, materialize, merge_sut_block,
-        split_destination)
+        ENV_SOURCE, SutChannelError, check_destinations, declared_sources, materialize,
+        merge_sut_block, split_destination)
 
     execution = parameters.get("execution", {}) or {}
     authored = {c.get("name"): (c.get("sut") or {})
@@ -767,6 +767,16 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     # on a missing path, a long way from the declaration.
     if not declared_sources(execution, vast_dir):
         return
+
+    # THE FIXED BLOCK IS CHECKED LIKE A FACTOR IS. A variation's destinations are checked with
+    # the rest of its declared outputs; an authored block reaches no plugin, and a mapping
+    # format's assignment creates the path it was given -- so a misspelt destination would
+    # write a key the stack never reads, in a cell that runs and reports normally. Checked
+    # once over the union rather than per configuration: what a source can address depends on
+    # the file, and every configuration reads the same one.
+    fixed = {destination for block in authored.values() for destination in block}
+    if fixed:
+        check_destinations(execution, vast_dir, sorted(fixed))
 
     for config in configs:
         block = merge_sut_block(authored.get(config.get("_config_name")) or {},

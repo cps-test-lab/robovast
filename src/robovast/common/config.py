@@ -766,10 +766,11 @@ class ExecutionConfig(BaseModel):
     #: is what a ``.vast`` has always meant.
     #:
     #: ``calibrated`` measures it instead: one probe run per node before the campaign places
-    #: work there, then that node's jobs sized from what was measured on it. **Declaring
-    #: ``resources`` under ``calibrated`` is refused rather than overridden**, because the two
-    #: answer the same question and a file that states a number which is then ignored is worse
-    #: than one that states nothing.
+    #: work there, then that node's jobs sized from what was measured on it. ``resources``
+    #: keeps its meaning there rather than being refused -- it is where measuring starts and
+    #: the ceiling a measured figure may not exceed -- so it has to sit ABOVE demand: a
+    #: container capped at what it wants throttles against the cap, and its probe is refused
+    #: as having measured the ceiling instead of the demand.
     #:
     #: The reason to prefer it is portability rather than density: a core count is a fact
     #: about the machine it was measured on, so a shipped ``.vast`` naming one asserts
