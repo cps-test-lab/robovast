@@ -62,16 +62,32 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  # Time, not batches: an archive fills for as long as it is given, and there is no
-  # meaningful "done" short of the budget running out.
-  - time: 5400
+  # RUNS, like every other campaign here, and for the reason they all use it: wall-clock is
+  # not a measure of compute on a shared lane. A `time:` budget spends whatever the cluster
+  # happened to give this campaign while it was contended -- measured, the same 5400 s that
+  # is ample on a quiet lane bought 63 runs against the sibling campaigns' 180-256, so the
+  # archive was judged on a fraction of their simulator and its coverage criterion never had
+  # the chance to fire.
+  #
+  # It is not batches, which is a separate point and the one the archive actually needs: an
+  # archive fills for as long as it is given and has no meaningful "done" short of the budget
+  # running out. `runs:` says that just as well as `time:` does, and says it reproducibly.
+  - runs: 240
   stopping:
-  # 0.35 of a 4 x 10 archive is 14 cells, and fewer than that are reachable: only 3 of
-  # the 4 failure modes occur (no run of 500+ has timed out), and mode is not free of
-  # clearance -- a collision cannot land in a positive-clearance bin. Measured: a QD
-  # run under the old bounds plateaued at coverage 0.175 over 17 batches and could
-  # only ever exhaust its time budget, which reads as a search that failed to
-  # converge when it was an archive that could not be filled.
+  # REACHABLE, and by some margin: measured across ~2900 runs, 16 of the 40 archive cells
+  # have been occupied at least once (coverage 0.400), and a single uniform-random campaign
+  # reached 14 of them (0.350) on its own. 0.25 is ten cells.
+  #
+  # What bounds the archive is structural rather than budgetary: `timeout` never occurs, so
+  # ten cells are dead; a collision only lands in the three lowest clearance bins, and a
+  # clean crossing only in the upper eight. Those bounds give the 16 above, and no budget
+  # reaches the other 24.
+  #
+  # This criterion has never fired here, and that is a statement about the STRATEGY rather
+  # than about the target. QD fills this archive worse than uniform sampling does -- 5 cells
+  # against random's 14 -- and reaches fewer cells per run as well, which is what a mutation
+  # step too small to leave the region around its elites looks like. `sigma` is the first
+  # thing to raise if that is worth chasing; the criterion is not the thing to lower.
   - metric: {name: coverage, op: '>=', value: 0.25}
   seed: 1
 
