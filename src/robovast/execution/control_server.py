@@ -232,3 +232,33 @@ def stage_output_callback(state, log):
         state.update(stage=str(msg))
 
     return publish
+
+
+#: What ``stop`` answers when it lands on a campaign that is already postprocessing.
+#:
+#: Said rather than left to be discovered, because the outcome differs from stopping a run
+#: and the difference is the part an operator has to act on: the runs are over and every
+#: result they produced is kept, so the campaign still ends as ``finished`` -- what the stop
+#: gives up is the derived data, and a re-run gets it back.
+STOP_DURING_POSTPROCESSING = (
+    "stop requested; cancelling postprocessing. The runs are finished and their results "
+    "are kept, so the campaign ends as 'finished' with its derived data not computed -- "
+    "re-run postprocessing to get it.")
+
+
+def stop_checker(state):
+    """A ``should_stop`` predicate over *state*, or ``None`` when nothing is driving it.
+
+    The counterpart of :func:`stage_output_callback` for the other direction: that one
+    publishes what postprocessing is doing, this one tells it when to give up. Both take a
+    *state* that may be ``None`` -- the re-run entry points postprocess a campaign nothing is
+    driving -- so a caller never has to ask which case it is in.
+
+    A predicate rather than the state object itself, because everything below this layer
+    (the postprocessing pipeline, its plugins, the cluster's conversion Job) then needs to
+    know only "is this still wanted", not what a campaign or a phase is. That is also what
+    makes those layers testable without one.
+    """
+    if state is None:
+        return None
+    return lambda: state.stop_requested

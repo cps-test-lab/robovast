@@ -293,3 +293,25 @@ def test_postprocessing_failed_is_not_a_terminal_message():
     assert "the metrics step found no bags" in sent[0]
     assert "Campaign FAILED" not in sent[0]
     assert "finished" in sent[1].lower()
+
+
+def test_a_cancelled_postprocessing_is_not_announced_as_a_failure():
+    """A re-run of postprocessing can be stopped, and a stop is not a fault.
+
+    The operator asked for it, so labelling it FAILED files a deliberate act under faults
+    and sends whoever reads the message looking for a fault that is not there — the same
+    distinction the campaign's own stop already makes.
+    """
+    from robovast.execution.notify import Notifier
+
+    notifier = Notifier("c1", topic="t")
+    sent = []
+    notifier._send = lambda msg, **kw: sent.append(msg)
+
+    notifier.postprocessing_cancelled("postprocessing cancelled by stop request")
+
+    assert len(sent) == 1
+    assert "CANCELLED" in sent[0] and "FAILED" not in sent[0]
+    # Not terminal: the campaign's trials are untouched and something else ends it.
+    notifier.finished("2 runs")
+    assert "finished" in sent[1].lower()

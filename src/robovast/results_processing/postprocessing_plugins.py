@@ -39,6 +39,7 @@ Configuration format:
           param2: value2
       - simple_plugin_name
 """
+import contextlib
 import csv
 import glob
 import json
@@ -46,8 +47,10 @@ import logging
 import math
 import os
 import re
+import signal
 import subprocess
 import tarfile
+import threading
 from importlib.resources import files
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -305,6 +308,77 @@ def _interrupted_job_dirs(results_dir: str) -> list:
                    if e.get("job_dir") and e.get("kind") in (KIND_KILLED, KIND_INVALID)})
 
 
+#: How long a cancelled conversion is given to tear itself down before it is killed
+#: outright. The term reaches the ``docker run`` client, which forwards it to the container;
+#: ``docker_exec.sh``'s trap then spends up to two three-second timeouts killing and
+#: removing it. A shorter wait would escalate to SIGKILL on a conversion that is shutting
+#: down correctly, which leaves the container to the daemon's own reaping rather than the
+#: script's.
+_CANCEL_GRACE_S = 15.0
+
+#: How often a cancelled-yet? check runs while the conversion streams its output. The
+#: conversion is minutes to hours long, so a second's latency is free; polling faster only
+#: costs wake-ups on the far more common path where nobody stops anything.
+_CANCEL_POLL_S = 1.0
+
+
+def _terminate_group(process: "subprocess.Popen") -> None:
+    """Signal the conversion's whole process group, escalating if it does not go.
+
+    The **group**, not the process: bash defers a trap until its foreground child returns,
+    so a signal to ``docker_exec.sh`` alone would sit unhandled for as long as the
+    conversion it is waiting on -- which is the entire thing being cancelled. Signalling the
+    group reaches the ``docker run`` client too, which forwards it to the container; the
+    script's trap then runs and removes it.
+
+    Every failure here is survivable and none is worth raising: the process may have exited
+    between the check and the signal, and a stop that cannot be delivered is no reason to
+    fail a campaign that is ending anyway. The conversion's container runs under ``--rm``,
+    so it goes when its process does, however this ends.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except (OSError, ProcessLookupError):
+        return
+    with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGTERM)
+    try:
+        process.wait(timeout=_CANCEL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+
+@contextlib.contextmanager
+def _cancelled_by(should_stop, process: "subprocess.Popen"):
+    """Kill *process*'s group as soon as *should_stop* says the work is no longer wanted.
+
+    A watching thread rather than a check in the output loop, because that loop is blocked
+    in a read on a conversion that prints only every few bags -- so a check there would fire
+    when the conversion felt like talking, not when the operator asked it to stop.
+
+    A no-op context when no predicate was given, so the ordinary path -- a CLI run, a
+    campaign nobody stops -- starts no thread at all.
+    """
+    if should_stop is None:
+        yield
+        return
+    done = threading.Event()
+
+    def watch():
+        while not done.wait(_CANCEL_POLL_S):
+            if should_stop():
+                _terminate_group(process)
+                return
+
+    thread = threading.Thread(target=watch, name="robovast-cancel-watch", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+
+
 class RosbagsProcess(BasePostprocessingPlugin):
     # Reads rosbags, so it needs the image whose message definitions wrote them.
     needs_execution_image = True
@@ -362,6 +436,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
         execution_image: Optional[str] = None,
         debug: bool = False,
         force: bool = False,
+        should_stop=None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_process plugin.
 
@@ -377,6 +452,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
             debug: If True, print all per-bag output; otherwise show only progress/summary.
+            should_stop: Predicate polled while the conversion runs; when it turns true the
+                conversion is torn down and this returns a stated cancellation. This is the
+                one postprocessing step long enough to be worth interrupting, and the one
+                that can be interrupted safely: a bag records itself as converted only once
+                its handlers have finished, and every output is rewritten rather than
+                appended, so the bag that was interrupted is simply redone next time.
 
         Returns:
             Tuple of (success, message).
@@ -437,8 +518,16 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.append("--force")
         cmd.append(results_dir)
 
+        process = None
         try:
             # Stream output line-by-line so progress is visible in real-time.
+            #
+            # In a session of its own so the conversion can be signalled as one group -- see
+            # :func:`_terminate_group`, which is the only thing that can end this step early.
+            # The cost of that session is that Ctrl+C no longer arrives here for free, since
+            # this is no longer in the terminal's foreground group; the KeyboardInterrupt
+            # branch below forwards it, so an interactive run tears the container down as it
+            # always did.
             process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(script_path),
@@ -446,31 +535,48 @@ class RosbagsProcess(BasePostprocessingPlugin):
                 stderr=subprocess.STDOUT,  # merge stderr into stdout to avoid deadlock
                 text=True,
                 env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+                start_new_session=True,
             )
             output_lines: List[str] = []
             _last_was_progress = False
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                output_lines.append(line)
-                is_progress = line.startswith("Processing rosbags")
-                if is_progress and not debug:
-                    print(f"\r{line}", end="", flush=True)
-                else:
-                    if _last_was_progress and not debug:
-                        print()
-                    print(line, flush=True)
-                _last_was_progress = is_progress
-            if _last_was_progress and not debug:
-                print()
-            returncode = process.wait()
+            with _cancelled_by(should_stop, process):
+                for line in process.stdout:
+                    line = line.rstrip("\n")
+                    output_lines.append(line)
+                    is_progress = line.startswith("Processing rosbags")
+                    if is_progress and not debug:
+                        print(f"\r{line}", end="", flush=True)
+                    else:
+                        if _last_was_progress and not debug:
+                            print()
+                        print(line, flush=True)
+                    _last_was_progress = is_progress
+                if _last_was_progress and not debug:
+                    print()
+                returncode = process.wait()
             output = "\n".join(output_lines)
             if returncode != 0:
+                if should_stop is not None and should_stop():
+                    # Named as what it was. The exit code of a conversion we killed says
+                    # "signalled", and reporting that as a failure would file the operator's
+                    # own stop under faults -- and send whoever reads it to look for a bug in
+                    # a step that was working.
+                    return False, ("rosbags_process cancelled: the campaign was stopped. "
+                                   "The bags are untouched and the bag being converted is "
+                                   "redone when postprocessing is re-run.")
                 return False, f"rosbags_process failed with exit code {returncode}\n{output}"
             summary = next(
                 (line for line in output_lines if line.startswith("Summary:")),
                 "rosbags processed successfully",
             )
             return True, summary
+        except KeyboardInterrupt:
+            # Only reachable because of the new session above: the interrupt reaches this
+            # process but no longer the conversion's group, so without forwarding it an
+            # interactive Ctrl+C would leave a container converting with nobody reading it.
+            if process is not None:
+                _terminate_group(process)
+            raise
         except Exception as e:
             return False, f"Error executing rosbags_process: {e}"
 

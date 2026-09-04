@@ -1349,7 +1349,8 @@ def _reattach(monkeypatch, core, batch, published):
     monkeypatch.setattr(pj, "publish_live_log",
                         lambda *a, **k: published.append("log"))
     monkeypatch.setattr(pj, "record_job_outputs",
-                        lambda cfg, cid, root, ok, message, force=False: (ok, message))
+                        lambda cfg, cid, root, ok, message, force=False,
+                        should_stop=None: (ok, message))
     return pj.reattach_conversion_job(cluster_config, "camp", "/nonexistent", "ns",
                                      pj.campaign_job_name("camp"))
 
@@ -1393,3 +1394,161 @@ def test_a_job_that_cannot_be_read_yields_no_verdict(monkeypatch):
     assert ok is None
     assert "no longer active" in message
     assert calls == ['read-job']
+
+
+# -- a campaign stopped while its postprocessing Job runs --------------------
+#
+# The stop that reaches a campaign's runs cannot reach this Job: that teardown is scoped to
+# `jobgroup=scenario-runs` so that it cannot cancel a content-addressed image build a
+# sibling campaign may be waiting on, and this Job is in `jobgroup=postprocessing`. So the
+# waiter acts on the flag itself, or a stop during postprocessing does nothing at all --
+# and because it is the waiter, a Job this process merely re-attached to is stoppable too.
+
+
+def _stopping_after(n):
+    """A predicate that lets *n* polls happen and then reports the campaign stopped."""
+    polls = {"n": 0}
+
+    def should_stop():
+        polls["n"] += 1
+        return polls["n"] > n
+
+    return should_stop
+
+
+def test_a_stop_deletes_the_job_it_is_waiting_on(monkeypatch):
+    """Otherwise the driver waits out a conversion that can run for hours.
+
+    Deleted on the campaign's terms -- now, and taking its pods with it -- because an
+    interrupted bag costs nothing: a bag records itself as converted only once its handlers
+    have finished, so the next run redoes it.
+    """
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=1)
+
+    ok, _message = _run_the_wait(monkeypatch, batch, should_stop=_stopping_after(1))
+
+    assert ok is False
+    batch.delete_namespaced_job.assert_called_once()
+    body = batch.delete_namespaced_job.call_args.kwargs["body"]
+    assert body.grace_period_seconds == 0
+    assert body.propagation_policy == "Foreground"
+
+
+def test_a_cancelled_job_is_read_as_stopped_rather_than_failed_or_unknown(monkeypatch):
+    """Not ``None``: nothing is going to produce the outcome now, so it is not an open
+    question the way a Job this process merely lost sight of is.
+
+    The message lands on ``postprocessing_error``, where a reader decides whether something
+    is wrong -- so it says the campaign was stopped, that its results are untouched, and
+    what brings the derived data back.
+    """
+    from unittest import mock
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=1)
+
+    ok, message = _run_the_wait(monkeypatch, batch, should_stop=lambda: True)
+
+    assert ok is False
+    assert "cancelled" in message and "stopped" in message
+    assert "untouched" in message and "re-run postprocessing" in message
+    assert "failed" not in message and "unknown" not in message
+
+
+@pytest.mark.parametrize("failure", ["refused", "unreachable"])
+def test_a_job_that_cannot_be_deleted_still_reports_the_cancellation(monkeypatch, failure):
+    """The campaign is being stopped either way, and the Job's own TTL collects it.
+
+    Both shapes matter: the API server can refuse the delete, and a stop can be a Ctrl+C
+    that takes the route to the cluster with it, which does not arrive as an
+    ``ApiException`` at all. Raising here would replace the operator's own stop with a
+    traceback from tidying up after it.
+    """
+    from unittest import mock
+
+    from kubernetes.client.rest import ApiException
+
+    batch = mock.Mock()
+    batch.read_namespaced_job_status.return_value = _job_status(active=1)
+    batch.delete_namespaced_job.side_effect = (
+        ApiException(status=403, reason="Forbidden") if failure == "refused"
+        else OSError("connection refused"))
+
+    ok, message = _run_the_wait(monkeypatch, batch, should_stop=lambda: True)
+
+    assert ok is False and "cancelled" in message
+
+
+def test_a_job_nobody_stops_is_never_deleted(monkeypatch):
+    """No predicate, and one that stays false, must both leave the Job alone."""
+    from unittest import mock
+
+    for predicate in (None, lambda: False):
+        batch = mock.Mock()
+        batch.read_namespaced_job_status.return_value = _job_status(active=0, succeeded=1)
+
+        ok, _message = _run_the_wait(monkeypatch, batch, should_stop=predicate)
+
+        assert ok is True
+        batch.delete_namespaced_job.assert_not_called()
+
+
+def test_a_cancelled_outcome_authors_no_failure_log(monkeypatch, tmp_path):
+    """The failure log is the account of a fault, and a stop is not one.
+
+    Its outputs are still synced -- what the Job wrote before it was deleted is the whole
+    account a cancelled postprocess has -- but nothing is written or echoed as a failure,
+    which would send whoever reads the campaign log looking for a fault that is not there.
+    """
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", (), None))
+    monkeypatch.setattr(pj, "run_conversion_job",
+                        lambda *a, **k: (False, "postprocessing cancelled: the campaign "
+                                                "was stopped."))
+    synced = []
+    monkeypatch.setattr(pj, "sync_outputs",
+                        lambda cfg, cid, cr, force=False: synced.append(cr))
+    monkeypatch.setattr(pj, "publish_postprocessing_log", lambda *a, **k: None)
+    authored = []
+    monkeypatch.setattr(pj, "_write_failure_log", lambda *a, **k: authored.append(a))
+
+    ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns",
+                                          should_stop=lambda: True)
+
+    assert ok is False
+    assert not authored                       # no fault was written into the campaign log
+    assert synced == [str(tmp_path)]          # ...but what the Job produced is still landed
+    assert message == "postprocessing cancelled: the campaign was stopped."
+    assert pj.POINTER_SLOT not in message     # nor pointed at as a failure would be
+
+
+def test_the_predicate_reaches_the_waiter_and_the_record(monkeypatch, tmp_path):
+    """Both halves need it: the waiter to end the Job, the record to tell that stop from a
+    failure once it has."""
+    seen = {}
+    monkeypatch.setattr(pj, "_submit_inputs",
+                        lambda cfg, cid, cr, skip=None, skip_rosout=False:
+                        ([{"plugins": []}], "img", (), None))
+
+    def _wait(*_a, **kwargs):
+        seen["waiter"] = kwargs.get("should_stop")
+        return True, "postprocessing complete"
+
+    def _record(*_a, **kwargs):
+        seen["record"] = kwargs.get("should_stop")
+        return True, "postprocessing complete"
+
+    monkeypatch.setattr(pj, "run_conversion_job", _wait)
+    monkeypatch.setattr(pj, "record_job_outputs", _record)
+
+    def predicate():
+        return False
+
+    pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", should_stop=predicate)
+
+    assert seen["waiter"] is predicate
+    assert seen["record"] is predicate

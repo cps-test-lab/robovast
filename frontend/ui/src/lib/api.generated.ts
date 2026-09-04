@@ -2767,6 +2767,8 @@ export interface components {
              * @default run
              */
             kind: string;
+            /** Node */
+            node: string | null;
             /** Started At */
             started_at: number | null;
             /**
