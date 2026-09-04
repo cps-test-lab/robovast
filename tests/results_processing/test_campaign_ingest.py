@@ -238,7 +238,7 @@ class _RecordingSink:
     def __init__(self):
         self.writes = []
 
-    def write(self, table, rows, context=None, source=""):  # noqa: D102 - matches RowSink
+    def write(self, table, rows, context=None, types=None, source=""):  # noqa: D102 - matches RowSink
         rows = list(rows)
         self.writes.append((table, rows))
         return len(rows)
@@ -328,3 +328,68 @@ def test_forgetting_a_campaign_removes_its_rows_and_its_registry_entry(conn, tmp
     assert registered == [keep], (
         "a deleted campaign must read as never ingested, not as ingested and empty -- "
         "those are different answers and only one is true after a delete")
+
+
+# -- what the ingest says while it runs ----------------------------------------------------
+
+def test_a_walk_reports_its_denominator_and_not_every_step(monkeypatch):
+    """A bare running count says work is happening and never says whether it is nearly done,
+    and a line per item turns the campaign log into the progress bar. Both walks are minutes
+    long on a campaign of any size, so the throttle is what makes reporting affordable."""
+    seen = []
+    monkeypatch.setattr(campaign_ingest, "PROGRESS_INTERVAL", 3600)
+    advance = campaign_ingest._walk_progress("ingesting run", 4, seen.append)
+    for _ in range(4):
+        advance()
+
+    # Only the last: everything before it fell inside the interval.
+    assert seen == ["index: ingesting run 4/4"]
+
+
+def test_the_last_item_always_reports_whatever_the_throttle_did(monkeypatch):
+    """The line a reader is left with has to be the final count. Left to the throttle alone,
+    a walk that ends just after a report finishes on a stale number and reads as stopped
+    part-way -- which is the exact impression this exists to remove."""
+    seen = []
+    monkeypatch.setattr(campaign_ingest, "PROGRESS_INTERVAL", 0)
+    advance = campaign_ingest._walk_progress("building the run table", 3, seen.append)
+    for _ in range(3):
+        advance()
+
+    assert seen == ["index: building the run table 1/3",
+                    "index: building the run table 2/3",
+                    "index: building the run table 3/3"]
+
+
+def _run_tree(root, runs):
+    """A campaign directory with *runs* run directories under one configuration."""
+    for run_id in range(runs):
+        (root / "nominal" / str(run_id)).mkdir(parents=True)
+    return root
+
+
+def test_building_the_run_table_narrates_itself(tmp_path, monkeypatch):
+    """Not a cheap walk, and the reason is easy to miss: every run has its clock map located
+    and its whole resource_usage CSV read for the shared-memory high-water mark. That is a
+    file parse per run, and until it finishes nothing else in this step says a word."""
+    monkeypatch.setattr(campaign_ingest, "PROGRESS_INTERVAL", 0)
+    seen = []
+    campaign_ingest.build_runs_table(_RecordingSink(), str(_run_tree(tmp_path, 3)),
+                                     output=seen.append)
+
+    assert seen == ["index: building the run table 1/3",
+                    "index: building the run table 2/3",
+                    "index: building the run table 3/3"]
+
+
+def test_an_unnarrated_caller_still_leaves_the_account_in_the_log(tmp_path, monkeypatch):
+    """``vast campaign import`` has no stage marker to publish into, and defaulting to
+    silence there would trade one unexplained wait for another. The log is where that path's
+    reader looks."""
+    monkeypatch.setattr(campaign_ingest, "PROGRESS_INTERVAL", 0)
+    logged = []
+    monkeypatch.setattr(campaign_ingest.logger, "info",
+                        lambda msg, *args: logged.append(msg % args if args else msg))
+    campaign_ingest.build_runs_table(_RecordingSink(), str(_run_tree(tmp_path, 2)))
+
+    assert "index: building the run table 2/2" in logged
