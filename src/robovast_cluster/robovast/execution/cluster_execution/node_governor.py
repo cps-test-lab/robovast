@@ -19,9 +19,15 @@ cluster used for measurement whose clock moves with load produces numbers that a
 a way nothing downstream can detect or correct.
 
 The cost of the default is bounded by the failure policy: a cluster that refuses the DaemonSet
-gets a warning and carries on, exactly as a GPU-less cluster does with the device plugin. Only
-an explicit ``--performance-governor`` turns that refusal into an error -- see
-:func:`ensure_cpu_governor`.
+-- or takes it and cannot run it, which is what a cloud VM does -- gets a warning and carries
+on, exactly as a GPU-less cluster does with the device plugin. Only an explicit
+``--performance-governor`` turns that into an error -- see :func:`ensure_cpu_governor`.
+
+Both halves are checked, because they fail differently and only one of them says so. A
+cluster that forbids the privileged pod answers the create call; a cloud VM accepts it and the
+pods then exit non-zero on every node, having found no writable cpufreq. Reporting the second
+as applied would leave the operator trusting measurements taken on a scaling clock, which is
+the outcome this module exists to prevent.
 """
 
 import logging
@@ -127,6 +133,86 @@ def manifest(namespace: str, governor: str, node_selector: Optional[dict] = None
 FORBIDDEN_HINTS = ("privileged", "podsecurity", "psp", "forbidden", "security context",
                    "securitycontext", "admission webhook", "violates")
 
+#: How long the DaemonSet gets to put a Ready pod on a node before "applied" stops being an
+#: honest answer.
+#:
+#: **The failure this catches is not the one the API reports.** A cluster that *refuses* the
+#: privileged pod says so at create time and is handled above. A cloud VM accepts it and then
+#: cannot run it: the guest has no writable ``/sys/devices/system/cpu/*/cpufreq`` because the
+#: hypervisor owns the clock, so :func:`_script` exits non-zero exactly as designed and the
+#: pods ``CrashLoopBackOff`` on every node -- while the create call returned 201 and setup
+#: reported the governor applied. That is the state this module exists to make impossible, so
+#: it is checked rather than assumed.
+#:
+#: Long enough for an image pull on a cold node, short enough not to stall a setup: past it,
+#: the honest answer is that it is not running, and a DaemonSet that recovers later still gets
+#: reported by the campaign's own ``cpu_governor_scaling`` advice.
+READY_TIMEOUT_S = 120
+POLL_SECONDS = 2
+
+
+def not_running(apps_api, namespace: str, *, timeout_s: float = READY_TIMEOUT_S,
+                sleep=None, clock=None) -> str:
+    """Why the DaemonSet is not running on any node, or ``""`` once one pod is Ready.
+
+    Reads the DaemonSet's own status rather than listing pods: ``desiredNumberScheduled`` and
+    ``numberReady`` are computed by the controller from the nodes it actually selected, which
+    is the same question asked here and one call instead of two.
+
+    A status that cannot be read is **not** a failure. This runs after a successful create,
+    and turning "could not check" into "did not work" would make a missing RBAC verb look like
+    a cluster that cannot hold its clock -- a different problem with a different remedy.
+    """
+    import time  # noqa: PLC0415
+
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + timeout_s
+    desired = ready = None
+    while True:
+        try:
+            status = apps_api.read_namespaced_daemon_set_status(
+                name=DAEMONSET_NAME, namespace=namespace).status
+            desired = getattr(status, "desired_number_scheduled", None) or 0
+            ready = getattr(status, "number_ready", None) or 0
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.warning(
+                "Applied %s but could not read its status (%s), so whether it is actually "
+                "setting the governor is unknown here. The campaign's own "
+                "'cpu_governor_scaling' advice is what will say.", DAEMONSET_NAME, exc)
+            return ""
+        if desired and ready:
+            return ""
+        if clock() >= deadline:
+            break
+        sleep(POLL_SECONDS)
+    if not desired:
+        return (f"no node was selected for it after {timeout_s:g}s, so nothing will set the "
+                f"governor. A node pool selector that matches no node does this, as does a "
+                f"cluster whose nodes all carry a taint the DaemonSet does not tolerate")
+    return (f"its pods are not running on any of the {desired} selected node(s) after "
+            f"{timeout_s:g}s. The pod writes the host's cpufreq policies and exits non-zero "
+            f"when none accepts the value, so a CrashLoopBackOff here means the nodes have no "
+            f"writable cpufreq -- the ordinary case on a cloud VM, whose hypervisor owns the "
+            f"clock. Inspect it with: kubectl -n {namespace} logs -l app={DAEMONSET_NAME}")
+
+
+def runtime_failure_message(governor: str, detail: str) -> str:
+    """What to tell an operator whose cluster took the DaemonSet and cannot run it.
+
+    Separate from :func:`refusal_message` because the remedy is: nothing was refused, so
+    there is nothing to grant. On a managed node pool the governor belongs to the node image,
+    and node auto-repair would undo a per-node setting anyway.
+    """
+    return (
+        f"the CPU governor DaemonSet was applied but is not setting '{governor}': {detail}\n"
+        "Set the governor through the node image or the node's startup configuration "
+        "instead, where a replaced machine comes back with it.\n"
+        "Leaving it unset is supported: RoboVAST reports a 'cpu_governor_scaling' warning "
+        "per campaign so the effect is visible in the results rather than silent. Re-run "
+        "setup with --no-performance-governor to stop trying."
+    )
+
 
 def refusal_message(governor: str, detail: str, *, forbidden: bool) -> str:
     """What to tell an operator whose cluster will not take this.
@@ -161,7 +247,8 @@ def refusal_message(governor: str, detail: str, *, forbidden: bool) -> str:
 
 def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bool = False,
                         node_selector: Optional[dict] = None,
-                        dry_run: bool = False) -> bool:
+                        dry_run: bool = False, ready_timeout_s: float = READY_TIMEOUT_S,
+                        sleep=None, clock=None) -> bool:
     """Apply the governor DaemonSet, or remove it when *enabled* is false.
 
     A boolean, not a governor name. :data:`PERFORMANCE` is the only setting that serves the
@@ -183,7 +270,13 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bo
       silently did not get one is worse off than someone who never asked, because they
       would now trust measurements taken on a scaling clock.
 
-    Either way the outcome is visible: the return value says whether it is installed, and a
+    The same split covers a cluster that **accepts** the DaemonSet and cannot run it, which
+    is a different failure and the one a cloud VM produces: the create call succeeds and the
+    pods then CrashLoopBackOff because the guest has no writable cpufreq. Returning "installed"
+    there would be the exact outcome this module is written to prevent, so the DaemonSet is
+    watched until a pod is Ready (:func:`not_running`) before saying so.
+
+    Either way the outcome is visible: the return value says whether it is running, and a
     campaign whose nodes still scale is reported by the ``cpu_governor_scaling`` advice, so
     the warning path never becomes a silent one.
 
@@ -218,7 +311,15 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bo
                 raise RuntimeError(message) from exc
             logger.warning("%s", message)
             return False
-    logger.info("CPU governor DaemonSet applied: every%s node will be set to '%s'.",
+    problem = not_running(apps_api, namespace, timeout_s=ready_timeout_s,
+                          sleep=sleep, clock=clock)
+    if problem:
+        message = runtime_failure_message(governor, problem)
+        if explicit:
+            raise RuntimeError(message)
+        logger.warning("%s", message)
+        return False
+    logger.info("CPU governor DaemonSet running: every%s node is set to '%s'.",
                 " selected" if node_selector else "", governor)
     return True
 
