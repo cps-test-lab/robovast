@@ -329,32 +329,81 @@ def node_pressure_probe():
 #: segment in ``/dev/shm`` is charged to the cgroup and is not reclaimable while it is mapped.
 #:
 #: These are GAUGES, not counters -- read the max over the window, never a delta.
-#:
-#: v2 only, sharing :func:`memory_probe`'s coverage rather than inventing a second one: v1
-#: spells every field differently (``rss``, ``cache``, ``mapped_file``), and one column that
-#: means a slightly different quantity on some nodes is the failure mode the unit conversions
-#: elsewhere in this file exist to avoid.
 MEMORY_STAT_FILE = "memory.stat"
 MEMORY_STAT_FIELDS = ("anon", "file", "shmem", "slab")
 
 
-def memory_stat_probe():
-    """``{memory_anon, memory_file, memory_shmem, memory_slab}``, or ``{}``."""
+def _read_memory_stat(path: str) -> dict:
+    """``memory.stat`` at *path* as ``{field: int}``, or ``{}`` where it cannot be read."""
     out = {}
     try:
-        with open(os.path.join(MEMORY_PATH, MEMORY_STAT_FILE), encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             raw = handle.read()
     except OSError:
         return out
     for line in raw.splitlines():
         key, _, value = line.partition(" ")
-        if key not in MEMORY_STAT_FIELDS:
-            continue
         try:
-            out[f"memory_{key}"] = int(value)
+            out[key] = int(value)
         except ValueError:
             pass
     return out
+
+
+def _memory_stat_v1(stat: dict) -> dict:
+    """v1's ``memory.stat`` in v2's column names, or ``{}``.
+
+    The fields read are the ``total_`` ones, and that prefix is load-bearing: v1's bare
+    ``rss``/``cache`` count this cgroup ALONE, so a container whose processes sit in a child
+    cgroup reads as near-empty, while v2's ``memory.stat`` is recursive. Reading the bare names
+    would not be a different spelling of the same number, it would be a different number that
+    looks plausible.
+
+    Translated rather than recorded under v1's own names, for the reason :data:`MEMORY_FILES_V1`
+    gives: the mixed cluster is the case that matters, and a column present on only some of its
+    nodes cannot be used to size anything. It is the same trade the CPU and memory probes above
+    already make.
+
+    ``file`` is v1's ``cache`` MINUS ``shmem``, because v1 counts the tmpfs pages inside
+    ``cache`` that v2 keeps out of ``file`` and reports only under ``shmem``. Left unsubtracted
+    the two versions would disagree about which group a DDS segment belongs to -- and it is the
+    group that decides a reservation, since ``shmem`` is unreclaimable while ``file`` is not.
+
+    ``slab`` has no v1 equivalent here (its kernel accounting lives in a separate ``memory.kmem``
+    controller that is often not enabled), so no column is emitted for it. Absent and not zero:
+    zero is a claim that the kernel held no slab, which is never true.
+    """
+    if "total_rss" not in stat or "total_cache" not in stat:
+        return {}
+    out = {"memory_anon": stat["total_rss"]}
+    shmem = stat.get("total_shmem")
+    if shmem is None:
+        # Without it neither derived group can be stated: ``file`` would carry the tmpfs and
+        # ``shmem`` would be missing from the unreclaimable sum, so a reservation sized from
+        # this would come out under what the container holds. ``anon`` alone is still true.
+        return out
+    out["memory_shmem"] = shmem
+    out["memory_file"] = max(stat["total_cache"] - shmem, 0)
+    return out
+
+
+def memory_stat_probe():
+    """``{memory_anon, memory_file, memory_shmem, memory_slab}``, or ``{}``.
+
+    **Both cgroup versions**, v2 first, read into the same column names -- the shape
+    :func:`memory_probe` and :func:`memory_events_probe` already have. Being the one memory
+    probe WITHOUT that fallback is not a smaller gap than theirs but a worse one: every other
+    memory column still lands on a v1 node, so the peak reads as a hard number while the only
+    field that says how much of it is page cache is silently absent -- and absence there is
+    indistinguishable from a kernel that cannot report it. A campaign is then sized from a
+    figure nobody can attribute.
+    """
+    stat = _read_memory_stat(os.path.join(MEMORY_PATH, MEMORY_STAT_FILE))
+    out = {f"memory_{field}": stat[field]
+           for field in MEMORY_STAT_FIELDS if field in stat}
+    if out:
+        return out
+    return _memory_stat_v1(_read_memory_stat(os.path.join(MEMORY_PATH_V1, MEMORY_STAT_FILE)))
 
 
 #: cgroup v2's record of the kernel REFUSING an allocation. ``max`` counts the times usage

@@ -133,6 +133,13 @@ It provides four views:
   and colored per container when the job has more than one. That matters in the ROS
   shape, where the simulator and the system under test have their own containers and a
   failure is only legible when their output is read against the scenario's.
+  On the cluster, every placed row also names **the node its pod landed on**, as a coloured
+  chip. The name is the information and the colour only a scanning aid -- one machine is one
+  colour down the whole list, so a batch that has piled onto a single node is visible without
+  reading twenty rows. Colours are derived from the name, so they are the same for every
+  viewer with nothing stored, and a set of them on screen is kept collision-free: two nodes are
+  never the same colour, because two chips painted alike would read as one machine. A job the
+  scheduler has not placed has no chip -- that is what "not placed yet" looks like.
   Every row carries **how long that job has been going**, on the right, and that clock starts
   when the *job* does -- before its pod is scheduled and before its inputs are staged -- so a
   row that is still ``pending`` or ``blocked`` has one too, which is where "how long has this

@@ -1392,6 +1392,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     backend.publish_execution_records(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
+        from robovast.execution.control_server import stop_checker
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -1406,6 +1407,11 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             # against whatever the cluster has at that instant -- and this runs at the END
             # of a campaign, when other campaigns have had the whole run to fill it.
             admission=getattr(backend, "admission", None),
+            # A stop reaches this phase through the same flag the run loop reads. Without
+            # it the flag is only *checked* before this step, so a campaign stopped once
+            # postprocessing has begun converts to the end regardless while its stop
+            # reports itself as done.
+            should_stop=stop_checker(state),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
@@ -1434,8 +1440,17 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                 # postprocessing failure keeps ``phase == finished`` (the runs are
                 # the deliverable) and records the reason on its own field, distinct
                 # from a run failure (``phase == failed``). Re-run corrects it.
+                #
+                # A cancellation lands here too, and is worded as one: the campaign's runs
+                # all finished and their results are complete, so it is not ``stopped``
+                # either -- what is missing is the derived data, which is exactly what
+                # ``postprocessing_error`` says and a re-run supplies. Told apart by the
+                # flag rather than by the message, so both stages' wordings are covered
+                # without either of them becoming a contract.
+                cancelled = state.stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
-                state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {message}")
+                state.set_phase(Phase.FINISHED, stage=(
+                    message if cancelled else f"postprocessing failed: {message}"))
             # The durable outcome record is written once by _finish_campaign after
             # both share and postprocessing have run, so a single outcome.json carries
             # phase=finished + share_error + postprocessing_error (and covers the

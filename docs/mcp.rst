@@ -605,7 +605,8 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    running pod's log on the cluster, the live ``system.log`` file locally). A
    finished job whose pod has been garbage-collected has no live log.
 
-   Each job also carries ``started_at`` (epoch seconds — the *job's* start, so a job that
+   Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
+   on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
    has not begun executing has one too) and, while it runs on a cluster, ``usage``: what it
    is consuming against **both** figures it was given. Measured against the request says
    whether the reservation was the right size; against the limit, whether the job is near
