@@ -36,6 +36,20 @@ execution:
     scenario:
       resources:
         cpu: 2
+        # Declared with `cpu`, and the pairing is the point rather than tidiness. Without a
+        # memory limit the run's AVAILABLE_MEM (the downward API's `limits.memory`) reports the
+        # NODE's memory as the budget, so anything sizing itself from it sizes itself to the
+        # machine it landed on -- and a smoke test is run on lanes nobody has characterised.
+        #
+        # It also decides what a reading of this container's memory MEANS. An unlimited cgroup
+        # keeps page cache it never needed, simply because nothing made the kernel reclaim it,
+        # and that cache is then most of what its peak reports. Under a limit the same run
+        # reclaims and proceeds.
+        #
+        # Roomy for what this renders -- one 320x240 camera through llvmpipe, plus the world
+        # compile on the first frame -- because a smoke test that OOMs reports a memory limit
+        # as a rendering failure, which is the one answer it must never give.
+        memory: 2Gi
   scenario_file: scenario.osc
   runs: 1
   # Software rendering through llvmpipe is slow, and the first render also compiles the world.
