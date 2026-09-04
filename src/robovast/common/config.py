@@ -370,6 +370,16 @@ SIMULATION_CONTAINER = 'simulation'
 #: The system under test.
 SUT_CONTAINER = 'sut'
 
+#: The scenario parameter carrying **this configuration's own directory** in the container.
+#:
+#: A campaign's per-configuration files are staged under ``<CONFIG_MOUNT>/<config name>/``
+#: while the scenario file itself is campaign-wide, so a path written relative to the
+#: scenario reaches the campaign's copy of a file and never the cell's. A scenario that
+#: declares this parameter is given the cell's directory and can address its own copies
+#: directly; the campaign does not set it, and is refused if it tries.
+CONFIG_DIR_PARAM = 'config_dir'
+
+
 #: The names with a defined meaning and a default image. Any other key in
 #: ``execution.containers`` is an ad-hoc container and must state its own ``image``.
 #:

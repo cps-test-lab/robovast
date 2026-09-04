@@ -430,6 +430,26 @@ modified. A scenario parameter whose value is the source's declared path is rewr
 that configuration's copy, so the trial launches the file belonging to the cell it is
 running.
 
+**Two ways for the trial to reach it**, because the scenario file is campaign-wide and a
+path written relative to it therefore names the campaign's copy:
+
+* a scenario parameter whose value the campaign sets to the source's declared path, rewritten
+  to that configuration's copy — the trial launches whatever the campaign named;
+* the scenario declaring ``config_dir``, which RoboVAST fills with this cell's directory
+  (``/config/<config-name>``), so the trial can address its own copies itself:
+
+  .. code-block:: text
+
+     params_file: string
+     config_dir: string
+     ...
+     key_value('params_file', config_dir + '/files/nav2_params.yaml')
+
+  Nothing is written in the ``.vast`` for it. A campaign that assigns ``config_dir`` is
+  refused: it names which cell is running, and a campaign able to point one cell's trial at
+  another's configuration is one whose results and inputs disagree. A scenario that does not
+  declare it is given nothing, since an override for an undeclared parameter is refused.
+
 Two things are refused rather than left to go wrong quietly:
 
 * a source declared on the ``simulation`` or ``scenario`` container — their configuration is
