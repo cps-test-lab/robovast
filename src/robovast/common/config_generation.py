@@ -742,6 +742,40 @@ def _validated_block(backend, block, name):
     return _validated_cfg(backend, dict(block or {}), name)
 
 
+def _inject_config_dir(configs, scenario_parameters):
+    """Give each cell its own directory, for scenarios that ask for it.
+
+    The scenario file is campaign-wide and every path written relative to it therefore
+    resolves to the campaign's copy. A configuration's own files are staged one level down,
+    so without this a trial can only reach them through a parameter whose value the campaign
+    sets to a declared path -- which every campaign varying its stack had to carry, and
+    which says nothing a reader could not have derived from the configuration's name.
+
+    Injected only when the scenario **declares** the parameter: an override for one it does
+    not declare is refused by scenario-execution, and a campaign that never addresses its own
+    directory should not be handed one. Set here rather than at dispatch because the
+    configuration's name -- the whole content of the value -- exists at composition, and both
+    execution lanes and the packer already carry a configuration's parameters unchanged.
+    """
+    from robovast.common.config import \
+        CONFIG_DIR_PARAM  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import \
+        CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+
+    declared = {p.get("name") for p in (scenario_parameters or [])
+                if isinstance(p, dict)}
+    if CONFIG_DIR_PARAM not in declared:
+        return
+    for config in configs:
+        block = config.setdefault("config", {})
+        if block.get(CONFIG_DIR_PARAM) is not None:
+            raise ValueError(
+                f"Scenario '{config.get('name')}': '{CONFIG_DIR_PARAM}' is set by RoboVAST to "
+                f"the configuration's own directory and a campaign may not assign it. Remove "
+                f"it from the configuration; the scenario reads it as a parameter.")
+        block[CONFIG_DIR_PARAM] = f"{CONFIG_MOUNT}/{config.get('name', '')}"
+
+
 def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     """Resolve every configuration's ``sut`` block and write the files it implies.
 
@@ -1915,6 +1949,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # that implies. Before the normalisation below, so those files are treated exactly like
     # any other artifact a variation produced.
     _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir)
+
+    _inject_config_dir(configs, existing_scenario_parameters)
 
     # Normalize _config_files and _config_transient_files: convert artifact absolute
     # paths (those inside output_dir) to paths relative to output_dir.  This makes
