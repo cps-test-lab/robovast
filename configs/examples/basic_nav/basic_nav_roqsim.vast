@@ -4,10 +4,9 @@ metadata:
   title: Basic nav2 navigation on the roqsim (MuJoCo) TurtleBot 4 (Depot)
   description: |
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
-    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same nav2 params, same map and the same
-    measurement half as basic_nav_gazebo.vast -- only the simulator differs. The bridge publishes
-    the same ROS graph Gazebo does (incl. a ground-truth turtlebot4_base_link_gt frame), so
-    roqsim is a drop-in replacement.
+    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same map and the same measurement half
+    as basic_nav_gazebo.vast. The bridge publishes the same ROS graph Gazebo does (incl. a
+    ground-truth turtlebot4_base_link_gt frame), so roqsim is a drop-in replacement.
 
     Three containers, which is what this file is really about. `simulation` is roqsim, started by
     the backend from its own image -- nothing here installs a simulator. `sut` is a nav2 image kept
