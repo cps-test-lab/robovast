@@ -6,8 +6,7 @@ import osc.remote
 scenario test_scenario:
     robot: differential_drive_robot
     goal_pose: pose_3d
-    # Relative: robovast rewrites it to the copy belonging to the configuration being run.
-    params_file: string = 'files/nav2_params.yaml'
+    params_file: string
 
     do serial:
         serial:
@@ -20,9 +19,9 @@ scenario test_scenario:
                        expected_value: '0.0',
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
-            ros_launch('', '/config/files/nav2_sut.launch.py',
+            ros_launch('', common.get_scenario_file_directory() + '/files/nav2_sut.launch.py',
                 [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
-                 key_value('map', '/config/files/depot.yaml'),
+                 key_value('map', common.get_scenario_file_directory() + '/files/depot.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:
                     remote('ipc:///ipc/sut', setup_timeout: 120s)

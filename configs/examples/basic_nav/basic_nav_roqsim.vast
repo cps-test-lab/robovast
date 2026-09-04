@@ -19,6 +19,9 @@ metadata:
   keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
+  # Names the declared source, which is what rewrites it to this cell's own copy.
+  parameters:
+  - params_file: 'files/nav2_params.yaml'
   sut:
     nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55 # default value
     nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
@@ -31,9 +34,6 @@ configuration:
       - position: {x: 21.0, y: -2.0}
       - position: {x: 21.0, y: -4.0}
       - position: {x: 21.0, y: -6.0}
-  - ParameterVariationList:
-      scenario: params_file
-      values: ['files/nav2_params.yaml']
 visualization:
   config:
     panels:
@@ -137,8 +137,6 @@ execution:
       resources:
         cpu: 2
         memory: 640Mi
-  # Measured per node rather than declared: a core count is a fact about the machine it was
-  # measured on, and `resources` above is then the probe's starting point and its ceiling.
   sizing: calibrated
   mode: ros2
   runs: 10
