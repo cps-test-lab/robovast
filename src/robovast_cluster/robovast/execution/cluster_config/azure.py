@@ -134,6 +134,8 @@ class AzureClusterConfig(BaseConfig):
         yaml_objects = store_pod.attach_infrastructure(
             yaml_objects, namespace,
             index_storage_path=kwargs.get('index_storage_path', ''),
+            index_storage_class=kwargs.get('index_storage_class', ''),
+            index_storage_size=kwargs.get('index_storage_size', ''),
             registry_storage_path=kwargs.get('registry_storage_path', ''),
             registry_storage_class=kwargs.get('registry_storage_class', ''))
         yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)

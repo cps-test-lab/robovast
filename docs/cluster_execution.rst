@@ -346,6 +346,8 @@ Flag                          Environment                     Default
 ``--store-path``              ``ROBOVAST_STORE_PATH``         ``/var/lib/robovast-store``
 ``--store-class``             ``ROBOVAST_STORE_CLASS``        *(unset — a hostPath)*
 ``--store-size``              ``ROBOVAST_STORE_SIZE``         ``500Gi`` (needs a class)
+``--index-class``             ``ROBOVAST_INDEX_CLASS``        *(unset — a hostPath)*
+``--index-size``              ``ROBOVAST_INDEX_SIZE``         ``20Gi`` (needs a class)
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
@@ -359,13 +361,20 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**Two tenants take no flag**, and for the same reason: one pod holds each pair, and derived
-data must not be separated from its source. The campaign results sit beside the workspaces and
-share their backing, because the service pod mirrors a campaign between them. The campaign
-index sits beside the object store and shares *its* backing, because every row in the index was
-ingested from a campaign in the store -- an index that outlived its sources would answer
-questions about campaigns nobody can reproduce or check, confidently. A flag able to separate
-either pair could only ever be ignored or refused.
+**Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
+derived data must not be separated from its source. The campaign results sit beside the
+workspaces and share their backing, because the service pod mirrors a campaign between them.
+The campaign index sits beside the object store and shares *its* backing, because every row in
+the index was ingested from a campaign in the store -- an index that outlived its sources would
+answer questions about campaigns nobody can reproduce or check, confidently. A flag able to
+separate either pair could only ever be ignored or refused.
+
+``--index-class`` is the exception the rule creates rather than a hole in it. Where campaigns
+live in a **bucket** there is no store volume for the index to share, so ``--store-class`` is
+refused and the index would have nowhere but a directory on a node to go — the one piece of
+this deployment's durable state that a replaced machine takes with it while every campaign it
+indexed survives. There the class is its own argument. On a provider that places the store as a
+volume the flag is refused, naming ``--store-class``, because that is what already backs both.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -1895,6 +1904,21 @@ loudly rather than inventing one.
    # or with a service-account key file instead of HMAC keys:
    vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
+
+The campaigns are in the bucket, but this deployment's **own** state is not, and a GKE node
+pool replaces machines constantly — autoscaling, auto-upgrade, auto-repair, spot reclaim. Back
+it with the cluster's StorageClass rather than the node's disk:
+
+.. code-block:: bash
+
+   vast cluster setup gcp -o gcs_bucket=my-robovast-results \
+     --index-class standard-rwo --registry-class standard-rwo \
+     --workspaces-class standard-rwo --buildkit-class premium-rwo --buildkit-size 200Gi
+
+Left on hostPaths, a replaced node takes the campaign index, the built images and the
+workspaces with it while every campaign in the bucket survives — and setup reports success on
+the empty replacement. These are zonal disks, so the pods that mount them are bound to one
+zone; that is the cost, and it is the intended one.
 
 Available options:
 
