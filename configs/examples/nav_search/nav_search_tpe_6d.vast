@@ -1,36 +1,42 @@
 version: 3
 metadata:
-  name: nav_search_qd
-  title: "A map of the different ways it goes wrong"
+  name: nav_search_tpe_6d
+  title: "Exploitation in six dimensions: does the advantage return?"
   description: |
-    Quality-diversity, and the only campaign here that answers "how MANY kinds of
-    trouble are there" rather than "how much". Its archive is keyed on how close the
-    crossing came and how long it took, with the failure mode as a categorical axis --
-    so a cell that collides and a cell that gives up are different entries rather than
-    two points with the same score.
-  keywords: [robotics, navigation, ROS2, roqsim, nav2, search, quality-diversity, diversity]
+    Optuna's TPE, driving toward the most failure-prone combination it can find.
+    Where the coverage campaigns answer "how often", this answers "how badly, and how
+    quickly did you find it" -- and it stops as soon as it has a genuine failure rather
+    than spending the rest of the budget confirming it.
+  keywords: [robotics, navigation, ROS2, roqsim, nav2, search, exploitation]
 
 search:
-  strategy: qd
+  strategy: optuna
   strategy_parameters:
-    archive:
-      type: grid
-      measures:
-        # Categorical: the archive declares the names and the extractor returns one, so
-        # "it collided" and "it never arrived" occupy different cells instead of being
-        # encoded into a number and decoded from a comment.
-        failure_mode:  {values: [none, collision, timeout, goal_miss]}
-        # RANGE FROM MEASUREMENT. `high: 1.5` is unreachable in this world by the
-        # example's own arithmetic: the widest doorway is 1.6 m and nav2's robot_radius
-        # 0.18, so search/nav_extract.py takes clearance_scale = 1.6/2 - 0.18 = 0.62 m
-        # as the most clearance any configuration can offer. Measured over the 60 cells
-        # of a full-budget Halton run, min_clearance spanned -0.089 .. 0.433 m and
-        # touched 4 of these 10 bins.
-        min_clearance: {low: -0.15, high: 0.5, bins: 10}
-    sigma: 0.15
+    sampler: tpe
   search_space:
-    gap_width:    {type: float, low: 0.4, high: 1.6}
-    walker_dwell: {type: float, low: 0.0, high: 8.0}
+  # SIX dimensions, against the two the campaigns beside this one search. That is the ONLY
+  # difference from them -- same world, same scenario, same extractor, same objective, same
+  # repetitions and the same runs: budget -- so a difference in the result is attributable to
+  # the dimension count and to nothing else.
+  #
+  # Two of the two-dimensional campaigns are the control: at 2 factors, uniform random found
+  # a deeper worst crossing than TPE did, for fewer runs. The explanation on offer is that
+  # ~60 uniform samples very nearly saturate a smooth 2-D square, leaving a surrogate model
+  # nothing to exploit. That explanation predicts the advantage returns once the space is
+  # too large to saturate, and this file is what tests the prediction rather than asserting it.
+    gap_width:        {type: float, low: 0.4,  high: 1.6}
+    walker_dwell:     {type: float, low: 0.0,  high: 8.0}
+    # The walker's speed, not just its phase: how fast it crosses decides how long the robot
+    # has to react, which the phase alone does not say.
+    walker_speed:     {type: float, low: 0.4,  high: 1.6}
+    # SENSING. The world declares this knob and leaves it fixed; a campaign that means to
+    # search it says so. Degraded ranging is what makes the unmapped barrier hard to see in
+    # time, so it belongs with the geometry rather than beside it.
+    lidar_noise:      {type: float, low: 0.0,  high: 0.12}
+    # THE STACK, on the sut: channel. Two tuning knobs against four environment factors, so
+    # this is a mixed environment-and-configuration space rather than a pure world sweep.
+    inflation_radius: {type: float, low: 0.20, high: 0.80}
+    max_speed:        {type: float, low: 0.10, high: 0.50}
   variations:
   - variations/doorway.py:DoorwayVariation:
       sim: {instances: components.barrier.instances}
@@ -38,6 +44,35 @@ search:
   - ParameterVariationList:
       sim: components.pedestrian.dwell
       values: [$walker_dwell]
+  - ParameterVariationList:
+      sim: components.pedestrian.speed
+      values: [$walker_speed]
+  - ParameterVariationList:
+      sim: components.robot.lidar.range_stddev
+      values: [$lidar_noise]
+  # Both costmaps inflate by the same figure -- one factor, two destinations, one value.
+  # ParameterVariationList pairs destinations with values POSITIONALLY and does not broadcast,
+  # so the marker is repeated once per destination; a single scalar against two destinations
+  # is refused.
+  - ParameterVariationList:
+      sut:
+      - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
+      - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+      values: [[$inflation_radius, $inflation_radius]]
+  # nav2 takes a velocity triple; the search varies its linear component and the rest stays
+  # what nav2_params.yaml declares.
+  - ParameterVariationList:
+      sut: nav2.velocity_smoother.ros__parameters.max_velocity
+      values: [[$max_speed, 0.0, 2.0]]
+  # ARMS THE sut: REWRITE, and the campaign does not work without it. Staging gives each
+  # configuration its own rewritten nav2_params.yaml and drops the original from run_files, so
+  # exactly one copy exists; what connects the trial to that copy is a scenario parameter whose
+  # value is the source's declared path. Left at its .osc default, nothing is rewritten and
+  # every run launches a params file that is no longer there -- burning its full init_nav2
+  # timeout waiting for a localizer that never activates.
+  - ParameterVariationList:
+      scenario: params_file
+      values: ['files/nav2_params.yaml']
   postprocessing:
   # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
   # each batch is scored, while results_processing runs once the campaign is over. Without
@@ -62,33 +97,12 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  # RUNS, like every other campaign here, and for the reason they all use it: wall-clock is
-  # not a measure of compute on a shared lane. A `time:` budget spends whatever the cluster
-  # happened to give this campaign while it was contended -- measured, the same 5400 s that
-  # is ample on a quiet lane bought 63 runs against the sibling campaigns' 180-256, so the
-  # archive was judged on a fraction of their simulator and its coverage criterion never had
-  # the chance to fire.
-  #
-  # It is not batches, which is a separate point and the one the archive actually needs: an
-  # archive fills for as long as it is given and has no meaningful "done" short of the budget
-  # running out. `runs:` says that just as well as `time:` does, and says it reproducibly.
+  # Bounded by RUNS and identical to nav_search_cmaes.vast, because the README pairs these
+  # two and a pair must share a budget. `batches:` cannot express that -- equal batches are
+  # equal simulator only while repetitions are constant -- and a `no_improvement` stop makes
+  # it worse still, since each strategy then stops when its own convergence rule fires and
+  # the comparison measures the rule rather than the sampler.
   - runs: 240
-  stopping:
-  # REACHABLE, and by some margin: measured across ~2900 runs, 16 of the 40 archive cells
-  # have been occupied at least once (coverage 0.400), and a single uniform-random campaign
-  # reached 14 of them (0.350) on its own. 0.25 is ten cells.
-  #
-  # What bounds the archive is structural rather than budgetary: `timeout` never occurs, so
-  # ten cells are dead; a collision only lands in the three lowest clearance bins, and a
-  # clean crossing only in the upper eight. Those bounds give the 16 above, and no budget
-  # reaches the other 24.
-  #
-  # This criterion has never fired here, and that is a statement about the STRATEGY rather
-  # than about the target. QD fills this archive worse than uniform sampling does -- 5 cells
-  # against random's 14 -- and reaches fewer cells per run as well, which is what a mutation
-  # step too small to leave the region around its elites looks like. `sigma` is the first
-  # thing to raise if that is worth chasing; the criterion is not the thing to lower.
-  - metric: {name: coverage, op: '>=', value: 0.25}
   seed: 1
 
 visualization:
@@ -99,7 +113,7 @@ visualization:
       # computed from the campaign rather than written into the prose -- so a notebook
       # cannot claim a finding its own data does not support.
       - Analysis:
-          campaign: analysis/nav_search_qd.ipynb
+          campaign: analysis/nav_search_6d.ipynb
 
 execution:
   containers:
@@ -116,6 +130,11 @@ execution:
     sut:
       image: family:robovast
       resources: {cpu: 3, memory: 640Mi}
+      # What the `sut:` channel addresses. Declaring the file is what lets a destination be
+      # checked against it before the campaign spends anything -- a misspelled key is refused
+      # here rather than discovered by a run that launched with defaults.
+      config_files:
+        nav2: files/nav2_params.yaml
     scenario:
       resources: {cpu: 0.85, cpu_limit: 2, memory: 512Mi}
   # Measured per node rather than declared: the same trial costs ~1.6x more CPU on the

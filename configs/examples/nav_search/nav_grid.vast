@@ -43,6 +43,18 @@ configuration:
       sim: components.pedestrian.dwell
       values: [0.0, 2.0, 4.0, 6.0]
 
+visualization:
+  results:
+    explorer:
+      notebooks:
+      # The reference campaign needs a view of its own: the eight search campaigns each
+      # answer "what did my strategy find", and this one answers the question they are all
+      # read against -- what exhaustive coverage cost, and which factor actually decides
+      # the outcome. Batch mode, so it works from the runs table rather than from the
+      # `unit` table a search records its scored cells in.
+      - Analysis:
+          campaign: analysis/nav_grid.ipynb
+
 execution:
   containers:
     # roqsim, from the deployment's project. Nothing here names an image: which registry it
