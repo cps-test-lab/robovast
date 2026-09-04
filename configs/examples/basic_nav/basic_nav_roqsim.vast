@@ -19,8 +19,10 @@ metadata:
   keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
+  sut:
+    nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55 # default value
+    nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
   variations:
-  # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_gazebo.vast.
   - ParameterVariationList:
       scenario: goal_pose
       values:
@@ -29,41 +31,23 @@ configuration:
       - position: {x: 21.0, y: -2.0}
       - position: {x: 21.0, y: -4.0}
       - position: {x: 21.0, y: -6.0}
-  # Keys in the stack's own file, addressed through the source `nav2` declared below. Both
-  # costmaps in one factor: destinations pair with values POSITIONALLY, so each level is a pair.
-  - ParameterVariationList:
-      sut:
-      - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
-      - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
-      values: [[0.30, 0.30], [0.55, 0.55]]
-  # Arms the rewrite that hands each cell its own copy: a parameter left at its .osc default
-  # is not one the campaign set, so the trial would launch against the unstaged original.
   - ParameterVariationList:
       scenario: params_file
       values: ['files/nav2_params.yaml']
 visualization:
-  # The Config tab's third column: what each generated configuration contains.
   config:
     panels:
     - parameters: {title: Scenario parameters, height: "35%"}
     - world: {title: World configuration, height: "15%"}
-    # `map2d` and not `scene3d`: the 3D panel keys its geometry on the simulator image, which
-    # the config view has no campaign to resolve. The 2D map is what nav2 plans in anyway.
     - map2d:
         title: Map
-        # The very map the scenario hands nav2, so this is the grid the run plans on.
         map: files/depot.yaml
         markers:
-        # MAP-frame -- this panel *is* the map -- so goal_pose needs no offset. The robot
-        # spawns at world (-8, 0) and map = world + (8, 0), where AMCL is seeded.
         - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
         - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
-    # No `scene3d` entry: the roqsim backend contributes it.
     run_view:
       panels:
-      # Two trees answering different questions: what this trial did, and why nav2 recovered.
-      # Half the column each; both claiming `left` would stack them on top of each other.
       - nav2_behavior_tree:
           position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
           minimizable: true
@@ -81,20 +65,15 @@ visualization:
             global: {topic: /global_costmap/costmap}
             local: {topic: /local_costmap/costmap}
             poses: {table: poses}
-      # The declared width is what floats `bottom-center` above the playback bar.
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
           minimizable: true
           minimized: true
-      # `vega` and not `timeseries` because speed is derived: the run records poses, not
-      # velocities. `datum['position.x']` rather than a `field`: the columns contain dots.
       - vega:
           title: base_link
           position: {anchor: bottom-right, width: 320, height: 380}
           minimizable: true
-          # `decimate_hz` because TF outruns the query's row cap, and that cap cuts at the
-          # HEAD: without it the chart stops mid-run while looking finished.
           source: {table: poses, filter: {frame: base_link}, decimate_hz: 5}
           vega_lite:
             resolve: {scale: {x: shared}}
@@ -109,8 +88,6 @@ visualization:
               - {op: lag, field: timestamp, as: t0}
               sort: [{field: timestamp}]
             - filter: "isValid(datum.t0)"
-            # Dropped, not clamped: two TF samples can share a receive time, and max(dt, 1e-6)
-            # would turn such a pair into a 4000 m/s spike.
             - filter: "datum.timestamp - datum.t0 > 0"
             - calculate: >
                 sqrt(pow(datum.px - datum.px0, 2) + pow(datum.py - datum.py0, 2))
@@ -125,7 +102,6 @@ visualization:
                 x: {field: timestamp, type: quantitative, axis: null}
                 y: {field: speed_avg, type: quantitative, title: "speed [m/s]"}
               layer:
-              # The faint raw line keeps visible what the rolling mean smoothed away.
               - mark: {type: line, opacity: 0.25, strokeWidth: 1}
                 encoding: {y: {field: speed, type: quantitative}}
               - mark: {type: line, strokeWidth: 1.5}
@@ -136,7 +112,6 @@ visualization:
                 x: {field: timestamp, type: quantitative, title: "t [s]"}
                 y: {field: value, type: quantitative, title: pose}
                 color: {field: series, type: nominal, legend: {title: null, orient: top}}
-    # The same three views the Gazebo half declares, so both backends are read identically.
     explorer:
       notebooks:
       - Analysis:
@@ -145,68 +120,37 @@ visualization:
           campaign: analysis/analysis_campaign.ipynb
 execution:
   containers:
-    # `roqsim` is an entry point in the `robovast.simulators` group, so it resolves wherever
-    # the campaign is composed. Nothing about the simulator travels with the campaign.
     simulation:
       backend: roqsim
-      # A path, because roqsim_nav2_example registers no `roqsim.worlds` provider. This is the
-      # campaign-wide DEFAULT; a configuration may resolve its own through `sim:`.
       config: world/depot_nav2.yaml
-      # No `image:`: the backend supplies the family member, and which registry it comes from
-      # is the deployment's business (ROBOVAST_PROJECT, --image-project), not this file's.
       resources:
-        # Request the sustained figure, cap generously: the simulator is not under test and
-        # its startup burst compiles depot's geometry, so no single honest number exists.
-        cpu: 0.5
-        cpu_limit: 6
+        cpu: 4
         memory: 2944Mi
-    # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing
-    # of ours. It must name an image -- RoboVAST has no default for the thing under test.
     sut:
       image: family:robovast
-      system_packages:
-      # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish
-      # an identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
-      - ros-jazzy-nav2-minimal-tb4-description
-      # What the `sut:` channel addresses. Declaring the file is what lets a destination be
-      # checked against it before the campaign spends anything.
       config_files:
         nav2: files/nav2_params.yaml
       resources:
-        # No cpu_limit split: an allocation the container never reaches cannot have shaped
-        # the run, and run_validity_view says per run whether the ceiling bound it.
         cpu: 3
         memory: 640Mi
     scenario:
       resources:
-        # Same reasoning as the simulator: scenario-execution is not under test.
-        cpu: 0.75
-        cpu_limit: 2
-        memory: 896Mi
+        cpu: 2
+        memory: 640Mi
   mode: ros2
   runs: 10
-  # Without it `stalled` is null and a wedged run looks like one still working. Batch mode,
-  # so progress never legitimately pauses mid-run; this is a backstop with room.
   timeout: 300
   scenario_file: scenario_roqsim.osc
   run_files:
-  # Per-extension rather than "files/*": that glob crosses '/' and swept __pycache__, which
-  # is hashed into the config identity. These reach the SUT too.
   - "files/*.yaml"
   - "files/*.pgm"
   - "files/*.xml"
   - "files/*.sdf"
   - "files/*.py"
-  env:
-  - PYTHONUNBUFFERED: "1"
 results_processing:
-  # Declared rather than discovered: a check that ran everywhere would write "ok" for every
-  # run of a non-nav2 stack -- a clean bill for a stack that was never there.
   health_checks:
   - nav2_control_loop_rate
   postprocessing:
-  # `all` extracts every TF child frame resolving against map, so a world that later gains a
-  # walker shows it. `require` names what the analysis is measured from; a run missing one fails.
   - rosbags_tf_to_csv:
       frames: all
       require: [base_link, odom, turtlebot4_base_link_gt]

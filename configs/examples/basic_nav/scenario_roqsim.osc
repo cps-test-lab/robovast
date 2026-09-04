@@ -3,32 +3,16 @@ import osc.ros
 import osc.nav2
 import osc.remote
 
-# roqsim/roqsim half, three containers. The simulator is already running in `containers.simulation`,
-# so only nav2 is launched here -- into the `sut` container, over remote(). The measurement half
-# (init_nav2, bag_record, nav_to_pose) is identical to scenario_gazebo.osc; if it drifts, a
-# difference in results stops being attributable to the simulator.
-
 scenario test_scenario:
     robot: differential_drive_robot
     goal_pose: pose_3d
-    # Relative because it names a staged input: robovast rewrites it to the copy belonging to
-    # the configuration being run, which is what makes a nav2 parameter a factor of the .vast.
+    # Relative: robovast rewrites it to the copy belonging to the configuration being run.
     params_file: string = 'files/nav2_params.yaml'
 
     do serial:
-        # Gate the LAUNCH, not the activation -- the one roqsim-specific difference. The Gazebo
-        # half's two lifecycle service_calls cannot work across a container boundary: service_call
-        # fires call_async once, with no wait_for_service, so the request is sent before its client
-        # has finished endpoint matching and is silently dropped. Gating the launch keeps the
-        # property that gate existed for (nav2 must not come up against a silent simulator, or
-        # collision_monitor fails closed at zero velocity) and lets nav2 autostart itself.
-        # Bounded, so a simulator that never comes up fails the trial instead of hanging it.
         serial:
             timeout(60s)
             wait_for_topics(topics: ['/clock'])
-            # range_max because check_data resolves member_name with a plain getattr, so a nested
-            # field like 'clock.sec' is rejected. sensor_data QoS: a reliable subscriber never
-            # matches a best-effort publisher.
             check_data(topic_name: '/scan',
                        topic_type: 'sensor_msgs.msg.LaserScan',
                        member_name: 'range_max',
@@ -36,34 +20,14 @@ scenario test_scenario:
                        expected_value: '0.0',
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
-            # remote() runs this action in the `sut` container. It is a modifier from
-            # scenario-execution-server: only actions that need no ROS node can carry it, which is
-            # ros_launch and nothing else in this file. /ipc is the one address identical on both
-            # lanes (tmpfs under compose, emptyDir in Kubernetes). Absolute path, because server-side
-            # a relative one resolves against the client's scenario dir on the server's filesystem.
             ros_launch('', '/config/files/nav2_sut.launch.py',
-                # This configuration's own copy. `params_file` arrives relative to the config
-                # mount root, which is this scenario's directory.
                 [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
                  key_value('map', '/config/files/depot.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:
-                    # setup_timeout stated, not left at the 10s default: this waits for the
-                    # scenario-execution-server in ANOTHER container, and a cluster batch starts
-                    # many pods at once, so bringup crosses 10s routinely. Measured 2026-08-21 on
-                    # a search campaign: all 5 runs of one parameter set failed "Cannot reach
-                    # scenario-execution-server ... (timeout 10.0s)". It is a bringup wait, not
-                    # part of the trial -- it returns as soon as the server answers -- so a
-                    # generous value costs nothing and the scenario's own timeout() still bounds
-                    # the run. Stated here because this example is what gets copied.
                     remote('ipc:///ipc/sut', setup_timeout: 120s)
             serial:
-                # Waits for amcl and bt_navigator to report active, retrying every tick -- which is
-                # what absorbs however long the twelve composed nodes take to come up.
                 robot.init_nav2(pose_3d())
-                # use_sim_time stamps every derived table with the simulator's clock, so both halves
-                # are comparable in sim seconds; /clock is recorded so wall-stamped topics
-                # (/behavior_tree_log) can be mapped back to it.
                 bag_record([
                         '/clock',
                         '/tf',
