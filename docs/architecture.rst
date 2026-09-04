@@ -10,6 +10,8 @@ are all thin **clients** of the same contract. This lets an LLM (or any client)
 author, run, re-postprocess, and reason over large-scale simulation campaigns
 through an interface that can live on a **different host** from the client.
 
+.. _architecture-interface:
+
 One interface, one implementation, many clients
 -----------------------------------------------
 
@@ -72,8 +74,7 @@ namespace, two origins, no shadowing.
 
 The practical consequence, and the reason it is worth the packaging: ``pip install
 robovast-client`` is 13 packages and ~30 MB against the core's 88 and ~290 MB, and a
-``vast`` assembled from it lists exactly the verbs it can run. See :ref:`client`, and
-``AGENTS.md`` §5 for the rules a change here must hold.
+``vast`` assembled from it lists exactly the verbs it can run. See :ref:`client`.
 
 Where the driver runs
 ----------------------
@@ -370,8 +371,11 @@ two origins, no shadowing. Adding an ``__init__.py`` to either directory would b
 merge silently, so neither has one.
 
 The direction of the dependency is load-bearing: ``robovast-cluster`` depends on
-``robovast``, never the reverse. See ``AGENTS.md`` §5 for the packaging rules that follow
-from it, including why a lane cannot be offered as an extra.
+``robovast``, never the reverse. That is why a lane is **not installable as an extra** — a
+``robovast[cluster]`` extra is the edge back, and closes the cycle. Every place that installs
+a lane does so as its own step: the controller Dockerfile, ``make venv`` and ``make build``
+each name it, and a test guards the Dockerfile, because an omission there cannot fail before
+deployment.
 
 .. _container-exec-architecture:
 
