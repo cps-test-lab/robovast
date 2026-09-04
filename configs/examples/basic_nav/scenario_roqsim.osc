@@ -6,7 +6,6 @@ import osc.remote
 scenario test_scenario:
     robot: differential_drive_robot
     goal_pose: pose_3d
-    params_file: string
 
     do serial:
         serial:
@@ -20,7 +19,7 @@ scenario test_scenario:
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
             ros_launch('', common.get_scenario_file_directory() + '/files/nav2_sut.launch.py',
-                [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
+                [key_value('params_file', common.get_scenario_file_directory() + '/files/nav2_params.yaml'),
                  key_value('map', common.get_scenario_file_directory() + '/files/depot.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:

@@ -14,17 +14,11 @@ metadata:
     over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
     no image of its own.
 
-    Two channels are varied. `scenario:` carries the goal, `sut:` rewrites nav2's own parameter
-    file per configuration -- 5 goals x 2 inflation radii.
+    One channel is varied: `scenario:` carries the goal, and every configuration runs the
+    campaign's own nav2 parameters.
   keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
-  # Names the declared source, which is what rewrites it to this cell's own copy.
-  parameters:
-  - params_file: 'files/nav2_params.yaml'
-  sut:
-    nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55 # default value
-    nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
   variations:
   - ParameterVariationList:
       scenario: goal_pose
@@ -128,8 +122,6 @@ execution:
         memory: 2944Mi
     sut:
       image: family:robovast
-      config_files:
-        nav2: files/nav2_params.yaml
       resources:
         cpu: 3
         memory: 640Mi
