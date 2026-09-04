@@ -52,6 +52,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -84,6 +85,38 @@ SCENARIO_TIMESTAMPS_TABLE = "scenario_timestamps"
 #: Records display name -> SQL table name, so a reader can find the table a file became
 #: after the name was sanitised.
 TABLE_NAME_MAP = "_table_name_map"
+
+#: How often a walk over the campaign's runs reports, in seconds. Frequent enough that a
+#: stalled ingest is visibly stalled, rare enough that the line does not become the campaign
+#: log -- the failure mode of a per-item progress bar, which writes one line per run into a
+#: file somebody later has to read.
+PROGRESS_INTERVAL = 15
+
+
+def _walk_progress(label: str, total: int, output):
+    """A throttled ``label n/total`` reporter for a walk with no other account of itself.
+
+    Both walks below take a share of minutes on a campaign of any size and neither has a
+    counter of its own, so between their start and their summary a reader sees nothing --
+    and an ingest that is working looks exactly like one that is wedged.
+
+    The denominator is what makes it worth emitting at all: a bare running count says work is
+    happening and never says whether it is nearly done, which is the only question being asked
+    of it.
+    """
+    state = {"done": 0, "last": time.monotonic()}
+
+    def advance():
+        state["done"] += 1
+        now = time.monotonic()
+        # The last item always reports, so the line a reader is left with is the final count
+        # rather than whatever the throttle happened to let through.
+        if now - state["last"] < PROGRESS_INTERVAL and state["done"] < total:
+            return
+        state["last"] = now
+        output(f"index: {label} {state['done']}/{total}")
+
+    return advance
 
 
 def _data_files(run_dir: Path) -> list:
@@ -419,7 +452,7 @@ def _param_types(param_keys, param_sources) -> dict:
     return types
 
 
-def build_runs_table(sink, campaign_dir: str) -> int:
+def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     """Write the ``runs`` dimension table for one campaign; return rows written.
 
     One row per run directory under the campaign -- **not** per row in ``campaign.db``'s
@@ -455,38 +488,46 @@ def build_runs_table(sink, campaign_dir: str) -> int:
     # and then no manifest is read at all.
     probed = campaign_data.probed_runs(root)
 
+    # Not a cheap walk, and the reason is easy to miss: every run has its clock map located,
+    # its job artifacts resolved and its whole ``resource_usage`` CSV read for the shared-memory
+    # high-water mark. That is a file parse per run, so the cost is the campaign's size.
+    walk = [(Path(config_dir).name, run_dir)
+            for config_dir in campaign_data.list_config_dirs(root)
+            for run_dir in campaign_data.list_run_dirs(config_dir)]
+    advance = _walk_progress("building the run table", len(walk),
+                             output or logger.info)
+
     rows = []
-    for config_dir in campaign_data.list_config_dirs(root):
-        config_name = Path(config_dir).name
+    for config_name, run_dir in walk:
         params = params_by_config.get(config_name, {})
         objective = objective_by_config.get(config_name)
-        for run_dir in campaign_data.list_run_dirs(config_dir):
-            run_path = Path(run_dir)
-            run_id = int(run_path.name)
-            outcome = (outcomes.get(config_name, {}).get(run_id)
-                       or campaign_data.read_run_outcome(run_path, root))
-            instance_type, node_label, cpu_name, cpus, mem = _sysinfo_fields(outcome)
-            clock = _clock_map_info(root, config_name, run_id)
-            shm_peak, shm_limit = _shm_info(root, config_name, run_id)
-            start_time = outcome["start_time"]
-            duration = outcome["duration_s"]
-            row = {
-                "config_name": config_name, "run_id": run_id,
-                "status": outcome["status"], "passed": outcome["passed"],
-                "duration_s": duration, "errors": outcome["errors"],
-                "failures": outcome["failures"], "objective": objective,
-                "start_time": start_time, "end_time": _end_time(start_time, duration),
-                "instance_type": instance_type, "node_label": node_label,
-                "cpu_name": cpu_name, "available_cpus": cpus,
-                "available_mem_bytes": mem,
-                "shm_peak_bytes": shm_peak, "shm_limit_bytes": shm_limit,
-                "clock_map_source": clock.source, "clock_map_samples": clock.samples,
-                "clock_map_wall_span_s": clock.wall_span_s,
-                "clock_map_sim_span_s": clock.sim_span_s,
-                "probed": 1 if f"{config_name}/{run_id}" in probed else 0,
-            }
-            row.update({f"param_{k}": params.get(k) for k in param_keys})
-            rows.append(row)
+        run_path = Path(run_dir)
+        run_id = int(run_path.name)
+        outcome = (outcomes.get(config_name, {}).get(run_id)
+                   or campaign_data.read_run_outcome(run_path, root))
+        instance_type, node_label, cpu_name, cpus, mem = _sysinfo_fields(outcome)
+        clock = _clock_map_info(root, config_name, run_id)
+        shm_peak, shm_limit = _shm_info(root, config_name, run_id)
+        start_time = outcome["start_time"]
+        duration = outcome["duration_s"]
+        row = {
+            "config_name": config_name, "run_id": run_id,
+            "status": outcome["status"], "passed": outcome["passed"],
+            "duration_s": duration, "errors": outcome["errors"],
+            "failures": outcome["failures"], "objective": objective,
+            "start_time": start_time, "end_time": _end_time(start_time, duration),
+            "instance_type": instance_type, "node_label": node_label,
+            "cpu_name": cpu_name, "available_cpus": cpus,
+            "available_mem_bytes": mem,
+            "shm_peak_bytes": shm_peak, "shm_limit_bytes": shm_limit,
+            "clock_map_source": clock.source, "clock_map_samples": clock.samples,
+            "clock_map_wall_span_s": clock.wall_span_s,
+            "clock_map_sim_span_s": clock.sim_span_s,
+            "probed": 1 if f"{config_name}/{run_id}" in probed else 0,
+        }
+        row.update({f"param_{k}": params.get(k) for k in param_keys})
+        rows.append(row)
+        advance()
 
     # The draws that never became a configuration. One row each, ``run_id`` NULL (there is
     # no run to number) and every run-derived column NULL -- the parameters are the whole
@@ -701,15 +742,23 @@ def build_run_health(sink, conn, campaign_dir: str, campaign_id: str) -> int:
 
 
 def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
-                    provenance_entries=None) -> dict:
+                    provenance_entries=None, output=None) -> dict:
     """Load a whole campaign -- its record and its data files -- into the index.
 
     Returns ``{table: rows}``. Idempotent at the campaign level: the record is rewritten
     (see :func:`~robovast.results_processing.dimension_ingest.mirror_campaign_record`) and
     metric rows for this campaign are cleared first, so re-ingesting after a re-postprocess
     lands the same rows rather than doubling them.
+
+    *output* receives a line per phase and a throttled counter over each walk. It is the only
+    account this step gives of itself: it is postprocessing's longest by a wide margin on a
+    campaign of any size, it is the last one to run, and the phase it runs in has no run
+    counter -- so with nothing here, "still working" and "wedged" are the same observation for
+    however long it takes. Defaults to the log, which is where the ``vast campaign import``
+    path reads it; postprocessing passes a callback that also publishes the live stage marker.
     """
     root = Path(campaign_dir)
+    output = output or logger.info
     totals = {}
     name_map: dict = {}
 
@@ -729,6 +778,7 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
 
     store = root / "campaign.db"
     if store.is_file():
+        output(f"index: reading the campaign record of {campaign_id}")
         totals.update(dimension_ingest.mirror_campaign_record(conn, str(store), campaign_id))
     else:
         # Not fatal: a campaign whose record is missing still has its measurements, and
@@ -741,18 +791,21 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     # The dimension table every analysis joins its metrics against, built before them so a
     # partial ingest still says which runs exist. ``campaign.db`` is optional here for the
     # same reason it is above: a campaign that ended badly still has runs on disk.
-    totals[RUNS_TABLE] = build_runs_table(sink, str(root))
+    totals[RUNS_TABLE] = build_runs_table(sink, str(root), output=output)
     index_schema.record_note(conn, RUNS_TABLE, "probed", _PROBED_NOTE,
                              kind=index_schema.NOTE_DOC)
 
-    for config_dir in list_config_dirs(str(root)):
-        config_name = Path(config_dir).name
-        for run_dir in list_run_dirs(config_dir):
-            run_path = Path(run_dir)
-            written = ingest_run(sink, run_path, config_name, int(run_path.name),
-                                 name_map=name_map)
-            for table, count in written.items():
-                totals[table] = totals.get(table, 0) + count
+    walk = [(Path(config_dir).name, run_dir)
+            for config_dir in list_config_dirs(str(root))
+            for run_dir in list_run_dirs(config_dir)]
+    advance = _walk_progress("ingesting run", len(walk), output)
+    for config_name, run_dir in walk:
+        run_path = Path(run_dir)
+        written = ingest_run(sink, run_path, config_name, int(run_path.name),
+                             name_map=name_map)
+        for table, count in written.items():
+            totals[table] = totals.get(table, 0) + count
+        advance()
 
     if name_map:
         sink.write(TABLE_NAME_MAP,
@@ -772,6 +825,7 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     # LAST of all the builders, and that ordering is load-bearing twice over: a check reads
     # the campaign's derived tables (``run_log``, ``runs``), so they must already be in the
     # index, and the grades are the only rows here written by code this package does not own.
+    output(f"index: grading the runs of {campaign_id}")
     totals[run_health.TABLE] = build_run_health(sink, conn, str(root), campaign_id)
 
     # Same reason: which columns exist is known only after the walk declared them.
