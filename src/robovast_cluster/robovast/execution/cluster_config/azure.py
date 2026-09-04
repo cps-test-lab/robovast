@@ -135,7 +135,8 @@ class AzureClusterConfig(BaseConfig):
             yaml_objects, namespace,
             index_storage_path=kwargs.get('index_storage_path', ''),
             registry_storage_path=kwargs.get('registry_storage_path', ''),
-            registry_storage_class=kwargs.get('registry_storage_class', ''))
+            registry_storage_class=kwargs.get('registry_storage_class', ''),
+            ingress_class=kwargs.get('ingress_class', ''))
         yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         try:
             apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)

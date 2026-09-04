@@ -1881,6 +1881,13 @@ loudly rather than inventing one.
 
 5. **Create the bucket yourself** and give the credential below read/write on it.
 
+   Pass ``--ingress-class gce`` when publishing with ``--ingress-host`` on GKE's built-in
+   controller. Unlike ingress-nginx it cannot route to a plain ClusterIP, so both Services
+   the Ingress fronts — the UI on ``/`` and the registry on ``/v2`` — are annotated for
+   container-native load balancing only when the class is named. A backend without it never
+   becomes healthy, and the reason is visible in the load balancer rather than in anything
+   RoboVAST prints.
+
 6. Generate the credential — either HMAC keys for the bucket, or a service-account
    JSON key.
 

@@ -312,7 +312,8 @@ class GcpClusterConfig(BaseConfig):
                 [], namespace,
                 index_storage_path=kwargs.get('index_storage_path', ''),
                 registry_storage_path=kwargs.get('registry_storage_path', ''),
-                registry_storage_class=kwargs.get('registry_storage_class', ''))),
+                registry_storage_class=kwargs.get('registry_storage_class', ''),
+                ingress_class=kwargs.get('ingress_class', ''))),
             namespace=namespace)
         logging.info("GCP cluster ready (campaign data goes straight to the bucket).")
 

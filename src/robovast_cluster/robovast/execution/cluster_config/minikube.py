@@ -166,7 +166,8 @@ class MinikubeClusterConfig(BaseConfig):
             index_storage_path=kwargs.get('index_storage_path', ''),
             index_storage_class=store_class,
             registry_storage_path=kwargs.get('registry_storage_path', ''),
-            registry_storage_class=kwargs.get('registry_storage_class', ''))
+            registry_storage_class=kwargs.get('registry_storage_class', ''),
+            ingress_class=kwargs.get('ingress_class', ''))
         yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         self._refuse_a_store_pod_on_the_wrong_node(namespace, 'robovast', control_node_labels)
         minio_store.refuse_a_store_the_manifest_cannot_change(namespace, store_volume)
