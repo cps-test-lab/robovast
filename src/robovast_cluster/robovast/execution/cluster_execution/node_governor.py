@@ -245,6 +245,33 @@ def refusal_message(governor: str, detail: str, *, forbidden: bool) -> str:
     )
 
 
+def unavailable_message(governor: str, config_name: str) -> str:
+    """Why a provider is not asked for a governor at all.
+
+    The third outcome, beside :func:`refusal_message` and :func:`runtime_failure_message`,
+    and the only one that is known before anything is applied: the provider's nodes are
+    virtual machines, whose kernels expose no cpufreq policy because the hypervisor owns the
+    clock. Nothing is attempted, so there is nothing to report as failed -- but it is said
+    out loud, because a cluster measuring on a clock nobody fixed must not be a silent state.
+
+    Informational rather than a warning: this is the provider working as it is, not something
+    that went wrong on this run. What is left unfixed still reaches the results, per campaign,
+    through the ``cpu_governor_scaling`` advice.
+    """
+    return (
+        f"not setting the CPU governor: the '{config_name}' provider runs campaigns on "
+        f"virtual machines, whose kernels expose no cpufreq policy to set -- the hypervisor "
+        f"owns the clock. Node replacement would undo a per-node setting there in any case.\n"
+        f"What the governor buys is comparability between runs, and that is still worth "
+        f"having: choose a machine type with a predictable clock, keep the campaign pool off "
+        f"shared-core and preemptible instances, and hold node upgrades for the duration. "
+        f"RoboVAST reports a 'cpu_governor_scaling' warning per campaign, so what is left "
+        f"unfixed shows up in the results rather than silently.\n"
+        f"Pass --performance-governor to attempt it anyway; it is obeyed, and it fails "
+        f"loudly rather than being overruled by this policy."
+    )
+
+
 def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bool = False,
                         node_selector: Optional[dict] = None,
                         dry_run: bool = False, ready_timeout_s: float = READY_TIMEOUT_S,
