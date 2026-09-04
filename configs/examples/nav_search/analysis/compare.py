@@ -150,7 +150,7 @@ def runs_to_depth(campaign, target):
         values = [u['robustness'] for u in cells if u.get('robustness') is not None]
         if not values:
             continue
-        depth = min(values) if depth is None else min(depth, min(values))
+        depth = min(values) if depth is None else min(depth, *values)
         if depth <= target:
             return spent
     return None
@@ -312,7 +312,7 @@ def grid_reference(campaigns):
     print()
     print('  What each search spent to say something about the same space:')
     for campaign in sorted(searches, key=lambda c: c.runs_spent):
-        ks, ns, hows = campaign.failing_cell_fraction()
+        ks, ns, _how = campaign.failing_cell_fraction()
         # As a MULTIPLE of the grid's runs, not as a percentage saved. A search that spent
         # more than the exhaustive grid is the interesting outcome here, and a signed
         # percentage renders that as "-40%", which reads as the opposite of what it means.
