@@ -239,6 +239,15 @@ The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block,
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
 the Makefile* changes, so it is the safe way to do it.
 
+**A distribution's own verbs are not entry points.** An entry point is for crossing a
+distribution boundary; a verb defined in the same module as its group stays an ordinary
+``@group.command()``. Declaring your own in installed metadata means a ``pyproject`` edit
+without a reinstall makes the verb vanish, silently. Moving a verb between distributions
+carries the mirror hazard — the old declaration is live until every distribution is
+reinstalled, and two providers of one name resolve unpredictably;
+``tests/test_editable_installs.py`` asserts exactly one provider per name. When ``vast``
+reports ``has no attribute`` after a pull, this is it, and ``make venv`` is the fix.
+
 **A client install must stay a working install.** ``robovast-client`` ships without the
 core, and every leak found so far has been a *deferred* import of it — the module imports
 perfectly and the command dies at call time, in exactly the install the distribution
@@ -410,6 +419,33 @@ them rather than invent its own habits:
      error lands in the contribution's ``errors`` and is shown beside the markers that did
      arrive, since a view missing one variation's geometry is otherwise indistinguishable from a
      variation that placed nothing.
+
+.. _extending-operation:
+
+Add an interface operation
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every remote operation is a method on
+:class:`robovast.service.interface.RobovastInterface`, and each client is a thin caller of it
+(:ref:`architecture-interface`). Adding one means threading it through the whole set:
+
+#. **The interface** — the abstract method, its ``Routes`` entry and the request/response
+   models. They live in ``robovast-client``, so a client install has them without the core.
+#. **Both transports** in ``robovast.service.client``: ``LocalTransport`` in process and
+   ``HTTPTransport`` over the route.
+#. **The HTTP route** in :mod:`robovast.service.app`.
+#. **The surfaces** — the ``vast`` CLI, the MCP tools, and, where the web UI shows the
+   operation, ``frontend/ui/src/lib/robovastClient.ts`` (:ref:`web-ui-internals`).
+
+An operation implemented inside one client — an MCP tool calling a local function directly,
+say — is reachable from that client alone, and the CLI, the web UI and the HTTP API have no
+way to it. Putting it on the interface is what gives every client the same answer, over
+either transport and on either execution lane.
+
+Anything the executing pod needs travels the same way: a value the controller reads must be
+passed through the cluster path (``cluster_service.py`` into the pod's environment) as well as
+the local one, or the operation works under ``vast serve --backend local`` and silently does
+nothing on the cluster.
 
 .. _extending-variation:
 
