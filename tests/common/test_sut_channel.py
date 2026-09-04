@@ -155,6 +155,20 @@ def test_a_source_name_used_twice_is_refused(tmp_path):
         declared_sources(execution, str(tmp_path))
 
 
+def test_one_file_declared_under_two_names_is_refused(tmp_path):
+    """The other direction of the same pairing.
+
+    Each source is rewritten as a whole document, so two names for one file give two
+    documents and one staged path: the second write replaces the first and every
+    destination on the losing source silently does nothing.
+    """
+    execution = {"containers": {
+        "sut": {"config_files": {"nav2": "files/a.yaml",
+                                 "controller_server": "files/a.yaml"}}}}
+    with pytest.raises(SutChannelError, match="One source per file"):
+        declared_sources(execution, str(tmp_path))
+
+
 # --- the pre-check ------------------------------------------------------------------------
 
 def test_a_destination_addressing_nothing_is_refused_before_anything_runs(campaign):
