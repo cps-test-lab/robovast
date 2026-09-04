@@ -41,6 +41,29 @@ def test_a_provider_without_an_object_store_still_gets_the_pod():
     assert service["metadata"]["name"] == store_pod.STORE_SERVICE_NAME
 
 
+def test_the_registrys_ingress_backend_is_annotated_like_the_services_own():
+    """The GKE Ingress fronts two Services, and reaches neither as a plain ClusterIP.
+
+    The registry answers on the store pod's Service, so a `gce` Ingress whose /v2 rule names
+    it needs container-native load balancing there too. Without it that backend never becomes
+    healthy and the reason is in the load balancer, not in anything RoboVAST prints -- while
+    the UI on `/` works, because the other Service was annotated.
+    """
+    service = next(d for d in store_pod.attach_infrastructure([], "robotics",
+                                                              ingress_class="gce")
+                   if d["kind"] == "Service")
+
+    assert service["metadata"]["annotations"] == registry_deploy.NEG_ANNOTATION
+
+
+def test_no_ingress_class_leaves_a_gke_specific_key_off_every_other_cluster():
+    service = next(d for d in store_pod.attach_infrastructure([], "robotics")
+                   if d["kind"] == "Service")
+
+    assert "annotations" not in service["metadata"]
+    assert registry_deploy.ingress_backend_annotations("nginx") == {}
+
+
 def test_attaching_twice_changes_nothing():
     """Setup is re-runnable, and every provider parses its manifest fresh each time."""
     once = _rke2_docs()

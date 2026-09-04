@@ -213,6 +213,29 @@ REGISTRY_INGRESS_ANNOTATIONS = {
 }
 
 
+#: What GKE's built-in ``gce`` controller needs on a Service before an Ingress can route to
+#: it. Unlike ingress-nginx, ``gce`` cannot reach a plain ClusterIP: it needs a NodePort
+#: backend or container-native load balancing, and this annotation asks for the second.
+#:
+#: **Every** Service the Ingress names, not just the first one. The Ingress fronts two -- the
+#: service's own on ``/`` and the store pod's on ``/v2`` -- and a backend without this simply
+#: never becomes healthy, with the reason visible in the load balancer rather than anywhere a
+#: RoboVAST user would look. So the annotation is decided in one place and both callers use
+#: it, because "one of the two Services got it" is exactly the shape of that bug.
+NEG_ANNOTATION = {"cloud.google.com/neg": '{"ingress": true}'}
+
+
+def ingress_backend_annotations(ingress_class: str) -> dict:
+    """Annotations a Service needs to be reachable as an Ingress backend under *ingress_class*.
+
+    Empty for every other controller, ``gce`` included when it is the cluster default and was
+    not named: this cannot detect a default it was never told, and annotating unconditionally
+    would put a GKE-specific key on every Service RoboVAST creates anywhere. Name the class
+    with ``--ingress-class gce`` on GKE.
+    """
+    return dict(NEG_ANNOTATION) if ingress_class == "gce" else {}
+
+
 def registry_ingress_path():
     """The ``/v2`` rule routing the registry half of the service's hostname.
 

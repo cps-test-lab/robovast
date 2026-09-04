@@ -89,7 +89,7 @@ def _add_port(service, name, port):
 
 def attach_infrastructure(docs, namespace="default", index_storage_path="",
                           index_storage_class="", registry_storage_path="",
-                          registry_storage_class=""):
+                          registry_storage_class="", ingress_class=""):
     """Add the registry and the index to a provider's parsed store manifest.
 
     *docs* is the provider's ``robovast`` manifest, parsed, with its store volume already
@@ -136,6 +136,12 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
                    "spec": {"type": "ClusterIP", "ports": [],
                             "selector": dict(STORE_POD_SELECTOR)}}
         docs.append(service)
+    # This Service is the registry's Ingress backend, so it needs whatever the controller
+    # requires of one -- the same annotations the service's own Service gets, from the same
+    # place. Merged rather than assigned: a provider's manifest may carry its own.
+    backend = registry_deploy.ingress_backend_annotations(ingress_class)
+    if backend:
+        service["metadata"].setdefault("annotations", {}).update(backend)
     _add_port(service, "registry", registry_deploy.REGISTRY_PORT)
     _add_port(service, "index", index_deploy.INDEX_PORT)
 
