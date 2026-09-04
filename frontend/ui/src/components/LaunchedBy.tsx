@@ -1,4 +1,5 @@
 import Chip from '@mui/material/Chip'
+import { CHIP_COLOURS, slotOf } from '@/lib/nameColor'
 
 /**
  * Who says they started a campaign.
@@ -22,28 +23,11 @@ import Chip from '@mui/material/Chip'
  * inventing a name.
  */
 
-/**
- * Palette chosen to hold contrast in both the light and dark themes — the UI follows the
- * viewer's, so a colour tuned for one is unreadable in the other.
- */
-const COLOURS = [
-  '#1f6feb', // blue
-  '#8250df', // purple
-  '#bf3989', // magenta
-  '#bc4c00', // orange
-  '#1a7f37', // green
-  '#0e7490', // teal
-  '#9a6700', // ochre
-  '#cf222e', // red
-]
-
-/** Stable across sessions and viewers: same name in, same colour out. */
+/** Stable across sessions and viewers: same name in, same colour out. Not collision-avoiding,
+ * and it does not need to be — one campaign has one launcher, so two names are never compared
+ * side by side the way a job list's nodes are. */
 function colourFor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0
-  }
-  return COLOURS[Math.abs(hash) % COLOURS.length]
+  return CHIP_COLOURS[slotOf(name, CHIP_COLOURS.length)]
 }
 
 export function LaunchedBy({ name }: { name?: string | null }) {

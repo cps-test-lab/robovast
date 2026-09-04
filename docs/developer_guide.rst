@@ -1836,7 +1836,10 @@ Control operations
 
 * ``stop`` (``client.stop``) — sets a cooperative flag on the campaign's
   ``ControllerState`` (``request_stop``); the loop ends after the current batch. In
-  the service this is a direct in-process call.
+  the service this is a direct in-process call. A campaign already **postprocessing** is
+  stopped by the same flag — the pipeline polls it and tears down the step in flight — but
+  ends as ``finished`` without its derived data rather than as ``stopped``, since its runs
+  are complete; see :doc:`architecture`.
 * ``get_campaign_logs`` — serves ``controller.log`` from a byte offset (live file
   while the campaign runs, the object-store copy afterwards). The web UI polls it to
   stream the log; ``vast … monitor`` renders live status from ``get_status``.
