@@ -152,6 +152,17 @@ def declared_sources(execution: dict, vast_dir: str) -> dict:
                 rel, fmt_name = str(entry), ""
             if not rel:
                 raise SutChannelError(f"source '{name}' declares no file")
+            # ONE SOURCE PER FILE, as well as one file per source. Each source is loaded and
+            # written back as its own document, and two sources sharing a file write to one
+            # staged path -- so the second dump replaces the first and every destination on
+            # the losing source silently does nothing. A file addressed under two names has
+            # one spelling that works, so the second name is refused rather than picked.
+            clash = next((other for other in sources.values() if other.rel_path == rel), None)
+            if clash is not None:
+                raise SutChannelError(
+                    f"sources '{clash.name}' and '{name}' both declare '{rel}'. One source "
+                    "per file: each is rewritten as a whole document, so a second name for "
+                    f"one file loses one of the two. Address it as '{clash.name}.<path>'.")
             sources[name] = Source(
                 name=name, rel_path=rel, abs_path=os.path.join(vast_dir, rel),
                 fmt=resolve_format(rel, fmt_name), container=container)
