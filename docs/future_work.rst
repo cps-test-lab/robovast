@@ -339,8 +339,7 @@ group's ``maxSize``, in node counts that still have to be turned into cores -- w
 live, and would be the same mechanism an ``eks`` provider needs beside S3 results storage.
 
 Also open: re-apply node identity labels continuously rather than at ``setup``, so a node the
-autoscaler adds can be pinned to and probed; and make the governor DaemonSet report a runtime
-failure instead of returning "applied".
+autoscaler adds can be pinned to and probed.
 
 **A naming clash worth resolving if either area is touched again.** ``runs.probed`` (a campaign
 run somebody read into) and a *calibration probe* (an extra run that measures a node) share a

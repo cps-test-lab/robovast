@@ -107,6 +107,10 @@ spec:
 
 class AzureClusterConfig(BaseConfig):
 
+    #: AKS node pools are Azure VMs, whose guest kernels expose no cpufreq policy.
+    #: See :attr:`BaseConfig.governor_is_settable`.
+    governor_is_settable = False
+
     def setup_cluster(self, storage_size="10Gi", **kwargs):
         """Set up MinIO S3 server for Azure cluster.
 
