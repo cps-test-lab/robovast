@@ -37,10 +37,15 @@ DEPLOYMENT_NAME = "robovast-tailnet"
 #: installs, and this one holds a WireGuard identity.
 IMAGE = "tailscale/tailscale:v1.90.6"
 
-#: Where the operator states the tailnet. Read from the host environment at setup -- a
-#: ``.env`` line, like the git token and the ntfy topic -- because it describes the CLUSTER
-#: rather than any campaign, and because a coordination server's address is a deployment
-#: fact that must not be written into this repository.
+#: The credential, and only the credential. Read from the host environment -- a ``.env``
+#: line, like the git token and the ntfy topic -- because a pre-auth key passed as an
+#: argument lands in shell history, and because a coordination server's address is a
+#: deployment fact that must not be written into this repository.
+#:
+#: *Whether* a cluster is on a tailnet is NOT read from here: that is ``setup --tailnet``.
+#: An environment variable applies to whatever context happens to be current, so one
+#: ``.env`` and two clusters would publish the one nobody meant to. See
+#: :func:`ensure_tailnet`.
 LOGIN_SERVER_ENV = "ROBOVAST_TAILNET_LOGIN_SERVER"
 AUTHKEY_ENV = "ROBOVAST_TAILNET_AUTHKEY"
 HOSTNAME_ENV = "ROBOVAST_TAILNET_HOSTNAME"
@@ -187,13 +192,19 @@ def _deployment(namespace, login_server, hostname, labels, node_selector):
 
 
 def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
-                   service_host="", service_port=0):
-    """Deploy the tailnet node when one is configured, remove it when one is not.
+                   service_host="", service_port=0, enabled=False):
+    """Deploy the tailnet node when this cluster asked for one, remove it when it did not.
 
-    Reconciled on **every** setup, empty included, for the reason the governor DaemonSet is:
-    setup writes the cluster's whole configuration, so unsetting the environment takes the
-    node away rather than leaving one nobody remembers configuring still answering on a
-    tailnet.
+    **The decision is the flag, never the environment.** Which route publishes a cluster is
+    a property of that cluster, and an operator's ``.env`` is not: one file and two contexts
+    would otherwise put a node on whichever happened to be current, on a deployment nobody
+    meant to publish. So ``vast cluster setup --tailnet`` says *this* cluster is on a
+    tailnet, and the environment only supplies the credential -- which belongs there anyway,
+    because a pre-auth key on a command line lands in shell history.
+
+    Off unless asked. Reconciled on **every** setup, for the reason the governor DaemonSet
+    is: setup writes the cluster's whole configuration, so dropping the flag takes the node
+    away rather than leaving one nobody remembers configuring still answering on a tailnet.
 
     Returns the hostname it published under, or ``""``.
     """
@@ -202,11 +213,17 @@ def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
     from .kube_client import load_kube_config  # noqa: PLC0415
     from .kubernetes import apply_manifests  # noqa: PLC0415
 
-    settings = configured()
     load_kube_config(context=kube_context)
-    if settings is None:
+    if not enabled:
         remove(namespace, kube_context)
         return ""
+    settings = configured()
+    if settings is None:
+        raise ValueError(
+            f"--tailnet asks for a tailnet node, but neither {LOGIN_SERVER_ENV} nor "
+            f"{AUTHKEY_ENV} is set. The credential is read from the environment (a .env "
+            f"line) rather than taken as an argument, so a pre-auth key does not land in "
+            f"shell history. Set both, or drop --tailnet.")
     login_server, authkey, hostname = settings
     apply_manifests(
         client.ApiClient(),
@@ -267,3 +284,32 @@ def remove(namespace="default", kube_context=None):
                 logger.warning("Could not remove %s from %s: %s", name, namespace, exc)
         except Exception as exc:  # noqa: BLE001 - a teardown must continue past one object
             logger.warning("Could not remove %s from %s: %s", name, namespace, exc)
+
+
+def reconcile_existing(namespace="default", kube_context=None,
+                       service_host="", service_port=0):
+    """Re-apply a tailnet node that **already exists**; never create one.
+
+    What ``upgrade`` runs. Setup decides whether a cluster is on a tailnet; an upgrade
+    carries a changed credential or serve config into one that already is, and must not
+    turn the route on for a cluster that never asked -- an operator upgrading two clusters
+    from one shell would otherwise publish the second by accident.
+
+    Returns the hostname, or ``""`` when there is no node here.
+    """
+    from kubernetes import client  # noqa: PLC0415
+    from kubernetes.client.exceptions import ApiException  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    try:
+        client.AppsV1Api().read_namespaced_deployment(
+            name=DEPLOYMENT_NAME, namespace=namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    return ensure_tailnet(namespace=namespace, kube_context=kube_context,
+                          service_host=service_host, service_port=service_port,
+                          enabled=True)

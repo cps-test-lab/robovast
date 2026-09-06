@@ -2036,22 +2036,36 @@ Coordination is whatever you point it at — Tailscale's own service, or a self-
 `Headscale <https://headscale.net>`_ so that no third party is trusted with the tailnet.
 RoboVAST passes ``--login-server`` through and lets the node register.
 
-Configured entirely from the environment, so a ``.env`` states it once per deployment:
+**Off by default, and asked for per cluster.** The credential lives in the environment, so
+a pre-auth key does not land in shell history; *which* cluster is on a tailnet is decided on
+the setup command, because one ``.env`` and two contexts would otherwise publish whichever
+happened to be current — a deployment nobody meant to expose.
 
 .. code-block:: bash
 
+   # .env — the credential
    ROBOVAST_TAILNET_LOGIN_SERVER=https://headscale.example.org
    ROBOVAST_TAILNET_AUTHKEY=<a pre-auth key from that server>
    ROBOVAST_TAILNET_HOSTNAME=robovast        # optional; the name users type
 
-``vast cluster setup`` then deploys the node, and users reach the web UI at
-``http://robovast`` on the tailnet with the access token from ``vast service token``.
-Nothing but a Tailscale client is needed — no kubeconfig, no ``kubectl``, no port-forward.
+.. code-block:: bash
 
-Both variables or neither: a login server with no key cannot register and a key with no
-server has nothing to register with, so half of the pair is refused rather than
-half-deployed. Reconciled on **every** setup, so unsetting them takes the node away rather
-than leaving one nobody remembers configuring still answering.
+   # the decision — this cluster, and no other
+   vast cluster setup <flavor> --tailnet
+
+Users then reach the web UI at ``http://robovast`` on the tailnet with the access token from
+``vast service token``. Nothing but a Tailscale client is needed — no kubeconfig, no
+``kubectl``, no port-forward.
+
+Written on **every** setup: omitting ``--tailnet`` removes a node a previous setup deployed,
+rather than leaving one nobody remembers configuring still answering. ``--tailnet`` with no
+credential in the environment is an argument error, since it would deploy a node that can
+never register.
+
+``vast cluster upgrade`` reconciles a node that **already exists**, so a rotated key reaches
+a running deployment without a re-setup — and creates none, so upgrading two clusters from
+one shell cannot publish the second by accident. It sits beside the RBAC and the registry
+route, so ``--no-restart`` picks it up without rolling the service pod.
 
 .. note::
 

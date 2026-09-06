@@ -38,6 +38,31 @@ def test_nothing_configured_is_the_ordinary_case(monkeypatch):
     assert td.configured() is None
 
 
+def test_which_cluster_is_on_a_tailnet_is_not_decided_by_the_environment(monkeypatch):
+    """One .env and two contexts would otherwise publish whichever happened to be current.
+
+    The credential stays in the environment -- a pre-auth key on a command line lands in
+    shell history -- but the decision is the flag, so a cluster nobody asked to publish
+    never is.
+    """
+    from unittest import mock
+    _configure(monkeypatch)
+
+    with mock.patch.object(td, "remove") as removed:
+        assert td.ensure_tailnet(enabled=False) == ""
+
+    assert removed.called, "an unasked cluster is reconciled to having no node"
+
+
+def test_asking_for_a_tailnet_with_no_credential_is_an_argument_error(monkeypatch):
+    """--tailnet with nothing to register with would deploy a node that can never come
+    up, so it is refused where the operator can still read the message."""
+    _configure(monkeypatch, server="", key="")
+
+    with pytest.raises(ValueError, match=td.LOGIN_SERVER_ENV):
+        td.ensure_tailnet(enabled=True)
+
+
 def test_half_a_tailnet_is_refused_rather_than_half_deployed(monkeypatch):
     """A login server with no key cannot register and a key with no server has nothing to
     register with, so either alone would deploy a node that can never come up."""

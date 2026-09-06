@@ -264,6 +264,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
                  jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
+                 tailnet=False,
                 
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
@@ -596,21 +597,22 @@ def setup_server(config_name=None, list_configs=False, force=False,
                    job_node_labels=jobs_node_labels,
                    registry_password=registry_password,
                    **service_kwargs)
-    # Reconciled on every setup, configured or not, for the reason the governor DaemonSet
-    # is: setup writes the cluster's whole configuration, so unsetting the environment
-    # takes the node away rather than leaving one nobody remembers configuring still
-    # answering on a tailnet. Placed after the service exists, because it proxies to it.
+    # Reconciled on every setup, asked for or not, for the reason the governor DaemonSet
+    # is: setup writes the cluster's whole configuration, so dropping --tailnet takes the
+    # node away rather than leaving one nobody remembers configuring still answering.
+    # Placed after the service exists, because it proxies to it.
     from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
     from .service_deploy import SERVICE_NAME, SERVICE_PORT  # noqa: PLC0415
     try:
         tailnet_deploy.ensure_tailnet(
             namespace=namespace, kube_context=kube_context,
-            node_selector=store_selector or None,
+            node_selector=store_selector or None, enabled=tailnet,
             service_host=f"{SERVICE_NAME}.{namespace}.svc", service_port=SERVICE_PORT)
     except ValueError:
-        # A half-configured tailnet is an argument error and is raised; anything else here
-        # is an optional route failing to come up, which must not fail a setup that
-        # otherwise succeeded -- the service is reachable by port-forward regardless.
+        # --tailnet with no credential in the environment is an argument error and is
+        # raised; anything else here is an optional route failing to come up, which must not
+        # fail a setup that otherwise succeeded -- the service is reachable by port-forward
+        # regardless.
         raise
     except Exception as exc:  # noqa: BLE001 - see above
         logger.warning("Could not deploy the tailnet node: %s. The service is up and "

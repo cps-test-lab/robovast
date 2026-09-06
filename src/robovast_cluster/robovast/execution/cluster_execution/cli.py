@@ -722,6 +722,16 @@ def _node_labels(pairs, flag):
                    '(managed Kubernetes does) is WARNED about and setup continues. Naming '
                    'the flag makes that refusal an error instead. '
                    '--no-performance-governor skips it and leaves the hosts alone.')
+@click.option('--tailnet/--no-tailnet', 'tailnet', default=False,
+              help='Publish the service on a WireGuard tailnet instead of an Ingress: a '
+                   'node beside it dials OUT to a coordination server and answers under a '
+                   'stable name, so nothing listens on the internet and users need no '
+                   'kubeconfig. OFF by default. The coordination server and pre-auth key '
+                   'come from the environment (ROBOVAST_TAILNET_LOGIN_SERVER / '
+                   '_AUTHKEY), so a key does not land in shell history -- but WHICH '
+                   'cluster is on a tailnet is decided here, because one .env and two '
+                   'contexts would otherwise publish whichever was current. Written on '
+                   'every setup: omitting it removes a node a previous setup deployed.')
 @click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
               help='Confine campaign job pods to nodes carrying this label; repeatable. '
                    'The admission controller counts free capacity only on matching nodes '
@@ -749,7 +759,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, performance_governor,
+          buildkit_cache_reserved, performance_governor, tailnet,
           jobs_node_label,
           control_node_label,
           cluster_config):
@@ -879,6 +889,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  control_node_labels=_node_labels(control_node_label,
                                                                   '--control-node-label'),
                                  cpu_governor=performance_governor,
+                                 tailnet=tailnet,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -1046,7 +1057,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     missed migration.
 
     ``--no-restart`` reconciles just that part — RBAC, the registry
-    ingress route — and stops before the Deployment is touched. All three are picked up by
+    ingress route, the optional tailnet node — and stops before the Deployment is touched. All three are picked up by
     the *running* pod (the API server evaluates RBAC per request, and
     workload, a route is the gateway's own state), so a permission the running version is
     missing can be granted without a version change and without the API blip. That is the
@@ -1129,6 +1140,29 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  pointed the Ingress' /v2 route at the registry")
+        # Only one that already exists. `setup --tailnet` decides whether a cluster is on
+        # a tailnet; this carries a rotated key or a changed serve config into one that
+        # already is. Creating here would let an operator upgrading two clusters from one
+        # shell publish the second by accident, which is the whole reason the decision is a
+        # flag rather than an environment variable.
+        #
+        # Above the --no-restart line with the other two, and for the same reason: this is
+        # a Deployment of its own, so the service pod does not have to roll for it.
+        from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+        from .service_deploy import SERVICE_NAME, SERVICE_PORT  # noqa: PLC0415
+        try:
+            tailnet = tailnet_deploy.reconcile_existing(
+                namespace=namespace, kube_context=kube_context,
+                service_host=f"{SERVICE_NAME}.{namespace}.svc", service_port=SERVICE_PORT)
+            if tailnet:
+                click.echo(f"  tailnet node '{tailnet}' reconciled")
+        except ValueError as exc:
+            # Half a tailnet is an argument error and stops the upgrade before it rolls
+            # anything; anything else is an optional route failing to come up, which must
+            # not fail an upgrade that is otherwise fine.
+            raise click.ClickException(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - see above
+            click.echo(f"  could not reconcile the tailnet node: {exc}", err=True)
         # --no-restart stops here, and everything above this line is why it can: RBAC is
         # evaluated by the API server per request, and
         # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
