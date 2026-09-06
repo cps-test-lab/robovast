@@ -126,15 +126,20 @@ def test_the_identity_survives_a_restart_rather_than_registering_a_second_node()
         "a container that talks to an outside coordination server gets one Secret by name")
 
 
-def test_it_proxies_to_the_service_over_plain_http():
-    """The transport is already WireGuard, so a certificate would encrypt what is
-    encrypted -- and the session cookie's Secure flag follows the scheme, so a browser
-    keeps it over http:// here."""
+def test_it_forwards_the_stream_rather_than_matching_a_host():
+    """The HTTP form keys handlers by <host>:<port> and needs the node's certificate domain
+    substituted into that key. A self-hosted coordination server need not issue one, and the
+    placeholder then survives, matches no request, and tailscale proxies to localhost:80
+    where nothing listens -- with the node pingable and the config reporting itself applied.
+
+    Forwarding needs no domain, no certificate and no host matching, so it behaves the same
+    against every coordination server.
+    """
     config = json.loads(td.serve_config("robovast-service.default.svc", 8800))
 
-    assert "80" in config["TCP"]
-    handler = config["Web"]["${TS_CERT_DOMAIN}:80"]["Handlers"]["/"]
-    assert handler["Proxy"] == "http://robovast-service.default.svc:8800"
+    assert config["TCP"]["80"]["TCPForward"] == "robovast-service.default.svc:8800"
+    assert "Web" not in config, "a host-keyed handler is what fails without a cert domain"
+    assert "TS_CERT_DOMAIN" not in json.dumps(config)
 
 
 def test_one_replica_because_two_would_claim_one_name():
