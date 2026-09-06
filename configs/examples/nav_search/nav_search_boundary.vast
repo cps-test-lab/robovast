@@ -129,8 +129,6 @@ execution:
   - "files/*.pgm"
   - "files/*.xml"
   - "files/*.py"
-  env:
-  - PYTHONUNBUFFERED: "1"
 
 results_processing:
   # nav2's own operating-rate metric, graded per run into the `run_health` table.
