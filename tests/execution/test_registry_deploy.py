@@ -158,10 +158,10 @@ def test_the_ingress_path_and_the_prefix_describe_the_same_registry():
 # -- the credential, in its two representations ---------------------------------------
 
 def _auths(secret):
-    import base64
     import json
-    raw = secret["stringData"][".dockerconfigjson"]
-    return json.loads(raw).get("auths", {})
+    # stringData, not data: the manifest is what setup hands the API server, so the value
+    # here is plaintext and is base64-encoded by Kubernetes rather than by us.
+    return json.loads(secret["stringData"][".dockerconfigjson"]).get("auths", {})
 
 
 def test_the_builtin_registrys_credential_reaches_every_client_through_one_secret(monkeypatch):

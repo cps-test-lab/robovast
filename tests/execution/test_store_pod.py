@@ -259,3 +259,45 @@ def test_a_migrated_cluster_passes(monkeypatch):
                   lambda self, n, ns: _Pod("minio", "registry", "index")})())
 
     service_deploy.verify_store_pod_infrastructure("default")
+
+
+# -- auth that was configured but never reached the cluster ----------------------------
+
+def _live_pod(*containers):
+    import types
+    return types.SimpleNamespace(spec=types.SimpleNamespace(containers=list(containers)))
+
+
+def _live_container(name, env_names=()):
+    import types
+    return types.SimpleNamespace(
+        name=name,
+        env=[types.SimpleNamespace(name=n, value="x") for n in env_names])
+
+
+def test_a_kept_store_pod_is_seen_to_be_serving_an_open_registry():
+    """The 409 that keeps an existing store pod keeps its container spec, so turning auth on
+    in the manifest does not turn it on in the cluster.
+
+    Without noticing this, setup mints a credential, writes both Secrets and reports
+    success over a registry still serving anonymous pushes -- claiming to have closed a hole
+    it left open, which is worse than never having claimed to.
+    """
+    open_registry = _live_pod(_live_container(registry_deploy.REGISTRY_CONTAINER_NAME,
+                                              ["REGISTRY_STORAGE_DELETE_ENABLED"]))
+
+    assert store_pod.registry_enforces_auth(open_registry) is False
+
+
+def test_a_recreated_store_pod_is_seen_to_enforce_it():
+    closed = _live_pod(_live_container(registry_deploy.REGISTRY_CONTAINER_NAME,
+                                       ["REGISTRY_STORAGE_DELETE_ENABLED", "REGISTRY_AUTH"]))
+
+    assert store_pod.registry_enforces_auth(closed) is True
+
+
+def test_a_pod_without_a_registry_is_not_read_as_authenticating():
+    """Absent and open are both "not asking for a credential", and the missing container is
+    already reported by its own check."""
+    assert store_pod.registry_enforces_auth(None) is False
+    assert store_pod.registry_enforces_auth(_live_pod(_live_container("minio"))) is False

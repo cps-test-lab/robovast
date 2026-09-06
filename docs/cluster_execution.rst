@@ -787,6 +787,13 @@ cluster-internal route as well.
    Nothing already in the object store is affected, and campaigns launched after the change
    get the credential like any other.
 
+   **The registry keeps serving anonymously until the store pod is recreated.** Setup keeps
+   an existing store pod as it is — recreating it on every run would be a far worse default
+   — so a changed container spec does not reach it, and the credential alone changes
+   nothing. Setup says so rather than reporting the hole closed: ``vast cluster cleanup``
+   then ``vast cluster setup`` is what applies it, built images are rebuilt on demand, and
+   the clients already hold the credential and start using it the moment the registry asks.
+
 **A service without a registry prefix cannot build.** The prefix is the service's own
 published host — with no Ingress there is no address a node could pull a built image back
 from — so a project whose container adds packages fails at submit naming that reason.

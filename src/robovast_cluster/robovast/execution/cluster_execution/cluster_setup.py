@@ -560,7 +560,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # whose registry route and index DSN point at containers that do not exist.
     from .service_deploy import \
         verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
-    verify_store_pod_infrastructure(namespace, kube_context)
+    verify_store_pod_infrastructure(namespace, kube_context,
+                                    registry_authenticated=bool(registry_password))
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
     # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via

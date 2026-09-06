@@ -1754,7 +1754,8 @@ def store_backing(pod):
     return None, None
 
 
-def verify_store_pod_infrastructure(namespace="default", kube_context=None):
+def verify_store_pod_infrastructure(namespace="default", kube_context=None,
+                                    registry_authenticated=False):
     """Raise unless the live ``robovast`` pod runs the registry and the index.
 
     Both moved out of this Deployment and into the pod ``vast cluster setup`` creates
@@ -1786,6 +1787,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
         raise
     missing = store_pod.missing_infrastructure(pod)
     if not missing:
+        _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated)
         return
     kind, detail = store_backing(pod)
     if kind == "emptyDir":
@@ -1808,6 +1810,30 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
         f"setup cannot add them. The remedy is 'vast cluster cleanup' then "
         f"'vast cluster setup', which recreates the pod; built images are rebuilt on "
         f"demand. {cost}")
+
+
+def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
+    """Say so when the credential exists but the running registry does not ask for it.
+
+    A warning and not a refusal, because the deployment works either way: this is the state
+    it was already in, and blocking every re-run of setup over it would be out of
+    proportion. What must not happen is silence -- a setup that minted a credential, wrote
+    both Secrets and reported success would otherwise read as having closed a hole it left
+    open, which is worse than never having claimed to.
+    """
+    from . import store_pod  # pylint: disable=import-outside-toplevel
+
+    if not registry_authenticated or store_pod.registry_enforces_auth(pod):
+        return
+    logger.warning(
+        "The registry credential is in place, but the %s pod in namespace %s is still "
+        "running a registry that does NOT require it: setup keeps an existing store pod as "
+        "it is, so a changed container spec cannot reach it. The registry stays open to "
+        "anyone who can reach the published host until the pod is recreated -- 'vast "
+        "cluster cleanup' then 'vast cluster setup'. Built images are rebuilt on demand, "
+        "and campaigns are unaffected; the clients already hold the credential and will "
+        "start using it the moment the registry asks.",
+        store_pod.STORE_POD_NAME, namespace)
 
 
 def published_host(namespace="default", kube_context=None):

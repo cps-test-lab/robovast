@@ -208,3 +208,31 @@ def missing_infrastructure(pod) -> list:
         return list(infrastructure_container_names())
     running = {getattr(c, "name", None) for c in (pod.spec.containers or [])}
     return [name for name in infrastructure_container_names() if name not in running]
+
+
+def registry_enforces_auth(pod) -> bool:
+    """Whether the **live** registry container is actually configured to authenticate.
+
+    The same 409 that keeps an existing store pod keeps its old container spec, so turning
+    auth on in the manifest does not turn it on in the cluster. Without this the credential
+    would be minted, written to both Secrets and reported as done, over a registry still
+    serving anonymous pushes -- a setup that says it closed a hole it left open, which is
+    worse than one that never claimed to.
+
+    Reads the container's environment rather than a version or a label: it is the thing
+    that decides, so it cannot be right here and wrong in the pod.
+
+    ``False`` for a pod that is absent or carries no registry container -- both are already
+    reported by :func:`missing_infrastructure`, and answering "not authenticating" is true
+    of them anyway.
+    """
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    if pod is None:
+        return False
+    for container in (pod.spec.containers or []):
+        if getattr(container, "name", None) != registry_deploy.REGISTRY_CONTAINER_NAME:
+            continue
+        return any(getattr(e, "name", None) == "REGISTRY_AUTH"
+                   for e in (getattr(container, "env", None) or []))
+    return False
