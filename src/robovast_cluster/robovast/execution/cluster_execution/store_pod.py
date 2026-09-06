@@ -88,8 +88,8 @@ def _add_port(service, name, port):
 
 
 def attach_infrastructure(docs, namespace="default", index_storage_path="",
-                          index_storage_class="", registry_storage_path="",
-                          registry_storage_class=""):
+                          index_storage_class="", index_storage_size="",
+                          registry_storage_path="", registry_storage_class=""):
     """Add the registry and the index to a provider's parsed store manifest.
 
     *docs* is the provider's ``robovast`` manifest, parsed, with its store volume already
@@ -141,7 +141,8 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
 
     claims = [c for c in (registry_deploy.registry_pvc_manifest(namespace,
                                                                 registry_storage_class),
-                          index_deploy.index_pvc_manifest(namespace, index_storage_class))
+                          index_deploy.index_pvc_manifest(namespace, index_storage_class,
+                                                          index_storage_size))
               if c]
     return claims + docs
 

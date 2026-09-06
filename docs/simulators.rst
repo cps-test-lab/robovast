@@ -112,7 +112,9 @@ anyway.
 Two further notes on a remote ``ros_launch``: use an absolute ``/config/...`` path (with
 an empty ``package_name`` it resolves against the *client's* scenario directory, evaluated
 on the *server's* filesystem), and the SUT image must carry the server and the action
-plugins used remotely — building it ``FROM`` the RoboVAST base gets both.
+plugins used remotely — building it ``FROM`` the RoboVAST base gets both. Both containers
+mount the same ``/config``, and it is the running cell's, so ``/config/files/nav2_params.yaml``
+is this configuration's copy on either side.
 
 Writing a backend
 -----------------

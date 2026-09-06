@@ -270,8 +270,7 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
             continue
         try:
             resolved = merge_sim_block(
-                execution, flatten_sim_block(config.get("sim") or {}), vast_dir,
-                config_name=config.get("name", ""))
+                execution, flatten_sim_block(config.get("sim") or {}), vast_dir)
         except Exception as exc:  # noqa: BLE001 - a bad block is the schema's to report
             logger.debug("could not resolve sim block for %s: %s",
                          config.get("name"), exc)

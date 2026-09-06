@@ -167,7 +167,9 @@ Each configuration variant gets its own directory:
    <config-name>/
    ├── _config/
    │   ├── config.yaml                       # Configuration identifier hashes
-   │   ├── scenario.config                   # Resolved parameter values (YAML)
+   │   ├── scenario.config                   # Resolved scenario parameters (YAML)
+   │   ├── sim.config                        # Resolved sim block [if the config has one]
+   │   ├── sut.config                        # Resolved sut block [if the config has one]
    │   ├── maps/                             # [navigation only]
    │   │   ├── <name>.pgm                    # 2D occupancy grid image
    │   │   └── <name>.yaml                   # Map metadata (resolution, origin, thresholds)
@@ -185,6 +187,21 @@ configuration, wrapped in a single key matching the scenario name:
    test_scenario:
      growth_rate: 0.5
      initial_population: 50
+
+One file per variation channel, and each holds what that channel resolved to for this
+configuration: ``scenario.config`` the parameters the scenario file declares, ``sim.config``
+the simulator's whole resolved block, ``sut.config`` the flat ``<source>.<path>: value``
+block the system under test was configured with. ``config.yaml`` holds none of them — it carries
+only the identifier hashes that group configurations across campaigns.
+
+The last two are **records**, not inputs: what a run reads is the mounted overrides file
+(``sim``) and the rewritten config copies (``sut``). They sit beside the configuration so
+that what each channel was given is readable without diffing two copies of a stack's
+configuration. The campaign-level ``_transient/configurations.yaml`` carries the same values
+for every configuration in one document.
+
+All three are also read into the index, so a factor can be filtered and grouped by whichever
+channel it was written on — see :ref:`channel-param-columns`.
 
 Run Directory
 ^^^^^^^^^^^^^
@@ -816,6 +833,58 @@ opposite remedies**: ``quota_bound`` means the container exhausted the quota its
 ``resources.cpu`` request, or put fewer jobs on the node. A container can be both, and the
 ceiling is reported first because that remedy is a line in the campaign's own ``.vast``.
 
+
+.. _channel-param-columns:
+
+Which channel a factor was written on, and its column
+-----------------------------------------------------
+
+A campaign varies its factors on three channels (:ref:`the destination reference
+<config-variation-destination>`), and the ``runs`` table gives each one a ``param_*`` column
+so that a question about a factor is the same query whichever channel it came from.
+
+The name differs, because the destinations do:
+
+.. list-table::
+   :widths: 20 40 40
+   :header-rows: 1
+
+   * - Channel
+     - Destination
+     - Column
+   * - ``scenario:``
+     - ``speed``
+     - ``param_speed``
+   * - ``sim:``
+     - ``components.floorplan.floor.friction``
+     - ``param_sim_friction``
+   * - ``sut:``
+     - ``nav2.….inflation_layer.inflation_radius``
+     - ``param_sut_inflation_radius``
+
+A scenario parameter keeps its own name, which is what an analysis has always read. A ``sim:``
+or ``sut:`` destination is a *path*, and its whole path makes no column anybody can type — the
+``sut:`` example does not fit in an identifier at all, and an XPath destination is not
+identifier-shaped anywhere but its end. So the column is named from the **end** of the
+destination, prefixed by its channel, and grows leftwards only as far as it must to stay
+unambiguous: two ``friction`` keys under different components become ``param_sim_floor_friction``
+and ``param_sim_wall_friction`` rather than quietly sharing one column.
+
+Uniqueness is decided over the **whole campaign**, not one configuration, because the table is
+one shape for every row in it.
+
+.. note::
+
+   **Do not guess a column name — read it from the table.** The suffix rule depends on what
+   else the campaign varies, so the same destination is ``param_sut_inflation_radius`` in one
+   campaign and ``param_sut_inflation_layer_inflation_radius`` in another that also varies the
+   global costmap's. ``describe_campaign_data`` lists what a campaign actually has.
+
+Every destination's value is in ``run_view.channels_json`` regardless, under the channel name
+the ``.vast`` writes it on — including one whose name would collide with a scenario parameter,
+or would not fit an identifier even at full length. Those get no column and are reported at
+warning level during ingest, naming the destination: a column silently missing is the same
+wrong answer as a column silently shared.
 
 .. _reading-result-files:
 

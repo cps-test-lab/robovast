@@ -16,7 +16,7 @@ MIB = 1024 ** 2
 
 
 def _node(name, cpu="8", memory="16Gi", gpu=None, node_id=True,
-          ready=True, cordoned=False, taints=()):
+          ready=True, cordoned=False, taints=(), capacity_cpu=None):
     """A node, carrying its identity label unless *node_id* is False.
 
     ``node_id=False`` is a node that joined since the last ``setup``: still counted, because
@@ -31,11 +31,16 @@ def _node(name, cpu="8", memory="16Gi", gpu=None, node_id=True,
     if gpu:
         alloc["nvidia.com/gpu"] = gpu
     labels = {NODE_ID_LABEL: f"node-{name}"} if node_id else {}
+    # A real node's capacity exceeds its allocatable by the kubelet's reservation. Defaulted
+    # to the same value so every existing test keeps meaning what it did; pass
+    # *capacity_cpu* to model the gap, which is what `_growable` must not read as room.
+    capacity = dict(alloc, cpu=capacity_cpu if capacity_cpu is not None else cpu)
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name, labels=labels),
         spec=types.SimpleNamespace(unschedulable=cordoned, taints=list(taints)),
         status=types.SimpleNamespace(
             allocatable=alloc,
+            capacity=capacity,
             conditions=[types.SimpleNamespace(
                 type="Ready", status="True" if ready else "False")]))
 
@@ -185,6 +190,8 @@ class _Autoscaler:
 def _with_config(nodes, pods, monkeypatch, config):
     monkeypatch.delenv(cluster_capacity.HEADROOM_CPU_ENV, raising=False)
     monkeypatch.delenv(cluster_capacity.HEADROOM_MEMORY_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.MAX_CPU_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.MAX_MEMORY_ENV, raising=False)
     core = types.SimpleNamespace(
         list_node=lambda **kw: types.SimpleNamespace(items=nodes),
         list_pod_for_all_namespaces=lambda **kw: types.SimpleNamespace(items=pods))
@@ -229,6 +236,54 @@ def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch)
 def test_no_cluster_config_is_the_ordinary_case(monkeypatch):
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
     assert p.budget().free_cpu == pytest.approx(8 - 1)
+
+
+def test_a_recorded_maximum_answers_where_the_providers_own_query_cannot(monkeypatch):
+    """The whole point of recording it. A provider reports its ceiling by running the cloud's
+    CLI, which the service image does not carry -- so in the pod that reads this, the
+    provider always fails and every managed cluster looked static."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     _Autoscaler(boom=True))
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    assert p.budget().growable is True
+
+
+def test_a_recorded_maximum_outranks_the_provider(monkeypatch):
+    """A stated ceiling that a query could overrule would not be worth stating, and the
+    provider is the source that cannot answer here anyway."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     _Autoscaler(cpu="4", memory="8Gi"))
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    assert p.budget().growable is True
+
+
+def test_a_recorded_maximum_at_the_current_size_is_not_growable(monkeypatch):
+    """A cluster already at its ceiling is static, and saying otherwise would create every
+    job unpinned against room that will never arrive."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "8")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "16Gi")
+    assert p.budget().growable is False
+
+
+def test_half_a_recorded_maximum_is_not_a_maximum(monkeypatch):
+    """Both halves or neither: a cpu ceiling with no memory ceiling is not a size."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "64")
+    monkeypatch.delenv(cluster_capacity.MAX_MEMORY_ENV, raising=False)
+    assert p.budget().growable is False
+
+
+def test_an_unparseable_recorded_maximum_raises_rather_than_meaning_static(monkeypatch):
+    """Reading a typo as "unset" would pin an elastic cluster to its current size, and the
+    symptom -- a cluster that never grows -- points nowhere near the cause."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    monkeypatch.setenv(cluster_capacity.MAX_CPU_ENV, "sixty-four")
+    monkeypatch.setenv(cluster_capacity.MAX_MEMORY_ENV, "256Gi")
+    with pytest.raises(ValueError, match=cluster_capacity.MAX_CPU_ENV):
+        p.budget()
 
 
 # -- fail loudly rather than inventing capacity --------------------------------------
@@ -392,6 +447,26 @@ def test_growable_is_judged_against_the_cluster_not_the_job_pool(monkeypatch):
     assert b.growable is False, (
         "24 declared vs 24 real cores across the cluster: the pool being smaller is a "
         "confinement, not headroom an autoscaler will supply")
+
+
+def test_a_cluster_at_its_ceiling_is_not_growable_despite_the_kubelet_reservation(monkeypatch):
+    """The declared ceiling counts machines of a type, so it carries no reservation; a node's
+    allocatable has one taken off. Comparing the two measures the reservation and calls it
+    room -- and then a full cluster is growable forever, every job is created unpinned,
+    per-node accounting is bypassed, and calibration switches off without saying so.
+    """
+    p = _with_config([_node("n1", cpu="15890m", memory="28Gi", capacity_cpu="16")], [],
+                     monkeypatch, _Autoscaler(cpu="16", memory="32Gi"))
+
+    assert p.budget().growable is False
+
+
+def test_room_a_second_machine_would_add_is_still_growable(monkeypatch):
+    """The reservation must not be read as room; a whole extra node still must be."""
+    p = _with_config([_node("n1", cpu="15890m", memory="28Gi", capacity_cpu="16")], [],
+                     monkeypatch, _Autoscaler(cpu="64", memory="128Gi"))
+
+    assert p.budget().growable is True
 
 
 def test_a_cordoned_node_does_not_make_a_cluster_look_growable(monkeypatch):

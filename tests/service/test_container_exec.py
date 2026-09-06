@@ -735,3 +735,42 @@ def test_a_held_aux_container_is_reaped_on_idleness_like_a_query_one():
     slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
     assert mgr._idle_reap_s(slot) == ce.QUERY_IDLE_REAP_S
     assert mgr._idle_cap_s(slot) == ce.QUERY_IDLE_WAIT_CAP_S
+
+
+# -- one container's /config is one configuration's -------------------------------------
+
+
+def _generated_tree(tmp_path, configs, per_config_files=()):
+    """A generated campaign tree with *configs*, each carrying the same staged file."""
+    generated = tmp_path / "generated"
+    (generated / "_config").mkdir(parents=True)
+    (generated / "_config" / "scenario.osc").write_text("scenario nav:\n")
+    (generated / "_transient").mkdir(parents=True)
+    (generated / "_transient" / "entrypoint.sh").write_text("#!/bin/sh\n")
+    for name in configs:
+        for rel in per_config_files:
+            path = generated / name / "_config" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"owner: {name}\n")
+    return str(generated)
+
+
+def test_a_staged_configurations_files_land_at_the_mount_root(tmp_path):
+    """The same place a campaign run puts them, so an exec answers about the same files the
+    run would open."""
+    generated = _generated_tree(tmp_path, ["cfg-a"], ["files/nav2_params.yaml"])
+    mount = ce._assemble_config_mount(str(tmp_path / "staging"), generated,
+                                      {"configs": [{"name": "cfg-a"}]})
+    staged = os.path.join(mount, "files", "nav2_params.yaml")
+    assert os.path.isfile(staged)
+    assert "cfg-a" in open(staged, encoding="utf-8").read()
+
+
+def test_two_configurations_cannot_share_one_mount(tmp_path):
+    """The selector is a glob, so it can match several -- and one `/config` cannot be two
+    cells' at once. Refused rather than resolved by whichever was copied last."""
+    generated = _generated_tree(tmp_path, ["cfg-a", "cfg-b"], ["files/nav2_params.yaml"])
+    with pytest.raises(ValueError, match="one configuration"):
+        ce._assemble_config_mount(
+            str(tmp_path / "staging"), generated,
+            {"configs": [{"name": "cfg-a"}, {"name": "cfg-b"}]})

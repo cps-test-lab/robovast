@@ -360,6 +360,8 @@ Flag                          Environment                     Default
 ``--store-path``              ``ROBOVAST_STORE_PATH``         ``/var/lib/robovast-store``
 ``--store-class``             ``ROBOVAST_STORE_CLASS``        *(unset — a hostPath)*
 ``--store-size``              ``ROBOVAST_STORE_SIZE``         ``500Gi`` (needs a class)
+``--index-class``             ``ROBOVAST_INDEX_CLASS``        *(unset — a hostPath)*
+``--index-size``              ``ROBOVAST_INDEX_SIZE``         ``20Gi`` (needs a class)
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
@@ -373,13 +375,20 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**Two tenants take no flag**, and for the same reason: one pod holds each pair, and derived
-data must not be separated from its source. The campaign results sit beside the workspaces and
-share their backing, because the service pod mirrors a campaign between them. The campaign
-index sits beside the object store and shares *its* backing, because every row in the index was
-ingested from a campaign in the store -- an index that outlived its sources would answer
-questions about campaigns nobody can reproduce or check, confidently. A flag able to separate
-either pair could only ever be ignored or refused.
+**Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
+derived data must not be separated from its source. The campaign results sit beside the
+workspaces and share their backing, because the service pod mirrors a campaign between them.
+The campaign index sits beside the object store and shares *its* backing, because every row in
+the index was ingested from a campaign in the store -- an index that outlived its sources would
+answer questions about campaigns nobody can reproduce or check, confidently. A flag able to
+separate either pair could only ever be ignored or refused.
+
+``--index-class`` is the exception the rule creates rather than a hole in it. Where campaigns
+live in a **bucket** there is no store volume for the index to share, so ``--store-class`` is
+refused and the index would have nowhere but a directory on a node to go — the one piece of
+this deployment's durable state that a replaced machine takes with it while every campaign it
+indexed survives. There the class is its own argument. On a provider that places the store as a
+volume the flag is refused, naming ``--store-class``, because that is what already backs both.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -1832,19 +1841,26 @@ headroom, per node, measured every cycle. What is built around it was designed a
 static bare-metal cluster, and these follow from that. None of them is a crash; each is
 a silent degradation, which is why they are written down.
 
-**A cluster whose configuration cannot report an autoscaler maximum is held at its current
-size.** Admission never creates a job that no current node can hold, which is correct on a
-static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
-exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
-configuration reports that maximum; admission then creates work unpinned and lets the
-autoscaler respond. A configuration that does not implement it, including the generic base
-one an unlisted provider falls back to, gets the static behaviour.
+**A cluster whose growth ceiling nothing states is held at its current size.** Admission
+never creates a job that no current node can hold, which is correct on a static cluster and
+self-defeating on an elastic one — a pod the scheduler cannot place is exactly what makes an
+autoscaler add a node. Given a ceiling, admission creates such work unpinned and lets the
+autoscaler respond, and a pool scaled to zero is a batch that waits rather than one that is
+refused. A cluster that *has* nodes is still sized against them: an autoscaler adds machines
+of its pool's shape, so "no node is that large" stays a permanent refusal however many arrive.
 
-**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
-does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
-``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
-static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
-is not where admission runs.
+The ceiling is **recorded, not queried**: ``setup`` and ``upgrade`` ask the provider — on
+GKE that is ``gcloud``, summing each node pool's autoscaler maximum — and write the answer
+into the service's environment as ``ROBOVAST_CLUSTER_MAX_CPU`` / ``ROBOVAST_CLUSTER_MAX_MEMORY``.
+That is where admission reads it, because admission runs in the service pod, whose image
+ships no cloud CLI. Setting those two variables before ``setup`` states the ceiling directly,
+which is what a provider with no query of its own — an unlisted one, or one whose CLI is not
+installed here — needs.
+
+Recorded rather than live means the figure **ages**: resizing a node pool does not reach a
+running deployment. Re-run ``vast cluster upgrade`` after such a change — the same lifecycle
+the node identity labels below already have. With neither a provider answer nor the two
+variables, the cluster is treated as static, exactly as before.
 
 **Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
 is what pins a job to the node its capacity was reserved on, and what a calibration probe
@@ -1911,6 +1927,21 @@ loudly rather than inventing one.
    # or with a service-account key file instead of HMAC keys:
    vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
+
+The campaigns are in the bucket, but this deployment's **own** state is not, and a GKE node
+pool replaces machines constantly — autoscaling, auto-upgrade, auto-repair, spot reclaim. Back
+it with the cluster's StorageClass rather than the node's disk:
+
+.. code-block:: bash
+
+   vast cluster setup gcp -o gcs_bucket=my-robovast-results \
+     --index-class standard-rwo --registry-class standard-rwo \
+     --workspaces-class standard-rwo --buildkit-class premium-rwo --buildkit-size 200Gi
+
+Left on hostPaths, a replaced node takes the campaign index, the built images and the
+workspaces with it while every campaign in the bucket survives — and setup reports success on
+the empty replacement. These are zonal disks, so the pods that mount them are bound to one
+zone; that is the cost, and it is the intended one.
 
 Available options:
 

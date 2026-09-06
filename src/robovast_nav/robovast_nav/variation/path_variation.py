@@ -24,7 +24,8 @@ from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
-                                                      ProvContribution)
+                                                      ProvContribution,
+                                                      VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
 from ..path_generator import PathGenerator
@@ -304,7 +305,10 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
             return cached_start_pose, cached_goal_poses, cached_path, map_file_path, cached_length
 
-        path_generator = PathGenerator(map_file_path)
+        # The robot the campaign declared, not the constructor's default: the waypoints
+        # below are sampled against `robot_diameter` clearance, and a planner inflating by
+        # a different radius rejects poses the sampler just accepted.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         attempt = 0
         max_attempts = 1000  # Maximum attempts to find a valid path
@@ -366,7 +370,17 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
 
             self.progress_update(f"  Generated waypoints: {waypoints}")
             # Generate path considering any existing static objects
-            path = path_generator.generate_path(waypoints, [])
+            try:
+                path = path_generator.generate_path(waypoints, [])
+            except ValueError as exc:
+                # The two clearance tests are not the same test: the sampler checks a disc
+                # of cells around a candidate, the planner a distance transform of the whole
+                # grid, so a pose close to a wall can pass one and fail the other. That is
+                # this draw's luck, and the loop already exists to redraw -- raising here
+                # ends a campaign over a pose nobody asked for.
+                self.progress_update(f"   waypoint rejected by the planner: {exc}")
+                attempt += 1
+                continue
 
             if not path:
                 self.progress_update(f"   no path found")
@@ -393,7 +407,12 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             break
 
         if not path_found:
-            raise ValueError(
+            # Infeasible, not broken: this map has no path of this length, which is a property of
+            # the draw rather than of the campaign. Search composition drops the one config and
+            # records a failed evaluation, so an optimizer proposing a length the map cannot hold
+            # keeps going instead of taking every other config in the batch down with it. A sweep
+            # (tolerate_infeasible=False) still fails loudly, which is what a stated level asks for.
+            raise VariationInfeasibleError(
                 f"PathVariationRandom: Failed to generate valid path within maximum attempts for config '{config['name']}'.\n"
                 f"  Variation parameters:\n"
                 f"    map_file:              {map_file_path} (parameter: {self.parameters.map_file or config.get('_map_file')})\n"
@@ -593,7 +612,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
         """Original behavior: generate paths from each start pose to all reachable raster points."""
         results = []
         path_index = 0
-        path_generator = PathGenerator(map_file_path)
+        # Inflated by the declared robot, matching the clearance the raster points were
+        # tested with -- see generate_path_for_config.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         for start_idx, start_pose in enumerate(start_poses):
             for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
@@ -615,7 +636,13 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                 # Generate path directly
                 waypoints = [start_pose, goal_pose]
-                path = path_generator.generate_path(waypoints, [])
+                try:
+                    path = path_generator.generate_path(waypoints, [])
+                except ValueError as exc:
+                    # A raster point the planner will not start or end on: skipped like any
+                    # other pair it cannot connect, rather than ending the campaign.
+                    self.progress_update(f"  waypoint rejected by the planner: {exc}")
+                    path = None
 
                 if path:
                     # Calculate path length
@@ -657,7 +684,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                      map_file_path, path_length: float):
         """New behavior: generate multiple goal poses using search radius algorithm."""
         results = []
-        path_generator = PathGenerator(map_file_path)
+        # Inflated by the declared robot, matching the clearance the raster points were
+        # tested with -- see generate_path_for_config.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         for start_idx, start_pose in enumerate(start_poses):
             self.progress_update(f"Generating multi-goal path for start pose {start_idx}")
@@ -690,7 +719,11 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
             # Only proceed if we found all required goal poses
             if len(goal_poses_list) == self.parameters.num_goal_poses:
                 # Generate path through all waypoints
-                path = path_generator.generate_path(waypoints, [])
+                try:
+                    path = path_generator.generate_path(waypoints, [])
+                except ValueError as exc:
+                    self.progress_update(f"  waypoint rejected by the planner: {exc}")
+                    path = None
 
                 if path:
                     # Calculate path length
