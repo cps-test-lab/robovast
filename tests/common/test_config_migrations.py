@@ -345,3 +345,57 @@ def test_v3_to_v4_is_idempotent_on_an_already_migrated_block():
     v4 = {"version": 4, "configuration": [
         {"name": "a", "parameters": {"scenario": {"goal": 1}}}]}
     assert migrate(v4)["configuration"][0]["parameters"] == {"scenario": {"goal": 1}}
+
+
+def test_a_migrated_search_template_validates_against_the_schema():
+    """The step and the model have to agree about the shape, not just each be reasonable.
+
+    Testing the transform alone let them disagree: the ladder rewrote ``search.parameters``
+    into channels while the field was still annotated as a list, so every search campaign
+    migrated cleanly and then failed to load.
+    """
+
+
+    v3 = {"version": 3,
+          "execution": {"containers": {"scenario": {"image": "a"}}, "runs": 1},
+          "search": {"strategy": "random",
+                     "search_space": {"gap": {"type": "float", "low": 0.0, "high": 1.0}},
+                     "extract": {"plugin": "p"},
+                     "objectives": [{"name": "o"}],
+                     "per_batch": 2,
+                     "budget": [{"batches": 2}],
+                     "parameters": [{"map_file": "m.yaml"}, {"goal": "$gap"}]}}
+    upgraded, _applied = upgrade_config(v3)
+    config = validate_config(upgraded)
+    assert config.search.parameters == {"scenario": {"map_file": "m.yaml", "goal": "$gap"}}
+
+
+def test_folding_the_parameters_list_keeps_the_notes_written_against_it(tmp_path):
+    """A campaign documents its parameters one note per line, and those notes are often the
+    only record of why a value is what it is. Restructuring must not spend them."""
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  # why the map is this one
+  - map_file: m.yaml
+  # why the goal is there
+  # and a second line about it
+  - goal: 3   # and a trailing note
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    text = path.read_text(encoding="utf-8")
+
+    assert "# why the map is this one" in text
+    assert "# why the goal is there" in text
+    assert "# and a second line about it" in text
+    assert "# and a trailing note" in text
+    # and it is still the document the step meant to produce
+    assert yaml.safe_load(text)["configuration"][0]["parameters"]["scenario"] == {
+        "map_file": "m.yaml", "goal": 3}

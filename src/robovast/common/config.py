@@ -2227,7 +2227,13 @@ class SearchConfig(BaseModel):
     # unknown keys) so the marker references survive for the validator below and
     # the substitution in Compose; the plugin params are validated at generation.
     variations: Optional[list[dict[str, Any]]] = None
-    parameters: Optional[list[dict[str, Any]]] = None
+    #: The fixed half of the template, in the same shape a configuration entry carries it:
+    #: channels under ``parameters:``. Compose expands this block into a configuration per
+    #: generation, so a shape of its own here would be a second grammar for one thing -- and
+    #: the v3 -> v4 ladder rewrites it exactly as it rewrites a configuration's.
+    #: Raw rather than :class:`ParametersConfig` for the reason the note above gives: a model
+    #: that drops unknown keys would take the ``$name`` markers with them.
+    parameters: Optional[dict[str, Any]] = None
     # Postprocessing run over each batch's results before extract (e.g. to write
     # metrics.csv). Same format/loader as results_processing.postprocessing:
     # entry-point name, ``./path.py:Class`` file ref, or ``{name: {params}}``.
