@@ -1321,10 +1321,19 @@ def cluster_token(namespace, kube_context, quiet):
 
         url = published_url(namespace, kube_context)
         if not url:
-            # Reachable but unpublished is a real state (no --ingress-host), and the
-            # token is still the right answer -- just not one a user can use yet.
-            click.echo("The service has no Ingress, so there is no URL to give out. "
-                       "Re-run setup with --ingress-host to publish it.")
+            # An Ingress is not the only way a deployment is reachable. A tailnet node
+            # publishes it under a name too, and answering "there is no URL" over one would
+            # send an operator to re-publish something already published.
+            from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+            tailnet = tailnet_deploy.published_hostname(namespace, kube_context)
+            if tailnet:
+                url = f"http://{tailnet}"
+        if not url:
+            # Reachable but unpublished is a real state (no --ingress-host, no tailnet), and
+            # the token is still the right answer -- just not one a user can use yet.
+            click.echo("The service has no Ingress and no tailnet node, so there is no URL "
+                       "to give out. Re-run setup with --ingress-host to publish it, or "
+                       "with --tailnet to reach it over a tailnet.")
             click.echo(f"\nAccess token: {token}")
             return
 
