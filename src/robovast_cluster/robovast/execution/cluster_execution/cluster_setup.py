@@ -548,6 +548,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
         registry_authenticated=bool(registry_password),
+        # Read, not popped: `deploy_service` needs the same value to build the Ingress whose
+        # /v2 rule names this Service as a backend. Both halves or the route is dead.
+        ingress_class=service_kwargs.get("ingress_class", ""),
         **cluster_kwargs,
     )
 
