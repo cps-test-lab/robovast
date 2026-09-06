@@ -128,7 +128,7 @@ hatch for joins and for the ``run_view`` / ``config_view`` views — it is delib
 scoped.
 
 What a metric varied *with* is usually the question, so ``with_params=True`` attaches each
-scenario parameter of the owning run as a column, with the ``param_`` prefix dropped
+parameter of the owning run as a column, with the ``param_`` prefix dropped
 (:func:`~robovast.common.analysis.db.attach_params` does the same to a frame you already
 have). A parameter whose name collides with a column of the table raises rather than
 shadowing it:

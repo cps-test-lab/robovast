@@ -43,7 +43,7 @@ from .config_identifier import compute_config_identifier, hash_file_content, has
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
-from .simulators import SIM_CONFIG_FILE
+from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
 
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
 # paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
@@ -2010,48 +2010,18 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                     yaml.dump(wrapped_config_data, f, default_flow_style=False, sort_keys=False)
 
 
-def _namespace_file_params(value, deploy_paths, namespace_prefix):
-    """Recursively rewrite file-valued scenario parameters to a namespaced path.
-
-    When several configurations are packed into one job, each config's generated
-    files are mounted under a per-config directory (``<namespace_prefix>/...``)
-    to avoid name collisions. Any string parameter whose value equals one of the
-    config's ``_config_files`` deploy paths is rewritten to
-    ``<namespace_prefix>/<deploy_path>``. All other values are left untouched.
-
-    The prefix is *relative to the config mount root* (i.e. the scenario file's
-    own directory), because scenarios resolve file params against their own
-    location (``get_scenario_file_directory() + "/" + value``). Making the value
-    absolute here would double the mount root (``/config/config/...``).
-
-    Args:
-        value: A scenario-parameter value (scalar, list or dict) to walk.
-        deploy_paths: Set of deploy-relative paths (e.g. ``maps/hallways.yaml``)
-            for this config's generated files.
-        namespace_prefix: Per-config prefix relative to the config mount root
-            (e.g. ``<config-name>``).
-
-    Returns:
-        The value with file paths rewritten.
-    """
-    if isinstance(value, dict):
-        return {k: _namespace_file_params(v, deploy_paths, namespace_prefix) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_namespace_file_params(v, deploy_paths, namespace_prefix) for v in value]
-    if isinstance(value, str) and value in deploy_paths:
-        return f"{namespace_prefix}/{value}"
-    return value
-
-
 def build_job_parameter_documents(job, scenario_name):
     """Build scenario-parameter override documents for a packed job.
 
     Produces one YAML document per work item in the job. Each document
     overrides ``scenario_name``'s parameters for that config and sets the special
     ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
-    writes the item's results into robovast's per-config/run layout. File-valued
-    parameters are namespaced under ``<config-name>/`` (relative to the config
-    mount root) to keep multiple configs' files from colliding in a single job.
+    writes the item's results into robovast's per-config/run layout.
+
+    A file-valued parameter is carried **as the campaign wrote it**. It needs no
+    rewriting: a scenario resolves a file parameter against its own directory, which is
+    the config mount, and a configuration's own copy of a file is staged there in place of
+    the campaign's -- so the path the campaign wrote already names the cell's file.
 
     Args:
         job: A :class:`~robovast.execution.packer.JobSpec`.
@@ -2069,17 +2039,10 @@ def build_job_parameter_documents(job, scenario_name):
         config = config_data.get("config") or {}
         config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
 
-        deploy_paths = {rel for rel, _ in config_data.get("_config_files", [])}
-        # Prefix is relative to the config mount root: scenarios resolve file
-        # params against their own directory (which *is* that mount root), so an
-        # absolute "/config/..." here would double to "/config/config/...".
-        namespace_prefix = config_name
-        namespaced = _namespace_file_params(config_dict, deploy_paths, namespace_prefix)
-
         # _output_dir is consumed by scenario_execution to place this item's
         # results; relative paths resolve under -o/--output-dir.
-        namespaced["_output_dir"] = f"{config_name}/{item.run_number}"
-        documents.append({scenario_name: namespaced})
+        config_dict["_output_dir"] = f"{config_name}/{item.run_number}"
+        documents.append({scenario_name: config_dict})
     return documents
 
 
@@ -2090,6 +2053,33 @@ def dump_multi_document_yaml(documents) -> str:
 
 # Filename of the per-campaign job-link manifest written into ``_transient/``.
 JOB_LINKS_MANIFEST = "job_links.yaml"
+
+
+#: Names the run itself owns at the config mount, and which a campaign's own files
+#: therefore may not occupy.
+#:
+#: Every one of these is written into the campaign's ``_config/`` or ``_transient/`` and
+#: reaches the container at ``/config/<name>`` -- the entrypoint the container executes, the
+#: scripts it sources, the parameter documents it reads. A configuration's file is staged
+#: where the campaign's copy would have been, so a deploy path equal to one of these would
+#: land on it. Refused at composition rather than left to the lane, which discovers it as a
+#: refused mount or a pod that dies in its entrypoint, after the image pull.
+#:
+#: An allowlist of what the run owns, not a guess at what a campaign might write: the set is
+#: exactly what :func:`prepare_campaign_configs` and the two lanes put there, and it lives
+#: beside the code that writes it so the two cannot drift.
+RESERVED_CONFIG_MOUNT_NAMES = frozenset({
+    "entrypoint.sh", "secondary_entrypoint.sh",
+    "collect_sysinfo.py", "monitor_resources.py",
+    "rosbags_process.py", "rosbags_common.py", "ros2_exec.sh",
+    "configurations.yaml", JOB_LINKS_MANIFEST,
+    "scenario.config", "scenario.params.yaml",
+    os.path.basename(SIM_OVERRIDES_MOUNT),
+})
+
+#: Per-job documents at the config mount, which carry a job tag rather than a fixed name.
+#: Matched as patterns for the same reason the set above is matched by name.
+RESERVED_CONFIG_MOUNT_PATTERNS = ("*.params.yaml", "*.sim.yaml")
 
 
 def job_artifact_rel(index, job_prefix="") -> str:

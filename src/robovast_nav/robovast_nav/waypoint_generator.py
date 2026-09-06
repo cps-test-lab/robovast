@@ -123,23 +123,25 @@ class WaypointGenerator:
         if not (0 <= grid_x < self.map.width and 0 <= grid_y < self.map.height):
             return False
 
-        # Calculate robot radius in grid cells
-        radius_cells = min(int(np.ceil(robot_radius / self.map.resolution)), 10)
+        # The robot's footprint in grid cells, at its full size. A ceiling on this asks
+        # about a smaller robot than the campaign declared -- it accepts a pose the robot
+        # does not fit in, and the planner, which inflates by the true radius, then refuses
+        # to start there. How many cells that is depends on the map's resolution, so any
+        # fixed limit is a limit on maps rather than on robots.
+        radius_cells = int(np.ceil(robot_radius / self.map.resolution))
 
-        # Check circular area around robot center - all must be in white areas
-        for dy in range(-radius_cells, radius_cells + 1):
-            for dx in range(-radius_cells, radius_cells + 1):
-                # Check if point is within robot's circular footprint
-                if dx * dx + dy * dy <= radius_cells * radius_cells:
-                    check_x = grid_x + dx
-                    check_y = grid_y + dy
+        # Every cell of the footprint must be inside the map and white. Vectorized because
+        # this runs per candidate pose inside the generator's attempt loop, where the cell
+        # count grows with the square of the radius.
+        offsets = np.arange(-radius_cells, radius_cells + 1)
+        d_y, d_x = np.meshgrid(offsets, offsets, indexing="ij")
+        disc = (d_x * d_x + d_y * d_y) <= radius_cells * radius_cells
+        check_y = grid_y + d_y[disc]
+        check_x = grid_x + d_x[disc]
 
-                    # Check bounds
-                    if not (0 <= check_x < self.map.width and 0 <= check_y < self.map.height):
-                        return False
+        if (check_y < 0).any() or (check_y >= self.map.height).any() \
+                or (check_x < 0).any() or (check_x >= self.map.width).any():
+            return False
 
-                    # Check if this pixel is white (>= 250)
-                    if self.map.map_array[check_y, check_x] < 250:
-                        return False
-
-        return True
+        # White (>= 250) everywhere the robot covers.
+        return bool((self.map.map_array[check_y, check_x] >= 250).all())

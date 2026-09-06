@@ -49,7 +49,8 @@ from pathlib import Path
 
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_data import (aggregate_run_status, invalid_runs,
-                                           list_run_dirs, read_container_failures,
+                                           list_run_dirs, read_config_channels,
+                                           read_container_failures,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
@@ -122,6 +123,36 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
                 _LAST_CAMPAIGN_ID = cid
                 return cid
             time.sleep(0.005)
+
+
+#: Batches in a row that may measure nothing before a search is stopped. Two, not one:
+#: a search space that is mostly (but not entirely) unrealizable produces a batch where
+#: every draw fails by chance -- at eight draws a batch and two thirds of the space
+#: infeasible that is one batch in twenty-five -- and ending such a campaign on the first
+#: one would stop a search that was working. Two running is not luck; it is a campaign
+#: that cannot produce, and every batch after it costs composition and yields nothing.
+EMPTY_BATCH_LIMIT = 2
+
+
+def _empty_batch_reason(unrunnable: dict) -> str:
+    """Why a batch scored nothing, phrased for whoever has to fix it.
+
+    The two counts answer different questions, so a stop that lumped them together would
+    send a reader to the wrong file: nothing COMPOSED means the draws cannot be turned
+    into configs (the search space against what the variation plugins accept), while
+    nothing MEASURED means they ran and produced no result (the scenario, the stack, the
+    extractor).
+    """
+    composition_failed = unrunnable.get("composition_failed", 0)
+    no_sample = unrunnable.get("no_sample", 0)
+    if composition_failed and not no_sample:
+        return ("no parameter set could be composed -- check the search_space bounds "
+                "against what the variation plugins accept")
+    if no_sample and not composition_failed:
+        return ("every parameter set ran and produced no measurable sample -- check the "
+                "scenario and the extractor")
+    return ("no parameter set produced a result: "
+            f"{composition_failed} could not be composed, {no_sample} produced no sample")
 
 
 class CampaignController:
@@ -554,7 +585,8 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs),
                 status=aggregate_run_status(run_dirs, invalid=invalidated),
-                result_dir=os.path.relpath(cdir, self.campaign_root))
+                result_dir=os.path.relpath(cdir, self.campaign_root),
+                channels=read_config_channels(Path(cdir)))
             outcomes = read_run_outcomes(Path(cdir), Path(self.campaign_root))
             self.store.record_runs(unit_id, outcomes)
             # The verdicts are parsed here anyway for the store; tallying them into the
@@ -620,6 +652,12 @@ class CampaignController:
         self._batches_done = position.batches
         self._evaluations_done = position.evaluations
         self._runs_done = position.runs
+        # How many batches in a row measured nothing, and why the last of them did. Reset to
+        # zero by any batch that scores a cell -- a resumed campaign therefore starts the
+        # count again, which is right: what it is watching for is a campaign that cannot
+        # produce, and the batches it did produce are on record.
+        self._empty_batches = 0
+        self._empty_batch_reason = ""
         self._history.extend(position.history)
         best_objective = position.best_objective   # best-so-far, in raw objective units
         # `_search_loop` already begins at `self._batches_done` -- it was written that way
@@ -809,6 +847,15 @@ class CampaignController:
             fresh, recalled = self._split_already_evaluated(param_sets, batch_idx)
             self._runs_done += sum((ps.n_reps or self.runs) for ps in fresh)
             scored = self._run_search_batch(fresh, batch_idx, batch_id)
+            # A batch that measured nothing, counted. Only when there was something to
+            # measure: a batch of cells an earlier one already scored is short by design and
+            # says nothing about whether this campaign can produce.
+            if fresh and not scored:
+                self._empty_batches += 1
+                logger.warning("Batch %d produced no evaluation (%d in a row): %s",
+                               batch_idx, self._empty_batches, self._empty_batch_reason)
+            elif scored:
+                self._empty_batches = 0
             # The strategy is told about every cell it proposed, whether this batch
             # measured it or an earlier one did. A recalled cell is a real answer to a
             # real proposal -- it is what that cell measured -- so withholding it would
@@ -847,6 +894,17 @@ class CampaignController:
             # batch boundary rather than only from the start.
             self.backend.publish_records(self.campaign_root)
             result = stop.should_stop(snap)
+            if not result and self._empty_batches >= EMPTY_BATCH_LIMIT:
+                # Not a criterion the campaign declared, and it does not need to be: a
+                # search that cannot produce an evaluation will not start producing one by
+                # being given more budget, and every batch it is given costs a composition
+                # -- and, where the cells run, a batch of trials -- to learn the same thing
+                # again. Reported as its own kind so the record says the campaign was
+                # stopped rather than that it finished its budget.
+                result = StopResult(
+                    kind="unproductive",
+                    reason=(f"{self._empty_batches} batches in a row produced no "
+                            f"evaluation: {self._empty_batch_reason}"))
             if not result and self.state is not None and self.state.stop_requested:
                 result = StopResult(kind="external",
                                     reason="stop requested via control API")
@@ -993,6 +1051,10 @@ class CampaignController:
         failed_runs = 0
         killed_runs = 0
         invalid_runs_count = 0
+        # Why the cells that produced nothing produced nothing, for the run-of-empty-batches
+        # check below. Counted per cell rather than inferred afterwards from the store,
+        # because the reason is what makes the stop message actionable.
+        unrunnable = {"composition_failed": 0, "no_sample": 0}
         try:
             for reps, group in sorted(groups.items()):
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
@@ -1027,6 +1089,7 @@ class CampaignController:
                             params=ps.values, objectives={}, measures={},
                             n_samples=0, status="composition_failed", result_dir="",
                             n_reps=reps)
+                        unrunnable["composition_failed"] += 1
                         continue
                     config_dir = Path(self.campaign_root) / config_name
                     result_dir = os.path.relpath(config_dir, self.campaign_root)
@@ -1051,7 +1114,8 @@ class CampaignController:
                             batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                             params=ps.values, objectives={}, measures={},
                             n_samples=0, status="no_sample", result_dir=result_dir,
-                            n_reps=reps)
+                            n_reps=reps,
+                            channels=read_config_channels(config_dir))
                         # Unlike composition_failed, these runs HAPPENED: record them so the
                         # cell's failures are visible and counted rather than vanishing with
                         # the evaluation that could not use them.
@@ -1061,13 +1125,15 @@ class CampaignController:
                         failed_runs += cfg_failed
                         killed_runs += cfg_killed
                         invalid_runs_count += cfg_invalid
+                        unrunnable["no_sample"] += 1
                         continue
                     evaluations.append(ev)
                     unit_id = self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=result_dir, n_reps=reps)
+                        result_dir=result_dir, n_reps=reps,
+                        channels=read_config_channels(config_dir))
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
@@ -1091,6 +1157,9 @@ class CampaignController:
                 self.state.update_runs(failed=failed_runs, killed=killed_runs,
                                        invalid=invalid_runs_count)
             self._end_batch_progress()
+        # What the loop needs if this batch scored nothing: not that it was empty, which it
+        # can see, but which of the two ways every cell came back with nothing.
+        self._empty_batch_reason = _empty_batch_reason(unrunnable)
         return evaluations
 
     def _run_postprocessing(self, tag: str = "") -> None:

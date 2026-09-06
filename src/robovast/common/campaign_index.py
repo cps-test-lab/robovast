@@ -32,7 +32,8 @@ from typing import Optional
 import yaml
 
 from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dirs,
-                            read_execution_metadata, read_run_outcomes, read_scenario_config)
+                            read_config_channels, read_execution_metadata,
+                            read_run_outcomes, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore, read_campaign_description
 
@@ -147,6 +148,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 status=aggregate_run_status(run_dirs),
                 result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
+                channels=read_config_channels(cfg_dir),
             )
             store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
     logger.info("Built campaign store: %s", store_path)

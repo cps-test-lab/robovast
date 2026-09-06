@@ -766,10 +766,11 @@ class ExecutionConfig(BaseModel):
     #: is what a ``.vast`` has always meant.
     #:
     #: ``calibrated`` measures it instead: one probe run per node before the campaign places
-    #: work there, then that node's jobs sized from what was measured on it. **Declaring
-    #: ``resources`` under ``calibrated`` is refused rather than overridden**, because the two
-    #: answer the same question and a file that states a number which is then ignored is worse
-    #: than one that states nothing.
+    #: work there, then that node's jobs sized from what was measured on it. ``resources``
+    #: keeps its meaning there rather than being refused -- it is where measuring starts and
+    #: the ceiling a measured figure may not exceed -- so it has to sit ABOVE demand: a
+    #: container capped at what it wants throttles against the cap, and its probe is refused
+    #: as having measured the ceiling instead of the demand.
     #:
     #: The reason to prefer it is portability rather than density: a core count is a fact
     #: about the machine it was measured on, so a shipped ``.vast`` naming one asserts
@@ -815,6 +816,9 @@ class ExecutionConfig(BaseModel):
     #     single simulator setup (the simulator is reset between them), amortising
     #     setup for simulators with cheap per-run cost. Runs are
     #     packed config-major, so a config's repeated runs stay together in a job.
+    # An upper bound, not a promise: a job holds one compiled world and one
+    # configuration's files, so runs of configurations that disagree about either are
+    # never packed together and the value is reached only within a group that agrees.
     # Results stay keyed by configuration name / run number regardless, so packing
     # is invisible to downstream processing.
     runs_per_job: int = 1
