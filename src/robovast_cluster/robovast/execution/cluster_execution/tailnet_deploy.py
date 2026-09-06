@@ -89,17 +89,27 @@ def configured():
 
 
 def serve_config(service_host, service_port):
-    """Tailscale's declarative proxy config: the tailnet's HTTP port to the service.
+    """Tailscale's declarative proxy config: the tailnet's port 80 to the service.
 
     Port 80 rather than 443 because nothing here holds a certificate; see the module
     docstring for why that is the right trade on a tailnet and the wrong one on an Ingress.
+
+    **A TCP forward rather than an HTTP handler**, and that is not a simplification. The
+    HTTP form keys its handlers by ``<host>:<port>`` and relies on the container
+    substituting the node's certificate domain into that key. A self-hosted coordination
+    server need not issue one -- ours did not -- and the placeholder then survives into the
+    config, matches no request, and tailscale falls back to proxying at ``localhost:80``
+    where nothing listens. The whole route fails with the node pingable and the config
+    reporting itself applied.
+
+    Forwarding the stream needs no domain, no certificate and no host matching, so it
+    behaves the same against every coordination server. What it gives up is per-host
+    routing, which one service on one node has no use for.
     """
     import json  # noqa: PLC0415
 
     return json.dumps({
-        "TCP": {"80": {"HTTPProxy": True}},
-        "Web": {"${TS_CERT_DOMAIN}:80": {"Handlers": {
-            "/": {"Proxy": f"http://{service_host}:{service_port}"}}}},
+        "TCP": {"80": {"TCPForward": f"{service_host}:{service_port}"}},
     }, indent=2)
 
 
@@ -213,7 +223,9 @@ def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
     from .kube_client import load_kube_config  # noqa: PLC0415
     from .kubernetes import apply_manifests  # noqa: PLC0415
 
-    load_kube_config(context=kube_context)
+    # Nothing dials a cluster above this point. An argument error must not cost a
+    # connection -- the same rule setup applies to its storage flags -- and `remove` loads
+    # the configuration itself, so the not-asked-for path needs none of it here either.
     if not enabled:
         remove(namespace, kube_context)
         return ""
@@ -225,6 +237,7 @@ def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
             f"line) rather than taken as an argument, so a pre-auth key does not land in "
             f"shell history. Set both, or drop --tailnet.")
     login_server, authkey, hostname = settings
+    load_kube_config(context=kube_context)
     apply_manifests(
         client.ApiClient(),
         iter(manifests(namespace, login_server, authkey, hostname,
@@ -313,3 +326,31 @@ def reconcile_existing(namespace="default", kube_context=None,
     return ensure_tailnet(namespace=namespace, kube_context=kube_context,
                           service_host=service_host, service_port=service_port,
                           enabled=True)
+
+
+def published_hostname(namespace="default", kube_context=None):
+    """The tailnet name this deployment answers on, or ``""`` when it has no node.
+
+    What the service is reachable *as* is not a fact the service pod can look up -- it has
+    no RBAC to read its own Deployments, deliberately -- so this is read by the CLI on the
+    operator's behalf, the same way the published Ingress host is.
+    """
+    from kubernetes import client  # noqa: PLC0415
+    from kubernetes.client.exceptions import ApiException  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    try:
+        deployment = client.AppsV1Api().read_namespaced_deployment(
+            name=DEPLOYMENT_NAME, namespace=namespace)
+    except ApiException:
+        return ""
+    except Exception:  # noqa: BLE001 - reporting only; an unreadable cluster names nothing
+        return ""
+    containers = deployment.spec.template.spec.containers or []
+    for container in containers:
+        for env in (container.env or []):
+            if getattr(env, "name", None) == "TS_HOSTNAME":
+                return getattr(env, "value", "") or ""
+    return ""

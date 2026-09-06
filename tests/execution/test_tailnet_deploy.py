@@ -54,6 +54,24 @@ def test_which_cluster_is_on_a_tailnet_is_not_decided_by_the_environment(monkeyp
     assert removed.called, "an unasked cluster is reconciled to having no node"
 
 
+def test_the_argument_checks_cost_no_connection(monkeypatch):
+    """Neither branch above reached a cluster, and that is the point rather than a detail.
+
+    A refusal that first waits out a kubeconfig lookup -- or fails with "no Kubernetes
+    configuration available" when the real answer is "you did not set the key" -- reports
+    the wrong problem. Setup applies the same rule to its storage flags.
+    """
+    from unittest import mock
+    _configure(monkeypatch, server="", key="")
+
+    with mock.patch.object(td, "remove"), \
+            mock.patch("robovast.execution.cluster_execution.kube_client."
+                       "load_kube_config", side_effect=AssertionError("dialled a cluster")):
+        assert td.ensure_tailnet(enabled=False) == ""
+        with pytest.raises(ValueError, match=td.LOGIN_SERVER_ENV):
+            td.ensure_tailnet(enabled=True)
+
+
 def test_asking_for_a_tailnet_with_no_credential_is_an_argument_error(monkeypatch):
     """--tailnet with nothing to register with would deploy a node that can never come
     up, so it is refused where the operator can still read the message."""
@@ -126,15 +144,20 @@ def test_the_identity_survives_a_restart_rather_than_registering_a_second_node()
         "a container that talks to an outside coordination server gets one Secret by name")
 
 
-def test_it_proxies_to_the_service_over_plain_http():
-    """The transport is already WireGuard, so a certificate would encrypt what is
-    encrypted -- and the session cookie's Secure flag follows the scheme, so a browser
-    keeps it over http:// here."""
+def test_it_forwards_the_stream_rather_than_matching_a_host():
+    """The HTTP form keys handlers by <host>:<port> and needs the node's certificate domain
+    substituted into that key. A self-hosted coordination server need not issue one, and the
+    placeholder then survives, matches no request, and tailscale proxies to localhost:80
+    where nothing listens -- with the node pingable and the config reporting itself applied.
+
+    Forwarding needs no domain, no certificate and no host matching, so it behaves the same
+    against every coordination server.
+    """
     config = json.loads(td.serve_config("robovast-service.default.svc", 8800))
 
-    assert "80" in config["TCP"]
-    handler = config["Web"]["${TS_CERT_DOMAIN}:80"]["Handlers"]["/"]
-    assert handler["Proxy"] == "http://robovast-service.default.svc:8800"
+    assert config["TCP"]["80"]["TCPForward"] == "robovast-service.default.svc:8800"
+    assert "Web" not in config, "a host-keyed handler is what fails without a cert domain"
+    assert "TS_CERT_DOMAIN" not in json.dumps(config)
 
 
 def test_one_replica_because_two_would_claim_one_name():

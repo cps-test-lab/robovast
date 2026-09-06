@@ -25,8 +25,12 @@ TOKEN = "a-token-that-is-long-enough-to-look-real"
 MODULE = "robovast.execution.cluster_execution.service_deploy"
 
 
-def _run(args, token=TOKEN, url="https://robovast.example.org"):
+TAILNET_MODULE = "robovast.execution.cluster_execution.tailnet_deploy"
+
+
+def _run(args, token=TOKEN, url="https://robovast.example.org", tailnet=""):
     with patch(f"{MODULE}.existing_auth_token", return_value=token), \
+         patch(f"{TAILNET_MODULE}.published_hostname", return_value=tailnet), \
          patch(f"{MODULE}.published_url", return_value=url):
         # The command itself, not `cluster token`: the group lives in robovast-client and
         # resolves this through entry-point metadata, which would make these unit tests
@@ -55,11 +59,33 @@ def test_the_handout_names_the_url_the_token_belongs_to():
 
 
 def test_an_unpublished_service_still_yields_its_token():
-    """No Ingress is a real state, and the token is still the right answer there."""
+    """No Ingress and no tailnet is a real state, and the token is still the right answer
+    there."""
     result = _run([], url="")
     assert result.exit_code == 0
     assert TOKEN in result.output
     assert "--ingress-host" in result.output, "it should say how to publish it"
+    assert "--tailnet" in result.output, "and the other way of publishing it"
+
+
+def test_a_tailnet_is_a_url_to_give_out():
+    """An Ingress is not the only way a deployment is reachable. Answering "there is no
+    URL" over a tailnet would send an operator to re-publish something already published --
+    and the handout would name no address the token belongs to."""
+    result = _run([], url="", tailnet="robovast")
+
+    assert result.exit_code == 0
+    assert "http://robovast" in result.output
+    assert TOKEN in result.output
+    assert "no URL" not in result.output
+
+
+def test_an_ingress_outranks_a_tailnet_in_the_handout():
+    """Both can exist. A published host is the one an operator hands to someone who may not
+    be on the tailnet, so it is the one named."""
+    result = _run([], tailnet="robovast")
+
+    assert "https://robovast.example.org" in result.output
 
 
 def test_no_token_is_an_error_that_names_the_fix():
