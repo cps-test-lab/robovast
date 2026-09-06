@@ -327,6 +327,21 @@ Every declared slot must be bound, each to exactly one channel; an unknown slot 
 naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
 for a simulator to compile is one — which are simply not produced when left unbound.
 
+A drawn start pose is the same story one level down. The stack under test is told where it
+starts, and the simulator can compile the robot there rather than have the trial move it once
+the run is going:
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_pose}
+       sim:      {spawn: components.robot.pose}
+
+``spawn`` carries the same pose in the shape a world states one, so it goes straight into the
+entry that places the robot. Binding it is optional: a campaign that only seeds localisation
+leaves it out, and one that binds it still binds ``start``, since a variation that draws a
+start pose has to say where that pose goes.
+
 
 .. _sut-channel:
 

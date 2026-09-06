@@ -27,7 +27,7 @@ from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationCo
                                                       ProvContribution,
                                                       VariationInfeasibleError)
 
-from ..data_model import Orientation, Pose, Position
+from ..data_model import Orientation, Pose, Position, pose_to_message
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
 from .. import config_view
@@ -61,6 +61,20 @@ class PathVariationRandomConfig(DestinationConfig):
     #: and contradict the scenario, failing at run time.
     SLOTS = ("start", "goal")
 
+    #: ``spawn`` is the SIMULATOR's view of the start pose: the same pose, in the shape a world
+    #: states one (``SpawnEntity``'s ``initial_pose``), written to the entry that places the
+    #: robot::
+    #:
+    #:     scenario: {start: start_pose, goal: goal_pose}
+    #:     sim:      {spawn: components.robot.pose}
+    #:
+    #: Both, from one call, because they are one fact: the simulator compiles the robot where the
+    #: path begins, and the stack under test is told where that is. Optional, because each is
+    #: useful alone -- a campaign that only seeds localisation binds ``start``, one whose stack
+    #: localises itself binds ``spawn`` -- and requiring both would make every campaign that wants
+    #: one name a destination it has none for.
+    OPTIONAL_SLOTS = ("spawn",)
+
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
     num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per meters of path length; single value or list for additional variations
     map_file: Optional[str] = None
@@ -87,6 +101,19 @@ class StartGoalSlots:  # pylint: disable=no-member
     def _start_destination(self) -> str:
         """The parameter the ``start`` slot is bound to."""
         return self.parameters.binding("start")[1]
+
+    def _placement(self, start_pose) -> dict:
+        """The slot values carrying the start pose: the trial's, and the simulator's when asked.
+
+        Two spellings of one pose, because the two sides read different types -- a scenario
+        parameter is a ``pose_3d`` and takes this model's own, while a world states a pose the way
+        ``SpawnEntity`` does. Which is which is decided by the SLOT, so neither has to be inferred
+        from the channel it happened to land on.
+        """
+        values = {"start": start_pose}
+        if self.parameters.is_bound("spawn"):
+            values["spawn"] = pose_to_message(start_pose)
+        return values
 
     def _goal_destination(self):
         """``(destination, single_pose_mode)`` for the ``goal`` slot.
@@ -248,7 +275,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                         other_values['_goal_parameter_name'] = goal_param
                         new_config = self.update_slots(
                             config,
-                            {'start': start_pose, 'goal': formatted_goal_poses},
+                            {**self._placement(start_pose), 'goal': formatted_goal_poses},
                             other_values=other_values,
                         )
                         results.append(new_config)
@@ -468,6 +495,9 @@ class PathVariationRasterizedConfig(DestinationConfig):
     #: with the scenario and with the other path variation.
     SLOTS = ("start", "goal")
 
+    #: As :class:`PathVariationRandomConfig`: the simulator's view of the same start pose.
+    OPTIONAL_SLOTS = ("spawn",)
+
     #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
     #: variation set. Input only: where the generated start pose *goes* is the ``start``
     #: binding above. Sharing one key between the two makes ``start_pose: start_pose`` a
@@ -659,7 +689,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                         new_config = self.update_slots(
                             config,
-                            {'start': start_pose, 'goal': formatted_goal_poses},
+                            {**self._placement(start_pose), 'goal': formatted_goal_poses},
                             other_values={
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
@@ -742,7 +772,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                         new_config = self.update_slots(
                             config,
-                            {'start': start_pose, 'goal': formatted_goal_poses},
+                            {**self._placement(start_pose), 'goal': formatted_goal_poses},
                             other_values={
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),

@@ -56,6 +56,27 @@ class Pose:
         return self.position == other.position and self.orientation == other.orientation
 
 
+def pose_to_message(pose: "Pose") -> dict:
+    """*pose* as a ``geometry_msgs/Pose`` mapping: position, and orientation as a quaternion.
+
+    The shape ``simulation_interfaces`` states a pose in (``SpawnEntity``'s ``initial_pose``), and
+    therefore the shape a simulator's world reads. A pose crossing into a world is converted here
+    rather than dumped as it stands, because the two spellings share the key name ``orientation``
+    and disagree about its contents: this model's is a yaw, the message's is x/y/z/w, and
+    ``{yaw: ...}`` is a valid-*looking* quaternion whose every component defaults to zero. Dumping
+    it would place the entity at a rotation nobody asked for instead of failing.
+
+    ``z`` is deliberately absent. This model has no z, and a simulator reads an omitted one as the
+    entity's own resting height -- which is what a wheeled robot needs, since a base authored at the
+    origin with its wheels below it is buried by a literal zero.
+    """
+    half = float(pose.orientation.yaw) / 2.0
+    return {
+        "position": {"x": float(pose.position.x), "y": float(pose.position.y)},
+        "orientation": {"x": 0.0, "y": 0.0, "z": math.sin(half), "w": math.cos(half)},
+    }
+
+
 @dataclass
 class StaticObject:
     """Represents a static object with name, model, pose, and optional xacro arguments."""
