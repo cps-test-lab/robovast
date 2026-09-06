@@ -50,24 +50,6 @@ search:
   - ParameterVariationList:
       sut: nav2.velocity_smoother.ros__parameters.max_velocity
       values: [[$max_speed, 0.0, 2.0]]
-  # THE SCENARIO CHANNEL, and it is load-bearing rather than decorative. The `sut:` channel
-  # stages each cell's rewritten nav2_params.yaml at /config/<config-name>/files/... and drops
-  # the original from run_files, so exactly one copy exists. What connects the trial to that
-  # copy is stated in docs/configuration.rst: "A scenario parameter whose value is the
-  # source's declared path is rewritten to that configuration's copy."
-  #
-  # A parameter left at its .osc DEFAULT is not one the campaign set, so there is nothing for
-  # that rewrite to act on. scenario.config comes out empty, the scenario falls back to
-  # `files/nav2_params.yaml` relative to its own directory (/config), and nav2 launches
-  # against the file staging deliberately removed -- every run then burning its full 120 s in
-  # init_nav2 waiting for a localizer that never activates. Measured: 0 of 18 runs passed
-  # before this line, 43 of 54 after it.
-  #
-  # Stating the declared path here is what arms the rewrite. One value, so it costs no
-  # configurations -- and it is this directory's only use of the `scenario:` channel.
-  - ParameterVariationList:
-      scenario: params_file
-      values: ['files/nav2_params.yaml']
   postprocessing:
   # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
   # each batch is scored, while results_processing runs once the campaign is over. Without

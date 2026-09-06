@@ -425,9 +425,9 @@ What each configuration gets
 """"""""""""""""""""""""""""
 
 A **rewritten copy** of every source it touched, staged under its own configuration
-directory and mounted at ``/config/<config-name>/<path>``. The campaign's own file is never
-modified. A scenario parameter whose value is the source's declared path is rewritten to
-that configuration's copy, so the trial launches the file belonging to the cell it is
+directory and mounted at ``/config/<path>`` — the declared path, exactly where the
+campaign's own copy would otherwise be. The campaign's file is never modified, and it is not
+staged beside the copy, so that path holds one file: the one belonging to the cell that is
 running.
 
 Beside them, ``<campaign>/<config>/_config/sut.config`` records the whole resolved block —
@@ -445,6 +445,11 @@ Two things are refused rather than left to go wrong quietly:
   (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
   reaches the same environment by a different route, so it is guarded against the same set
   rather than becoming a way around the rule.
+
+A source whose path would land on a file the run itself owns at ``/config`` — the
+entrypoint, the scenario, a parameter document — is refused at composition, naming the set.
+Only the mount root is contested; the run writes nothing into a subdirectory of it, so
+``nav2/scenario.config`` is a campaign's own business.
 
 A declared source is **excluded from** ``run_files`` staging, so exactly one copy of it
 reaches the container. Campaigns stage their inputs with patterns (``files/*.yaml`` to pick
@@ -775,8 +780,21 @@ locally.
 
 Packing is invisible to results: every run's output is always written to
 ``<config>/<run>/`` regardless of how runs were grouped into jobs (see
-:ref:`results-output-structure`). The number of jobs is
-``ceil(num_configs * runs / runs_per_job)``.
+:ref:`results-output-structure`).
+
+An **upper bound**, not a target. A job holds one compiled world and one configuration's
+files, so runs only share a job when they agree about both, and
+``ceil(num_configs * runs / runs_per_job)`` is the count you get when they all do:
+
+- configurations resolving to **different simulator settings** are never packed together —
+  the simulator compiles its model once per process, so the second cell would run against
+  the first one's geometry;
+- configurations that **stage files of their own** (a ``sut:`` block, or a variation that
+  generates one) are never packed with a *different* configuration — each cell's copy is
+  mounted at ``/config/<path>``, and only one file can be there.
+
+Neither restricts a configuration's own repeated runs, which is what ``runs_per_job`` is
+for, and a campaign that varies only scenario parameters is affected by neither.
 
 .. code-block:: yaml
 

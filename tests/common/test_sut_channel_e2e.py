@@ -235,6 +235,39 @@ def test_a_source_caught_by_a_run_files_glob_is_staged_only_as_the_rewritten_cop
         _written(config, "files/nav2_params.yaml")
 
 
+def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
+    """The seam this channel exists to close, end to end.
+
+    The scenario writes `get_scenario_file_directory() + '/files/nav2_params.yaml'`, which
+    is `/config/files/nav2_params.yaml` -- the declared path, unchanged. What makes that the
+    CELL's file rather than the campaign's is staging: each configuration's copy goes to
+    that path, and the campaign's original is not staged at all. So nothing has to be
+    rewritten, and no campaign has to remember to name the file.
+    """
+    from robovast.common.execution import build_job_parameter_documents
+    from robovast.execution.packer import JobSpec, WorkItem
+
+    data = _compose(tmp_path, f"""\
+        - name: inflation
+          parameters:
+          - params_file: files/nav2_params.yaml
+          variations:
+          - ParameterVariationList:
+              sut: {_BASE}.inflation_layer.inflation_radius
+              values: [0.30, 0.55]
+    """)
+    configs = data["configs"]
+
+    # Each cell has its own copy, at the declared path ...
+    staged = {c["name"]: _written(c, "files/nav2_params.yaml") for c in configs}
+    assert len(set(staged.values())) == len(configs), staged
+    # ... and what the trial is told is that path, carried rather than rewritten.
+    for config in configs:
+        job = JobSpec(items=[WorkItem(config=config, run_number=0)], index=0)
+        document = build_job_parameter_documents(job, "nav")[0]["nav"]
+        assert document["params_file"] == "files/nav2_params.yaml"
+
+
 def test_the_environment_carrier_refuses_rather_than_doing_nothing(tmp_path):
     """It is the channel's second carrier and no lane delivers it per configuration yet.
     Silently dropping it would be a campaign whose factor did not vary."""

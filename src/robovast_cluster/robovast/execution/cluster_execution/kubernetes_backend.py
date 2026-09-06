@@ -56,6 +56,7 @@ import copy
 import hashlib
 import logging
 import os
+import posixpath
 import re
 import shlex
 import tempfile
@@ -1145,8 +1146,9 @@ class BatchJobRunner:
         as the campaign root, uploaded to the campaign prefix, so per-config
         results land at ``<campaign>/<config>/<run>/`` via each document's
         ``_output_dir``. Job-level artifacts go to a per-job subdir, and each
-        config's files are mirrored under ``/config/<config-name>/`` to avoid
-        collisions. The job's multi-document param file ships in ``_transient/``
+        config's files are staged at ``/config/<deploy path>`` -- where the campaign's
+        own copy would otherwise be, so ``/config`` is the view belonging to the cell
+        that is running. The job's multi-document param file ships in ``_transient/``
         and so lands at ``/config/<job-tag>.params.yaml``.
         """
         _, _, _, _, campaign_prefix = self._s3_settings()
@@ -1161,15 +1163,34 @@ class BatchJobRunner:
         sim_rename = (
             f"(cp /config/{job_tag}.sim.yaml {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
             if sim_overlay["document"] else "")
-        per_config_mirror = "".join(
-            f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/ /config/{cn}/ 2>/dev/null || true); "
-            for cn in job.config_names
+        # Each configuration's own files, staged where the campaign's copy would have been.
+        # Copied per declared path rather than mirroring `<config>/_config/` wholesale,
+        # because that directory also holds this cell's RECORDS -- `config.yaml`,
+        # `scenario.config`, `sim.config`, `sut.config` -- and `scenario.config` at
+        # `/config/scenario.config` is the entrypoint's default parameter file. Composition
+        # knows exactly which paths are inputs, so they are named rather than filtered out
+        # of a wholesale copy by a list that would have to grow with every new record.
+        #
+        # After both campaign mirrors below, so a cell's copy lands on the campaign's; the
+        # packer keeps one file-owning configuration per job, so which copy wins is never
+        # in question (see `WorkItem.files_key`).
+        staged = []
+        for item in job.items:
+            for deploy_rel, _src in (item.config.get("_config_files") or []):
+                entry = (item.config_name, deploy_rel)
+                if entry not in staged:
+                    staged.append(entry)
+        per_config_stage = "".join(
+            f"(mkdir -p /config/{posixpath.dirname(rel)} && "
+            f"mc cp mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/{rel} "
+            f"/config/{rel} 2>/dev/null || true); "
+            for cn, rel in staged
         )
         init_cmd = (
             f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
-            f"{per_config_mirror}"
+            f"{per_config_stage}"
             f"{sim_rename}"
             f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient; do "
             f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "

@@ -816,6 +816,9 @@ class ExecutionConfig(BaseModel):
     #     single simulator setup (the simulator is reset between them), amortising
     #     setup for simulators with cheap per-run cost. Runs are
     #     packed config-major, so a config's repeated runs stay together in a job.
+    # An upper bound, not a promise: a job holds one compiled world and one
+    # configuration's files, so runs of configurations that disagree about either are
+    # never packed together and the value is reached only within a group that agrees.
     # Results stay keyed by configuration name / run number regardless, so packing
     # is invisible to downstream processing.
     runs_per_job: int = 1
