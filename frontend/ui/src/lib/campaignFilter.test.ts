@@ -10,7 +10,7 @@ const campaign = (c: Partial<CampaignSummary>): CampaignSummary =>
   ({ campaign_id: 'c1', description: '', created_by: '', phase: 'running', ...c } as CampaignSummary)
 
 const rows = [
-  campaign({ campaign_id: 'tour-20260901-1200', description: 'Robolab waypoint tour', created_by: 'ada' }),
+  campaign({ campaign_id: 'tour-20260901-1200', description: 'Warehouse waypoint tour', created_by: 'ada' }),
   campaign({ campaign_id: 'nav-20260830-0900', description: 'Nav2 clearance sweep', created_by: 'lin' }),
   campaign({ campaign_id: 'nav-20260831-1500', description: 'Nav2 clearance sweep', created_by: 'ada', phase: 'failed' }),
 ]
