@@ -223,12 +223,22 @@ class ClusterBudgetProvider:
         A node that is down still counts towards the current total here, for the same reason
         it counts in ``capacities()``: it is coming back, and treating its absence as room the
         autoscaler must supply would ask for a machine to replace one that already exists.
+
+        **``capacity``, not ``allocatable``, and this is the one place that is right.**
+        Everything else here sizes against ``allocatable``, because that is what the scheduler
+        may hand out. This comparison is not about what may be handed out: it asks whether the
+        cluster is at its ceiling, and the ceiling a provider declares is a count of machines
+        of some type -- a *capacity* figure, with no kubelet reservation taken off it.
+        Comparing it against allocatable measures two different things, and the difference is
+        the reservation itself: a cluster sitting exactly at its maximum then reads as growable
+        forever, every job is created unpinned, per-node accounting is bypassed, and
+        ``calibration_applies`` switches per-node sizing off without saying so.
         """
         declared = self._declared_total()
         if declared is None:
             return False
         core = self._core_api_factory()
-        total_cpu = sum(parse_resource((n.status.allocatable or {}).get("cpu"))
+        total_cpu = sum(parse_resource((n.status.capacity or {}).get("cpu"))
                         for n in core.list_node().items)
         return declared[0] > total_cpu
 

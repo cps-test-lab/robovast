@@ -16,7 +16,7 @@ MIB = 1024 ** 2
 
 
 def _node(name, cpu="8", memory="16Gi", gpu=None, node_id=True,
-          ready=True, cordoned=False, taints=()):
+          ready=True, cordoned=False, taints=(), capacity_cpu=None):
     """A node, carrying its identity label unless *node_id* is False.
 
     ``node_id=False`` is a node that joined since the last ``setup``: still counted, because
@@ -31,11 +31,16 @@ def _node(name, cpu="8", memory="16Gi", gpu=None, node_id=True,
     if gpu:
         alloc["nvidia.com/gpu"] = gpu
     labels = {NODE_ID_LABEL: f"node-{name}"} if node_id else {}
+    # A real node's capacity exceeds its allocatable by the kubelet's reservation. Defaulted
+    # to the same value so every existing test keeps meaning what it did; pass
+    # *capacity_cpu* to model the gap, which is what `_growable` must not read as room.
+    capacity = dict(alloc, cpu=capacity_cpu if capacity_cpu is not None else cpu)
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name, labels=labels),
         spec=types.SimpleNamespace(unschedulable=cordoned, taints=list(taints)),
         status=types.SimpleNamespace(
             allocatable=alloc,
+            capacity=capacity,
             conditions=[types.SimpleNamespace(
                 type="Ready", status="True" if ready else "False")]))
 
@@ -442,6 +447,26 @@ def test_growable_is_judged_against_the_cluster_not_the_job_pool(monkeypatch):
     assert b.growable is False, (
         "24 declared vs 24 real cores across the cluster: the pool being smaller is a "
         "confinement, not headroom an autoscaler will supply")
+
+
+def test_a_cluster_at_its_ceiling_is_not_growable_despite_the_kubelet_reservation(monkeypatch):
+    """The declared ceiling counts machines of a type, so it carries no reservation; a node's
+    allocatable has one taken off. Comparing the two measures the reservation and calls it
+    room -- and then a full cluster is growable forever, every job is created unpinned,
+    per-node accounting is bypassed, and calibration switches off without saying so.
+    """
+    p = _with_config([_node("n1", cpu="15890m", memory="28Gi", capacity_cpu="16")], [],
+                     monkeypatch, _Autoscaler(cpu="16", memory="32Gi"))
+
+    assert p.budget().growable is False
+
+
+def test_room_a_second_machine_would_add_is_still_growable(monkeypatch):
+    """The reservation must not be read as room; a whole extra node still must be."""
+    p = _with_config([_node("n1", cpu="15890m", memory="28Gi", capacity_cpu="16")], [],
+                     monkeypatch, _Autoscaler(cpu="64", memory="128Gi"))
+
+    assert p.budget().growable is True
 
 
 def test_a_cordoned_node_does_not_make_a_cluster_look_growable(monkeypatch):
