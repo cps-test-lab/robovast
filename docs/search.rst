@@ -209,8 +209,9 @@ Marker rules:
 
    **Zero configs is the other direction, and it is tolerated.** A draw can be
    unrealizable rather than misconfigured — a path too short to hold the obstacles the
-   same draw asks for, say — and then the variation pipeline composes nothing for it.
-   That set is recorded as ``composition_failed`` (visible in the store's ``unit``
+   same draw asks for, say — or refused outright by a plugin whose declared parameter
+   domain the search space overruns, and then the variation pipeline composes nothing for
+   it. That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
    cope: ingest what arrived, or — if its optimiser cannot take a short generation —

@@ -41,7 +41,8 @@ from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
-from .variation.base_variation import VariationInfeasibleError
+from .variation.base_variation import (VariationConfigError,
+                                       VariationInfeasibleError)
 from .variation.loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,19 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
 
 def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
-    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+    # Constructing a plugin validates its parameters, so a refusal happens HERE -- and
+    # reported from outside this function it named neither the plugin nor the config block,
+    # leaving "Config validation failed" as the whole of what a reader got for a value one
+    # plugin among several would not take. Only that one class is intercepted: every other
+    # way a construction can fail keeps the exception it already raises, including the ones
+    # carrying their own next step.
+    try:
+        variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+    except VariationConfigError as e:
+        msg = f"Variation failed. {variation_class.__name__}: {e}"
+        logger.error(msg)
+        progress_update_callback(msg)
+        raise VariationConfigError(msg, config_name=e.config_name) from e
 
     # Collect input files for campaign self-containment
     input_files = variation.get_input_files()
@@ -1525,13 +1538,20 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     ``tolerate_infeasible`` controls what happens when a variation raises
     :class:`~.variation.base_variation.VariationInfeasibleError` (a specific
-    parameter draw cannot be realized, as opposed to a plugin bug): when
-    ``False`` (the default — batch-mode campaigns and direct callers) it
-    propagates and aborts composition, same as any other exception; when
-    ``True`` (search-mode composition, via :class:`~robovast.search.compose.Compose`)
-    the affected top-level config block is dropped and composition continues
-    with the rest. Every other exception always propagates regardless of this
-    flag.
+    parameter draw cannot be realized, as opposed to a plugin bug) or
+    :class:`~.variation.base_variation.VariationConfigError` (a plugin refuses the
+    parameters it was handed): when ``False`` (the default — batch-mode campaigns and
+    direct callers) it propagates and aborts composition, same as any other exception;
+    when ``True`` (search-mode composition, via
+    :class:`~robovast.search.compose.Compose`) the affected top-level config block is
+    dropped and composition continues with the rest. Every other exception always
+    propagates regardless of this flag.
+
+    Both classes and nothing wider: they are the two ways a *draw* can turn out
+    unrunnable, and a search that ends on one has spent every batch before it for
+    nothing. A campaign in which they are the rule rather than the exception is a
+    different problem, and the controller stops it — see
+    :meth:`~robovast.execution.controller.CampaignController._search_loop`.
 
     Caching is active for all flows when ``use_cache=True``.  Two cache
     entries are stored under ``<vast_dir>/.cache/``:
@@ -1848,12 +1868,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except VariationInfeasibleError as exc:
+            except (VariationInfeasibleError, VariationConfigError) as exc:
                 # Name the config block here -- neither execute_variation nor the plugin
                 # knows it, but it is exactly what a reader needs to act on the message
                 # (which config, not just which plugin/why), whether this propagates
                 # (batch mode) or is only logged before the config is dropped (search).
-                named_exc = VariationInfeasibleError(
+                #
+                # Both classes, and the type is preserved: a draw a plugin refuses and a
+                # draw no arrangement realizes are equally unrunnable, so a search skips
+                # both -- while a batch, which tolerates neither, still gets the message
+                # that fits its case.
+                named_exc = type(exc)(
                     f"config '{config['name']}': {exc}", config_name=config['name'])
                 if not tolerate_infeasible:
                     raise named_exc from exc
