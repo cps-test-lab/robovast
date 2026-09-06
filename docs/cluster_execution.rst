@@ -205,6 +205,19 @@ cluster that refuses the DaemonSet is then an error instead of a warning, becaus
 asked for a fixed clock and silently did not get one would go on to trust measurements taken
 on a scaling one.
 
+**A provider whose nodes are virtual machines moves the default rather than the flag.** ``gcp``
+and ``azure`` schedule campaigns on cloud VMs, whose guest kernels expose no cpufreq policy at
+all — the hypervisor owns the clock — so setup states that once and does not attempt it, rather
+than spending a readiness wait every run to rediscover the same answer. Naming
+``--performance-governor`` is still obeyed there and still fails loudly: provider policy decides
+what happens when nobody said, never what happens when somebody did.
+
+What the governor buys does not go away with the knob. Comparability between runs is still worth
+having on a cloud pool, and the levers there belong to the node pool rather than to a DaemonSet:
+a machine type with a predictable clock, no shared-core and no preemptible instances in the
+campaign pool, and node upgrades held for the duration of a campaign. The
+``cpu_governor_scaling`` warning per campaign is what keeps the remaining gap in the results.
+
 It installs a privileged DaemonSet with the host's ``/sys`` mounted writable, confined to
 the job node pool when one is configured. Leaving it off is supported: RoboVAST reports a
 ``cpu_governor_scaling`` warning per campaign, so the effect shows up in the results rather
@@ -219,15 +232,16 @@ cleanup prints it rather than reporting a clean teardown.
 
 .. warning::
 
-   **On a cloud VM this usually cannot work**, and the two ways it fails are different. A
-   cluster that *refuses* the privileged pod — GKE Autopilot does — says so at create time.
-   GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at runtime: a
-   GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because the
-   hypervisor owns the clock, so the pod exits non-zero and ``CrashLoopBackOff``\ s on every
-   node. Setup waits for a Ready pod and reports both cases rather than either as applied.
-   Node auto-repair would undo the setting anyway. On managed Kubernetes, pass
-   ``--no-performance-governor`` and set the governor through the node image instead — and
-   read the ``cpu_governor_scaling`` advice, which is what tells you whether it took effect.
+   **On a cloud VM this cannot work**, which is why ``gcp`` and ``azure`` do not attempt it.
+   Where it *is* attempted — an unlisted provider, or ``--performance-governor`` naming it —
+   the two ways it fails are different. A cluster that *refuses* the privileged pod, as GKE
+   Autopilot does, says so at create time. GKE Standard and EKS generally **accept** it, and
+   the DaemonSet then fails at runtime: a GCE or EC2 guest has no writable
+   ``/sys/devices/system/cpu/*/cpufreq``, so the pod exits non-zero and
+   ``CrashLoopBackOff``\ s on every node. Setup waits for a Ready pod and reports both cases
+   rather than either as applied. Node auto-repair would undo the setting anyway. Set the
+   governor through the node image where the node image is yours — and read the
+   ``cpu_governor_scaling`` advice, which is what tells you whether it took effect.
 
 .. _cluster-node-local-storage:
 
@@ -1841,8 +1855,10 @@ cannot be probed, so its jobs run at the declared sizing beside calibrated ones.
 ``vast exec cluster setup`` after the pool changes to bring new nodes back under
 :ref:`cluster-node-calibration`.
 
-**The CPU governor DaemonSet usually cannot work on a cloud VM** — and the way it fails is not
-the way setup detects. See the warning under :ref:`cluster-cpu-governor`.
+**The CPU governor cannot be set on a cloud VM**, so the cloud providers do not attempt one and
+say so instead. The comparability it buys is then the node pool's to provide — machine type,
+no shared-core or preemptible instances, upgrades held for a campaign — rather than a
+DaemonSet's. See :ref:`cluster-cpu-governor`.
 
 .. _cluster-config-gcp:
 

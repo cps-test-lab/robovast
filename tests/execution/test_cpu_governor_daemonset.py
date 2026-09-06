@@ -16,7 +16,8 @@ from robovast.execution.cluster_execution.node_governor import (ABSENT, DAEMONSE
                                                                 ensure_cpu_governor,
                                                                 manifest, refusal_message,
                                                                 remove_daemonset,
-                                                                runtime_failure_message)
+                                                                runtime_failure_message,
+                                                                unavailable_message)
 
 
 class _ApiException(Exception):
@@ -203,6 +204,31 @@ def test_a_status_that_cannot_be_read_is_not_read_as_a_failure(caplog):
     with caplog.at_level(logging.WARNING):
         assert _instant(_NoStatus()) is True
     assert "could not read its status" in caplog.text, "unknown must not pass silently"
+
+
+# -- a provider whose nodes cannot take one ------------------------------------------------
+
+def test_a_vm_provider_declares_that_there_is_no_clock_to_fix():
+    """Known before anything is applied, so setup should not spend a readiness wait per run
+    rediscovering it."""
+    from robovast.execution.cluster_config.base_config import BaseConfig
+    from robovast.execution.cluster_config.azure import AzureClusterConfig
+    from robovast.execution.cluster_config.gcp import GcpClusterConfig
+
+    assert BaseConfig.governor_is_settable is True, (
+        "attempting and reporting is the safe default; only a provider that KNOWS opts out")
+    assert GcpClusterConfig.governor_is_settable is False
+    assert AzureClusterConfig.governor_is_settable is False
+
+
+def test_not_attempting_it_still_says_what_is_left_unfixed():
+    """What the governor buys is comparability, and that need does not go away with the knob.
+    A cluster measuring on a clock nobody fixed must not be a silent state."""
+    message = unavailable_message(PERFORMANCE, "gcp")
+
+    assert "cpu_governor_scaling" in message, "the per-campaign report must be named"
+    assert "--performance-governor" in message, "and the way to override the default"
+    assert "comparability" in message
 
 
 def test_asking_for_nothing_removes_a_previously_configured_daemonset():

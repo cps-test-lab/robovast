@@ -367,3 +367,48 @@ def test_setup_reports_where_it_put_the_data(monkeypatch, deploy_stubs):
     reported = setup_server(config_name="rke2", namespace="default")
     assert reported["data_node"] == "node-a"
     assert reported["data_source"] == "auto"
+
+
+# -- the governor default a provider may move --------------------------------
+
+def test_a_vm_provider_is_not_asked_for_a_governor_it_cannot_set(deploy_stubs, caplog):
+    """Attempting it there costs a readiness wait every run to rediscover the same answer.
+
+    Reconciled to absent rather than skipped: setup writes the cluster's whole configuration
+    on every run, so a DaemonSet an earlier setup left behind still goes.
+    """
+    import logging
+
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = False
+    with caplog.at_level(logging.INFO):
+        setup_server(config_name="gcp", namespace="default")
+
+    node_governor.ensure_cpu_governor.assert_called_once()
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is False
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is False
+    assert "cpu_governor_scaling" in caplog.text, "what is left unfixed must still be said"
+
+
+def test_naming_the_flag_is_obeyed_even_where_the_provider_says_it_cannot_work(deploy_stubs):
+    """Provider policy decides what happens when nobody said, never what happens when
+    somebody did -- and the attempt then fails loudly rather than being overruled here."""
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = False
+    setup_server(config_name="gcp", namespace="default", cpu_governor=True)
+
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is True
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is True
+
+
+def test_a_provider_that_can_take_one_still_gets_it_by_default(deploy_stubs):
+    """The default is unchanged everywhere else: bare metal is where this works."""
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = True
+    setup_server(config_name="rke2", namespace="default")
+
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is True
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is False

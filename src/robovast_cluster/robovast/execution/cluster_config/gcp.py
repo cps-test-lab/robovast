@@ -169,6 +169,10 @@ class GcpClusterConfig(BaseConfig):
     and persisted in the cluster flag file between ``setup`` and ``cleanup``.
     """
 
+    #: GKE node pools are Compute Engine VMs, whose guest kernels expose no cpufreq policy.
+    #: See :attr:`BaseConfig.governor_is_settable`.
+    governor_is_settable = False
+
     def __init__(self):
         super().__init__()
         self._gcs_bucket: Optional[str] = None
