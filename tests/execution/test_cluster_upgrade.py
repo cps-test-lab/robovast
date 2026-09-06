@@ -162,6 +162,11 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -210,6 +215,11 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -261,6 +271,11 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -334,6 +349,11 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     # Returns None on success; it raises on every non-convergence.
@@ -393,6 +413,11 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)

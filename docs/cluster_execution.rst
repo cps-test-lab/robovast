@@ -2021,6 +2021,56 @@ so they can live in ``.env`` rather than on the command line. See ``.env.example
    ``kubectl get deploy -o yaml`` in the namespace can read them. Scope the HMAC key
    or service account to that one bucket.
 
+.. _cluster-tailnet:
+
+Reaching it over a tailnet instead of publishing it
+----------------------------------------------------
+
+An Ingress asks for a public DNS record, a certificate for it, and an address that survives
+the cluster being rebuilt. A deployment that has none of those, or wants nothing listening
+on the internet at all, can be reached over a WireGuard tailnet instead: a Tailscale node
+runs beside the service, **dials out** to a coordination server, and answers on the tailnet
+under a stable name. No firewall rule is opened and no address changes when the cluster does.
+
+Coordination is whatever you point it at — Tailscale's own service, or a self-hosted
+`Headscale <https://headscale.net>`_ so that no third party is trusted with the tailnet.
+RoboVAST passes ``--login-server`` through and lets the node register.
+
+Configured entirely from the environment, so a ``.env`` states it once per deployment:
+
+.. code-block:: bash
+
+   ROBOVAST_TAILNET_LOGIN_SERVER=https://headscale.example.org
+   ROBOVAST_TAILNET_AUTHKEY=<a pre-auth key from that server>
+   ROBOVAST_TAILNET_HOSTNAME=robovast        # optional; the name users type
+
+``vast cluster setup`` then deploys the node, and users reach the web UI at
+``http://robovast`` on the tailnet with the access token from ``vast service token``.
+Nothing but a Tailscale client is needed — no kubeconfig, no ``kubectl``, no port-forward.
+
+Both variables or neither: a login server with no key cannot register and a key with no
+server has nothing to register with, so half of the pair is refused rather than
+half-deployed. Reconciled on **every** setup, so unsetting them takes the node away rather
+than leaving one nobody remembers configuring still answering.
+
+.. note::
+
+   **Plain HTTP on the tailnet, deliberately.** The transport is already WireGuard, so a
+   certificate would encrypt what is encrypted. It works because the session cookie's
+   ``Secure`` flag follows the request scheme — the reason an Ingress refuses plain HTTP is
+   that the token would cross an untrusted network, which is exactly what a tailnet is not.
+
+.. warning::
+
+   **This does not make in-cluster builds possible.** The prefix campaigns push to has to be
+   pullable by the *kubelet*, and nodes are not on the tailnet — they resolve no tailnet name
+   and hold no key. So this publishes the service to people, never to the cluster's own
+   container runtime, and ``can_build_images`` stays false. An Ingress, or an external
+   registry, is what changes that.
+
+   The node itself is unprivileged (userspace networking), so it deploys on a managed
+   cluster where the alternative — ``NET_ADMIN`` plus ``/dev/net/tun`` — is refused.
+
 .. _cluster-config-rke2:
 
 RKE2
