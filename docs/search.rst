@@ -208,8 +208,9 @@ Marker rules:
    clear error naming the offending parameter set if a variation expands.
 
    **Zero configs is the other direction, and it is tolerated.** A draw can be
-   unrealizable rather than misconfigured — a path too short to hold the obstacles the
-   same draw asks for, say — and then the variation pipeline composes nothing for it.
+   unrealizable rather than misconfigured — a path length longer than any route the map
+   holds, or a path too short to hold the obstacles the same draw asks for — and then the
+   variation pipeline composes nothing for it.
    That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to

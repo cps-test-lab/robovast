@@ -24,7 +24,8 @@ from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
-                                                      ProvContribution)
+                                                      ProvContribution,
+                                                      VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
 from ..path_generator import PathGenerator
@@ -406,7 +407,12 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             break
 
         if not path_found:
-            raise ValueError(
+            # Infeasible, not broken: this map has no path of this length, which is a property of
+            # the draw rather than of the campaign. Search composition drops the one config and
+            # records a failed evaluation, so an optimizer proposing a length the map cannot hold
+            # keeps going instead of taking every other config in the batch down with it. A sweep
+            # (tolerate_infeasible=False) still fails loudly, which is what a stated level asks for.
+            raise VariationInfeasibleError(
                 f"PathVariationRandom: Failed to generate valid path within maximum attempts for config '{config['name']}'.\n"
                 f"  Variation parameters:\n"
                 f"    map_file:              {map_file_path} (parameter: {self.parameters.map_file or config.get('_map_file')})\n"
