@@ -814,6 +814,42 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
         config.setdefault("_config_files", []).extend(contribution.files)
 
 
+def _check_config_file_paths(configs, scenario_file):
+    """Refuse a per-configuration file that would land on one the run owns.
+
+    A configuration's copy of a file is staged where the campaign's copy would have been,
+    at ``/config/<deploy path>`` -- which is also where the run's own furniture lives: the
+    entrypoint, the parameter documents, the scripts every container sources. A deploy path
+    equal to one of those would replace it.
+
+    Refused here because both lanes discover it late and unhelpfully: locally as two mount
+    sources for one target, on the cluster as a pod whose entrypoint is a campaign's YAML
+    file -- in both cases after the image pull, at the cost of a cell.
+    """
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        RESERVED_CONFIG_MOUNT_NAMES, RESERVED_CONFIG_MOUNT_PATTERNS)
+
+    reserved = set(RESERVED_CONFIG_MOUNT_NAMES)
+    if scenario_file:
+        reserved.add(os.path.basename(scenario_file))
+    for config in configs:
+        for deploy_rel, _src in (config.get("_config_files") or []):
+            name = os.path.basename(deploy_rel)
+            if os.path.dirname(deploy_rel):
+                # Only the mount root is contested: the run writes nothing into a
+                # subdirectory of it, so `nav2/scenario.config` is a campaign's own
+                # business.
+                continue
+            if name in reserved or any(fnmatch.fnmatch(name, p)
+                                       for p in RESERVED_CONFIG_MOUNT_PATTERNS):
+                raise ValueError(
+                    f"Config '{config.get('name')}': the file '{deploy_rel}' would be "
+                    f"staged over one the run itself owns at the config mount. RoboVAST "
+                    f"puts these there: {', '.join(sorted(reserved))} (and "
+                    f"{', '.join(RESERVED_CONFIG_MOUNT_PATTERNS)}). Deploy it under a "
+                    f"subdirectory, or rename it.")
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
                                image_project=None, image_project_tag=None):
@@ -855,8 +891,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         deploy_paths = {rel for rel, _ in (config.get("_config_files") or [])}
         try:
             resolved = merge_sim_block(
-                execution, sim_values, vast_dir,
-                deploy_paths=deploy_paths, config_name=config.get("name", ""))
+                execution, sim_values, vast_dir, deploy_paths=deploy_paths)
         except Exception as exc:  # noqa: BLE001 - re-raised only where it is the user's
             if uses_channel:
                 raise
@@ -879,6 +914,13 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             logger.debug("simulator backend declared no input files: %s", exc)
             continue
         for rel in declared:
+            # An ABSOLUTE path is already staged: it is a configuration's own file, whose
+            # `sim` value names the config mount rather than the campaign directory. Adding
+            # it to run_files would ask the campaign to stage a path that exists only inside
+            # a container -- which is the shape a variation that generates its cell's world
+            # produces, and the one case where the world is not a campaign file at all.
+            if os.path.isabs(rel):
+                continue
             if rel not in run_files:
                 run_files.append(rel)
 
@@ -1296,7 +1338,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # 9: _run_files now also carries the local plugin modules the config references, so a cached
 # entry from 8 describes both a different input set and a different config identity -- the
 # modules are content-hashed, and earlier formats do not carry them.
-_CACHE_FORMAT_VERSION = 9
+# 10: a configuration's staged files are addressed at the config mount rather than under a
+# per-configuration directory, and an entry carries its RESOLVED sim block -- so one written
+# by 9 replays container paths that no longer exist.
+_CACHE_FORMAT_VERSION = 10
 
 
 def _build_generate_cache_key(
@@ -1940,6 +1985,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # that implies. Before the normalisation below, so those files are treated exactly like
     # any other artifact a variation produced.
     _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir)
+
+    # Every per-configuration file now exists, from both producers, and none has been
+    # normalised yet -- the one point where the whole set can be checked against the names
+    # the run owns.
+    _check_config_file_paths(configs, scenario_file)
 
     # Normalize _config_files and _config_transient_files: convert artifact absolute
     # paths (those inside output_dir) to paths relative to output_dir.  This makes
