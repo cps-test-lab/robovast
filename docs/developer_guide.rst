@@ -956,7 +956,10 @@ outputs are appended to ``run_files``. That position is the whole design, and ev
 follows from it: the outputs reach ``hash_run_files()`` (so they enter the configuration
 identity), ``prepare_campaign_configs()`` copies them into ``<campaign>/_config/``, and the
 run container bind-mounts them at ``/config/<path>``. There is no second code path for
-generated files anywhere downstream. It also means generation is **host-side, before
+generated files anywhere downstream. A *per-configuration* artifact — one a variation
+produces per cell — is staged at that same ``/config/<path>`` instead of the campaign's copy,
+so a generator and a variation put a file in the same place and the campaign-wide one simply
+loses the path when a cell owns it. It also means generation is **host-side, before
 publication**, so the cluster lane gets the artifacts with no extra work.
 
 **Generation vs. variation.** Both can produce artifacts, and the test for which you want is:

@@ -13,6 +13,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from robovast.common import simulators as S
+from robovast.common.config_generation import _resolve_config_sim_blocks
 from robovast.common.variation.base_variation import Variation
 from robovast.common.variation.parameter_variation import ParameterVariationList
 from robovast.execution.packer import FixedK, OnePerJob, WorkItem
@@ -145,22 +146,35 @@ def test_a_campaign_that_varies_nothing_resolves_to_what_it_declared(backend, ex
 
 
 def test_a_generated_file_is_addressed_where_the_container_will_find_it(backend, execution):
-    """A per-config artifact is mounted under its own prefix, and absolutely.
+    """A per-config artifact is addressed at the config mount, with no per-config prefix.
 
-    Absolute because the simulator is a separate process with an unrelated working
-    directory -- unlike a scenario, which resolves file parameters against its own.
+    A configuration's own copy is staged where the campaign's copy would have been, so the
+    deploy path IS the path in the container.
     """
     merged = S.merge_sim_block(
         execution, {"plugins.floorplan.mesh": "3d-mesh/room.stl"},
-        deploy_paths={"3d-mesh/room.stl"}, config_name="rooms-1")
+        deploy_paths={"3d-mesh/room.stl"})
     assert (merged["overrides"]["plugins"]["floorplan"]["mesh"]
-            == "/config/rooms-1/3d-mesh/room.stl")
+            == "/config/3d-mesh/room.stl")
+
+
+def test_the_addressed_path_is_absolute(backend, execution):
+    """The one thing the scenario channel does not need, and this one cannot do without.
+
+    A backend's own path handling reaches only the world; the override tree travels
+    verbatim into the document the simulator reads, so a relative value in it would be
+    resolved against whatever working directory that process happens to have.
+    """
+    merged = S.merge_sim_block(
+        execution, {"plugins.floorplan.mesh": "3d-mesh/room.stl"},
+        deploy_paths={"3d-mesh/room.stl"})
+    assert merged["overrides"]["plugins"]["floorplan"]["mesh"].startswith("/")
 
 
 def test_a_value_that_is_not_a_staged_file_is_left_alone(backend, execution):
     merged = S.merge_sim_block(
         execution, {"plugins.floorplan.mesh": "roqsim_scenes:depot"},
-        deploy_paths={"3d-mesh/room.stl"}, config_name="rooms-1")
+        deploy_paths={"3d-mesh/room.stl"})
     assert merged["overrides"]["plugins"]["floorplan"]["mesh"] == "roqsim_scenes:depot"
 
 
@@ -210,6 +224,19 @@ def test_every_distinct_world_travels(backend, execution):
               for w in ("worlds/a.yaml", "worlds/b.yaml", "roqsim_scenes:depot")]
     staged = {f for b in blocks for f in S.sim_input_files(execution, b)}
     assert staged == {"worlds/a.yaml", "worlds/b.yaml"}  # the package ref needs nothing
+
+
+def test_a_cells_own_world_is_not_asked_of_the_campaign(backend, execution, tmp_path):
+    """A variation that generates its cell's world produces a `sim` value at the config
+    mount, not a campaign path. Staging it is the configuration's business -- asking the
+    campaign to stage it too would name a path that exists only inside a container."""
+    configs = [{"name": "rooms-1", "sim": {"config": "worlds/generated.yaml"},
+                "_config_files": [("worlds/generated.yaml", str(tmp_path / "generated.yaml"))]}]
+    run_files = []
+    _resolve_config_sim_blocks(configs, {"execution": execution, "configuration": []},
+                               str(tmp_path), run_files)
+    assert configs[0]["sim"]["config"] == "/config/worlds/generated.yaml"
+    assert run_files == [], run_files
 
 
 # -- a job runs one compiled model -----------------------------------------------------
@@ -274,3 +301,71 @@ def test_one_per_job_is_unaffected_by_worlds():
 def test_a_campaign_with_no_simulator_still_packs():
     items = [WorkItem(config={"name": "c1"}, run_number=r) for r in range(3)]
     assert len(FixedK(3).pack(items)) == 1
+
+
+# -- a job mounts one configuration's files --------------------------------------------
+
+
+def _owner(config_name, deploy_paths, run_number=0, sim=None):
+    """A work item whose configuration stages files of its own."""
+    return WorkItem(
+        config={"name": config_name, "sim": sim or {"config": "w.yaml"},
+                "_config_files": [(rel, f"/gen/{config_name}/{rel}")
+                                  for rel in deploy_paths]},
+        run_number=run_number)
+
+
+def test_a_configuration_that_stages_nothing_has_no_files_key():
+    """So every campaign that never used the channel groups as it always did."""
+    assert _item("c1", {"config": "w.yaml"}).files_key == ""
+
+
+def test_two_configurations_staging_the_same_path_do_not_share_a_key():
+    """The path is what collides; the name is what makes the two copies different files."""
+    a = _owner("c1", ["files/nav2_params.yaml"])
+    b = _owner("c2", ["files/nav2_params.yaml"])
+    assert a.files_key != b.files_key
+
+
+def test_one_configurations_runs_share_a_key():
+    a = _owner("c1", ["files/nav2_params.yaml"], run_number=0)
+    b = _owner("c1", ["files/nav2_params.yaml"], run_number=1)
+    assert a.files_key == b.files_key
+
+
+def test_the_key_does_not_depend_on_the_order_files_were_staged_in():
+    a = _owner("c1", ["files/a.yaml", "files/b.yaml"])
+    b = _owner("c1", ["files/b.yaml", "files/a.yaml"])
+    assert a.files_key == b.files_key
+
+
+def test_packing_never_mixes_two_file_owning_configurations():
+    """Both would want /config/files/nav2_params.yaml, and only one file can be there."""
+    items = [_owner("c1", ["files/nav2_params.yaml"], 0),
+             _owner("c1", ["files/nav2_params.yaml"], 1),
+             _owner("c2", ["files/nav2_params.yaml"], 0),
+             _owner("c2", ["files/nav2_params.yaml"], 1)]
+    jobs = FixedK(4).pack(items)
+    assert len(jobs) == 2
+    for job in jobs:
+        assert len(set(job.config_names)) == 1
+
+
+def test_a_configurations_own_runs_still_pack():
+    """The point of runs_per_job survives: repeated runs of one cell share a setup."""
+    items = [_owner("c1", ["files/nav2_params.yaml"], r) for r in range(4)]
+    assert [len(j) for j in FixedK(2).pack(items)] == [2, 2]
+
+
+def test_configurations_that_stage_nothing_still_pack_together():
+    """The common case -- a campaign varying only scenario parameters -- is untouched."""
+    items = [_item("c1", {"config": "w.yaml"}, 0), _item("c2", {"config": "w.yaml"}, 0),
+             _item("c3", {"config": "w.yaml"}, 0)]
+    assert [len(j) for j in FixedK(3).pack(items)] == [3]
+
+
+def test_a_chunk_that_would_straddle_two_cells_is_split():
+    """The whole cost of the rule: ragged chunks, never a job holding two cells' files."""
+    items = [_owner(cn, ["files/nav2_params.yaml"], r)
+             for cn in ("c1", "c2") for r in range(3)]
+    assert [len(j) for j in FixedK(2).pack(items)] == [2, 1, 2, 1]

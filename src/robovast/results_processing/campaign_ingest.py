@@ -36,7 +36,8 @@ half anyway: measured on a real campaign, ``COPY`` was 0.35 s of a 4.6 s ingest,
 read dominated.
 
 **And the dimension table beside them.** ``runs`` -- one row per run, the outcome, the host,
-and every scenario parameter flattened into a typed ``param_*`` column -- is what an analysis
+and every varied parameter flattened into a typed ``param_*`` column, whichever of the three
+variation channels it was written on -- is what an analysis
 joins its metrics against on ``(config_name, run_id)``. It is built here rather than left to
 ``run_view`` over ``params_json``, because a parameter is only a *filterable, orderable*
 column once its type has been inferred from the values; see ``notes/runs_table_port.md``.
@@ -51,6 +52,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -358,30 +360,49 @@ def _clock_map_info(campaign_path: Path, config_name: str, run_id: int):
 
 
 def _read_units(store_path: Path) -> tuple:
-    """``(params_by_config, objective_by_config, composition_failed)`` from ``campaign.db``.
+    """``(params, channels, objectives, composition_failed)`` by config, from ``campaign.db``.
 
-    ``status`` and ``paramset_id`` are absent from a store predating them; the query retries
-    with the columns every version has rather than losing every unit's params.
+    ``params`` is the scenario channel -- the configuration's ``config`` block, or on a search
+    campaign the parameter set the strategy proposed. The ``sim`` and ``sut`` channels come
+    from ``channels_json`` and are folded in under their own names by
+    :func:`_channel_params`, so a factor is a ``param_*`` column whichever channel it was
+    written on.
+
+    ``status``, ``paramset_id`` and ``channels_json`` are absent from a store predating them;
+    the query retries with the columns every version has rather than losing every unit's
+    params.
     """
     params_by_config: dict = {}
+    channels_by_config: dict = {}
     objective_by_config: dict = {}
     composition_failed: list = []
     store = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
     try:
         try:
             rows = store.execute(
-                "SELECT config_name, params_json, objective, status, paramset_id "
-                "FROM unit").fetchall()
+                "SELECT config_name, params_json, objective, status, paramset_id, "
+                "channels_json FROM unit").fetchall()
         except sqlite3.Error:
-            rows = [(cn, pj, obj, None, None) for cn, pj, obj in store.execute(
-                "SELECT config_name, params_json, objective FROM unit")]
-        for config_name, params_json, objective, status, paramset_id in rows:
+            try:
+                rows = [(cn, pj, obj, st, pid, None) for cn, pj, obj, st, pid in
+                        store.execute("SELECT config_name, params_json, objective, status, "
+                                      "paramset_id FROM unit")]
+            except sqlite3.Error:
+                rows = [(cn, pj, obj, None, None, None) for cn, pj, obj in store.execute(
+                    "SELECT config_name, params_json, objective FROM unit")]
+        for config_name, params_json, objective, status, paramset_id, channels_json in rows:
             try:
                 params = json.loads(params_json) if params_json else {}
             except (TypeError, ValueError):
                 params = {}
             if not isinstance(params, dict):
                 params = {}
+            try:
+                channels = json.loads(channels_json) if channels_json else {}
+            except (TypeError, ValueError):
+                channels = {}
+            if not isinstance(channels, dict):
+                channels = {}
             if status == "composition_failed":
                 # No config_name and no directory on disk: ``paramset_id`` is the only
                 # identity such a draw has. Same rule as ``index_views.run_view``'s
@@ -391,6 +412,7 @@ def _read_units(store_path: Path) -> tuple:
             if not config_name:
                 continue
             params_by_config[config_name] = params
+            channels_by_config[config_name] = channels
             objective_by_config[config_name] = objective
     except sqlite3.Error as exc:
         # A store with no ``unit`` table at all predates the search record. The runs are
@@ -399,7 +421,7 @@ def _read_units(store_path: Path) -> tuple:
                        store_path, exc)
     finally:
         store.close()
-    return params_by_config, objective_by_config, composition_failed
+    return params_by_config, channels_by_config, objective_by_config, composition_failed
 
 
 def _read_outcomes(store_path: Path) -> dict:
@@ -429,6 +451,113 @@ def _read_outcomes(store_path: Path) -> dict:
     finally:
         store.close()
     return outcomes
+
+
+#: Postgres truncates an identifier past this many bytes, so an over-long column name is not
+#: a long name -- it is a *different* one, and two destinations can silently become one
+#: column. A name that does not fit gets none.
+_MAX_COLUMN_BYTES = 63
+
+#: The identifier-shaped tokens of a destination, in order. A ``sim:`` path is dotted and a
+#: ``sut:`` one may be an XPath (``bt.//RecoveryNode[@name='x']/@number_of_retries``), so the
+#: split is on "what could be a column name", not on any one channel's separator.
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _flatten_channel(block, prefix: str = "") -> dict:
+    """Nested channel block -> ``{dotted destination: leaf value}``.
+
+    The ``sut`` block is already flat and passes through unchanged; the ``sim`` block is the
+    backend's whole resolved configuration and is flattened the same way
+    ``simulators.flatten_sim_block`` writes it, so a destination reads here exactly as it was
+    written in the ``.vast``.
+    """
+    out = {}
+    for key, value in (block or {}).items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict) and value:
+            out.update(_flatten_channel(value, f"{path}."))
+        else:
+            out[path] = value
+    return out
+
+
+def _channel_column_names(destinations) -> dict:
+    """``{(channel, destination): name}`` -- the shortest suffix unique in this campaign.
+
+    A destination is a path, and its whole path makes a column name nobody can type:
+    ``sut.nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius``
+    does not even fit in an identifier. The name is therefore built from the *end* of the
+    destination -- ``sut_inflation_radius`` -- and grows leftwards only as far as it must to
+    stay unambiguous, so two ``friction`` keys under different components become
+    ``sim_floor_friction`` and ``sim_wall_friction`` instead of quietly sharing a column.
+
+    Uniqueness is decided over the whole campaign's destinations, not one configuration's:
+    the runs table is one shape for every row in it, so a name that is unique per cell and
+    ambiguous across cells is the one failure this must not have.
+    """
+    tokens = {(channel, path): _TOKEN.findall(path) for channel, path in destinations}
+    depth = {key: 1 for key in destinations}
+
+    def _name(key):
+        channel, _ = key
+        return f"{channel}_" + "_".join(tokens[key][-depth[key]:]) if tokens[key] else ""
+
+    names = {key: _name(key) for key in destinations}
+    # One pass per token the longest destination has: every pass either lengthens an
+    # ambiguous name or the rule has nothing left to disambiguate with.
+    for _ in range(max((len(t) for t in tokens.values()), default=0)):
+        counts: dict = {}
+        for name in names.values():
+            counts[name] = counts.get(name, 0) + 1
+        grew = False
+        for key in destinations:
+            if counts[names[key]] > 1 and depth[key] < len(tokens[key]):
+                depth[key] += 1
+                grew = True
+        if not grew:
+            break
+        names = {key: _name(key) for key in destinations}
+    return names
+
+
+def _channel_params(channels_by_config: dict) -> dict:
+    """``{config_name: {param key: value}}`` for the ``sim`` and ``sut`` channels.
+
+    The scenario channel is deliberately not folded in here: it already reaches the table
+    through ``params_json``, which on a search campaign is the parameter set the strategy
+    proposed rather than the resolved block, and rewriting that would change what an existing
+    analysis reads.
+
+    A destination that cannot be given a column keeps its value in ``channels_json`` and is
+    reported, once, naming where to read it -- a column silently missing is the same wrong
+    answer as a column silently shared.
+    """
+    destinations = sorted({
+        (channel, dest)
+        for channels in channels_by_config.values()
+        for channel in ("sim", "sut")
+        for dest in _flatten_channel(channels.get(channel) or {})
+    })
+    names = _channel_column_names(destinations)
+
+    dropped = {key for key, name in names.items()
+               if not name or len(f"param_{name}".encode()) > _MAX_COLUMN_BYTES}
+    if dropped:
+        logger.warning(
+            "index: %d sim/sut destination(s) get no param_ column and are readable only "
+            "in unit.channels_json: %s", len(dropped),
+            ", ".join(f"{channel}:{path}" for channel, path in sorted(dropped)))
+
+    out: dict = {}
+    for config_name, channels in channels_by_config.items():
+        values = {}
+        for channel in ("sim", "sut"):
+            for path, value in _flatten_channel(channels.get(channel) or {}).items():
+                if (channel, path) not in dropped:
+                    values[names[(channel, path)]] = value
+        out[config_name] = values
+    return out
 
 
 def _param_types(param_keys, param_sources) -> dict:
@@ -467,12 +596,32 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     root = Path(campaign_dir)
     store_path = root / "campaign.db"
     params_by_config: dict = {}
+    channels_by_config: dict = {}
     objective_by_config: dict = {}
     composition_failed: list = []
     outcomes: dict = {}
     if store_path.is_file():
-        params_by_config, objective_by_config, composition_failed = _read_units(store_path)
+        (params_by_config, channels_by_config, objective_by_config,
+         composition_failed) = _read_units(store_path)
         outcomes = _read_outcomes(store_path)
+
+    # A factor is a column whichever channel it was written on. The sim and sut values are
+    # merged into the scenario ones under names built across the whole campaign, so a
+    # destination means the same column in every row -- see `_channel_column_names`. A
+    # scenario parameter wins a name clash, being the one an existing analysis already reads,
+    # and the loser is named rather than dropped quietly.
+    channel_params = _channel_params(channels_by_config)
+    clashes = sorted({name for config_name, values in channel_params.items()
+                      for name in values
+                      if name in (params_by_config.get(config_name) or {})})
+    if clashes:
+        logger.warning(
+            "index: %s already name(s) a scenario parameter, so the sim/sut destination "
+            "keeps only its unit.channels_json value: %s",
+            "column" if len(clashes) == 1 else "columns", ", ".join(clashes))
+    for config_name, values in channel_params.items():
+        params_by_config[config_name] = {
+            **values, **(params_by_config.get(config_name) or {})}
 
     fixed = dict(_RUNS_COLUMNS)
     # Every unit's keys, so a run whose params differ from its siblings still gets every

@@ -402,8 +402,9 @@ def config_file(data_dir: Union[str, Path], relative_path: str,
     Parameters that name a file — ``map_file``, ``mesh_file`` — hold a path relative to the
     campaign's ``_config/``, which is where the snapshot puts ``environments/``. Joining
     them against the notebook's ``DATA_DIR`` instead is wrong at every scope except the
-    campaign root, and a configuration's own ``_config/`` holds only ``config.yaml`` and
-    ``scenario.config`` — so that spelling silently finds nothing.
+    campaign root, and a configuration's own ``_config/`` holds only that configuration's own
+    records (``config.yaml`` and the per-channel ``*.config`` files) — so that spelling
+    silently finds nothing.
 
     Args:
         data_dir: The notebook's ``DATA_DIR``, at any scope.
@@ -433,9 +434,11 @@ def config_file(data_dir: Union[str, Path], relative_path: str,
 def read_runs(data_dir: Union[str, Path]) -> pd.DataFrame:
     """The ``runs`` dimension table, restricted to what *data_dir* selects.
 
-    One row per run: outcome, duration, the host it ran on, and every scenario parameter as a
-    typed ``param_*`` column. Joining it to a metric table on ``(config_name, run_id)`` is how
-    an analysis relates what varied to what happened.
+    One row per run: outcome, duration, the host it ran on, and every varied parameter as a
+    typed ``param_*`` column -- ``scenario:`` factors under their own names, ``sim:`` and
+    ``sut:`` ones under a channel-prefixed name built from the end of their destination.
+    Joining it to a metric table on ``(config_name, run_id)`` is how an analysis relates what
+    varied to what happened.
     """
     return read_table(data_dir, "runs")
 

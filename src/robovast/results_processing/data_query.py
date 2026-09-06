@@ -372,8 +372,9 @@ _TABLE_DESCRIPTIONS = {
     ("temp", "run_view"): (
         "START HERE for per-run and per-configuration questions. One row per run, joined: "
         "config_name, run_id, status, passed, duration_s, errors, failures, tests, "
-        "start_time, failure_message, params_json, objective, paramset_id, batch, job_dir, "
-        "sysinfo_json. Query unqualified: FROM run_view. Works before postprocessing. "
+        "start_time, failure_message, params_json, channels_json, objective, paramset_id, "
+        "batch, job_dir, sysinfo_json. Query unqualified: FROM run_view. Works before "
+        "postprocessing. "
         "ALWAYS filter with config_name, not run_id alone: run_id restarts at 0 in every "
         "configuration, so run_id alone matches one run per config and returns rows you "
         "did not ask for. "
@@ -385,6 +386,11 @@ _TABLE_DESCRIPTIONS = {
         "Per-run metrics: join a metric table on (config_name, run_id). "
         "params_json holds each parameter as the scenario received it, so a file-valued "
         "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
+        "channels_json holds what EVERY variation channel resolved to for the "
+        "configuration -- {scenario, sim, sut}, the keys a .vast writes destinations on "
+        "-- so a sim: or sut: factor is readable there verbatim, including a destination "
+        "too long or too XPath-shaped to have become a param_ column: "
+        "channels_json::jsonb -> 'sut'. NULL on a store predating it. "
         "job_dir and sysinfo_json are NULL when the campaign has no recorded host info. "
         "batch is the ask/tell round that proposed the configuration: 0 for every row of a "
         "batch-mode campaign (which has exactly one), the search iteration for a search "
@@ -494,7 +500,7 @@ _TABLE_DESCRIPTIONS = {
         "Join on (config_name, run_id)."),
     ("main", "runs"): (
         "Per-run dimension table: status/passed/duration_s/errors/failures, the "
-        "scalar objective, each scenario parameter as a param_* column (non-scalar "
+        "scalar objective, each varied parameter as a param_* column (non-scalar "
         "params are JSON-encoded TEXT — read a field with param_x::jsonb ->> 'key' or an element "
         "with param_x::jsonb -> 0, and fan a list out with "
         "jsonb_array_elements(param_x::jsonb)), and the host it ran on "
@@ -519,7 +525,14 @@ _TABLE_DESCRIPTIONS = {
         "could not be built at all (an unrealizable draw): it never ran, so run_id and "
         "every run column are NULL, config_name falls back to paramset_id, and only the "
         "param_* columns are meaningful. Add WHERE run_id IS NOT NULL for run "
-        "statistics."),
+        "statistics. "
+        "A scenario: factor keeps its own name (param_speed); a sim: or sut: factor is "
+        "prefixed by its channel and named by the END of its destination, extended "
+        "leftwards only as far as it must be to stay unique in the campaign — "
+        "sut.nav2.local_costmap.local_costmap.ros__parameters.inflation_layer."
+        "inflation_radius is param_sut_inflation_radius. Do not guess these names: read "
+        "them from the table's columns, and read run_view.channels_json for a "
+        "destination that got no column."),
     ("campaign", "campaign"): (
         "One row for the campaign. Execution provenance, and what to compare across "
         "campaigns: robovast_version, execution_type (local|cluster), image, "
