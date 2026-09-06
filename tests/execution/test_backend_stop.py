@@ -43,10 +43,23 @@ def _script(tmp_path, body: str) -> str:
 
 
 def test_stop_terminates_run_script_via_sigterm(tmp_path):
-    """stop_requested → SIGTERM fires the script's cleanup trap, which exits."""
+    """stop_requested → SIGTERM fires the script's cleanup trap, which exits.
+
+    The poll interval is the whole reason this is not 0.05s. The stop is requested *before*
+    the run starts, so the very first poll sends SIGTERM -- and the script has to have
+    reached its ``trap`` line by then. That line is bash's second, but everything before it
+    is process startup: fork, exec, and bash's own dynamic linking. Under 50ms a loaded CI
+    runner loses that race, the signal meets bash's default handler instead of the trap, and
+    the run dies with -15 having cleaned nothing up. The failure looks like a broken trap
+    and is not one.
+
+    A second longer than any plausible startup, and paid only by this test.
+    """
     marker = tmp_path / "cleaned_up"
+    ready = tmp_path / "trap_installed"
     script = _script(tmp_path, f"""
         trap 'touch "{marker}"; exit 130' SIGTERM
+        touch "{ready}"
         while true; do sleep 0.05; done
     """)
 
@@ -54,9 +67,10 @@ def test_stop_terminates_run_script_via_sigterm(tmp_path):
     state.request_stop()  # already requested before we start waiting
 
     backend = DockerBackend(state=state)
-    backend._STOP_POLL_SECONDS = 0.05  # react fast in the test
+    backend._STOP_POLL_SECONDS = 1.0  # must outlast bash's startup; see the docstring
     rc = backend._run_watching_stop([script])
 
+    assert ready.exists(), "the script never got as far as installing its trap"
     assert rc == 130, "script's SIGTERM trap should exit 130"
     assert marker.exists(), "the SIGTERM cleanup trap must have run"
 
