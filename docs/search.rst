@@ -463,6 +463,21 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
 * ``runs`` — stop after this many individual **executions**. Counted from what each
   batch asks for, so it bounds wall-clock rather than results.
 
+.. note::
+
+   **A search that measures nothing is stopped, whatever its budget says.** Two batches in
+   a row in which no parameter set produced an evaluation end the campaign, with a reason
+   naming which half of it came back empty: nothing **composed** (the search space against
+   what the variation plugins accept) or nothing **measured** (the scenario, the stack, the
+   extractor). It is recorded as a stop of kind ``unproductive``.
+
+   Two rather than one, because a mostly-unrealizable space produces a batch where every
+   draw fails by chance and ending such a campaign on the first would stop a search that
+   was working. Two running is not luck, and every batch after it costs a composition — and
+   where the cells do run, a batch of trials — to learn the same thing again. A search that
+   is *meant* to run in a space this hostile has to widen its bounds; there is no budget
+   large enough to make an unproductive campaign productive.
+
 ``evaluations`` and ``runs`` are two counts and not one because neither predicts the
 other: one evaluation costs as many runs as it was given repetitions. While every cell
 gets the same ``execution.runs`` the product ``batches × per_batch × runs`` predicts
