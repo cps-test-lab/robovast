@@ -701,10 +701,13 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - DB — the index's ``postprocessing_steps``; the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
-   * - each configuration's ``_config/sim.config``
-     - File — what the simulator was given, a whole document read once (by a person
-       replaying a cell, or by the run view). Its *effective* values already reach the DB
-       through ``campaign.unit``, so a second copy would be a second source of truth
+   * - each configuration's ``_config/sim.config`` and ``_config/sut.config``
+     - Both — the file is what each channel was given, a whole document a person reads when
+       replaying a cell by hand. Its values also reach the DB, as ``campaign.unit``'s
+       ``channels_json`` and the ``param_*`` columns built from it, because a factor nobody
+       can filter or group by is a factor the campaign varied and no query can see. The file
+       is written by the **composer** and the column by the **controller**, from one reader
+       (``read_config_channels``), so the two cannot say different things
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
    * - ``_execution/interventions.json``
@@ -765,7 +768,8 @@ Querying results
 
 Per-run metrics are consolidated into the central results index (one
 table per CSV stem) plus a ``runs`` **dimension table** — per-run
-``status``/``duration_s`` and each scenario parameter as a ``param_*`` column.
+``status``/``duration_s`` and each varied parameter as a ``param_*`` column, on whichever
+channel it was written (:ref:`channel-param-columns`).
 That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
 table (the operational source of truth for per-run outcomes, written live from
 each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
@@ -824,7 +828,7 @@ plain decimal number becomes ``INTEGER``/``REAL`` and is stored numerically, and
 else stays ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the
 column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its text, and
 NaN has no SQLite representation, so accepting it would delete data instead of typing it).
-Scenario ``param_*`` columns are typed the same way from their resolved values.
+``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
 caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
 

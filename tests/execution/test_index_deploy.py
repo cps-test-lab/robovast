@@ -84,6 +84,15 @@ def test_the_index_is_a_claim_exactly_where_the_store_is_one():
     assert index_deploy.index_pvc_manifest("default", "") is None
 
 
+def test_the_index_claim_takes_the_size_it_is_given():
+    """A bucket-backed provider has no --store-class to size the index with, so the size is
+    its own argument there."""
+    assert index_deploy.index_pvc_manifest("default", "premium-rwo", "100Gi")["spec"][
+        "resources"]["requests"]["storage"] == "100Gi"
+    assert index_deploy.index_pvc_manifest("default", "premium-rwo")["spec"][
+        "resources"]["requests"]["storage"] == index_deploy.DEFAULT_INDEX_SIZE
+
+
 def test_the_data_directory_is_below_the_mount_not_the_mount():
     """A PVC root often carries lost+found, and initdb refuses a non-empty directory.
 

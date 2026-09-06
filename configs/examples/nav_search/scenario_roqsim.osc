@@ -35,11 +35,13 @@ scenario test_scenario:
 
     # THE STACK UNDER TEST, as one file rather than as parameters mirrored from it.
     # A campaign varying the stack writes into this file on the `sut:` channel, and each
-    # configuration is launched with its own rewritten copy; the value here is the default
-    # the checked-in file already carries. Relative because it names a staged input:
-    # robovast rewrites it to the copy belonging to the configuration being run, which is
-    # what makes a nav2 parameter a factor of the .vast rather than a mutation scripted
-    # here.
+    # configuration is launched with its own rewritten copy -- which is what makes a nav2
+    # parameter a factor of the .vast rather than a mutation scripted here.
+    #
+    # A parameter only because a campaign may want to point the trial at a different file;
+    # it does not have to be one, and a scenario that never varies the path can write
+    # 'files/nav2_params.yaml' inline. Either way the path is relative to this scenario's
+    # own directory, and the copy staged there is the running configuration's.
     params_file: string = 'files/nav2_params.yaml'
 
     robot: differential_drive_robot
@@ -67,10 +69,6 @@ scenario test_scenario:
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
             ros_launch('', '/config/files/nav2_sut.launch.py',
-                # This configuration's own copy. `params_file` arrives relative to the
-                # config mount root -- which is this scenario's directory -- because
-                # robovast namespaces a staged file per configuration so a packed job
-                # cannot serve one cell's parameters to another.
                 [key_value('params_file', common.get_scenario_file_directory() + '/' + params_file),
                  key_value('map', '/config/files/empty_room.yaml'),
                  key_value('autostart', 'true')],

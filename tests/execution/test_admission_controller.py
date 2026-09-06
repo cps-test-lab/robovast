@@ -179,6 +179,26 @@ def test_a_cluster_with_no_nodes_raises_rather_than_reporting_busy():
         c.preflight(JobSizing(1.0, MIB))
 
 
+def test_a_growable_cluster_is_still_judged_by_the_nodes_it_has():
+    """An autoscaler adds machines of a pool's fixed shape, so on the ordinary homogeneous
+    cluster "no node is that large" stays true however many arrive.
+
+    Excusing it would trade a loud, immediate refusal for a campaign that waits forever
+    having created zero jobs -- the exact failure this check exists to prevent, and one no
+    downstream diagnosis can see because they all read pods.
+    """
+    c = _controller(FakeProvider(nodes=[Capacity(4.0, 4096 * MIB)], growable=True))
+    with pytest.raises(AdmissionRefused, match="no node is that large"):
+        c.preflight(JobSizing(9.0, MIB))
+    c.preflight(JobSizing(4.0, MIB))          # what a current node holds is admitted
+
+
+def test_a_pool_scaled_to_zero_is_a_temporary_condition_on_a_growable_cluster():
+    """The resting state of an autoscaled pool, not a cluster that cannot run anything."""
+    c = _controller(FakeProvider(nodes=[], growable=True))
+    c.preflight(JobSizing(1.0, MIB))
+
+
 # -- ownership ----------------------------------------------------------------------------
 
 def test_cancel_drops_one_owners_work_and_not_anothers():

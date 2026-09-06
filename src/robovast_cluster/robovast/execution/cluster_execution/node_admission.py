@@ -658,6 +658,21 @@ class AdmissionController:
         Checked once before a batch is enqueued. Without it a campaign sits in the admit loop
         forever having created **zero** jobs, and every diagnosis path downstream is pod-based
         and therefore blind to it.
+
+        A cluster with **no nodes at all** is the one case a growable cluster is excused,
+        because there is then nothing to judge a size against. A pool scaled to zero is the
+        ordinary resting state of an autoscaled cluster, and refusing a batch there would make
+        that state permanent: the pending pods are what would have grown it. ``drain`` places
+        such an item unpinned, under its own limit, so passing here hands out no unbounded plan.
+
+        A cluster that **has** nodes is judged by them even when it can grow, and that is
+        deliberate. An autoscaler adds machines from a pool of some fixed shape, so on the
+        ordinary homogeneous cluster "no node is that large" stays true however many are
+        added -- and excusing it would trade a loud, immediate refusal for a campaign that
+        waits forever having created zero jobs, which is the exact failure this check exists
+        to prevent. The cost is a heterogeneous cluster whose one large pool is scaled to
+        zero: a job only that pool could hold is refused, naming the biggest node currently
+        present. Loud and wrong beats silent and stuck, and the message says what it measured.
         """
         # A zero-cpu pod fits everything, so the queue would stop gating and create the whole
         # plan at once. The caller that builds a sizing from a manifest refuses this first and
@@ -669,11 +684,13 @@ class AdmissionController:
                 "would admit the entire plan at once. Declare "
                 "execution.containers.<name>.resources.cpu.")
         capacities = self._provider.capacities()
-        if not capacities:
-            raise AdmissionRefused(
-                "no nodes are available to size against; the cluster reported none")
         if any(c.holds(sizing) for c in capacities):
             return
+        if not capacities:
+            if self.growable():
+                return
+            raise AdmissionRefused(
+                "no nodes are available to size against; the cluster reported none")
         biggest = max(capacities, key=lambda c: c.cpu)
         raise AdmissionRefused(
             f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and no node is "

@@ -80,6 +80,31 @@ class WorkItem:
         canonical = json.dumps(block, sort_keys=True, default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
+    @property
+    def files_key(self) -> str:
+        """Identity of the configuration files this item's ``/config`` is made of.
+
+        Work items may share a job only if they share this, for the same reason they must
+        share :attr:`sim_key`. A configuration's own copy of a file is mounted where the
+        campaign's copy would have been, at ``/config/<deploy path>`` -- one path, holding
+        one file. Two configurations that own files therefore cannot be staged into one
+        container at all: the second's copies would land on the first's, and the trial would
+        run against configuration it was not given.
+
+        Empty when the configuration owns no files, so a campaign that stages nothing per
+        cell groups exactly as it did before this existed.
+
+        Both halves matter. The name is what makes two cells distinct; the deploy paths are
+        what makes their copies collide.
+        """
+        files = self.config.get("_config_files") or []
+        if not files:
+            return ""
+        canonical = json.dumps(
+            [self.config_name, sorted(rel for rel, _ in files)],
+            sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
 
 @dataclass
 class JobSpec:
@@ -123,13 +148,16 @@ class OnePerJob(Packer):
 
 
 class FixedK(Packer):
-    """Up to ``k`` work items per job, chunked **within** equal simulator settings.
+    """Up to ``k`` work items per job, chunked **within** what one job can hold one of.
 
-    Items are grouped by :attr:`WorkItem.sim_key` before chunking, because one job runs one
-    compiled model: packing two worlds together would run the second configuration against
-    the first one's geometry. A campaign whose configurations share a world -- every
-    campaign before this existed -- has one group, so the chunks are the same ones it
-    always got.
+    Items are grouped by :attr:`WorkItem.sim_key` and :attr:`WorkItem.files_key` before
+    chunking, because a job runs one compiled model and mounts one configuration's files.
+    Packing two worlds together would run the second configuration against the first one's
+    geometry; packing two file-owning configurations together would give the second's trial
+    the first's configuration, since both want ``/config/<deploy path>``.
+
+    A campaign whose configurations share a world and stage nothing per cell has one group,
+    so the chunks are the same ones it always got.
 
     Grouping preserves **first-seen order**, of the groups and of the items within them.
     ``build_jobs`` is called from several places and the jobs it returns must match across
@@ -143,9 +171,9 @@ class FixedK(Packer):
         self.k = k
 
     def pack(self, items: list[WorkItem]) -> list[JobSpec]:
-        groups: dict[str, list[WorkItem]] = {}
+        groups: dict[tuple[str, str], list[WorkItem]] = {}
         for item in items:
-            groups.setdefault(item.sim_key, []).append(item)
+            groups.setdefault((item.sim_key, item.files_key), []).append(item)
         jobs = []
         for group in groups.values():
             for start in range(0, len(group), self.k):

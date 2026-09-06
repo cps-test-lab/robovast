@@ -205,6 +205,19 @@ cluster that refuses the DaemonSet is then an error instead of a warning, becaus
 asked for a fixed clock and silently did not get one would go on to trust measurements taken
 on a scaling one.
 
+**A provider whose nodes are virtual machines moves the default rather than the flag.** ``gcp``
+and ``azure`` schedule campaigns on cloud VMs, whose guest kernels expose no cpufreq policy at
+all — the hypervisor owns the clock — so setup states that once and does not attempt it, rather
+than spending a readiness wait every run to rediscover the same answer. Naming
+``--performance-governor`` is still obeyed there and still fails loudly: provider policy decides
+what happens when nobody said, never what happens when somebody did.
+
+What the governor buys does not go away with the knob. Comparability between runs is still worth
+having on a cloud pool, and the levers there belong to the node pool rather than to a DaemonSet:
+a machine type with a predictable clock, no shared-core and no preemptible instances in the
+campaign pool, and node upgrades held for the duration of a campaign. The
+``cpu_governor_scaling`` warning per campaign is what keeps the remaining gap in the results.
+
 It installs a privileged DaemonSet with the host's ``/sys`` mounted writable, confined to
 the job node pool when one is configured. Leaving it off is supported: RoboVAST reports a
 ``cpu_governor_scaling`` warning per campaign, so the effect shows up in the results rather
@@ -219,15 +232,16 @@ cleanup prints it rather than reporting a clean teardown.
 
 .. warning::
 
-   **On a cloud VM this usually cannot work, and the failure is not the one setup detects.**
-   Setup recognises a cluster that *refuses* the privileged pod — GKE Autopilot does — and
-   warns. GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at
-   runtime: a GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because
-   the hypervisor owns the clock. The pod exits non-zero and ``CrashLoopBackOff``\ s on every
-   node while setup reports the DaemonSet as applied. Node auto-repair would undo the setting
-   anyway. On managed Kubernetes, pass ``--no-performance-governor`` and set the governor
-   through the node image instead — and read the ``cpu_governor_scaling`` advice, which is
-   what tells you whether it took effect.
+   **On a cloud VM this cannot work**, which is why ``gcp`` and ``azure`` do not attempt it.
+   Where it *is* attempted — an unlisted provider, or ``--performance-governor`` naming it —
+   the two ways it fails are different. A cluster that *refuses* the privileged pod, as GKE
+   Autopilot does, says so at create time. GKE Standard and EKS generally **accept** it, and
+   the DaemonSet then fails at runtime: a GCE or EC2 guest has no writable
+   ``/sys/devices/system/cpu/*/cpufreq``, so the pod exits non-zero and
+   ``CrashLoopBackOff``\ s on every node. Setup waits for a Ready pod and reports both cases
+   rather than either as applied. Node auto-repair would undo the setting anyway. Set the
+   governor through the node image where the node image is yours — and read the
+   ``cpu_governor_scaling`` advice, which is what tells you whether it took effect.
 
 .. _cluster-node-local-storage:
 
@@ -346,6 +360,8 @@ Flag                          Environment                     Default
 ``--store-path``              ``ROBOVAST_STORE_PATH``         ``/var/lib/robovast-store``
 ``--store-class``             ``ROBOVAST_STORE_CLASS``        *(unset — a hostPath)*
 ``--store-size``              ``ROBOVAST_STORE_SIZE``         ``500Gi`` (needs a class)
+``--index-class``             ``ROBOVAST_INDEX_CLASS``        *(unset — a hostPath)*
+``--index-size``              ``ROBOVAST_INDEX_SIZE``         ``20Gi`` (needs a class)
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
@@ -359,13 +375,20 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**Two tenants take no flag**, and for the same reason: one pod holds each pair, and derived
-data must not be separated from its source. The campaign results sit beside the workspaces and
-share their backing, because the service pod mirrors a campaign between them. The campaign
-index sits beside the object store and shares *its* backing, because every row in the index was
-ingested from a campaign in the store -- an index that outlived its sources would answer
-questions about campaigns nobody can reproduce or check, confidently. A flag able to separate
-either pair could only ever be ignored or refused.
+**Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
+derived data must not be separated from its source. The campaign results sit beside the
+workspaces and share their backing, because the service pod mirrors a campaign between them.
+The campaign index sits beside the object store and shares *its* backing, because every row in
+the index was ingested from a campaign in the store -- an index that outlived its sources would
+answer questions about campaigns nobody can reproduce or check, confidently. A flag able to
+separate either pair could only ever be ignored or refused.
+
+``--index-class`` is the exception the rule creates rather than a hole in it. Where campaigns
+live in a **bucket** there is no store volume for the index to share, so ``--store-class`` is
+refused and the index would have nowhere but a directory on a node to go — the one piece of
+this deployment's durable state that a replaced machine takes with it while every campaign it
+indexed survives. There the class is its own argument. On a provider that places the store as a
+volume the flag is refused, naming ``--store-class``, because that is what already backs both.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -1818,19 +1841,26 @@ headroom, per node, measured every cycle. What is built around it was designed a
 static bare-metal cluster, and these follow from that. None of them is a crash; each is
 a silent degradation, which is why they are written down.
 
-**A cluster whose configuration cannot report an autoscaler maximum is held at its current
-size.** Admission never creates a job that no current node can hold, which is correct on a
-static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
-exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
-configuration reports that maximum; admission then creates work unpinned and lets the
-autoscaler respond. A configuration that does not implement it, including the generic base
-one an unlisted provider falls back to, gets the static behaviour.
+**A cluster whose growth ceiling nothing states is held at its current size.** Admission
+never creates a job that no current node can hold, which is correct on a static cluster and
+self-defeating on an elastic one — a pod the scheduler cannot place is exactly what makes an
+autoscaler add a node. Given a ceiling, admission creates such work unpinned and lets the
+autoscaler respond, and a pool scaled to zero is a batch that waits rather than one that is
+refused. A cluster that *has* nodes is still sized against them: an autoscaler adds machines
+of its pool's shape, so "no node is that large" stays a permanent refusal however many arrive.
 
-**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
-does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
-``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
-static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
-is not where admission runs.
+The ceiling is **recorded, not queried**: ``setup`` and ``upgrade`` ask the provider — on
+GKE that is ``gcloud``, summing each node pool's autoscaler maximum — and write the answer
+into the service's environment as ``ROBOVAST_CLUSTER_MAX_CPU`` / ``ROBOVAST_CLUSTER_MAX_MEMORY``.
+That is where admission reads it, because admission runs in the service pod, whose image
+ships no cloud CLI. Setting those two variables before ``setup`` states the ceiling directly,
+which is what a provider with no query of its own — an unlisted one, or one whose CLI is not
+installed here — needs.
+
+Recorded rather than live means the figure **ages**: resizing a node pool does not reach a
+running deployment. Re-run ``vast cluster upgrade`` after such a change — the same lifecycle
+the node identity labels below already have. With neither a provider answer nor the two
+variables, the cluster is treated as static, exactly as before.
 
 **Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
 is what pins a job to the node its capacity was reserved on, and what a calibration probe
@@ -1841,8 +1871,10 @@ cannot be probed, so its jobs run at the declared sizing beside calibrated ones.
 ``vast exec cluster setup`` after the pool changes to bring new nodes back under
 :ref:`cluster-node-calibration`.
 
-**The CPU governor DaemonSet usually cannot work on a cloud VM** — and the way it fails is not
-the way setup detects. See the warning under :ref:`cluster-cpu-governor`.
+**The CPU governor cannot be set on a cloud VM**, so the cloud providers do not attempt one and
+say so instead. The comparability it buys is then the node pool's to provide — machine type,
+no shared-core or preemptible instances, upgrades held for a campaign — rather than a
+DaemonSet's. See :ref:`cluster-cpu-governor`.
 
 .. _cluster-config-gcp:
 
@@ -1902,6 +1934,21 @@ loudly rather than inventing one.
    # or with a service-account key file instead of HMAC keys:
    vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
+
+The campaigns are in the bucket, but this deployment's **own** state is not, and a GKE node
+pool replaces machines constantly — autoscaling, auto-upgrade, auto-repair, spot reclaim. Back
+it with the cluster's StorageClass rather than the node's disk:
+
+.. code-block:: bash
+
+   vast cluster setup gcp -o gcs_bucket=my-robovast-results \
+     --index-class standard-rwo --registry-class standard-rwo \
+     --workspaces-class standard-rwo --buildkit-class premium-rwo --buildkit-size 200Gi
+
+Left on hostPaths, a replaced node takes the campaign index, the built images and the
+workspaces with it while every campaign in the bucket survives — and setup reports success on
+the empty replacement. These are zonal disks, so the pods that mount them are bound to one
+zone; that is the cost, and it is the intended one.
 
 Available options:
 

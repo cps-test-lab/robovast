@@ -371,8 +371,10 @@ def _build_packed_compose_yaml(
     ``/out`` is the campaign root (scenario_execution writes per-config
     ``_output_dir`` subdirs), a single multi-document parameter file is mounted
     at ``/config/scenario.params.yaml``, and each config's generated files are
-    mounted under ``/config/<config-name>/`` to avoid collisions. Used for both
-    single-config (one config per job) and packed (several configs per job) runs.
+    mounted at ``/config/<deploy path>`` -- where the campaign's own copy would
+    otherwise be, so ``/config`` is the view belonging to the cell that is running.
+    Used for both single-config (one config per job) and packed (several configs
+    per job) runs.
 
     *plan* is the campaign's :class:`~robovast.common.containers.ContainerPlan`: its
     main container runs the scenario, and every other one becomes a sidecar sharing the
@@ -382,8 +384,8 @@ def _build_packed_compose_yaml(
     ``scenario_execution_server`` the scenario drives over the ``/ipc/<name>`` socket
     with ``remote()``. One that declares a command runs that instead -- how a simulator
     or a stack that RoboVAST does not drive is started. Either way it receives the same
-    packed param file and namespaced per-config file mounts as the main container, so
-    file-valued parameters resolve identically on both sides.
+    packed param file and per-config file mounts as the main container, so a file path
+    resolves identically on both sides.
     """
 
     def quote(s):
@@ -397,6 +399,19 @@ def _build_packed_compose_yaml(
     sidecars = plan.sidecars
     has_secondaries = bool(sidecars)
 
+    # Where this job's own configuration files go, and therefore which campaign files they
+    # replace. The packer keeps one file-owning configuration per job, so these paths are
+    # unambiguous; see `WorkItem.files_key`.
+    #
+    # One mount per PATH, not per work item: a job packing several runs of one configuration
+    # carries that configuration once per run, and compose refuses a repeated mount target
+    # even when both sides name the same file.
+    config_file_mounts = {}
+    for item in job.items:
+        for deploy_rel, _src in (item.config.get("_config_files") or []):
+            config_file_mounts.setdefault(
+                deploy_rel, f"{item.config.get('name', '')}/_config/{deploy_rel}")
+
     def _packed_config_mounts():
         """Volume mount lines shared by the main and secondary containers."""
         yield f'      - "{quote(results_dir_var)}/{param_file_rel}:/config/scenario.params.yaml:ro"'
@@ -408,15 +423,22 @@ def _build_packed_compose_yaml(
                    f':{SIM_OVERRIDES_MOUNT}:ro"')
         yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
         for run_file in run_files:
+            # A path this configuration stages its own copy of belongs to the
+            # configuration, not to the campaign: mounting both would be two sources for
+            # one target, which compose refuses outright. The `sut:` channel already drops
+            # its declared sources from run_files at composition, so what this catches is a
+            # variation's generated artifact that a run_files pattern also matched.
+            if run_file in config_file_mounts:
+                continue
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
-        # Per-config generated files, namespaced under /config/<config-name>/
-        for config_data in (it.config for it in job.items):
-            config_name = config_data.get("name", "")
-            for deploy_rel, _src in config_data.get("_config_files", []):
-                yield (
-                    f'      - "{quote(results_dir_var)}/{config_name}/_config/{deploy_rel}'
-                    f':/config/{config_name}/{deploy_rel}:ro"'
-                )
+        # This configuration's own files, where the campaign's copy would have been -- so a
+        # path the scenario writes relative to itself names the file belonging to the cell
+        # that is running.
+        for deploy_rel, staged_rel in config_file_mounts.items():
+            yield (
+                f'      - "{quote(results_dir_var)}/{staged_rel}'
+                f':/config/{deploy_rel}:ro"'
+            )
         if has_secondaries:
             yield '      - shared_tmp:/tmp'
             yield '      - shared_ipc:/ipc'

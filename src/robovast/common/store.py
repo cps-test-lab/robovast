@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS unit (
     status        TEXT,
     result_dir    TEXT,
     created_at    REAL,
-    n_reps        INTEGER          -- repetitions ALLOCATED to this cell; n_samples is what came back
+    n_reps        INTEGER,         -- repetitions ALLOCATED to this cell; n_samples is what came back
+    channels_json TEXT             -- {scenario, sim, sut}: what each variation channel resolved to
 );
 CREATE TABLE IF NOT EXISTS job (
     id           INTEGER PRIMARY KEY,
@@ -476,8 +477,26 @@ _MIGRATION_ADD_UNIT_N_REPS = """
 ALTER TABLE unit ADD COLUMN n_reps INTEGER;
 """
 
+# 11 -> 12: what each variation channel resolved to, for every cell.
+#
+# `params_json` is the SCENARIO channel only: on a grid campaign it is the configuration's
+# `config` block, and on a search campaign it is the parameter set the strategy proposed --
+# which the replay feeds back to the strategy, so it cannot carry anything else. A factor
+# written on the `sim:` or `sut:` channel therefore reached the results tree as a file and
+# the index not at all, and two factors on adjacent lines of one .vast were not equally
+# analysable.
+#
+# Kept beside `params_json` rather than merged into it for that reason: the two answer
+# different questions, and a search resume must keep seeing only what it proposed.
+#
+# NULL on a store written before this. The blocks are recorded per configuration on disk,
+# so `campaign_index.rebuild` fills it in for a campaign whose store is reconstructed.
+_MIGRATION_ADD_UNIT_CHANNELS = """
+ALTER TABLE unit ADD COLUMN channels_json TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -498,6 +517,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_NODE,
     _MIGRATION_ADD_BATCH_ASKED,
     _MIGRATION_ADD_UNIT_N_REPS,
+    _MIGRATION_ADD_UNIT_CHANNELS,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -679,6 +699,7 @@ class CampaignStore:
         result_dir: str,
         n_samples: Optional[int] = None,
         n_reps: Optional[int] = None,
+        channels: Optional[dict] = None,
     ) -> int:
         """Record one parameter set's outcome.
 
@@ -686,6 +707,11 @@ class CampaignStore:
         ``n_reps`` is what the cell was ALLOCATED, which under ``search.repetitions``
         differs per cell and is what a ``runs`` budget counts. ``None`` means the
         campaign's ``execution.runs``.
+
+        ``channels`` is what each variation channel resolved to for this cell
+        (``{"scenario": ..., "sim": ..., "sut": ...}``), kept beside ``params`` and never
+        merged into it: ``params`` is what a search proposed and is replayed back to the
+        strategy, while ``channels`` is what the cell was actually configured with.
         """
         # Surface the sole objective as a queryable REAL column for the common
         # single-objective case; keep the full dict in JSON regardless.
@@ -693,8 +719,8 @@ class CampaignStore:
         cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, "
-            "created_at, n_reps) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, n_reps, channels_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 batch_id, paramset_id, config_name,
                 json.dumps(params, default=str),
@@ -704,6 +730,7 @@ class CampaignStore:
                 n_samples,
                 status, result_dir, time.time(),
                 n_reps,
+                json.dumps(channels, default=str) if channels else None,
             ),
         )
         self._conn.commit()
