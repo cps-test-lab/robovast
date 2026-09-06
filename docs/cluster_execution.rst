@@ -775,6 +775,18 @@ cluster-internal route as well.
    is what turns auth on — the same rule that already refuses an Ingress without an access
    token.
 
+.. warning::
+
+   **A published deployment that predates this gains auth on its next** ``setup``, and a
+   campaign already running across that moment is the one case to plan for. Job pods created
+   before it carry no ``imagePullSecrets``; while their pods keep running this costs nothing,
+   but one that restarts afterwards re-pulls without a credential and fails with a 401 that
+   reads as a missing image rather than a missing login.
+
+   Let running campaigns finish before re-running ``setup``, or expect to re-launch them.
+   Nothing already in the object store is affected, and campaigns launched after the change
+   get the credential like any other.
+
 **A service without a registry prefix cannot build.** The prefix is the service's own
 published host — with no Ingress there is no address a node could pull a built image back
 from — so a project whose container adds packages fails at submit naming that reason.
