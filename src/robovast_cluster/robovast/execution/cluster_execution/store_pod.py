@@ -89,7 +89,8 @@ def _add_port(service, name, port):
 
 def attach_infrastructure(docs, namespace="default", index_storage_path="",
                           index_storage_class="", index_storage_size="",
-                          registry_storage_path="", registry_storage_class=""):
+                          registry_storage_path="", registry_storage_class="",
+                          registry_authenticated=False):
     """Add the registry and the index to a provider's parsed store manifest.
 
     *docs* is the provider's ``robovast`` manifest, parsed, with its store volume already
@@ -119,7 +120,7 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     containers = spec.setdefault("containers", [])
     volumes = spec.setdefault("volumes", [])
     for container, volume in (
-            (registry_deploy.registry_container(),
+            (registry_deploy.registry_container(authenticated=registry_authenticated),
              registry_deploy.registry_volume(registry_storage_path,
                                              registry_storage_class)),
             (index_deploy.index_container(),
@@ -128,6 +129,14 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
             containers.append(container)
         if not any(v.get("name") == volume["name"] for v in volumes):
             volumes.append(volume)
+
+    if registry_authenticated:
+        # The password file, beside the blobs it guards. Added here rather than in the
+        # loop above because it pairs with no container of its own -- it is a second
+        # volume for one of them.
+        auth_volume = registry_deploy.registry_auth_volume()
+        if not any(v.get("name") == auth_volume["name"] for v in volumes):
+            volumes.append(auth_volume)
 
     service = _find(docs, "Service", STORE_SERVICE_NAME)
     if service is None:

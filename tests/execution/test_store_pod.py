@@ -64,6 +64,56 @@ def test_a_bucket_backed_provider_can_put_the_index_on_a_volume():
         "a pod scheduled against a claim that does not exist yet stays Pending")
 
 
+def test_a_published_registry_authenticates_and_still_probes(caplog):
+    """The registry shares its hostname with the token-gated UI and has no gate of its own,
+    so publishing without this serves an anonymous push/pull registry on a public name.
+
+    The probe is half the change: it used to read ``/v2/``, which answers 401 once auth is
+    on, and an httpGet probe counts that as a failure -- the container would never become
+    Ready and nothing in the message would mention authentication.
+    """
+    docs = store_pod.attach_infrastructure([], "robotics", registry_authenticated=True)
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    registry = next(c for c in pod["spec"]["containers"]
+                    if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
+    env = {e["name"]: e["value"] for e in registry["env"]}
+
+    assert env["REGISTRY_AUTH"] == "htpasswd"
+    assert env["REGISTRY_AUTH_HTPASSWD_PATH"].startswith(registry_deploy.REGISTRY_AUTH_DIR)
+    assert any(m["name"] == registry_deploy.REGISTRY_AUTH_VOLUME_NAME
+               for m in registry["volumeMounts"])
+    assert any(v.get("secret", {}).get("secretName")
+               == registry_deploy.REGISTRY_HTPASSWD_SECRET_NAME
+               for v in pod["spec"]["volumes"])
+    for probe in ("readinessProbe", "livenessProbe"):
+        assert registry[probe]["httpGet"]["path"] == "/debug/health"
+        assert registry[probe]["httpGet"]["port"] == registry_deploy.REGISTRY_DEBUG_PORT
+
+
+def test_an_unpublished_registry_is_left_open_and_mounts_no_secret():
+    """There is no route to it and no prefix to build into, so there is nothing to protect
+    and no credential to invent."""
+    docs = store_pod.attach_infrastructure([], "robotics")
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    registry = next(c for c in pod["spec"]["containers"]
+                    if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
+
+    assert "REGISTRY_AUTH" not in {e["name"] for e in registry["env"]}
+    assert not any(v["name"] == registry_deploy.REGISTRY_AUTH_VOLUME_NAME
+                   for v in pod["spec"]["volumes"])
+
+
+def test_the_password_file_is_bcrypt_because_nothing_else_is_accepted():
+    """registry:2 verifies with Go's bcrypt and does not fall back to a weaker hash: it
+    fails every request instead, so there is no quieter way to get this wrong."""
+    entry = registry_deploy.htpasswd_entry("s3cret")
+    user, _, digest = entry.partition(":")
+
+    assert user == registry_deploy.REGISTRY_AUTH_USER
+    assert digest.startswith("$2")
+    assert "s3cret" not in entry
+
+
 def test_attaching_twice_changes_nothing():
     """Setup is re-runnable, and every provider parses its manifest fresh each time."""
     once = _rke2_docs()

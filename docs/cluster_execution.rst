@@ -743,17 +743,37 @@ fails for the pull, and a plain-HTTP registry needs ``registries.yaml`` plus a r
 restart on **every** node. The service's own published hostname already has real DNS and
 a real certificate, so both halves work with no node configuration at all.
 
-The same URL works from a workstation: ``docker pull robovast.example.org/<tag>:<hash>``
-needs no login and no CA import, which is how you reproduce a campaign's exact image
-locally.
+The same URL works from a workstation: ``docker login robovast.example.org`` and then
+``docker pull robovast.example.org/<tag>:<hash>`` needs no CA import, which is how you
+reproduce a campaign's exact image locally.
 
-.. warning::
+**A published registry authenticates**, and does so in the registry rather than at the
+Ingress. The credential is minted at ``setup``, kept in the cluster, and never rotated by a
+re-run — the deployment's own push, the nodes' pulls and the service's "already pushed?"
+probe all read it from one ``dockerconfigjson`` Secret, so nothing has to be configured for
+builds to keep working. ``vast service token`` does not print it: it is not a user
+credential, and no client needs it.
 
-   The registry is **unauthenticated**. It shares a hostname with the UI, which *is*
-   token-gated, so it is the more reachable half of that host: anyone who can reach the
-   service can push an image that campaigns then run. That is acceptable while RoboVAST
-   is on a private network and is the first thing to revisit before exposing it to the
-   internet. Adding auth is an htpasswd Secret plus an Ingress annotation.
+Ask the cluster when you want it for a ``docker login`` from a workstation:
+
+.. code-block:: bash
+
+   kubectl get secret robovast-registry-push \
+     -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
+
+It is enforced by the registry and not by an Ingress annotation deliberately. The only
+annotations for this are ingress-nginx's, and a cluster whose controller is something else —
+GKE's ``gce``, for one — accepts them, ignores them, and serves an open registry while
+reporting success. What the registry enforces itself holds on every controller, and on the
+cluster-internal route as well.
+
+.. note::
+
+   **An unpublished deployment leaves it open**, because there is then no route to it: the
+   prefix campaigns build into is derived from the Ingress host, so a deployment with no
+   Ingress cannot build at all. Publishing is the moment it becomes reachable, so publishing
+   is what turns auth on — the same rule that already refuses an Ingress without an access
+   token.
 
 **A service without a registry prefix cannot build.** The prefix is the service's own
 published host — with no Ingress there is no address a node could pull a built image back
@@ -1121,9 +1141,9 @@ Three consequences worth knowing before they surprise you:
   with neither mTLS nor a NetworkPolicy. It is a ClusterIP with no Ingress, but that is not a
   boundary: campaign pods run images a ``.vast`` chose and can reach it. The pip download cache
   is shared across every build and now *persists*, so anything that can dial the daemon can
-  leave something in it for the next build to install. The registry's "deliberately
-  unauthenticated" note does not transfer — that one is excused by sharing a token-gated
-  hostname, and this has no hostname at all.
+  leave something in it for the next build to install. The registry no longer shares this
+  weakness — it authenticates wherever it is published — so this is now the one
+  unauthenticated endpoint the deployment runs, excused only by having no hostname at all.
 * **A wedged cache has no remote remedy.** Changing a cache scope fixes a bad *registry* cache;
   a bad local store needs the daemon restarted or its volume cleared, on the node that holds
   it.
