@@ -223,7 +223,9 @@ def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
     from .kube_client import load_kube_config  # noqa: PLC0415
     from .kubernetes import apply_manifests  # noqa: PLC0415
 
-    load_kube_config(context=kube_context)
+    # Nothing dials a cluster above this point. An argument error must not cost a
+    # connection -- the same rule setup applies to its storage flags -- and `remove` loads
+    # the configuration itself, so the not-asked-for path needs none of it here either.
     if not enabled:
         remove(namespace, kube_context)
         return ""
@@ -235,6 +237,7 @@ def ensure_tailnet(namespace="default", kube_context=None, node_selector=None,
             f"line) rather than taken as an argument, so a pre-auth key does not land in "
             f"shell history. Set both, or drop --tailnet.")
     login_server, authkey, hostname = settings
+    load_kube_config(context=kube_context)
     apply_manifests(
         client.ApiClient(),
         iter(manifests(namespace, login_server, authkey, hostname,

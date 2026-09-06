@@ -54,6 +54,24 @@ def test_which_cluster_is_on_a_tailnet_is_not_decided_by_the_environment(monkeyp
     assert removed.called, "an unasked cluster is reconciled to having no node"
 
 
+def test_the_argument_checks_cost_no_connection(monkeypatch):
+    """Neither branch above reached a cluster, and that is the point rather than a detail.
+
+    A refusal that first waits out a kubeconfig lookup -- or fails with "no Kubernetes
+    configuration available" when the real answer is "you did not set the key" -- reports
+    the wrong problem. Setup applies the same rule to its storage flags.
+    """
+    from unittest import mock
+    _configure(monkeypatch, server="", key="")
+
+    with mock.patch.object(td, "remove"), \
+            mock.patch("robovast.execution.cluster_execution.kube_client."
+                       "load_kube_config", side_effect=AssertionError("dialled a cluster")):
+        assert td.ensure_tailnet(enabled=False) == ""
+        with pytest.raises(ValueError, match=td.LOGIN_SERVER_ENV):
+            td.ensure_tailnet(enabled=True)
+
+
 def test_asking_for_a_tailnet_with_no_credential_is_an_argument_error(monkeypatch):
     """--tailnet with nothing to register with would deploy a node that can never come
     up, so it is refused where the operator can still read the message."""
