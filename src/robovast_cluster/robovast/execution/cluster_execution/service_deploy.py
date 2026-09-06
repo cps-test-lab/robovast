@@ -1757,7 +1757,52 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     # was configured rather than leaving the variable absent and ambiguous.
     for var in (BOOTSTRAP_CPU_ENV, BOOTSTRAP_MEMORY_ENV):
         env.append({"name": var, "value": os.environ.get(var, "").strip()})
+    # How large this cluster may get, asked HERE rather than in the pod that reads it: the
+    # answer comes from the provider's own CLI, which this command has and the service image
+    # does not. Written on every deploy, empty included, so a cluster that stopped being able
+    # to answer is recorded as static rather than keeping a figure nothing still supports.
+    from .cluster_capacity import MAX_CPU_ENV, MAX_MEMORY_ENV  # noqa: PLC0415
+    max_cpu, max_memory = _cluster_maximum(config_name, config_kwargs, kube_context)
+    env.append({"name": MAX_CPU_ENV, "value": max_cpu})
+    env.append({"name": MAX_MEMORY_ENV, "value": max_memory})
     return env
+
+
+def _cluster_maximum(config_name, config_kwargs, kube_context):
+    """``(cpu, memory)`` as strings this cluster may grow to; ``("", "")`` when unknown.
+
+    The operator's own environment wins over the provider: a cluster whose configuration
+    cannot report a maximum -- an unlisted provider, or one whose CLI is not installed here --
+    is exactly where somebody has to state it, and a stated value that a query could override
+    would not be worth stating.
+
+    Any failure is an absence. A provider that cannot answer leaves the deployment sized
+    against its current nodes, which is what every deployment did before this existed; a
+    ``setup`` that died because an optimisation could not be measured would be the worse
+    trade.
+    """
+    import os  # noqa: PLC0415
+
+    from .cluster_capacity import MAX_CPU_ENV, MAX_MEMORY_ENV  # noqa: PLC0415
+
+    stated_cpu = (os.environ.get(MAX_CPU_ENV) or "").strip()
+    stated_memory = (os.environ.get(MAX_MEMORY_ENV) or "").strip()
+    if stated_cpu and stated_memory:
+        return stated_cpu, stated_memory
+    if not config_name:
+        return "", ""
+    try:
+        from .cluster_setup import get_cluster_config  # noqa: PLC0415
+        config = get_cluster_config(config_name)
+        config.restore_from_setup_kwargs(dict(config_kwargs or {}))
+        cpu, memory = config.get_cluster_allocatable_resources(kube_context)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.debug("provider %r could not report a maximum cluster size", config_name,
+                     exc_info=True)
+        return "", ""
+    if not cpu or not memory:
+        return "", ""
+    return str(cpu), str(memory)
 
 
 #: ``(/etc/localtime, /etc/timezone)`` — where :func:`_host_timezone` reads the setup
