@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from robovast.common.config import ChoiceDim, ConfigV1, FloatDim, IntDim, validate_config
 
-BASE = {"version": 3, "execution": {"containers": {"scenario": {"image": "img"}}, "runs": 2}}
+BASE = {"version": 4, "execution": {"containers": {"scenario": {"image": "img"}}, "runs": 2}}
 
 
 def _with_search(**search):
@@ -105,6 +105,6 @@ def test_search_without_configuration_validates():
 
 def test_search_and_configuration_are_mutually_exclusive():
     cfg = _with_search()
-    cfg["configuration"] = [{"name": "base", "parameters": [{"x": 1.0}]}]
+    cfg["configuration"] = [{"name": "base", "parameters": {"scenario": {"x": 1.0}}}]
     with pytest.raises(ValidationError, match="mutually exclusive"):
         ConfigV1(**cfg)

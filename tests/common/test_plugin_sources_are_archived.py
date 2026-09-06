@@ -48,7 +48,7 @@ def _project(tmp_path, *, config=None, search=None, results=None, files=None):
         target.write_text(body)
 
     document = {
-        "version": 3,
+        "version": 4,
         "metadata": {"name": "archived"},
         "execution": {
             "containers": {"sut": {"image": "sut:latest"},
@@ -118,7 +118,7 @@ def test_a_scenario_parameter_that_looks_like_a_ref_is_not_collected(tmp_path):
     vast = _project(
         tmp_path,
         config=[{"name": "base",
-                 "parameters": [{"entrypoint": "tools/run.py:main"}]}],
+                 "parameters": {"scenario": {"entrypoint": "tools/run.py:main"}}}],
         files={"tools/run.py": "def main():\n    pass\n"})
 
     assert _compose(vast, tmp_path)["_run_files"] == []

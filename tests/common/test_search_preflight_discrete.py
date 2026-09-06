@@ -31,7 +31,7 @@ def _discrete_project(tmp_path, *, values, per_batch, variation):
     (tmp_path / "myvar.py").write_text(variation)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 3
+        version: 4
         metadata: {{name: search-preflight-discrete}}
         execution:
           containers:

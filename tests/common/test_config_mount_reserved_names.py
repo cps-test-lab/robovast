@@ -34,7 +34,7 @@ def _compose(tmp_path, source_rel, scenario_rel="scenario.osc"):
     parent.write_text("a: 1\n")
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 3
+        version: 4
         metadata: {{name: reserved}}
         configuration:
         - name: only

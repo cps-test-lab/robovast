@@ -67,7 +67,7 @@ def _project(tmp_path):
     declared = yaml.safe_dump(_DECLARED, default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 3
+        version: 4
         metadata: {name: seam}
         configuration:
         - name: base

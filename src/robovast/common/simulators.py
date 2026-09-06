@@ -736,6 +736,36 @@ def flatten_sim_block(block, prefix: str = "") -> dict:
     return out
 
 
+def unflatten_sim_block(flat: dict) -> dict:
+    """``{dotted path: leaf}`` -> nested ``sim:`` mapping. Inverse of :func:`flatten_sim_block`.
+
+    Composition works on the flat form, because that is the only shape in which two writes to
+    one destination are the same key. What a configuration *carries* is the nested form, so
+    anything that composes a block has to put it back -- a channel whose shape depended on
+    whether presets were involved would be the "two shapes on one key" that
+    :func:`flatten_sim_block` exists to prevent.
+    """
+    out: dict = {}
+    for path, value in (flat or {}).items():
+        parts = str(path).split(".")
+        node = out
+        for part in parts[:-1]:
+            existing = node.get(part)
+            if existing is not None and not isinstance(existing, dict):
+                raise ValueError(
+                    f"sim: destination {path!r} is under {part!r}, which is already set to a "
+                    f"value ({existing!r}). One of them has to go: a destination cannot be both "
+                    "a leaf and a branch.")
+            node = node.setdefault(part, {})
+        last = parts[-1]
+        if isinstance(node.get(last), dict) and node[last]:
+            raise ValueError(
+                f"sim: destination {path!r} is set to a value, but destinations under it are "
+                "set too. One of them has to go.")
+        node[last] = value
+    return out
+
+
 def backend_own_keys(backend: SimulatorBackend) -> Optional[set]:
     """The key names a backend's ``CONFIG_CLASS`` declares, or ``None`` if it has none."""
     model = getattr(backend, "CONFIG_CLASS", None)

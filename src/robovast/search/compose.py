@@ -123,13 +123,9 @@ def distinct_draws(param_sets: list[ParamSet], where: str = "this batch") -> lis
     return distinct
 
 
-def _set_scenario_param(params: list, name: str, value: Any) -> None:
-    """Set scenario parameter ``name`` in a list of single-key dicts."""
-    for entry in params:
-        if isinstance(entry, dict) and name in entry:
-            entry[name] = value
-            return
-    params.append({name: value})
+def _set_scenario_param(parameters: dict, name: str, value: Any) -> None:
+    """Set scenario parameter ``name`` in a configuration block's ``parameters:``."""
+    parameters.setdefault("scenario", {})[name] = value
 
 
 def _substitute_vars(node: Any, values: dict[str, Any], used: set[str]) -> Any:
@@ -215,7 +211,7 @@ class Compose:
             # parameter (the simple-sweep case, e.g. the quadrotor example).
             for key, value in ps.values.items():
                 if key not in used:
-                    _set_scenario_param(block.setdefault("parameters", []), key, value)
+                    _set_scenario_param(block.setdefault("parameters", {}), key, value)
             blocks.append(block)
             id_by_block[block_name] = ps.id
 

@@ -29,6 +29,7 @@ from pprint import pformat
 
 import yaml
 
+
 # The node label is computed IN THE CONTAINER by ``execution/data/collect_sysinfo.py``,
 # which is mounted into the image as a standalone script and can import nothing from this
 # package. Re-exported through here so every host-side caller hashes identically: two
@@ -1724,6 +1725,37 @@ def _plugin_specs_of(campaign_data) -> list:
     return section if isinstance(section, list) else []
 
 
+
+def _archive_vast_sources(vast_src, campaign_config_dir):
+    """Copy the campaign's ``.vast`` and every base it extends into ``_config/``.
+
+    Returns the archived path of the campaign's own file. Sources keep their position relative
+    to the project directory, which is what makes the archive a tree the author would
+    recognise rather than a flat pile whose ``extends:`` no longer resolve.
+    """
+    from robovast.common.config_extends import \
+        extends_sources  # pylint: disable=import-outside-toplevel
+
+    # Imported here: results_utils imports this module, so the pair can only meet at call time.
+    from robovast.common.results_utils import \
+        write_campaign_pointer  # pylint: disable=import-outside-toplevel
+
+    # The RAW document, not `load_config`: that resolves `extends:` and removes it, so the
+    # chain this has to walk would already be gone.
+    with open(vast_src, "r", encoding="utf-8") as handle:
+        raw = next(iter(yaml.safe_load_all(handle)), None) or {}
+    project_dir = os.path.abspath(os.path.dirname(vast_src))
+    own_dst = None
+    for src in extends_sources(raw, vast_src):
+        rel = os.path.relpath(str(src), project_dir)
+        dst = os.path.join(campaign_config_dir, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(str(src), dst)
+        own_dst = dst
+    write_campaign_pointer(campaign_config_dir, own_dst)
+    return own_dst
+
+
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                              instance_type_command=None, gui=False):
     """Stage a campaign's config tree, including the generated entrypoint.
@@ -1827,10 +1859,18 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     os.makedirs(os.path.dirname(scenario_config_dst), exist_ok=True)
     shutil.copy2(scenario_file_path_for_hash, scenario_config_dst)
 
-    # Copy the .vast file into _config/
+    # Copy the .vast file into _config/, with whatever it is built on.
+    #
+    # `_config/` mirrors the project tree, so a campaign extending a base archives both at the
+    # paths the author gave them and `reconstruct_project` hands back a tree that still says
+    # what it said. Which of those files is the campaign is a fact known here and not
+    # recoverable by looking afterwards -- alphabetical order has no reason to favour it --
+    # so it is recorded rather than re-derived.
+    #
+    # A campaign extending nothing takes the same path and copies one file, byte for byte,
+    # comments and anchors intact.
     vast_src = campaign_data["vast"]
-    vast_dst = os.path.join(campaign_config_dir, os.path.basename(vast_src))
-    shutil.copy2(vast_src, vast_dst)
+    vast_dst = _archive_vast_sources(vast_src, campaign_config_dir)
 
     # What the declared plugin specs resolved to. Recorded HERE because this is where the
     # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the

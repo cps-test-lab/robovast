@@ -60,7 +60,7 @@ def _project(tmp_path, configuration, run_files=""):
     block = textwrap.indent(textwrap.dedent(configuration).strip("\n"), "  ")
     vast = tmp_path / "campaign.vast"
     vast.write_text(
-        "version: 3\n"
+        "version: 4\n"
         "metadata: {name: sut-channel}\n"
         "configuration:\n"
         f"{block}\n"
@@ -156,8 +156,9 @@ def test_a_fixed_block_is_overridden_by_a_factor(tmp_path):
     """The precedence the other two channels have."""
     data = _compose(tmp_path, f"""\
         - name: fixed-and-varied
-          sut:
-            {_BASE}.inflation_layer.inflation_radius: 0.10
+          parameters:
+            sut:
+              {_BASE}.inflation_layer.inflation_radius: 0.10
           variations:
           - ParameterVariationList:
               sut: {_BASE}.inflation_layer.inflation_radius
@@ -170,8 +171,9 @@ def test_a_fixed_block_is_overridden_by_a_factor(tmp_path):
 def test_absence_reaches_the_file_the_cell_runs(tmp_path):
     data = _compose(tmp_path, f"""\
         - name: no-voxel
-          sut:
-            {_BASE}.voxel_layer: {{$absent: true}}
+          parameters:
+            sut:
+              {_BASE}.voxel_layer: {{$absent: true}}
     """)
     config = data["configs"][0]
     path = _written(config, "files/nav2_params.yaml")
@@ -201,8 +203,9 @@ def test_a_misspelled_destination_in_a_fixed_block_is_refused_too(tmp_path):
     with pytest.raises(Exception, match="addresses nothing"):
         _compose(tmp_path, """\
         - name: typo-fixed
-          sut:
-            nav2.local_costmp.inflation_radius: 0.10
+          parameters:
+            sut:
+              nav2.local_costmp.inflation_radius: 0.10
     """)
 
 
@@ -250,7 +253,7 @@ def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
     data = _compose(tmp_path, f"""\
         - name: inflation
           parameters:
-          - params_file: files/nav2_params.yaml
+            scenario: {{params_file: files/nav2_params.yaml}}
           variations:
           - ParameterVariationList:
               sut: {_BASE}.inflation_layer.inflation_radius

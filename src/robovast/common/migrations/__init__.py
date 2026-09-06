@@ -53,6 +53,11 @@ def upgrade_config_file(path, *, write: bool = False):
 
     yaml = YAML()
     yaml.preserve_quotes = True
+    # Wide enough that nothing is re-wrapped. Left at the default, ruamel reflows any flow
+    # mapping past ~80 columns -- including ones the step never touched -- so a migration
+    # that changed two keys rewrites lines all over the file, and the diff stops showing
+    # what the migration did.
+    yaml.width = 4096
     with open(path, "r", encoding="utf-8") as handle:
         documents = list(yaml.load_all(handle))
     if not documents or documents[0] is None:
@@ -61,6 +66,45 @@ def upgrade_config_file(path, *, write: bool = False):
     upgraded, applied = upgrade_config(documents[0])
     documents[0] = upgraded
     if write and applied:
-        with open(path, "w", encoding="utf-8") as handle:
-            yaml.dump_all(documents, handle)
+        if _only_the_version_moved(path, upgraded):
+            _rewrite_version_line(path, upgraded.get("version"))
+        else:
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.dump_all(documents, handle)
     return upgraded, applied
+
+
+def _only_the_version_moved(path, upgraded) -> bool:
+    """True when the ladder changed nothing in *path* but the version number.
+
+    Most steps leave most files alone -- they restructure one block, and a campaign without
+    that block is carried forward unchanged. Round-tripping such a file still rewrites it,
+    because ruamel normalises what it re-emits: a flow mapping padded out to align a column
+    loses the padding, and a nested flow map loses its braces. Both are equivalent YAML and
+    neither is what the migration did, so the diff stops showing the change and starts hiding
+    it. Rewriting one line instead keeps a no-op migration looking like one.
+    """
+    import yaml as _plain  # pylint: disable=import-outside-toplevel
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            before = next(iter(_plain.safe_load_all(handle)), None)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if not isinstance(before, dict):
+        return False
+    strip = lambda doc: {k: v for k, v in doc.items() if k != "version"}  # noqa: E731
+    return strip(before) == strip(dict(upgraded))
+
+
+def _rewrite_version_line(path, version) -> None:
+    """Replace the top-level ``version:`` line in *path*, touching nothing else."""
+    import re  # pylint: disable=import-outside-toplevel
+
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    new_text, count = re.subn(r"(?m)^version:[ \t]*\d+[ \t]*$", f"version: {version}", text, count=1)
+    if count == 0:                       # no line to replace: the file left it implicit
+        new_text = f"version: {version}\n" + text
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(new_text)

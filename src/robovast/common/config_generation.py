@@ -34,6 +34,7 @@ from importlib.metadata import entry_points
 from pprint import pformat
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
+from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
 from .errors import missing_input_error
@@ -772,7 +773,7 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
         merge_sut_block, split_destination)
 
     execution = parameters.get("execution", {}) or {}
-    authored = {c.get("name"): (c.get("sut") or {})
+    authored = {c.get("name"): channel(c, SUT)
                 for c in (parameters.get("configuration") or [])}
     # A DECLARED SOURCE IS STAGED EVEN WHEN NOTHING ADDRESSES IT. Declaring one drops the original
     # from run_files for the campaign as a whole, so returning early here leaves a campaign that
@@ -877,7 +878,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     if not backend_name(execution):
         return
 
-    authored = {c.get("name"): (c.get("sim") or {})
+    authored = {c.get("name"): channel(c, SIM)
                 for c in (parameters.get("configuration") or [])}
     uses_channel = any(authored.values()) or any(c.get("sim") for c in configs)
 
@@ -1868,12 +1869,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # Initialize config dict with scenario parameters if they exist
         config_dict = {}
 
-        scenario_parameters = config.get('parameters', [])
+        scenario_parameters = channel(config, SCENARIO)
         if scenario_parameters:
-            # Convert list of single-key dicts to a single dict
-            for param in scenario_parameters:
-                if isinstance(param, dict):
-                    config_dict.update(param)
+            config_dict.update(scenario_parameters)
 
             # Validate that all specified parameters exist in the scenario
             if existing_scenario_parameters:

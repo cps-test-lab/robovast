@@ -36,6 +36,7 @@ from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dir
                             read_run_outcomes, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore, read_campaign_description
+from robovast.common.results_utils import campaign_vast_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,8 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
     # The vast copy carries evaluation.visualization for the GUI; tolerate absence.
     config_dir = campaign_dir / "_config"
     config_json: dict = {}
-    vast_files = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+    vast_files = [campaign_vast_or_none(campaign_dir)]
+    vast_files = [v for v in vast_files if v is not None]
     if vast_files:
         try:
             # `upgrade=True`: this reads an ARCHIVED config, which may predate the current

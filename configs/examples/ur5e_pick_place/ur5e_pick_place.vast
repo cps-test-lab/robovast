@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: ur5e-pick-place
   title: "UR5e pick-and-place: how accurate does the reported box pose have to be?"

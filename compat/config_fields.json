@@ -128,9 +128,19 @@
       "Union[list[ConfigurationConfig], NoneType]"
     ],
     [
+      "configuration_presets",
+      false,
+      "Union[dict[str, ConfigurationPreset], NoneType]"
+    ],
+    [
       "execution",
       true,
       "ExecutionConfig"
+    ],
+    [
+      "extends",
+      false,
+      "Union[str, NoneType]"
     ],
     [
       "general",
@@ -194,17 +204,12 @@
     [
       "parameters",
       false,
-      "Union[list[ScenarioParameterConfig], NoneType]"
+      "Union[ParametersConfig, NoneType]"
     ],
     [
-      "sim",
+      "use",
       false,
-      "Union[dict, NoneType]"
-    ],
-    [
-      "sut",
-      false,
-      "Union[dict[str, Any], NoneType]"
+      "Union[list[str], NoneType]"
     ],
     [
       "variations",
@@ -214,7 +219,24 @@
     [
       "<extra>",
       false,
-      "ignore"
+      "forbid"
+    ]
+  ],
+  "ConfigurationPreset": [
+    [
+      "parameters",
+      false,
+      "Union[ParametersConfig, NoneType]"
+    ],
+    [
+      "variations",
+      false,
+      "Union[list[VariationConfig], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
     ]
   ],
   "ContainerConfig": [
@@ -580,6 +602,28 @@
       "forbid"
     ]
   ],
+  "ParametersConfig": [
+    [
+      "scenario",
+      false,
+      "Union[dict[str, Any], NoneType]"
+    ],
+    [
+      "sim",
+      false,
+      "Union[dict, NoneType]"
+    ],
+    [
+      "sut",
+      false,
+      "Union[dict[str, Any], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "PlotSpec": [
     [
       "query",
@@ -853,13 +897,6 @@
       "<extra>",
       false,
       "forbid"
-    ]
-  ],
-  "ScenarioParameterConfig": [
-    [
-      "<extra>",
-      false,
-      "allow"
     ]
   ],
   "SearchConfig": [
