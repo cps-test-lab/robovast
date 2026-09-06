@@ -311,6 +311,8 @@ class GcpClusterConfig(BaseConfig):
             iter(store_pod.attach_infrastructure(
                 [], namespace,
                 index_storage_path=kwargs.get('index_storage_path', ''),
+                index_storage_class=kwargs.get('index_storage_class', ''),
+                index_storage_size=kwargs.get('index_storage_size', ''),
                 registry_storage_path=kwargs.get('registry_storage_path', ''),
                 registry_storage_class=kwargs.get('registry_storage_class', ''))),
             namespace=namespace)

@@ -367,3 +367,16 @@ def test_setup_reports_where_it_put_the_data(monkeypatch, deploy_stubs):
     reported = setup_server(config_name="rke2", namespace="default")
     assert reported["data_node"] == "node-a"
     assert reported["data_source"] == "auto"
+
+
+def test_an_index_class_is_refused_where_the_store_already_backs_the_index():
+    """Offline, before anything dials the cluster -- an argument error must not cost a
+    connection timeout, nor leave a half-set-up cluster behind it.
+
+    rke2 places the object store as a volume, and --store-class backs the index with that
+    same volume so the two are created, moved and destroyed together. A second class would
+    let the index outlive the campaigns every one of its rows was ingested from.
+    """
+    with pytest.raises(RuntimeError, match="--store-class"):
+        setup_server(config_name="rke2", namespace="default",
+                     service_kwargs={"index_storage_class": "local-path"})

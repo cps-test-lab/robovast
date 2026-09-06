@@ -41,6 +41,29 @@ def test_a_provider_without_an_object_store_still_gets_the_pod():
     assert service["metadata"]["name"] == store_pod.STORE_SERVICE_NAME
 
 
+def test_a_bucket_backed_provider_can_put_the_index_on_a_volume():
+    """The one piece of this deployment's durable state a bucket does not hold.
+
+    With the campaigns in a bucket there is no --store-class to back the index beside, so on a
+    node pool whose machines are replaced -- which is every managed one -- a hostPath index
+    goes with the node while every campaign it indexed survives.
+    """
+    docs = store_pod.attach_infrastructure([], "robotics",
+                                           index_storage_class="premium-rwo",
+                                           index_storage_size="100Gi")
+    claim = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    volume = next(v for v in pod["spec"]["volumes"]
+                  if v["name"] == index_deploy.INDEX_VOLUME_NAME)
+
+    assert claim["spec"]["storageClassName"] == "premium-rwo"
+    assert claim["spec"]["resources"]["requests"]["storage"] == "100Gi"
+    assert volume["persistentVolumeClaim"]["claimName"] == index_deploy.INDEX_VOLUME_NAME
+    assert "hostPath" not in volume
+    assert docs.index(claim) < docs.index(pod), (
+        "a pod scheduled against a claim that does not exist yet stays Pending")
+
+
 def test_attaching_twice_changes_nothing():
     """Setup is re-runnable, and every provider parses its manifest fresh each time."""
     once = _rke2_docs()
