@@ -94,6 +94,12 @@ def _deploy_stubs(monkeypatch):
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
+
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
     config = mock.Mock()
@@ -212,6 +218,11 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    # Reconciled on every setup for the same reason, and it reads the API server even when
+    # no tailnet is configured.
+    from robovast.execution.cluster_execution import tailnet_deploy
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     # Setup reports which image and digest the pod came up on, once it is serving. Two
     # more reads against the API server, and reporting-only -- they swallow their own
     # errors, so unstubbed they cost a connect timeout apiece and say nothing.
