@@ -1391,13 +1391,24 @@ def _search_composition_report(config_path):
     if sample["infeasible"]:
         listed = "; ".join(f"{item['name']} {item['params']}"
                            for item in sample["infeasible"])
+        # Still an advisory when the whole sample failed, and deliberately: this sample is
+        # a handful of draws, so "none of 4 composed" is weak evidence about a space that
+        # is merely mostly infeasible -- refusing the campaign would block a search whose
+        # needle is real but rare. It is said in stronger words, and the run-time guard is
+        # what acts on evidence: a campaign that measures nothing in two consecutive
+        # batches is stopped, having observed batches rather than a sample.
+        outlook = (
+            "Nothing sampled composes, so as written this campaign may produce nothing "
+            "at all; it will be stopped after two batches that measure nothing. Check "
+            "the search_space bounds against what the variation plugins accept."
+            if sample["composed"] == 0 else
+            "The campaign skips such draws and continues, but a high rate here means "
+            "much of the search space is infeasible — check the search_space bounds "
+            "against the variation's constraints.")
         problems.append(_problem(
             "search-composition",
             f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
-            f"set(s) could not be composed: {listed}. The campaign skips such draws "
-            "and continues, but a high rate here means much of the search space is "
-            "infeasible — check the search_space bounds against the variation's "
-            "constraints.",
+            f"set(s) could not be composed: {listed}. {outlook}",
             field="search.search_space"))
 
     # Counts describe one composed batch, not the whole campaign: how many configs a

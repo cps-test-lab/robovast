@@ -209,8 +209,9 @@ Marker rules:
 
    **Zero configs is the other direction, and it is tolerated.** A draw can be
    unrealizable rather than misconfigured — a path length longer than any route the map
-   holds, or a path too short to hold the obstacles the same draw asks for — and then the
-   variation pipeline composes nothing for it.
+   holds, or a path too short to hold the obstacles the same draw asks for — or refused
+   outright by a plugin whose declared parameter domain the search space overruns; either
+   way the variation pipeline composes nothing for it.
    That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
@@ -462,6 +463,21 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
   is not counted.
 * ``runs`` — stop after this many individual **executions**. Counted from what each
   batch asks for, so it bounds wall-clock rather than results.
+
+.. note::
+
+   **A search that measures nothing is stopped, whatever its budget says.** Two batches in
+   a row in which no parameter set produced an evaluation end the campaign, with a reason
+   naming which half of it came back empty: nothing **composed** (the search space against
+   what the variation plugins accept) or nothing **measured** (the scenario, the stack, the
+   extractor). It is recorded as a stop of kind ``unproductive``.
+
+   Two rather than one, because a mostly-unrealizable space produces a batch where every
+   draw fails by chance and ending such a campaign on the first would stop a search that
+   was working. Two running is not luck, and every batch after it costs a composition — and
+   where the cells do run, a batch of trials — to learn the same thing again. A search that
+   is *meant* to run in a space this hostile has to widen its bounds; there is no budget
+   large enough to make an unproductive campaign productive.
 
 ``evaluations`` and ``runs`` are two counts and not one because neither predicts the
 other: one evaluation costs as many runs as it was given repetitions. While every cell
