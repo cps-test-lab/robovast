@@ -1823,7 +1823,8 @@ never creates a job that no current node can hold, which is correct on a static 
 self-defeating on an elastic one — a pod the scheduler cannot place is exactly what makes an
 autoscaler add a node. Given a ceiling, admission creates such work unpinned and lets the
 autoscaler respond, and a pool scaled to zero is a batch that waits rather than one that is
-refused.
+refused. A cluster that *has* nodes is still sized against them: an autoscaler adds machines
+of its pool's shape, so "no node is that large" stays a permanent refusal however many arrive.
 
 The ceiling is **recorded, not queried**: ``setup`` and ``upgrade`` ask the provider — on
 GKE that is ``gcloud``, summing each node pool's autoscaler maximum — and write the answer

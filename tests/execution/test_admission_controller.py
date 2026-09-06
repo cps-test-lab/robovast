@@ -179,14 +179,18 @@ def test_a_cluster_with_no_nodes_raises_rather_than_reporting_busy():
         c.preflight(JobSizing(1.0, MIB))
 
 
-def test_a_growable_cluster_is_not_judged_by_the_nodes_it_happens_to_have():
-    """"No node is that large" is a fact about now, and on an autoscaler now is not ever.
+def test_a_growable_cluster_is_still_judged_by_the_nodes_it_has():
+    """An autoscaler adds machines of a pool's fixed shape, so on the ordinary homogeneous
+    cluster "no node is that large" stays true however many arrive.
 
-    Refusing here would make the refusal self-fulfilling: the pending pods are what would
-    have grown the cluster, and a batch that is never enqueued creates none.
+    Excusing it would trade a loud, immediate refusal for a campaign that waits forever
+    having created zero jobs -- the exact failure this check exists to prevent, and one no
+    downstream diagnosis can see because they all read pods.
     """
     c = _controller(FakeProvider(nodes=[Capacity(4.0, 4096 * MIB)], growable=True))
-    c.preflight(JobSizing(9.0, MIB))
+    with pytest.raises(AdmissionRefused, match="no node is that large"):
+        c.preflight(JobSizing(9.0, MIB))
+    c.preflight(JobSizing(4.0, MIB))          # what a current node holds is admitted
 
 
 def test_a_pool_scaled_to_zero_is_a_temporary_condition_on_a_growable_cluster():
