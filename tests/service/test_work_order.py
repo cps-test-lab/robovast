@@ -102,7 +102,7 @@ def test_the_collect_all_validator_lists_every_marker(tmp_path):
     somebody go looking; the positions are the useful part."""
     from robovast.common.config_validation import validate_project_file
 
-    raw = {"version": 3, "metadata": {"name": "p"},
+    raw = {"version": 4, "metadata": {"name": "p"},
            "execution": {"containers": {
                "sut": {"image": "reg/x:1",
                        "provenance": {"source": "s", "revision": "r"},
@@ -130,7 +130,7 @@ def test_markers_are_found_wherever_they_land():
 
 
 def test_a_clean_config_has_no_markers():
-    assert find_migration_markers({"version": 3, "execution": {"runs": 1}}) == []
+    assert find_migration_markers({"version": 4, "execution": {"runs": 1}}) == []
 
 
 def test_retrigger_refuses_and_names_the_workspace_command(tmp_path, removed_capability):

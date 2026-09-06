@@ -1,0 +1,7 @@
+# A pilot: one configuration, so a retrigger of it must stay a pilot.
+config_filter: 'config-1*'
+campaign_name: null
+runs: 2
+postprocess: false
+upload_to_share: false
+show_gui: false

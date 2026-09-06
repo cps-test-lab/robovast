@@ -13,6 +13,7 @@ A ``.vast`` configuration file has the following top-level structure:
 .. code-block:: yaml
 
    version: 3
+   extends: common/base.vast     # optional; see Extends
    metadata:
      title: "Project Title"
      description: "Project description"
@@ -52,6 +53,75 @@ An **older** version is migrated forward rather than refused:
 A **newer** version is refused: a format from a later robovast cannot be migrated backwards,
 so the answer is to upgrade robovast. See ``src/robovast/common/migrations/README.md`` for
 the ladder itself and for when the version is bumped at all.
+
+
+.. _config-extends:
+
+Extends
+-------
+
+**Type:** String (a path)
+
+**Required:** No
+
+Another ``.vast`` this campaign is built on. Campaigns that differ in a few lines are
+otherwise written by copying a neighbour, and what drifts afterwards is never the part anyone
+meant to change -- a container's resources, a postprocessing step, a dashboard.
+
+.. code-block:: yaml
+
+   # common/nav2-base.vast -- no version, no execution: it is a fragment, not a campaign
+   execution:
+     containers:
+       simulation: {backend: roqsim, resources: {cpu: 1.0, memory: 6Gi}}
+       sut:        {image: "family:robovast", resources: {cpu: 4, memory: 6Gi}}
+     runs: 5
+
+.. code-block:: yaml
+
+   version: 3
+   extends: common/nav2-base.vast
+   execution:
+     containers:
+       sut: {resources: {cpu: 8}}      # memory: 6Gi is inherited
+
+**Mappings merge at every depth; lists and scalars are replaced.** That is the rule to hold on
+to, and the one you meet first: you cannot add one panel, one postprocessing step, one
+``run_files`` pattern or one ``configuration:`` entry -- a list is inherited whole or restated
+whole. Appending cannot be the default and still be undone, because a campaign that meant to
+replace a list would silently run both.
+
+A base may ``extends:`` a base in turn. Each link overrides the one beneath it, and a cycle is
+refused naming the chain.
+
+**A base is a fragment, and is never validated on its own.** It usually has no ``execution:``,
+which the schema requires, so only the merged document is a campaign. For the same reason
+**every relative path resolves against the campaign's directory, not the base's**: a base is
+part of its child rather than a document in its own right.
+
+**A base must live under the campaign's project directory** -- beside it, in a subdirectory,
+anywhere below it. There is no rule about which, and no marker key or second file extension: a
+``.vast`` another one extends is a base because something extends it. The containment rule is
+the one that matters, because only the project directory is copied into a service workspace,
+so a base outside it is simply absent wherever the campaign is not run from this tree; it is
+refused rather than warned about, since a base *is* the campaign.
+
+Resolution is total and happens when the file is loaded, so nothing downstream knows the key
+existed. Two consequences worth knowing:
+
+* **A configuration's identity does not change.** It is hashed from the resolved block, so
+  moving an existing campaign onto a base leaves every ``config_identifier`` as it was and its
+  results stay comparable with what it produced before.
+* **The archive keeps both.** ``_config/`` mirrors the project tree, so the campaign and every
+  base it was built on are stored at the paths the author gave them, and a campaign
+  reconstructed from its results still says what it said. Which of those files is the campaign
+  is recorded in ``_config/.campaign`` rather than guessed at.
+
+A base does not make a workspace ambiguous: with several ``.vast`` files, the ones others
+extend are not candidates to launch. A file **nothing** extends still is -- an orphan cannot be
+told from a second campaign -- so extending a sibling campaign works but is worth avoiding:
+editing a campaign that others inherit from silently changes them, where a base extracted for
+the purpose says what it is.
 
 
 Metadata Section
@@ -180,10 +250,97 @@ contexts, and it is rebuilt wherever a campaign is composed.
    sibling imports and no data file of its own. Anything larger belongs in ``plugins:``.
 
 
+.. _config-presets:
+
+Configuration presets
+---------------------
+
+**Type:** Mapping of preset name → configuration body
+
+**Required:** No
+
+Reusable configuration bodies, composed by a configuration entry's ``use:``. A factorial
+design is then written as its axes rather than as its cross product -- a robot, a stack and a
+trial are three presets, and each cell names the three it is:
+
+.. code-block:: yaml
+
+   configuration_presets:
+     robot-tb4:
+       parameters:
+         scenario: {description_package: nav2_minimal_tb4_description}
+         sim:      {config: world/nav2.yaml}
+     stack-bringup:
+       parameters:
+         scenario: {params_file: files/nav2/nav2_params.yaml}
+         sut:      {bringup.bt_navigator.ros__parameters.default_nav_to_pose_bt_xml: /config/files/bt.xml}
+
+   configuration:
+   - name: bringup-mppi-tb4
+     use: [robot-tb4, stack-bringup]
+     parameters:
+       sut: {bringup.velocity_smoother.ros__parameters.max_velocity: [0.306, 0.0, 1.9]}
+
+A preset carries exactly what a configuration carries, minus what belongs to one
+configuration: it may not set ``name:``, and it may not ``use:`` another preset. **Presets do
+not nest** -- one flat level is what keeps "read the entry and the presets it names" a complete
+account of what a configuration runs, and sharing presets between *files* is what
+:ref:`extends <config-extends>` is for.
+
+**Do not reach for YAML merge keys instead.** ``<<:`` is shallow, so where several presets
+contribute to one subtree -- three of them writing ``parameters.scenario``, say -- all but the
+first are dropped **with no error**, and the campaign runs its full sweep against values nobody
+wrote.
+
+Precedence
+^^^^^^^^^^
+
+Four layers, lowest to highest::
+
+   preset parameters  <  parameters  <  preset variations  <  variations
+
+Two axes rather than four rules: **preset before entry, and fixed before variation.** Within a
+layer, presets apply in ``use:`` order. The second axis is not new -- a variation has always
+won over the fixed value it varies -- so presets split each existing layer in two and change no
+existing precedence.
+
+Overriding a preset is the ordinary case and is silent: the entry is more specific than the
+axes it composes, and the override is visible where the reader is already looking.
+``{$absent: true}`` works there too, so an entry can delete a key a preset set.
+
+The consequence worth knowing, because it will surprise someone: **an entry's ``parameters:``
+does not beat a preset's ``variations:``.** To override a preset's sweep, declare your own
+variation on that destination, which replaces the preset's rather than crossing with it.
+
+What is refused
+^^^^^^^^^^^^^^^
+
+* a ``use:`` naming a preset the file does not define, listing the ones it does;
+* **two presets writing one destination** -- which of them won would be decided by the order of
+  a list two lines away, and the losing write is recorded nowhere. Set it in the configuration
+  itself, which wins over every preset, or split the presets so one owns the destination.
+  ``sim:`` is compared on the flattened path, so the nested and dotted spellings of one
+  destination collide as they should;
+* two presets sweeping one destination, which is a factor crossed with itself;
+* ``name:`` or ``use:`` inside a preset, and a preset named twice in one ``use:``.
+
+A preset that is **never used** is reported and not refused: ``vast configuration
+export-configs`` copies the whole document and replaces only ``configuration:``, so refusing
+would turn a working command into one that emits files nothing can load.
+
+Presets are resolved when the file is loaded, so nothing downstream sees them, and a
+configuration's identity is hashed from the resolved block -- rewriting a campaign onto presets
+leaves every ``config_identifier`` unchanged and its results comparable with what it produced
+before.
+
+
 Configuration Section
 ---------------------
 
-The ``configuration`` section defines which runs are to be executed. It is a list where each entry represents a scenario with its parameters and variations.
+The ``configuration`` section defines which runs are to be executed. It is a list where each
+entry represents a scenario. An entry states which presets it is built from (``use:``), the
+fixed values it writes (``parameters:``, grouped by channel), and how those values are swept
+(``variations:``).
 
 Scenario Definition
 ^^^^^^^^^^^^^^^^^^^
@@ -208,25 +365,36 @@ It must be lowercase and must not contain underscores, spaces, or periods (use h
 parameters
 """"""""""
 
-**Type:** List of dictionaries
+**Type:** Dictionary of channel → values
 
 **Required:** No
 
-Fixed parameter values that apply to all runs of this scenario. Each list item should be a dictionary with a single parameter name-value pair.
-
-This is useful when you want to define a single configuration with specific values without variations.
+The fixed values this configuration writes, applying to all of its runs, **grouped by the
+:ref:`channel <config-variation-destination>` they land in**. One grammar for all three, so
+which channel a value goes to is said by the key it is under and never by the shape that key
+happens to have:
 
 .. code-block:: yaml
 
    configuration:
    - name: test-fixed
      parameters:
-     - growth_rate: 0.07
-     - initial_population: 123
-     - goal_pose:
-         position:
-           x: 10.0
-           y: 5.0
+       scenario:                     # what the trial does: parameters the .osc declares
+         growth_rate: 0.07
+         initial_population: 123
+         goal_pose: {position: {x: 10.0, y: 5.0}}
+       sim:                          # what it runs in: nested, against the backend's schema
+         overrides: {plugins: {ceiling: {enabled: false}}}
+       sut:                          # how the stack is configured: FLAT <source>.<path> keys
+         nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
+
+``scenario:`` names are checked against the ones the scenario file declares, so a parameter no
+scenario has is refused rather than passed to nobody.
+
+``parameters`` and :ref:`variations <config-variations>` **compose**: these are the fixed base
+of every cell, and a variation writing the same destination wins over the value here.
+
+.. _config-variations:
 
 variations
 """"""""""
@@ -413,8 +581,9 @@ usable both as a fixed setting and as a factor level:
 
    configuration:
    - name: no-voxel
-     sut:
-       nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
+     parameters:
+       sut:
+         nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
 
 **A per-configuration ``sut:`` block is flat**, unlike ``sim:``, and this is the one place
 the two channels differ. Everything after the source name belongs to the file's format and
@@ -499,19 +668,19 @@ sim
 
 **Required:** No
 
-Fixed values for the **simulator this configuration runs in** — the sibling of
-``parameters`` for the other channel. ``parameters`` is what the trial does; ``sim`` is what
-it runs in:
+Fixed values for the **simulator this configuration runs in**, written under
+``parameters:`` beside the other two channels. ``scenario:`` is what the trial does; ``sim:``
+is what it runs in:
 
 .. code-block:: yaml
 
    configuration:
    - name: roofless
      parameters:
-     - goal_pose: {position: {x: 10.0, y: 5.0}}
-     sim:
-       overrides:
-         plugins: {ceiling: {enabled: false}}
+       scenario: {goal_pose: {position: {x: 10.0, y: 5.0}}}
+       sim:
+         overrides:
+           plugins: {ceiling: {enabled: false}}
 
 A nested mapping against the backend's own schema, merged over
 :ref:`execution.containers.simulation <config-containers>` — which stays the campaign-wide

@@ -40,7 +40,7 @@ def _bt_record(**overrides) -> dict:
 
 def _write_bt_log(path: Path, records: list) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    meta = {"format": "behaviour_tree_log", "version": 3, "scenario": "demo",
+    meta = {"format": "behaviour_tree_log", "version": 4, "scenario": "demo",
             "scenario_file": "/scenarios/demo.osc", "scenario_sha256": "abc",
             "tick_period": 0.1, "clock": "SimulationClock", "py_trees": "2.4.0",
             "started_at": "2026-08-06T09:14:22Z"}

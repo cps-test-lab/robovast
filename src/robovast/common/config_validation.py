@@ -47,6 +47,8 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from robovast.common.config_extends import resolve_extends
+from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
 from robovast.common.containers import ros_repo_name
 
@@ -292,7 +294,17 @@ def _safe_load(config_path):
         return None, _problem("parse", "No documents found in the .vast file.")
     if not isinstance(documents[0], dict):
         return None, _problem("parse", "Top-level .vast content is not a mapping.")
-    return documents[0], None
+    # Validation reports on the campaign that would run, which is the composed one. Reporting
+    # on the unresolved file would clear a campaign whose base contradicts it, and flag one
+    # whose base supplies what looks missing here.
+    try:
+        raw = resolve_extends(documents[0], config_path)
+    except ValueError as e:
+        return None, _problem("extends", str(e))
+    try:
+        return expand_configuration_presets(raw), None
+    except ValueError as e:
+        return None, _problem("presets", str(e))
 
 
 def _config_name_from_loc(raw, loc):

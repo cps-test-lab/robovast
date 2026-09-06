@@ -647,7 +647,7 @@ def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, mon
 
     (tmp_path / "_config").mkdir()
     (tmp_path / "_config" / "x.vast").write_text(
-        "version: 3\nmetadata: {name: x}\nresults_processing:\n"
+        "version: 4\nmetadata: {name: x}\nresults_processing:\n"
         "  postprocessing:\n  - rosbags_tf_to_csv\n")
     fetched = []
 
@@ -690,7 +690,7 @@ def test_a_root_without_the_ledger_does_not_read_as_no_interventions(tmp_path, m
 
     (tmp_path / "_config").mkdir()
     (tmp_path / "_config" / "x.vast").write_text(
-        "version: 3\nmetadata: {name: x}\nresults_processing:\n"
+        "version: 4\nmetadata: {name: x}\nresults_processing:\n"
         "  postprocessing:\n  - rosbags_tf_to_csv\n")
     (tmp_path / "_execution").mkdir()
     (tmp_path / "_execution" / "execution.yaml").write_text("image: img:1\n")

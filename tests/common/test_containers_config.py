@@ -11,7 +11,7 @@ from robovast.service.image_build import extract_build_specs
 
 
 def _cfg(**containers):
-    return {"version": 3, "execution": {"containers": containers, "runs": 1}}
+    return {"version": 4, "execution": {"containers": containers, "runs": 1}}
 
 
 # -- the schema --------------------------------------------------------------------
@@ -350,7 +350,7 @@ def test_a_campaigns_own_config_wins_over_a_neighbours(tmp_path):
 
     mine = tmp_path / "aaa-experiment-2026-08-07-000001"
     other = tmp_path / "zzz-experiment-2026-08-04-000001"
-    for d, body in ((mine, "version: 3\n"), (other, "version: 1\n")):
+    for d, body in ((mine, "version: 4\n"), (other, "version: 1\n")):
         (d / "_config").mkdir(parents=True)
         (d / "_config" / "campaign.vast").write_text(body)
 

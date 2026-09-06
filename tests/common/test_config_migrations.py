@@ -290,3 +290,58 @@ def test_upgrade_config_file_without_write_leaves_the_file_alone(tmp_path):
     upgraded, applied = upgrade_config_file(target)
     assert applied and upgraded["version"] == SUPPORTED_CONFIG_VERSION
     assert target.read_text(encoding="utf-8") == original
+
+
+# -- v3 -> v4: fixed values move under `parameters:`, grouped by channel -------------
+
+def test_v3_to_v4_folds_the_parameters_list_and_moves_the_sibling_channels():
+    """The step the golden fixture cannot exercise: it predates any `configuration:` block."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "configuration": [{
+        "name": "a",
+        "parameters": [{"map_file": "m.yaml"}, {"goal": 1}],
+        "sim": {"overrides": {"x": 1}},
+        "sut": {"nav2.a": 2},
+        "variations": [{"V": {}}]}]})
+
+    entry = out["configuration"][0]
+    assert out["version"] == 4
+    assert entry["parameters"] == {"scenario": {"map_file": "m.yaml", "goal": 1},
+                                   "sim": {"overrides": {"x": 1}},
+                                   "sut": {"nav2.a": 2}}
+    assert "sim" not in entry and "sut" not in entry
+    assert entry["variations"] == [{"V": {}}], "variations say how a value is produced, not where"
+
+
+def test_v3_to_v4_folds_a_repeated_parameter_the_way_v3_already_read_it():
+    """v3 collapsed the list with ``dict.update`` before anything read it, so the last
+    entry already won. Writing it as a mapping states what the file always meant."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "configuration": [
+        {"name": "a", "parameters": [{"goal": 1}, {"goal": 2}]}]})
+    assert out["configuration"][0]["parameters"]["scenario"] == {"goal": 2}
+
+
+def test_v3_to_v4_leaves_a_configuration_with_nothing_fixed_alone():
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    entry = migrate({"version": 3, "configuration": [{"name": "a"}]})["configuration"][0]
+    assert entry == {"name": "a"}
+
+
+def test_v3_to_v4_migrates_the_search_template_the_same_way():
+    """``search.parameters`` is a configuration block without its wrapper."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "search": {"parameters": [{"k": "v"}]}})
+    assert out["search"]["parameters"] == {"scenario": {"k": "v"}}
+
+
+def test_v3_to_v4_is_idempotent_on_an_already_migrated_block():
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    v4 = {"version": 4, "configuration": [
+        {"name": "a", "parameters": {"scenario": {"goal": 1}}}]}
+    assert migrate(v4)["configuration"][0]["parameters"] == {"scenario": {"goal": 1}}

@@ -78,6 +78,29 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
 logger = logging.getLogger(__name__)
 
 
+def _extended_bases(candidates, project_dir):
+    """Of *candidates*, the ones another candidate names in its ``extends:``.
+
+    A base is identified by something extending it, not by its shape. Guessing from shape --
+    "no ``execution:`` block, so a fragment" -- would also swallow a campaign someone is
+    halfway through writing, turning a validation error that names the missing section into
+    "this workspace has no .vast file".
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    bases = set()
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first = next(iter(yaml.safe_load_all(f)), None)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        ext = first.get("extends") if isinstance(first, dict) else None
+        if isinstance(ext, str) and ext.strip():
+            bases.add(Path(os.path.abspath(os.path.join(os.path.dirname(str(path)), ext))))
+    return bases
+
+
 def _as_dir(rel_path: str) -> str:
     """The directory form of a relative path — what a listing echoes back, so that
     concatenating it with an entry yields that entry's address."""
@@ -767,6 +790,11 @@ class LocalTransport(RobovastInterface):
                 v for v in sorted(project_dir.rglob("*.vast"))
                 if not any(part.startswith(".") or part in PINNED_SKIP_DIRS
                            for part in v.relative_to(project_dir).parts)]
+            # A base another .vast is built on is not itself a campaign to launch, so it does
+            # not make the workspace ambiguous. One that nothing extends still does -- an
+            # orphan is indistinguishable from a second campaign, and saying so is right.
+            bases = _extended_bases(vasts, project_dir)
+            vasts = [v for v in vasts if Path(os.path.abspath(str(v))) not in bases] or vasts
             if not vasts:
                 raise ValueError(
                     f"workspace {workspace_id!r} has no .vast file; "
@@ -4728,12 +4756,13 @@ class LocalTransport(RobovastInterface):
         # the rest of the snapshot config being re-validatable.
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         from robovast.service.interface import CampaignPlotsResponse
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         plots = []
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for p in (visualization_block(cfg, "results", "data_browser", "plots") or []):
                 if isinstance(p, dict) and p.get("query"):
                     plots.append({"title": p.get("title", ""), "query": p["query"],
@@ -5172,11 +5201,12 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         workloads: dict = {}
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for view in (visualization_block(cfg, "results", "explorer", "notebooks") or []):
                 if not isinstance(view, dict):
                     continue

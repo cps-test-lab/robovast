@@ -84,6 +84,14 @@ def classify(base: dict, head: dict) -> "tuple[bool, list[str], list[str]]":
             if (was_type, is_type) == ("allow", "forbid"):
                 breaking.append(f"{key[0]} now forbids extra keys")
             elif was_type != is_type:
+                # `ignore -> forbid` also rejects a file that used to load, and is
+                # classified additive on purpose: an ignored key never reached the model, so
+                # such a file was already not doing what it reads, and the bump test is
+                # whether a *valid* config stops meaning what it meant. The refusal is the
+                # point of the change rather than a casualty of it. Reading an archived
+                # campaign is kept working by `validate_config(strict=False)`, not by a
+                # version step -- a migration cannot help there, because the key it would
+                # have to drop is one no schema ever described.
                 additive.append(f"{key[0]} extra: {was_type} -> {is_type}")
             continue
         if was_type != is_type:

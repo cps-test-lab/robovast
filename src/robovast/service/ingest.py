@@ -344,14 +344,15 @@ def _check_config(campaign_dir: Path) -> dict:
                                             config_version, needs_upgrade, upgrade_config)
     from robovast.service.retrigger import _read_vast
 
-    vast_files = sorted((campaign_dir / "_config").glob("*.vast")) \
-        if (campaign_dir / "_config").is_dir() else []
-    if not vast_files:
+    from robovast.common.results_utils import campaign_vast_or_none
+
+    found = campaign_vast_or_none(campaign_dir)
+    if found is None:
         return _stage(STAGE_FAILED, "no .vast under _config/")
     try:
-        raw = _read_vast(vast_files[0])
+        raw = _read_vast(found)
     except Exception as e:  # pylint: disable=broad-except
-        return _stage(STAGE_FAILED, f"{vast_files[0].name} could not be parsed: {e}")
+        return _stage(STAGE_FAILED, f"{found.name} could not be parsed: {e}")
 
     version = config_version(raw)
     if not needs_upgrade(raw):
