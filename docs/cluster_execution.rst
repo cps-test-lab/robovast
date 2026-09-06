@@ -2021,6 +2021,70 @@ so they can live in ``.env`` rather than on the command line. See ``.env.example
    ``kubectl get deploy -o yaml`` in the namespace can read them. Scope the HMAC key
    or service account to that one bucket.
 
+.. _cluster-tailnet:
+
+Reaching it over a tailnet instead of publishing it
+----------------------------------------------------
+
+An Ingress asks for a public DNS record, a certificate for it, and an address that survives
+the cluster being rebuilt. A deployment that has none of those, or wants nothing listening
+on the internet at all, can be reached over a WireGuard tailnet instead: a Tailscale node
+runs beside the service, **dials out** to a coordination server, and answers on the tailnet
+under a stable name. No firewall rule is opened and no address changes when the cluster does.
+
+Coordination is whatever you point it at — Tailscale's own service, or a self-hosted
+`Headscale <https://headscale.net>`_ so that no third party is trusted with the tailnet.
+RoboVAST passes ``--login-server`` through and lets the node register.
+
+**Off by default, and asked for per cluster.** The credential lives in the environment, so
+a pre-auth key does not land in shell history; *which* cluster is on a tailnet is decided on
+the setup command, because one ``.env`` and two contexts would otherwise publish whichever
+happened to be current — a deployment nobody meant to expose.
+
+.. code-block:: bash
+
+   # .env — the credential
+   ROBOVAST_TAILNET_LOGIN_SERVER=https://headscale.example.org
+   ROBOVAST_TAILNET_AUTHKEY=<a pre-auth key from that server>
+   ROBOVAST_TAILNET_HOSTNAME=robovast        # optional; the name users type
+
+.. code-block:: bash
+
+   # the decision — this cluster, and no other
+   vast cluster setup <flavor> --tailnet
+
+Users then reach the web UI at ``http://robovast`` on the tailnet with the access token from
+``vast service token``. Nothing but a Tailscale client is needed — no kubeconfig, no
+``kubectl``, no port-forward.
+
+Written on **every** setup: omitting ``--tailnet`` removes a node a previous setup deployed,
+rather than leaving one nobody remembers configuring still answering. ``--tailnet`` with no
+credential in the environment is an argument error, since it would deploy a node that can
+never register.
+
+``vast cluster upgrade`` reconciles a node that **already exists**, so a rotated key reaches
+a running deployment without a re-setup — and creates none, so upgrading two clusters from
+one shell cannot publish the second by accident. It sits beside the RBAC and the registry
+route, so ``--no-restart`` picks it up without rolling the service pod.
+
+.. note::
+
+   **Plain HTTP on the tailnet, deliberately.** The transport is already WireGuard, so a
+   certificate would encrypt what is encrypted. It works because the session cookie's
+   ``Secure`` flag follows the request scheme — the reason an Ingress refuses plain HTTP is
+   that the token would cross an untrusted network, which is exactly what a tailnet is not.
+
+.. warning::
+
+   **This does not make in-cluster builds possible.** The prefix campaigns push to has to be
+   pullable by the *kubelet*, and nodes are not on the tailnet — they resolve no tailnet name
+   and hold no key. So this publishes the service to people, never to the cluster's own
+   container runtime, and ``can_build_images`` stays false. An Ingress, or an external
+   registry, is what changes that.
+
+   The node itself is unprivileged (userspace networking), so it deploys on a managed
+   cluster where the alternative — ``NET_ADMIN`` plus ``/dev/net/tun`` — is refused.
+
 .. _cluster-config-rke2:
 
 RKE2

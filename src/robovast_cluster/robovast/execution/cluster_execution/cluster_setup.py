@@ -264,6 +264,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
                  jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
+                 tailnet=False,
                 
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
@@ -596,6 +597,27 @@ def setup_server(config_name=None, list_configs=False, force=False,
                    job_node_labels=jobs_node_labels,
                    registry_password=registry_password,
                    **service_kwargs)
+    # Reconciled on every setup, asked for or not, for the reason the governor DaemonSet
+    # is: setup writes the cluster's whole configuration, so dropping --tailnet takes the
+    # node away rather than leaving one nobody remembers configuring still answering.
+    # Placed after the service exists, because it proxies to it.
+    from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+    from .service_deploy import SERVICE_NAME, SERVICE_PORT  # noqa: PLC0415
+    try:
+        tailnet_deploy.ensure_tailnet(
+            namespace=namespace, kube_context=kube_context,
+            node_selector=store_selector or None, enabled=tailnet,
+            service_host=f"{SERVICE_NAME}.{namespace}.svc", service_port=SERVICE_PORT)
+    except ValueError:
+        # --tailnet with no credential in the environment is an argument error and is
+        # raised; anything else here is an optional route failing to come up, which must not
+        # fail a setup that otherwise succeeded -- the service is reachable by port-forward
+        # regardless.
+        raise
+    except Exception as exc:  # noqa: BLE001 - see above
+        logger.warning("Could not deploy the tailnet node: %s. The service is up and "
+                       "reachable with 'kubectl port-forward'; re-run setup to retry.", exc)
+
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull
@@ -762,6 +784,11 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     # `remove_daemonset` and the note the CLI prints.
     from .node_governor import delete_cpu_governor  # pylint: disable=import-outside-toplevel
     governor_removal = delete_cpu_governor(namespace, kube_context)
+    # The tailnet node goes with the deployment it fronts: left behind it would answer on a
+    # tailnet for a service that no longer exists, and its WireGuard identity would outlive
+    # everything that justified issuing it.
+    from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+    tailnet_deploy.remove(namespace, kube_context)
     # Same reasoning, and the same reason it is unconditional: a Deployment left behind holds a
     # pod and its reservation forever for a deployment that no longer exists. Its volume claim
     # is deliberately kept -- see `delete_buildkitd`.

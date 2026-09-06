@@ -162,6 +162,12 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -210,6 +216,12 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -261,6 +273,12 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -334,6 +352,12 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     # Returns None on success; it raises on every non-convergence.
@@ -351,6 +375,46 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     assert result.exit_code == 0, result.output
     assert apply_rbac.called, "upgrade left the controller RBAC unreconciled"
     assert apply_rbac.call_args.kwargs["namespace"] == "default"
+
+
+def test_upgrade_reconciles_a_tailnet_node_that_already_exists(monkeypatch):
+    """It carries a rotated key or a changed serve config into a cluster that is already on
+    a tailnet -- and creates nothing.
+
+    `setup --tailnet` is what decides. Creating here would let an operator upgrading two
+    clusters from one shell publish the second by accident, which is the whole reason the
+    decision is a flag rather than an environment variable.
+    """
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import cluster_setup, tailnet_deploy
+
+    ensure = mock.Mock(return_value="robovast")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", ensure)
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: ("rke2", {"namespace": "default"}))
+    monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
+    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:a")
+    monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
+    monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster",
+                        lambda *a, **k: {})
+
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
+
+    assert result.exit_code == 0, result.output
+    assert ensure.called, "an environment-configured route needs the environment command"
+    assert ensure.call_args.kwargs["namespace"] == "default"
+    assert "robovast" in result.output
 
 
 def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
@@ -393,6 +457,12 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     # Same moment, same reason: the registry's password file is put in the cluster before
     # the store pod that mounts it, and that reads the API server too.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
