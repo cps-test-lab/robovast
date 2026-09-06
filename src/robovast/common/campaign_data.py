@@ -1195,6 +1195,46 @@ def read_scenario_config(config_dir: Path) -> dict[str, Any]:
     return content
 
 
+def read_config_channels(config_dir: Path) -> dict[str, Any]:
+    """What each variation channel resolved to for one configuration.
+
+    Reads the three per-channel records a configuration carries -- ``scenario.config``,
+    ``sim.config`` and ``sut.config`` -- and returns them under the channel names a ``.vast``
+    writes its destinations on. A channel a campaign does not use has no file and no key, so
+    the result says which channels this configuration actually has.
+
+    This is the single reader for all three, so what reaches the index is by construction
+    what the results tree records. The ``sut`` block is already flat
+    (``{"<source>.<path>": value}``); the ``sim`` block is the backend's whole resolved
+    configuration and stays nested here.
+
+    Args:
+        config_dir: Path to the configuration directory
+            (e.g. ``campaign-<id>/<config-name>``).
+
+    Returns:
+        ``{channel: block}`` for every channel this configuration recorded; ``{}`` when it
+        recorded none.
+    """
+    channels: dict[str, Any] = {}
+    try:
+        scenario = read_scenario_config(config_dir)
+    except FileNotFoundError:
+        scenario = None
+    if isinstance(scenario, dict) and scenario:
+        channels["scenario"] = scenario
+
+    for channel, filename in (("sim", "sim.config"), ("sut", "sut.config")):
+        path = config_dir / "_config" / filename
+        if not path.exists():
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            block = yaml.safe_load(f)
+        if isinstance(block, dict) and block:
+            channels[channel] = block
+    return channels
+
+
 def read_test_result(run_dir: Path) -> dict[str, Any]:
     """Parse JUnit test result from ``test.xml``.
 

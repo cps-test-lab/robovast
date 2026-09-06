@@ -366,6 +366,12 @@ owns and reads that file* rather than scoping its name — the ``sut`` role, or 
 container beside it for a stack that runs in more than one. Two containers declaring the
 same name is refused for that reason, naming both.
 
+**The pairing is one to one in both directions**: two sources may not name the same file
+either. Each source is loaded, edited and written back as a whole document, so two names for
+one file produce two documents and one staged path — the second write replaces the first, and
+every destination on the losing source silently does nothing. A file has one spelling that
+works, so the second name is refused rather than picked.
+
 **A format owns its own path syntax.** RoboVAST splits a destination once, on the first
 ``.``, to find the source; everything after that goes to the file's format untouched. So
 the mapping formats take dotted keys — with ``[0]`` for a list index and ``['a.b']`` for a
@@ -419,10 +425,16 @@ What each configuration gets
 """"""""""""""""""""""""""""
 
 A **rewritten copy** of every source it touched, staged under its own configuration
-directory and mounted at ``/config/<config-name>/<path>``. The campaign's own file is never
-modified. A scenario parameter whose value is the source's declared path is rewritten to
-that configuration's copy, so the trial launches the file belonging to the cell it is
+directory and mounted at ``/config/<path>`` — the declared path, exactly where the
+campaign's own copy would otherwise be. The campaign's file is never modified, and it is not
+staged beside the copy, so that path holds one file: the one belonging to the cell that is
 running.
+
+Beside them, ``<campaign>/<config>/_config/sut.config`` records the whole resolved block —
+a **record**, not an input, mirroring what ``sim:`` writes to ``sim.config`` and ``scenario:``
+to ``scenario.config``. The rewritten copies are what the cell runs; this is what a reader
+consults to see which factor produced which value, without diffing two copies of a stack's
+configuration.
 
 Two things are refused rather than left to go wrong quietly:
 
@@ -433,6 +445,11 @@ Two things are refused rather than left to go wrong quietly:
   (``CAMPAIGN_ID`` and its siblings). ``execution.env`` refuses these already; this carrier
   reaches the same environment by a different route, so it is guarded against the same set
   rather than becoming a way around the rule.
+
+A source whose path would land on a file the run itself owns at ``/config`` — the
+entrypoint, the scenario, a parameter document — is refused at composition, naming the set.
+Only the mount root is contested; the run writes nothing into a subdirectory of it, so
+``nav2/scenario.config`` is a campaign's own business.
 
 A declared source is **excluded from** ``run_files`` staging, so exactly one copy of it
 reaches the container. Campaigns stage their inputs with patterns (``files/*.yaml`` to pick
@@ -447,8 +464,12 @@ What is checked before anything runs
 
 Every destination is resolved against the declared source and checked against the file
 itself, at composition — the component that owns the schema is the one that says what is
-addressable. What must exist is the **parent**: a factor may legitimately set a key the file
-leaves at its default, so refusing an absent leaf would reject a correct campaign.
+addressable. A configuration's fixed ``sut:`` block is checked exactly as a factor is: a
+mapping format's assignment *creates* the path it is given, so an unchecked misspelling
+would write a key the stack never reads, in a cell that runs and reports normally.
+
+What must exist is the **parent**: a factor may legitimately set a key the file leaves at
+its default, so refusing an absent leaf would reject a correct campaign.
 
 A format that cannot decide (a malformed XPath, say) leaves that destination unchecked and
 **says so at warning level**. A skipped check is never silent, because silence is
@@ -465,7 +486,10 @@ Each plugin's slots, and whether they are required, are listed with it under
 
 .. note::
 
-   You cannot specify both ``parameters`` and ``variations`` for the same scenario. Use ``parameters`` for fixed values or ``variations`` for parameter sweeps.
+   ``parameters`` and ``variations`` may be given together for the same scenario, on every
+   channel: the fixed block is what the configuration starts from and a factor writing the
+   same destination wins over it. That is how a cell holds one thing fixed while sweeping
+   another.
 
 
 sim
@@ -493,6 +517,30 @@ A nested mapping against the backend's own schema, merged over
 :ref:`execution.containers.simulation <config-containers>` — which stays the campaign-wide
 *default*. A world belongs to a configuration, never to a campaign and never to a single
 run.
+
+
+sut
+"""
+
+**Type:** Dictionary
+
+**Required:** No
+
+Fixed values for **how the system under test is configured** in this configuration — the
+third channel's sibling of ``parameters`` and ``sim``:
+
+.. code-block:: yaml
+
+   configuration:
+   - name: no-voxel
+     sut:
+       nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
+
+A **flat** mapping of ``<source>.<path>`` to value, unlike ``sim``: everything after the
+source name belongs to that file's format and may be an XPath, which no nested mapping can
+express. Merged under any variation writing the same destination, and checked against the
+declaring file exactly as a factor's destination is. See :ref:`the sut channel <sut-channel>`
+for what a source is.
 
 
 Execution Section
@@ -732,8 +780,21 @@ locally.
 
 Packing is invisible to results: every run's output is always written to
 ``<config>/<run>/`` regardless of how runs were grouped into jobs (see
-:ref:`results-output-structure`). The number of jobs is
-``ceil(num_configs * runs / runs_per_job)``.
+:ref:`results-output-structure`).
+
+An **upper bound**, not a target. A job holds one compiled world and one configuration's
+files, so runs only share a job when they agree about both, and
+``ceil(num_configs * runs / runs_per_job)`` is the count you get when they all do:
+
+- configurations resolving to **different simulator settings** are never packed together —
+  the simulator compiles its model once per process, so the second cell would run against
+  the first one's geometry;
+- configurations that **stage files of their own** (a ``sut:`` block, or a variation that
+  generates one) are never packed with a *different* configuration — each cell's copy is
+  mounted at ``/config/<path>``, and only one file can be there.
+
+Neither restricts a configuration's own repeated runs, which is what ``runs_per_job`` is
+for, and a campaign that varies only scenario parameters is affected by neither.
 
 .. code-block:: yaml
 

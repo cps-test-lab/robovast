@@ -104,6 +104,10 @@ def test_infeasible_draws_are_reported_with_their_params(tmp_path):
     assert "4 of 4" in problem["message"]
     assert "speed" in problem["message"]        # the offending params are named
     assert problem["field"] == "search.search_space"
+    # A whole sample that failed says more than a partial one, and says it here: a few
+    # draws are weak evidence about a space that is merely mostly infeasible, so this
+    # stays an advisory -- while naming what the campaign is heading for and what stops it.
+    assert "may produce nothing at all" in problem["message"]
 
 
 def test_preview_sample_separates_composed_from_infeasible(tmp_path):

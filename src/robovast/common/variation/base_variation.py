@@ -69,6 +69,37 @@ class VariationInfeasibleError(RuntimeError):
         self.config_name = config_name
 
 
+class VariationConfigError(ValueError):
+    """The parameters handed to a plugin do not satisfy the model that plugin declares
+    (an amount outside its supported range, a missing required field), as opposed to a
+    failure in the plugin's own logic.
+
+    A *narrow* class, and that is what makes it safe for search composition to treat like
+    an unrealizable draw: a config model can only report that these values are not
+    acceptable to this plugin, never that the plugin is broken. A search proposing a value
+    outside a plugin's domain is the search space and the plugin disagreeing about the
+    bounds, which is a property of the draw -- and one refused draw must not end a campaign
+    the way it did while this was an anonymous ``ValueError`` raised where nothing could
+    name it.
+
+    A batch does not tolerate it, and should not: every cell of a sweep is stated, so a
+    value a plugin refuses is the sweep's own bounds being wrong. Kept a separate type from
+    :class:`VariationInfeasibleError` because the two say different things to a reader --
+    "this plugin will not accept that value" against "no arrangement realizes that draw" --
+    and only the first is answered by editing the file.
+
+    ``config_name`` is filled in by composition, and ``include_traceback = False`` for the
+    reason :class:`VariationInfeasibleError` gives: the message names the plugin, the config
+    and the field, which is the whole of what a reader can act on.
+    """
+
+    include_traceback = False
+
+    def __init__(self, message, config_name=None):
+        super().__init__(message)
+        self.config_name = config_name
+
+
 class DestinationConfig(VariationConfig):
     """Config base for a variation whose outputs the author binds to channels.
 
@@ -364,7 +395,14 @@ class Variation():
         reset_config_index()
         self.base_path = base_path
         if self.CONFIG_CLASS is not None:
-            self.parameters = get_validated_config(parameters, self.CONFIG_CLASS)
+            try:
+                self.parameters = get_validated_config(parameters, self.CONFIG_CLASS)
+            except ValueError as exc:
+                # Named, so composition can tell "this plugin will not accept that value"
+                # from a failure in the plugin itself. Only the validation call is wrapped:
+                # anything else that goes wrong while constructing a plugin is a defect and
+                # must keep aborting.
+                raise VariationConfigError(str(exc)) from exc
         else:
             self.parameters = parameters
         self.general_parameters = general_parameters
