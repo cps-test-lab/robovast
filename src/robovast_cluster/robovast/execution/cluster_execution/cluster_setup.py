@@ -176,6 +176,30 @@ def load_cluster_config_plugins():
     return plugins
 
 
+def _resolve_registry_host(service_kwargs, namespace, kube_context):
+    """The host this deployment's registry answers on, or ``""`` when it is unpublished.
+
+    One lookup for two consumers that must agree: the credential the registry enforces is
+    keyed by this host in the clients' ``dockerconfigjson``, and the prefix campaigns build
+    into is derived from it. Resolved separately they could disagree, and the deployment
+    would authenticate under one name while telling every campaign to push to another.
+
+    Tolerant on purpose: this dials the API server, and setup must not hang or die because
+    it could not *look up* something it is merely trying to preserve. No answer means the
+    deployment is not published, which is a real state and not a failure.
+    """
+    from .service_deploy import published_host  # pylint: disable=import-outside-toplevel
+
+    host = (service_kwargs or {}).get("registry_host") or \
+        (service_kwargs or {}).get("ingress_host")
+    if host:
+        return host
+    try:
+        return published_host(namespace, kube_context)
+    except Exception:  # noqa: BLE001 - unreachable, unpublished, or no RBAC
+        return ""
+
+
 def get_cluster_config(config_name):
     """Get a cluster configuration instance by name.
 
@@ -486,6 +510,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from .service_deploy import ensure_index_secret  # pylint: disable=import-outside-toplevel
     ensure_index_secret(namespace, kube_context)
 
+    # The registry's password file, for the same reason and at the same moment: the store
+    # pod mounts it. Empty host -> no credential, because an unpublished deployment has no
+    # route to its registry and cannot build at all; publishing is what makes it reachable,
+    # so publishing is what turns auth on.
+    from .service_deploy import \
+        ensure_registry_htpasswd  # pylint: disable=import-outside-toplevel
+    registry_host = _resolve_registry_host(service_kwargs, namespace, kube_context)
+    registry_password = ensure_registry_htpasswd(namespace, kube_context, registry_host)
+
     # The storage flags for the registry and the index travel to the *store pod* now, not
     # to the service Deployment: that is where both volumes live. Passed as named arguments
     # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
@@ -514,6 +547,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
         index_storage_size=service_kwargs.pop("index_storage_size", ""),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
+        registry_authenticated=bool(registry_password),
         # Read, not popped: `deploy_service` needs the same value to build the Ingress whose
         # /v2 rule names this Service as a backend. Both halves or the route is dead.
         ingress_class=service_kwargs.get("ingress_class", ""),
@@ -526,7 +560,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # whose registry route and index DSN point at containers that do not exist.
     from .service_deploy import \
         verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
-    verify_store_pod_infrastructure(namespace, kube_context)
+    verify_store_pod_infrastructure(namespace, kube_context,
+                                    registry_authenticated=bool(registry_password))
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
     # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via
@@ -536,7 +571,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
-    from .service_deploy import deploy_service, published_host, wait_for_service_ready
+    from .service_deploy import deploy_service, wait_for_service_ready
     # Keep the registry prefix a re-run cannot drop. It is baked from the Ingress host,
     # so a `setup` without --ingress-host must not make `_registry_env` return None: the
     # Secret would go unlisted from the Deployment's envFrom, the pod would lose the prefix,
@@ -545,19 +580,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     #
     # `deploy_service` separates registry_host from ingress_host precisely so a caller
     # can re-bake the prefix without rebuilding the Ingress; `upgrade` already used that
-    # and `setup` did not. Recovering the host from the live Ingress makes the two agree.
-    if "registry_host" not in service_kwargs:
-        host = service_kwargs.get("ingress_host")
-        if not host:
-            # Only now, and only tolerantly: this dials the API server, and setup must
-            # not hang or die because it could not *look up* something it is merely
-            # trying to preserve. No answer means there is nothing to preserve.
-            try:
-                host = published_host(namespace, kube_context)
-            except Exception:  # noqa: BLE001 - unreachable, unpublished, or no RBAC
-                host = ""
-        if host:
-            service_kwargs["registry_host"] = host
+    # and `setup` did not. The host resolved once above is what both the password file and
+    # the prefix are derived from, so the registry cannot end up authenticating under one
+    # name while campaigns are told to push to another.
+    if "registry_host" not in service_kwargs and registry_host:
+        service_kwargs["registry_host"] = registry_host
     # The job node pool travels in the service's env because the admission controller is
     # what enforces it and the controller runs there. Passed as its own argument, NOT as
     # `env`: that parameter is the WHOLE environment rather than an addition to it, so a
@@ -567,6 +594,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
                    job_node_labels=jobs_node_labels,
+                   registry_password=registry_password,
                    **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)

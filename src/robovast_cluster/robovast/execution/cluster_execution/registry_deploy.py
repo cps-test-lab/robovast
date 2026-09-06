@@ -47,10 +47,18 @@ configuration, and so does a developer's laptop -- ``docker pull`` from a workst
 works against the same URL, which is how someone reproduces a campaign's exact image
 locally.
 
-The registry is deliberately **unauthenticated**. It shares a hostname with the UI, which
-*is* token-gated, so it is the more reachable half of that host; acceptable while the
-service is not exposed to the internet, and the first thing to revisit when it is. Adding
-auth is an htpasswd Secret plus an Ingress annotation -- see ``docs/cluster_execution.rst``.
+The registry **authenticates wherever it is published**, and does so in the registry
+rather than at the Ingress. An Ingress annotation would have been smaller, but the only
+ones that exist are ingress-nginx's, and a cluster whose controller is anything else --
+GKE's ``gce``, for one -- would accept them, ignore them, and serve an open registry while
+reporting success. Auth the registry enforces itself holds on every controller and on the
+in-cluster route as well.
+
+It stays open on a deployment with no Ingress, because there is then no route to it: the
+prefix campaigns build into is derived from the Ingress host, so an unpublished deployment
+cannot build at all. Publishing is exactly the moment it becomes reachable, so publishing
+is what turns auth on -- the same rule that already refuses an Ingress without an access
+token.
 """
 
 import logging
@@ -77,6 +85,62 @@ REGISTRY_DATA_DIR = "/var/lib/registry"
 
 #: Name of the volume carrying :data:`REGISTRY_DATA_DIR`.
 REGISTRY_VOLUME_NAME = "registry-data"
+
+#: The registry's own debug listener, which serves ``/debug/health`` **unauthenticated**.
+#:
+#: Load-bearing once auth is on: the probes used to read ``/v2/``, which then answers 401,
+#: and an ``httpGet`` probe counts anything outside 200-399 as a failure. The container
+#: would never become Ready, the store pod would never come up, and nothing about the
+#: message would point at authentication. Not published by any Service -- it is reachable
+#: only from the kubelet on the pod's own address.
+REGISTRY_DEBUG_PORT = 5001
+
+#: The one account the built-in registry knows. A name rather than a per-user identity on
+#: purpose: this authenticates *the deployment's own* push and pull, which is one actor --
+#: BuildKit pushing, the nodes pulling, and the service asking whether a ref already
+#: exists. Who may reach the UI is a separate question with a separate answer.
+REGISTRY_AUTH_USER = "robovast"
+
+#: Secret holding the bcrypt htpasswd file the registry reads, and the directory it is
+#: mounted at. Separate from the ``dockerconfigjson`` Secret carrying the same credential
+#: for the clients: one is the server's password file, the other is what a docker client
+#: presents, and they are different formats of one fact minted in one place.
+REGISTRY_HTPASSWD_SECRET_NAME = "robovast-registry-htpasswd"
+REGISTRY_HTPASSWD_KEY = "htpasswd"
+REGISTRY_AUTH_VOLUME_NAME = "registry-auth"
+REGISTRY_AUTH_DIR = "/etc/robovast-registry-auth"
+REGISTRY_AUTH_REALM = "robovast"
+
+
+def htpasswd_entry(password: str, user: str = REGISTRY_AUTH_USER) -> str:
+    """One bcrypt ``user:hash`` line, which is the only format the registry accepts.
+
+    ``registry:2`` verifies with Go's bcrypt and rejects an htpasswd file written with
+    MD5 or SHA1 -- it does not fall back, it fails every request, so there is no weaker
+    hash to accidentally choose here.
+    """
+    import bcrypt  # noqa: PLC0415
+
+    digest = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return f"{user}:{digest}"
+
+
+def htpasswd_secret_manifest(namespace: str, password: str,
+                             user: str = REGISTRY_AUTH_USER) -> dict:
+    """The Secret :func:`registry_container` mounts as its password file."""
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": REGISTRY_HTPASSWD_SECRET_NAME, "namespace": namespace,
+                     "labels": {"app": "robovast-service"}},
+        "stringData": {REGISTRY_HTPASSWD_KEY: htpasswd_entry(password, user)},
+    }
+
+
+def registry_auth_volume() -> dict:
+    """The volume carrying the htpasswd file into the registry container."""
+    return {"name": REGISTRY_AUTH_VOLUME_NAME,
+            "secret": {"secretName": REGISTRY_HTPASSWD_SECRET_NAME}}
 
 #: Default host path backing the registry when no StorageClass is available. Declared in
 #: :mod:`.data_paths` with every other tenant's, so the resolver that places them all and the
@@ -119,35 +183,45 @@ def registry_prefix(ingress_host):
     return (ingress_host or "").strip()
 
 
-def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH):
+def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH, authenticated=False):
     """The registry container to run in the object-store pod.
 
     *storage_path* is unused here (the volume carries it) and accepted so callers read
     as a pair with :func:`registry_volume`.
     """
     del storage_path
+    env = [
+        # Let a re-pushed tag replace its predecessor and let the garbage collector
+        # reclaim it. Without this the registry refuses deletes outright, and an
+        # experiment image rebuilt a hundred times keeps a hundred copies.
+        {"name": "REGISTRY_STORAGE_DELETE_ENABLED", "value": "true"},
+        {"name": "REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY",
+         "value": REGISTRY_DATA_DIR},
+        # Serves /debug/health without auth, which is what the probes read. See
+        # REGISTRY_DEBUG_PORT: probing /v2/ stops working the moment auth is on.
+        {"name": "REGISTRY_HTTP_DEBUG_ADDR", "value": f":{REGISTRY_DEBUG_PORT}"},
+    ]
+    mounts = [{"name": REGISTRY_VOLUME_NAME, "mountPath": REGISTRY_DATA_DIR}]
+    if authenticated:
+        env += [
+            {"name": "REGISTRY_AUTH", "value": "htpasswd"},
+            {"name": "REGISTRY_AUTH_HTPASSWD_REALM", "value": REGISTRY_AUTH_REALM},
+            {"name": "REGISTRY_AUTH_HTPASSWD_PATH",
+             "value": f"{REGISTRY_AUTH_DIR}/{REGISTRY_HTPASSWD_KEY}"},
+        ]
+        mounts.append({"name": REGISTRY_AUTH_VOLUME_NAME,
+                       "mountPath": REGISTRY_AUTH_DIR, "readOnly": True})
+    probe = {"httpGet": {"path": "/debug/health", "port": REGISTRY_DEBUG_PORT}}
     return {
         "name": REGISTRY_CONTAINER_NAME,
         "image": REGISTRY_IMAGE,
         "imagePullPolicy": "IfNotPresent",
         "ports": [{"containerPort": REGISTRY_PORT, "name": "registry"}],
-        "env": [
-            # Let a re-pushed tag replace its predecessor and let the garbage collector
-            # reclaim it. Without this the registry refuses deletes outright, and an
-            # experiment image rebuilt a hundred times keeps a hundred copies.
-            {"name": "REGISTRY_STORAGE_DELETE_ENABLED", "value": "true"},
-            {"name": "REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY",
-             "value": REGISTRY_DATA_DIR},
-        ],
-        "volumeMounts": [{"name": REGISTRY_VOLUME_NAME,
-                          "mountPath": REGISTRY_DATA_DIR}],
+        "env": env,
+        "volumeMounts": mounts,
         "resources": REGISTRY_RESOURCES,
-        "readinessProbe": {
-            "httpGet": {"path": "/v2/", "port": REGISTRY_PORT},
-            "initialDelaySeconds": 2, "periodSeconds": 10},
-        "livenessProbe": {
-            "httpGet": {"path": "/v2/", "port": REGISTRY_PORT},
-            "initialDelaySeconds": 10, "periodSeconds": 20},
+        "readinessProbe": dict(probe, initialDelaySeconds=2, periodSeconds=10),
+        "livenessProbe": dict(probe, initialDelaySeconds=10, periodSeconds=20),
     }
 
 

@@ -19,6 +19,9 @@ python = ">=3.12,<3.14"
 # installs `robovast-cluster` into the pod, and every module here imports `robovast`.
 robovast = "^2.0.0"
 kubernetes = "^34.1"
+# The built-in registry's password file. ``registry:2`` verifies with Go's bcrypt and
+# rejects anything weaker, so this is the hash or no auth at all -- see registry_deploy.
+bcrypt = "^4.0"
 boto3 = "^1.35"
 google-cloud-storage = "^2.0"
 

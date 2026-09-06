@@ -1260,25 +1260,80 @@ def _registry_ca_manifest(namespace):
     }
 
 
-def _registry_dockerconfig_manifest(namespace):
-    """A ``kubernetes.io/dockerconfigjson`` Secret for registry push/pull, or ``None``.
+def _auth_entry(user, password):
+    """One ``auths`` entry, in the three shapes a docker client may read."""
+    import base64
+    return {"username": user, "password": password,
+            "auth": base64.b64encode(f"{user}:{password}".encode()).decode()}
 
-    Created only when ``ROBOVAST_REGISTRY_SERVER`` + ``ROBOVAST_REGISTRY_USERNAME`` +
-    ``ROBOVAST_REGISTRY_PASSWORD`` are set at setup (an existing external registry —
-    the Phase-1 path). The credentials never leave the cluster and never cross the
-    client interface.
+
+def existing_registry_password(namespace="default", kube_context=None, host=""):
+    """The built-in registry's password from the deployed Secret, or ``""``.
+
+    **The dockerconfigjson is where the plaintext lives**, because the registry's own copy
+    is a bcrypt hash and cannot be read back. So this is the one place a re-run recovers it
+    from, and recovering it is what stops a second ``setup`` minting a new password, leaving
+    the nodes' pull Secret disagreeing with the registry's password file, and turning every
+    campaign's image pull into a 401 that nothing reports as a credential problem.
     """
     import base64
     import json
+
+    if not host:
+        return ""
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(context=kube_context)
+    try:
+        secret = client.CoreV1Api().read_namespaced_secret(
+            REGISTRY_PUSH_SECRET_NAME, namespace)
+    except ApiException:
+        return ""
+    raw = (secret.data or {}).get(".dockerconfigjson", "")
+    if not raw:
+        return ""
+    try:
+        auths = json.loads(base64.b64decode(raw).decode()).get("auths", {})
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    return (auths.get(host) or {}).get("password", "") or ""
+
+
+def _registry_dockerconfig_manifest(namespace, builtin_host="", builtin_password=""):
+    """A ``kubernetes.io/dockerconfigjson`` Secret for registry push/pull, or ``None``.
+
+    Carries up to two entries, because one Secret is what every consumer already looks for
+    -- the build Job's push, a campaign pod's ``imagePullSecrets``, the image warmer and
+    the service's own "already pushed?" probe all name
+    :data:`REGISTRY_PUSH_SECRET_NAME` and nothing else:
+
+    * an **external** registry, when ``ROBOVAST_REGISTRY_SERVER`` +
+      ``ROBOVAST_REGISTRY_USERNAME`` + ``ROBOVAST_REGISTRY_PASSWORD`` are set at setup;
+    * the **built-in** registry, when this deployment is published and therefore
+      authenticates (*builtin_host* / *builtin_password*).
+
+    A ``dockerconfigjson`` is keyed by host, so the two coexist without either needing to
+    know about the other. The credentials never leave the cluster and never cross the
+    client interface.
+    """
     import os
     server = os.environ.get("ROBOVAST_REGISTRY_SERVER", "").strip()
     user = os.environ.get("ROBOVAST_REGISTRY_USERNAME", "").strip()
     password = os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()
-    if not (server and user and password):
+    auths = {}
+    if server and user and password:
+        auths[server] = _auth_entry(user, password)
+    if builtin_host and builtin_password:
+        from . import registry_deploy  # pylint: disable=import-outside-toplevel
+        auths[builtin_host] = _auth_entry(registry_deploy.REGISTRY_AUTH_USER,
+                                          builtin_password)
+    if not auths:
         return None
-    auth = base64.b64encode(f"{user}:{password}".encode()).decode()
-    dockercfg = {"auths": {server: {"username": user, "password": password,
-                                    "auth": auth}}}
+    import json
+    dockercfg = {"auths": auths}
     return {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -1434,6 +1489,60 @@ def existing_index_password(namespace, kube_context=None):
         raise
     encoded = (secret.data or {}).get(index_deploy.INDEX_PASSWORD_KEY, "")
     return base64.b64decode(encoded).decode() if encoded else ""
+
+
+def ensure_registry_htpasswd(namespace="default", kube_context=None, host="",
+                             password=""):
+    """Put the built-in registry's password file in the cluster; return the password.
+
+    Called by ``cluster setup`` **before** the store pod is applied, for the same reason
+    :func:`ensure_index_secret` is: the registry container mounts this Secret, and a pod
+    created without it sits in CreateContainerConfigError.
+
+    Returns ``""`` when *host* is empty. An unpublished deployment has no route to its
+    registry and no prefix to build into, so there is nothing to protect and no credential
+    to invent -- see this module's registry counterpart in ``registry_deploy``.
+
+    The password is **preserved**, never rotated, and recovered from the client Secret
+    rather than from this one, which holds only a bcrypt hash. Minting a second password
+    would leave the nodes' pull credential disagreeing with the registry's password file,
+    and the symptom -- every image pull failing with a 401 well after setup reported
+    success -- names nothing that would lead anyone here.
+    """
+    if not host:
+        return ""
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel
+
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+
+    password = password or existing_registry_password(namespace, kube_context, host)
+    minted = not password
+    password = password or generate_token()
+
+    load_kube_config(context=kube_context)
+    core = client.CoreV1Api()
+    body = registry_deploy.htpasswd_secret_manifest(namespace, password)
+    try:
+        core.create_namespaced_secret(namespace=namespace, body=body)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        # Replaced rather than kept, and only ever with the password recovered above: the
+        # hash is salted, so an existing Secret cannot be compared against the plaintext to
+        # decide whether it already matches. Rewriting it from the same password is a no-op
+        # the registry re-reads on its next start; leaving a stale one there would keep a
+        # password nothing else still holds.
+        core.replace_namespaced_secret(
+            name=registry_deploy.REGISTRY_HTPASSWD_SECRET_NAME,
+            namespace=namespace, body=body)
+    if minted:
+        logger.info("Minted the built-in registry's credential; it is held only in the "
+                    "cluster and is reused by every later setup.")
+    return password
 
 
 def ensure_index_secret(namespace="default", kube_context=None):
@@ -1645,7 +1754,8 @@ def store_backing(pod):
     return None, None
 
 
-def verify_store_pod_infrastructure(namespace="default", kube_context=None):
+def verify_store_pod_infrastructure(namespace="default", kube_context=None,
+                                    registry_authenticated=False):
     """Raise unless the live ``robovast`` pod runs the registry and the index.
 
     Both moved out of this Deployment and into the pod ``vast cluster setup`` creates
@@ -1677,6 +1787,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
         raise
     missing = store_pod.missing_infrastructure(pod)
     if not missing:
+        _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated)
         return
     kind, detail = store_backing(pod)
     if kind == "emptyDir":
@@ -1699,6 +1810,30 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None):
         f"setup cannot add them. The remedy is 'vast cluster cleanup' then "
         f"'vast cluster setup', which recreates the pod; built images are rebuilt on "
         f"demand. {cost}")
+
+
+def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
+    """Say so when the credential exists but the running registry does not ask for it.
+
+    A warning and not a refusal, because the deployment works either way: this is the state
+    it was already in, and blocking every re-run of setup over it would be out of
+    proportion. What must not happen is silence -- a setup that minted a credential, wrote
+    both Secrets and reported success would otherwise read as having closed a hole it left
+    open, which is worse than never having claimed to.
+    """
+    from . import store_pod  # pylint: disable=import-outside-toplevel
+
+    if not registry_authenticated or store_pod.registry_enforces_auth(pod):
+        return
+    logger.warning(
+        "The registry credential is in place, but the %s pod in namespace %s is still "
+        "running a registry that does NOT require it: setup keeps an existing store pod as "
+        "it is, so a changed container spec cannot reach it. The registry stays open to "
+        "anyone who can reach the published host until the pod is recreated -- 'vast "
+        "cluster cleanup' then 'vast cluster setup'. Built images are rebuilt on demand, "
+        "and campaigns are unaffected; the clients already hold the credential and will "
+        "start using it the moment the registry asks.",
+        store_pod.STORE_POD_NAME, namespace)
 
 
 def published_host(namespace="default", kube_context=None):
@@ -1864,7 +1999,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
                       tls_secret="", issuer="", insecure_http=False,
-                      public_origin=None, registry_host="",
+                      public_origin=None, registry_host="", registry_password="",
                       workspaces_storage_path="", workspaces_storage_class="",
                       node_selector=None, index_password=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
@@ -1989,11 +2124,13 @@ def service_manifests(namespace="default", image=None, env=None,
         extra.append(auth_secret_manifest(namespace, auth_token))
         env_secret_names.append(AUTH_SECRET_NAME)
 
-    # Registry push/pull credentials (dockerconfigjson) — created only when an
-    # external registry's auth is configured at setup. Not an envFrom secret: it is
-    # mounted into the build Job and referenced as an imagePullSecret by campaign
-    # pods (both by name via the registry config env above).
-    registry_secret = _registry_dockerconfig_manifest(namespace)
+    # Registry push/pull credentials (dockerconfigjson) — for an external registry
+    # configured at setup, for the built-in one once it is published and therefore
+    # authenticates, or for both. Not an envFrom secret: it is mounted into the build Job
+    # and referenced as an imagePullSecret by campaign pods (both by name via the registry
+    # config env above).
+    registry_secret = _registry_dockerconfig_manifest(
+        namespace, builtin_host=registry_host, builtin_password=registry_password)
     if registry_secret:
         extra.append(registry_secret)
         # Created right here, so the Deployment can reference it without a lookup.
@@ -2179,7 +2316,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
-                   public_origin=None, registry_host="",
+                   public_origin=None, registry_host="", registry_password="",
                    workspaces_storage_path="", workspaces_storage_class="",
                    node_selector=None):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
@@ -2253,7 +2390,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
         insecure_http=insecure_http, public_origin=public_origin,
-        registry_host=registry_host,
+        registry_host=registry_host, registry_password=registry_password,
         workspaces_storage_path=workspaces_storage_path,
         workspaces_storage_class=workspaces_storage_class,
         node_selector=node_selector)
