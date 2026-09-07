@@ -163,7 +163,7 @@ check-config-fields: ## Fail if compat/config_fields.json is out of date with th
 	@python3 tools/config_fields.py --check
 
 .PHONY: check-config-version
-check-config-version: ## Fail if a config version bump is missing, or unnecessary
+check-config-version: ## Fail if a config version bump is missing, unnecessary, or left a sample behind
 	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)
 
 .PHONY: check-compat-version

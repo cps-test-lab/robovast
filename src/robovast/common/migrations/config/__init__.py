@@ -1,6 +1,6 @@
 """The ``.vast`` config version ladder.
 
-One of four version surfaces in robovast; ``migrations/README.md`` lists them all and is
+One of three version surfaces in robovast; ``migrations/README.md`` lists them all and is
 the entry point for adding a step to any of them.
 
 Mirrors :mod:`robovast.common.store`'s proven shape: a supported version, an ordered

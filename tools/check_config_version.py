@@ -13,6 +13,13 @@ Two failure directions, both real:
 The second is the one nobody catches by review, which is why it is checked here rather than
 left to judgement. Classification comes from ``compat/config_fields.json``; see
 ``tools/config_fields.py`` for why that file and not rendered JSON Schema.
+
+A third direction, checked against the working tree alone and so on every run: the number a
+*reader* is shown. Every ``version:`` a shipped example or a documentation sample declares
+must be the supported one, because strict authoring accepts no other -- a sample left behind
+hands the reader a starting point ``vast`` refuses. The docs are checked here rather than by
+a substitution in ``docs/conf.py`` because reStructuredText does not expand substitutions
+inside a literal block, which is where every one of those samples lives.
 """
 
 import argparse
@@ -26,6 +33,15 @@ _REPO = pathlib.Path(__file__).resolve().parents[1]
 _SNAPSHOT_REL = "compat/config_fields.json"
 _LADDER_REL = "src/robovast/common/migrations/config/__init__.py"
 _FIXTURES_REL = "src/robovast/common/migrations/fixtures"
+
+#: Where a ``version:`` is declared for a reader to copy: the shipped examples, and the
+#: YAML samples in the documentation.
+_DECLARING_GLOBS = (("configs/examples", "*.vast"), ("docs", "*.rst"))
+
+#: A ``version:`` declaration, anchored to a line of its own so it matches what a reader
+#: would copy -- not the word in prose, and not a dotted package version such as
+#: ``version: 2.1.0``, which the anchored integer group cannot match.
+_DECLARED_RE = re.compile(r"^[ \t]*version:[ \t]*(\d+)[ \t]*$", re.MULTILINE)
 
 
 #: Annotations that never described a file that could exist, and the reason each is a
@@ -140,6 +156,38 @@ def _fixture_changes(base: str) -> "tuple[list[str], list[str]]":
     return added, touched
 
 
+def _stale_declarations(version: int) -> list:
+    """One failure naming every shipped ``version:`` that is not *version*, or ``[]``."""
+    stale = []
+    for directory, pattern in _DECLARING_GLOBS:
+        for path in sorted((_REPO / directory).rglob(pattern)):
+            if "_build" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for match in _DECLARED_RE.finditer(text):
+                if int(match.group(1)) != version:
+                    line = text.count("\n", 0, match.start()) + 1
+                    stale.append(f"{path.relative_to(_REPO)}:{line} declares "
+                                 f"version {match.group(1)}")
+    if not stale:
+        return []
+    return [f"SUPPORTED_CONFIG_VERSION is {version}, but a shipped file declares another "
+            f"version:\n    "
+            + "\n    ".join(stale)
+            + "\n  Authoring accepts the supported version only, so each of these is a "
+              "starting point that would be refused."]
+
+
+def _report(failures: list) -> int:
+    """Print every failure at once and return the exit code."""
+    if not failures:
+        return 0
+    print("config version check FAILED\n", file=sys.stderr)
+    for failure in failures:
+        print(f"  - {failure}\n", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -147,19 +195,24 @@ def main() -> int:
                         help="Base ref to compare against (default: origin/main)")
     args = parser.parse_args()
 
-    if _git("rev-parse", "--verify", args.base, allow_fail=True) is None:
-        print(f"base ref {args.base!r} not found; skipping (nothing to compare against)")
-        return 0
-
-    base_ladder = _at(args.base, _LADDER_REL)
     head_ladder = (_REPO / _LADDER_REL).read_text(encoding="utf-8")
-    base_version = _supported_version(base_ladder)
     head_version = _supported_version(head_ladder)
     if head_version is None:
         sys.exit(f"could not read SUPPORTED_CONFIG_VERSION from {_LADDER_REL}")
+
+    # Reads the working tree only, so it holds however this run ends: the delta checks below
+    # need a base ref and a landed snapshot, and both of those are skippable.
+    failures = _stale_declarations(head_version)
+
+    if _git("rev-parse", "--verify", args.base, allow_fail=True) is None:
+        print(f"base ref {args.base!r} not found; skipping the delta check (nothing to "
+              f"compare against)")
+        return _report(failures)
+
+    base_version = _supported_version(_at(args.base, _LADDER_REL))
     if base_version is None:
         print(f"{_LADDER_REL} is new on this branch; skipping the delta check")
-        return 0
+        return _report(failures)
 
     delta = head_version - base_version
     base_raw = _at(args.base, _SNAPSHOT_REL)
@@ -171,19 +224,20 @@ def main() -> int:
         print(f"{_SNAPSHOT_REL} does not exist at {args.base}; skipping the schema "
               f"classification (nothing to compare against)")
         if delta != 0:
-            sys.exit(f"SUPPORTED_CONFIG_VERSION moved {base_version} -> {head_version} in "
-                     f"the same change that introduces {_SNAPSHOT_REL}. Land the snapshot "
-                     f"first, so the bump can be classified.")
-        return 0
+            failures.append(
+                f"SUPPORTED_CONFIG_VERSION moved {base_version} -> {head_version} in the "
+                f"same change that introduces {_SNAPSHOT_REL}. Land the snapshot first, so "
+                f"the bump can be classified.")
+        return _report(failures)
     base_snapshot = json.loads(base_raw)
     head_path = _REPO / _SNAPSHOT_REL
     if not head_path.exists():
-        sys.exit(f"{_SNAPSHOT_REL} is missing. Run: make config-fields")
+        failures.append(f"{_SNAPSHOT_REL} is missing. Run: make config-fields")
+        return _report(failures)
     head_snapshot = json.loads(head_path.read_text(encoding="utf-8"))
 
     breaking, reasons, additive = classify(base_snapshot, head_snapshot)
     added_goldens, touched_goldens = _fixture_changes(args.base)
-    failures = []
 
     if breaking and delta == 0:
         failures.append(
@@ -214,10 +268,7 @@ def main() -> int:
               "campaign becomes.")
 
     if failures:
-        print("config version check FAILED\n", file=sys.stderr)
-        for failure in failures:
-            print(f"  - {failure}\n", file=sys.stderr)
-        return 1
+        return _report(failures)
 
     summary = "breaking" if breaking else ("additive" if additive else "unchanged")
     print(f"config version check OK: schema {summary}, "
