@@ -171,6 +171,13 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         # trial look clean. See RunProgress.
         "batch_runs_no_result": st.runs.no_result if st.runs else 0,
         "batch_runs_failed": st.runs.failed if st.runs else 0,
+        # Whether the two counts above are final for this batch, because 0 alone cannot
+        # say. They are written once, when the batch's verdicts are tallied, so a poll
+        # partway through a batch that had already lost runs reads 0 -- which is also what
+        # a batch that lost nothing reads. Reported beside them rather than left to the
+        # docstring: a caller that has not read the docstring is exactly the caller that
+        # misreads the number.
+        "batch_outcomes_counted": bool(st.runs.outcomes_counted) if st.runs else False,
         "progress": _progress_from_status(st),
     }
     # How long the campaign has held this phase. A phase alone cannot separate slow
@@ -466,7 +473,8 @@ def get_campaign_status(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
-        batch_runs_failed, batch_runs_no_result}``, plus, on a search,
+        batch_runs_failed, batch_runs_no_result, batch_outcomes_counted}``, plus, on a
+        search,
         ``objective_name``/``objective_direction``/``batches_since_improvement``/
         ``objective_history`` (and ``objective_history_omitted`` when older batches were
         dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
@@ -479,6 +487,15 @@ def get_campaign_status(campaign_id: str) -> dict:
         Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
         completion cannot honestly be known). ``phase_age_s`` is the only signal for a
         phase with no run counter — ``initializing``, ``building``.
+
+        **Read ``batch_outcomes_counted`` before ``batch_runs_failed``.** The failure
+        counts are written once, when the current batch's per-run verdicts are tallied, so
+        until then they read 0 — and 0 is also what a batch that lost nothing reads. While
+        it is ``false``, ``batch_runs_failed: 0`` means "not counted yet" and is not
+        evidence of a healthy sweep; a poll mid-batch has read exactly that and concluded
+        the opposite. Whatever it says, a run's own JUnit verdict
+        (``run_view.status``/``passed``) remains the authority on that run; this aggregate
+        is a convenience, and this flag says when it is one worth having.
     """
     try:
         client = service_access.service_client()

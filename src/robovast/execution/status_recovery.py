@@ -101,7 +101,11 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     return {"completed": completed, "total": total, "failed": failed,
             "killed": counts.get("num_killed", 0),
             "invalid": counts.get("num_invalid", 0),
-            "no_result": max(0, total - completed)}
+            "no_result": max(0, total - completed),
+            # From verdicts already written, so there is no later moment at which these
+            # become final -- unlike a live batch, where the same 0 can mean "not tallied
+            # yet".
+            "outcomes_counted": True}
 
 
 def reconstruct_status_from_disk(campaign_dir: str | Path,

@@ -3357,9 +3357,21 @@ export interface components {
          *     A reader showing ``completed`` as a success count is therefore wrong; successes are
          *     ``completed - failed``.
          *
+         *     ``outcomes_counted`` says whether ``failed``, ``killed`` and ``invalid`` are final for
+         *     the batch they describe. They are written when the batch's per-run verdicts are
+         *     tallied, which happens once, at the end — so before then they read 0, and 0 is also
+         *     what a batch that genuinely lost nothing reads. Those are not the same statement and a
+         *     reader cannot tell them apart from the number: a poll partway through a batch that had
+         *     already lost runs reported ``failed: 0``, and was read as a healthy sweep. This is the
+         *     difference between "none, and we have counted" and "none counted yet".
+         *
+         *     It does not weaken the standing rule that only a run's own JUnit verdict is
+         *     authoritative. It says when this aggregate is worth reading at all.
+         *
          *     The per-batch scope holds for a **live** status. One recovered from disk
          *     (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports
-         *     the whole campaign instead — there is no current batch for it to be relative to.
+         *     the whole campaign instead — there is no current batch for it to be relative to, and
+         *     its counters come from verdicts already on disk, so they are counted by construction.
          */
         RunProgress: {
             /**
@@ -3387,6 +3399,11 @@ export interface components {
              * @default 0
              */
             no_result: number;
+            /**
+             * Outcomes Counted
+             * @default false
+             */
+            outcomes_counted: boolean;
             /**
              * Total
              * @default 0
