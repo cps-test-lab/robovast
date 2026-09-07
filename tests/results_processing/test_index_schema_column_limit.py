@@ -9,6 +9,8 @@ test the moment anything is executed against it is *more* precise than a real on
 be here, not less.
 """
 
+import contextlib
+
 import pytest
 
 from robovast.common.errors import TableColumnLimitExceeded
@@ -63,6 +65,17 @@ def test_a_new_table_at_exactly_the_limit_is_accepted(monkeypatch):
     class _RecordingConn:
         def execute(self, sql, *_a, **_kw):
             calls.append(sql)
+
+        # Creating a table and scoping it is one transaction (see ``ensure_table``), so a
+        # stand-in for the connection has to offer one. It does nothing: what this test
+        # watches is the DDL, and a stub that recorded a rollback would be asserting on
+        # the stub.
+        def transaction(self):
+            @contextlib.contextmanager
+            def _noop():
+                yield
+
+            return _noop()
 
     # 3 context columns are always prepended, so the data columns must leave headroom.
     n = index_schema._MAX_TABLE_COLUMNS - len(index_schema.CONTEXT_COLUMNS)  # noqa: SLF001
