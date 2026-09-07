@@ -932,6 +932,14 @@ class VersionInfo(BaseModel):
     # Docker is running right now is a different question, answered by `resource_usage`
     # and by the run preflight; probing it here would make the cheapest call in the
     # interface the slowest.
+    #
+    # So `True` is not a promise that a build will be *published*. On the cluster lane it
+    # means a registry is configured; whether the credential it would push with is still
+    # accepted is asked once per build, at submit time and before any layer is built (see
+    # `RegistryImageStore.push_refused`), because that answer costs a round trip to the
+    # registry and cannot be cached across the calls every client makes. A consumer must
+    # not read `True` as "this build will succeed" -- it rules out the deployment having
+    # nowhere to push, and nothing else.
     #: True when this deployment can build an experiment image; ``None`` when the service
     #: did not say. **A consumer must treat ``None`` as "no verdict" and print nothing**:
     #: a service older than this field leaves it absent, and reading that as ``False``

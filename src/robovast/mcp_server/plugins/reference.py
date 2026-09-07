@@ -201,7 +201,10 @@ def get_service_info() -> dict:
         all — check it before authoring a container that adds packages, because otherwise
         the refusal arrives at ``start_campaign``, after the push and the workspace.
         ``build_unavailable`` then carries the reason and the fix. Both are **absent** when
-        the service did not say; absent is not ``false``.
+        the service did not say; absent is not ``false``. It reports the infrastructure a
+        build needs, not that a given build will be published: a registry whose push
+        credential has gone stale reads ``true`` here and is refused by
+        ``build_experiment_image`` itself, before any layer is built.
     """
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE

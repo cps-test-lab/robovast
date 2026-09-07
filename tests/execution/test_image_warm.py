@@ -394,6 +394,11 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
                                              build_id=BUILD, image_hash="abc123"),
         resolve_vcs=lambda spec_: {},
         git_secret_name=lambda: "",
+        # A submit asks the store whether the registry would refuse the credential
+        # it is about to push with, before it stages anything. False here: these tests
+        # are about what a submit does once it has decided to build, and a stub that
+        # said otherwise would refuse before reaching any of it.
+        push_refused=lambda image_ref: False,
         pull_secret_name=lambda: "reg-push"), raising=False)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
     monkeypatch.setattr(cs, "_sweep_build_contexts", lambda cfg, bucket: None)
