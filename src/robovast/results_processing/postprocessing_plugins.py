@@ -238,6 +238,23 @@ class Command(BasePostprocessingPlugin):
         if not os.path.exists(script_path):
             return False, f"Script not found: {script_path}"
 
+        # The cluster lane's staging initContainer restores this bit for the `_config/`
+        # subtree a `command` step's script lives in (see `postprocess_stage.py`; the rest
+        # of a campaign's tree -- bags and CSVs, orders of magnitude larger -- skips that
+        # restoration on purpose, since nothing reads them as a program). This is a second,
+        # narrower line of defence for every other way a staged script can still arrive
+        # non-executable: the local (non-cluster) lane never runs that initContainer at
+        # all, and a workspace push from a filesystem or transport that does not preserve
+        # POSIX modes would land here the same way. Cheap either way -- one stat/chmod pair
+        # -- and this is the one caller that actually execve()s the file.
+
+        if os.path.isfile(script_path) and not os.access(script_path, os.X_OK):
+            try:
+                mode = os.stat(script_path).st_mode
+                os.chmod(script_path, mode | 0o111)
+            except OSError:
+                pass  # fall through; the exec below reports the real error if this didn't help
+
         # Build full command (optionally pass provenance to docker_exec and script)
         full_command = [script_path]
         if provenance_file:
