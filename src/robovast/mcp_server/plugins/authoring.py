@@ -118,11 +118,16 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
 #: workspace is not on this host at all, so a filesystem read would check a different
 #: file, or none, and report the verdict as if it were about the one the campaign runs.
+#:
+#: **Indented to the docstrings it is spliced into.** A paragraph at column 0 in a body
+#: indented by four leaves the docstring with no common indent, so ``Args:``/``Returns:``
+#: stop being recognised as sections and are served as prose in the tool description --
+#: on every request, duplicating what the parameter schema already carries.
 _ADDRESS_LANE = """
-A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so this
-is the file the campaign will actually run. Anything else is read as a path on the
-MCP-server host — for authoring before a workspace exists, and the only lane with no
-service running. ``lane`` says which answered.
+    A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
+    this is the file the campaign will actually run. Anything else is read as a path on
+    the MCP-server host — for authoring before a workspace exists, and the only lane with
+    no service running. ``lane`` says which answered.
 """
 
 
