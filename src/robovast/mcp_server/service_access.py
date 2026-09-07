@@ -47,10 +47,10 @@ NO_SERVICE = ("no robovast-service reachable — start one on this machine "
 #: whichever tool it is, and the examples are examples.
 EXEC_PATH_CONSEQUENCE = (
     "Every tool that answers by asking a container cannot answer on this deployment -- "
-    "exec_in_container, the image catalogs (list_scenario_actions, list_roqsim_plugins), "
-    "describe_scenario, describe_world -- and validate_project reports as unchecked "
-    "whatever needed one: its world and scenario checks, and any execution.generate "
-    "generator or variation that composes in a helper image. Everything that reads what a "
+    "exec_in_container, the image catalog (list_image_catalog), describe_scenario, "
+    "describe_world -- and validate_project reports as unchecked whatever needed one: "
+    "its world and scenario checks, and any execution.generate generator or variation "
+    "that composes in a helper image. Everything that reads what a "
     "campaign produced is unaffected: status, logs, results, plots and SQL. Report this "
     "and carry on with those; nothing about a .vast changes it."
 )
