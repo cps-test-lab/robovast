@@ -701,7 +701,11 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     instances = _instances_for_sim([_Obj()], [("box", [0.5, 0.5, 1.0])])
     assert instances[0]["name"] == "obstacle_7"
     assert instances[0]["size"] == [0.5, 0.5, 1.0]
-    assert instances[0]["pos"] == [1.0, 2.0]
+    # The pose in the shape a placement plugin reads, which is the shape the spawn service
+    # states one in. A flat `pos` is a second spelling those plugins treat as absent, so an
+    # obstacle written that way compiles at the origin -- in a run about where it was put.
+    assert instances[0]["pose"] == {"position": {"x": 1.0, "y": 2.0}}
+    assert "pos" not in instances[0] and "yaw" not in instances[0]
     # 'box' is the placement plugin's own default, so it is not restated per instance.
     assert "shape" not in instances[0]
     # Nothing about motion by default: the instance takes the simulator's, and restating a
