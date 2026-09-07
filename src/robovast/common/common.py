@@ -23,6 +23,7 @@ from dataclasses import asdict, is_dataclass
 import yaml
 
 from .config import validate_config
+from . import yaml_strict
 from .config_extends import resolve_extends
 from .config_presets import expand_configuration_presets
 from .file_cache import FileCache
@@ -102,7 +103,9 @@ def load_config(config_file, subsection=None, allow_missing=False, upgrade=False
     with open(config_file, 'r') as f:
         try:
             # Load all documents, the first one contains the config
-            documents = list(yaml.safe_load_all(f))
+            # Strict unless this is an archive read: `upgrade=True` reads a campaign
+            # that already ran, and the value it ran with is the one a repeat keeps.
+            documents = yaml_strict.load_all(f, path=config_file, strict=not upgrade)
             if not documents:
                 logger.error("No documents found in scenario file")
                 raise ValueError("No documents found in scenario file")

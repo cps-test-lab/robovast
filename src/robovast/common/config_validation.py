@@ -47,6 +47,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from robovast.common import yaml_strict
 from robovast.common.config_extends import resolve_extends
 from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
@@ -285,7 +286,9 @@ def _safe_load(config_path):
         return None, _problem("file", f"Config file not found: {config_path}")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            documents = list(yaml.safe_load_all(f))
+            documents = yaml_strict.load_all(f, path=config_path)
+    except yaml_strict.DuplicateKeyError as e:
+        return None, _problem("parse", str(e))
     except yaml.YAMLError as e:
         return None, _problem("parse", f"YAML parse error: {e}")
     except OSError as e:

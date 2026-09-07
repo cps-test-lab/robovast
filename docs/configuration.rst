@@ -55,6 +55,23 @@ so the answer is to upgrade robovast. See ``src/robovast/common/migrations/READM
 the ladder itself and for when the version is bumped at all.
 
 
+.. note::
+
+   **A key stated twice in one mapping is refused**, naming both lines. YAML keeps the last of
+   the two, so the losing block stays in the file, still reads as the configuration, and is
+   applied to nothing -- a campaign that runs, reports every cell normally, and was configured
+   by something nobody wrote.
+
+   It is reachable by ordinary means rather than by typing a key twice on purpose: a block
+   indented at a list's level belongs to the entry *above* it, so a ``sut:`` or ``parameters:``
+   block written after one configuration's body and before the next one's ``- name:`` silently
+   replaces the block of the entry before it.
+
+   Anchors and ``<<:`` merge keys are unaffected -- an explicit key overriding a merged one is
+   what a merge is for. Reading an *archived* campaign is not refused either: it already ran,
+   with the value a repeat keeps, and that is the value read back, with a warning saying so.
+
+
 .. _config-extends:
 
 Extends
