@@ -34,7 +34,9 @@ sim:
 components:
   # The workbench. Only its top collides (the legs are visual in the model), so the arm cannot
   # snag a leg while reaching across.
-  - spawn_model: {model: industrial_table, pos: [0.0, 0.0, 0.0]}
+  # motion: static -- the arm is bolted to this bench, so it must not be a body the arm
+  # can shift. A prop is `physics` unless the world says otherwise.
+  - spawn_model: {model: industrial_table, pos: [0.0, 0.0, 0.0], motion: static}
     name: bench
 
   # The UR5e, bolted to the bench top, with the gripper welded to its flange.
@@ -103,10 +105,13 @@ components:
   # `publish_tf: static` so the TRIAL reads where the bin is instead of restating it. The pose is
   # latched once on /tf_static, which is right for a welded prop -- and it means this line is the
   # only place the bin's position is written down.
+  # motion: static -- the bin is a fixture the arm drops into, and `publish_tf: static` latches
+  # one frame for the whole run, which only a body that cannot move can honour.
   - spawn_model:
       model: drop_bin.xml
       pos: [0.25, 0.40, 0.76]
       publish_tf: static
+      motion: static
     name: bin
 
   # The box, spawned last so it settles onto the bench rather than being placed exactly.
@@ -119,7 +124,6 @@ components:
   # straight top-down grasp needs no wrist roll to line the jaws up.
   - spawn_model:
       model: graspable_box
-      free: true
       publish_tf: dynamic
       pos: [0.45, 0.0, 0.79]
     name: parcel

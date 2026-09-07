@@ -233,10 +233,17 @@ class ObstacleVariationConfig(DestinationConfig):
         return v
 
 
-def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
+def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> list:
     """The placement as *geometry*: what a list-valued placement plugin compiles.
 
-    Deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
+    *motion* is written per instance when the placement is not what the simulator would assume.
+    roqsim's placement plugins default to ``motion: physics`` -- a body the solver owns -- which
+    is right for an obstacle a trial teleports in and wrong for scenery it only drives around: a
+    pushable obstacle can be nudged off the placement the campaign chose, and the run then
+    measures a layout nobody selected. Left ``None`` the instance says nothing and takes the
+    default, because restating a default is noise that goes stale when the default moves.
+
+    Otherwise deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
     model reference and spawner arguments -- one simulator's spawning vocabulary -- while what
     has to exist in a compiled model is a shape at a pose.
 
@@ -266,6 +273,8 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
             instance['size'] = list(size)
         if shape and shape != 'box':
             instance['shape'] = shape
+        if motion is not None:
+            instance['motion'] = motion
         instances.append(instance)
     return instances
 
@@ -309,6 +318,14 @@ class ObstacleVariation(NavVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationConfig
+
+    #: What the ``instances`` this variation writes say about who owns their pose.
+    #: ``static`` here: a placed obstacle is scenery the trial drives AROUND, and a
+    #: simulator whose placements default to physics would otherwise let the robot
+    #: push one off the position this variation chose -- which is the independent
+    #: variable. A subclass whose obstacle is moved DURING the trial sets ``None``
+    #: and takes the default.
+    SIM_INSTANCES_MOTION = "static"
 
     @classmethod
     def config_view_data(cls, config, base_path):
@@ -521,7 +538,8 @@ class ObstacleVariation(NavVariation):
         # a world carrying fewer obstacles than the scenario names is a run that fails on a
         # service call, not a configuration anyone can fix afterwards.
         if self.parameters.is_bound('instances'):
-            values['instances'] = _instances_for_sim(obstacle_objects, obstacle_geometry)
+            values['instances'] = _instances_for_sim(
+                obstacle_objects, obstacle_geometry, motion=self.SIM_INSTANCES_MOTION)
         result_config = self.update_slots(
             config, values,
             other_values={'_map_file': map_file_path, '_path': path,

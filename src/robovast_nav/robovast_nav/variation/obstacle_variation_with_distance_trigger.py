@@ -163,6 +163,13 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
 
+    #: None: this obstacle is REVEALED partway through the run -- parked out of the
+    #: way and teleported in when the robot comes within the trigger distance -- so
+    #: it is the one placement that must keep the simulator's movable default.
+    #: SetEntityState refuses an entity with no free joint, so welding it here would
+    #: fail the trial on its first call.
+    SIM_INSTANCES_MOTION = None
+
     @classmethod
     def config_view_data(cls, config, base_path):
         """The obstacles, plus the trigger point that spawns them."""
