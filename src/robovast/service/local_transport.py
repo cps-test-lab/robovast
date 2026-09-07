@@ -2060,7 +2060,7 @@ class LocalTransport(RobovastInterface):
             self._guard_new_campaign()
             ref = self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
-                origin=self._retrigger_origin(campaign_id),
+                origin=self._retrigger_origin(campaign_id, plan.config_migration),
                 materialize=plan.materialize,
                 discard=plan.discard,
                 pinned_images=plan.pinned_images))
@@ -2074,8 +2074,8 @@ class LocalTransport(RobovastInterface):
         self._notifier(campaign_id).retriggered(ref.campaign_id)
         return ref
 
-    def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
-        """The origin to record for a re-run of *source_id*.
+    def _retrigger_origin(self, source_id: str, config_migration: dict) -> CampaignOrigin:
+        """The origin to record for a re-run of *source_id*, staged as *config_migration* says.
 
         Built here rather than in :mod:`robovast.service.retrigger`, which deliberately
         does not import the service interface.
@@ -2086,6 +2086,10 @@ class LocalTransport(RobovastInterface):
         Copied rather than resolved by walking ``from_campaign`` later, because the listing
         is paginated (a reader may not hold the parent at all) and because a parent is
         routinely deleted -- lineage that evaporates with it is lineage nobody can rely on.
+
+        The config version comes from the plan that staged the tree, so the record states
+        the version this run actually read rather than the one the source's frozen ``.vast``
+        would migrate to if it were staged again today.
 
         None of this is a link: the re-run runs from the source's frozen ``_config/``
         (:mod:`robovast.service.retrigger` says why), never from the workspace named here,
@@ -2098,7 +2102,9 @@ class LocalTransport(RobovastInterface):
             from_campaign=source_id,
             workspace_id=parent.workspace_id if parent else "",
             workspace_name=parent.workspace_name if parent else "",
-            config_path=parent.config_path if parent else "")
+            config_path=parent.config_path if parent else "",
+            config_version_from=config_migration["from"],
+            config_migration_steps=config_migration["steps"])
 
     def _admit_image_provenance(self, target, request: CreateCampaignRequest) -> None:
         """Refuse to launch a campaign whose image nobody could later identify.

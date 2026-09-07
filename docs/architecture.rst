@@ -290,8 +290,11 @@ A campaign does **record** which workspace and ``.vast`` it was launched from, o
 of it: nothing resolves it to run anything — a retrigger relaunches from the campaign's own
 frozen ``_config/`` — so deleting the workspace it names still takes nothing with it. It
 answers "where did this come from?", which is a fact about the past; it does not answer
-"where do I re-run it from?", which is always the campaign itself. See
-:ref:`web-ui-origin`.
+"where do I re-run it from?", which is always the campaign itself. A **re-run** records the
+config version it read as well (``origin_config_version_from`` and the migration steps that
+got it there), because a re-run migrates a staged copy of the parent's frozen ``.vast``, and
+two runs of "the same campaign" that read different config versions are not the same
+experiment. See :ref:`web-ui-origin`.
 
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
