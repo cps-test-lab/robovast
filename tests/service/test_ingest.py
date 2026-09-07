@@ -81,6 +81,29 @@ def test_a_config_from_a_newer_robovast_is_reported_not_migrated(campaign):
     assert "newer robovast" in stage["detail"]
 
 
+@pytest.mark.parametrize("version,says", [
+    (None, "declares no 'version:'"),
+    ("4", "must be an integer"),
+])
+def test_a_config_with_no_usable_version_blocks_the_import(campaign, version, says):
+    """A file with nothing to start the ladder from is the opposite of one from a newer
+    robovast, and they need opposite recoveries. Importing it as displayable would defer the
+    failure to whoever tries to re-run it, where the archive is all that is left to go on."""
+    vast_path = next((campaign / "_config").glob("*.vast"))
+    raw = yaml.safe_load(vast_path.read_text(encoding="utf-8"))
+    if version is None:
+        raw.pop("version", None)
+    else:
+        raw["version"] = version
+    vast_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["config"]
+    assert stage["verdict"] == STAGE_FAILED
+    assert says in stage["detail"]
+    assert stage["recovery"], "a blocking stage names what to do about it"
+    assert report["ok"] is False and "config" in report["blocking"]
+
+
 def test_a_store_from_a_newer_robovast_says_what_would_be_lost(campaign):
     """CampaignStore deliberately reads a newer store best-effort rather than refusing. That is
     respected -- but silently omitting whatever the newer schema added is exactly the kind of
