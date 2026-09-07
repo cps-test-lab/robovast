@@ -2689,9 +2689,18 @@ class LocalTransport(RobovastInterface):
         # established when the container is created, and a follow-up call only `docker
         # exec`s into it. Without this, asking for a window after a plain call would reuse
         # the mount-less container and silently draw nothing.
+        #
+        # The workspace's CONTENTS belong in it for the same reason, and this is the only
+        # member of the tuple that is not already immutable. A campaign is frozen once it
+        # starts, so its id is an identity; a workspace is editable by definition, and the
+        # project reaches a held container exactly once, when the container is created
+        # (the cluster lane mirrors it in with an init container, the local lane
+        # bind-mounts it). So a reused container answers from the tree it was staged
+        # from, and an edited workspace is answered for by the bytes it no longer holds --
+        # a validate that keeps reporting the problem its own fix already removed.
         identity = (request.workspace_id, request.campaign_id,
                     request.config_path, request.config_name, spec.image,
-                    bool(request.show_gui))
+                    bool(request.show_gui), _workspace_sha(spec))
         started = time.monotonic()
         query = bool(getattr(request, "query", False))
         out = self._exec_manager.run(spec, limit_s,
@@ -5710,3 +5719,50 @@ class LocalTransport(RobovastInterface):
         if key is not None:
             self._disk_status_cache[campaign_id] = (key, status)
         return status
+
+
+def _workspace_sha(spec) -> str:
+    """Fingerprint of the workspace *spec* stages, or ``""`` when it stages none.
+
+    Every file's relative path, size and inode timestamps, sorted -- deliberately NOT its
+    bytes. This runs on every exec and every query, and reading a workspace carrying
+    meshes would put a full tree read on the warm path this pool exists to keep warm.
+    Stat answers the question that is actually being asked: has the tree changed since a
+    container was staged from it?
+
+    ``st_ctime_ns`` as well as ``st_mtime_ns`` because only the first is beyond a writer's
+    reach: a tree restored by something that preserves mtime -- rsync -t, a tar extract --
+    still moves ctime. Paths and sizes are in it so an added, removed or renamed file is a
+    different tree whatever the clock did.
+
+    The residual: a file rewritten to the SAME size within one filesystem timestamp tick
+    fingerprints equal. That tick is 1 ms on ext4, measured rather than assumed, and it is
+    the window in which a container would also have to be staged for a stale answer to
+    reach anyone. Through the service's own API, the only writer, that means two different
+    versions of one file written a millisecond apart with identical length. Content hashing
+    is what closes it, at the cost this exists to avoid -- so if it ever bites, that is the
+    trade to revisit, not this function's inputs.
+
+    Empty for a campaign, which is frozen once it starts and is therefore identified by
+    its id alone -- so this adds nothing to a campaign's identity and cannot make two
+    equal campaigns look different.
+
+    A tree that cannot be read fingerprints as unreadable rather than as empty: a
+    workspace whose directory is missing is not the same tree as every other unreadable
+    one, and returning "" would let it share a held container with a campaign.
+    """
+    workspace_dir = getattr(spec, "workspace_dir", "")
+    if not workspace_dir:
+        return ""
+    root = Path(workspace_dir)
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            stat = path.stat()
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(
+                f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}".encode())
+    except OSError as err:
+        logger.debug("could not fingerprint workspace %s: %s", workspace_dir, err)
+        return f"unreadable:{workspace_dir}"
+    return digest.hexdigest()
