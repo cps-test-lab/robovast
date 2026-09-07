@@ -236,21 +236,45 @@ class ToolCallLog:
         return [ToolStat(tool=r[0], calls=r[1], errors=r[2], mean_ms=float(r[3] or 0.0),
                          max_ms=float(r[4] or 0.0), last_at=r[5]) for r in rows]
 
-    def read_calls(self, *, limit: int = 200, tool: str = "",
-                   failed_only: bool = False) -> list[ToolCall]:
-        """The log, newest first -- what a person opening the panel wants to see."""
+    @staticmethod
+    def _filter(tool: str, failed_only: bool) -> tuple[str, list]:
+        """The ``WHERE`` both reads share, so a count and its page never disagree."""
         where, params = [], []
         if tool:
             where.append("tool = %s")
             params.append(tool)
         if failed_only:
             where.append("NOT ok")
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
-        params.append(max(1, min(int(limit), 2000)))
+        return (" WHERE " + " AND ".join(where)) if where else "", params
+
+    def read_calls(self, *, limit: int = 200, tool: str = "", failed_only: bool = False,
+                   offset: int = 0) -> list[ToolCall]:
+        """One page of the log, newest first.
+
+        Clamped to :data:`MAX_ROWS` -- the retention cap, so the bound is the number of
+        rows that can exist rather than a smaller one invented here. A caller that wants
+        the whole record can ask for it; one that wants a panel page asks for a page. The
+        page is only half the answer, though: how many rows matched is
+        :meth:`count_calls`, and a caller that reports a page without it cannot say
+        whether the record ended or the page did.
+        """
+        clause, params = self._filter(tool, failed_only)
+        params.append(max(1, min(int(limit), MAX_ROWS)))
+        params.append(max(0, int(offset)))
         rows = self._query(
             f"SELECT at, tool, duration_ms, ok, args, answer, actor FROM {TABLE}"
-            f"{clause} ORDER BY at DESC LIMIT %s", tuple(params))
+            f"{clause} ORDER BY at DESC LIMIT %s OFFSET %s", tuple(params))
         return [ToolCall(*r) for r in rows]
+
+    def count_calls(self, *, tool: str = "", failed_only: bool = False) -> int:
+        """How many rows match, ignoring any page bound.
+
+        Separate from :meth:`read_calls` because the two answer different questions and
+        a page that carried its own total would have to fetch rows to count them.
+        """
+        clause, params = self._filter(tool, failed_only)
+        rows = self._query(f"SELECT COUNT(*) FROM {TABLE}{clause}", tuple(params))
+        return int(rows[0][0]) if rows else 0
 
     def _query(self, sql: str, params: tuple = ()) -> list:
         """Read, treating an absent table as an empty log.

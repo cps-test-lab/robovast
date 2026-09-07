@@ -2020,7 +2020,7 @@
         "type": "object"
       },
       "McpCalls": {
-        "description": "A page of the call log, newest first.",
+        "description": "A page of the call log, newest first.\n\nThe page reports its own bounds, for the reason :class:`McpToolStats` reports the\nretained window: a reader given rows and no total cannot tell a record that ended\nfrom a page that did, and will read a busy afternoon as the whole month the ranking\nbeside it summarises. :attr:`offset` walks the rest.",
         "properties": {
           "calls": {
             "items": {
@@ -2034,16 +2034,40 @@
             "title": "Detail",
             "type": "string"
           },
+          "limit": {
+            "default": 0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
           "status": {
             "default": "ok",
             "title": "Status",
             "type": "string"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
           "calls",
           "detail",
-          "status"
+          "limit",
+          "offset",
+          "status",
+          "total",
+          "truncated"
         ],
         "title": "McpCalls",
         "type": "object"
@@ -4705,7 +4729,7 @@
     },
     "/admin/mcp-calls": {
       "get": {
-        "description": "The MCP call log, newest first -- what each call was given and what it answered.\n\nArguments and answers are truncated where they are recorded, not here; the cap is\n``robovast.mcp_server.tool_stats``.",
+        "description": "The MCP call log, newest first -- what each call was given and what it answered.\n\nArguments and answers are truncated where they are recorded, not here; the cap is\n``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether\nmore remain, because a page that reported neither read as the whole record.",
         "operationId": "get_mcp_calls_admin_mcp_calls_get",
         "parameters": [
           {
@@ -4736,6 +4760,16 @@
               "default": false,
               "title": "Failed Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -4769,7 +4803,7 @@
     },
     "/admin/mcp-calls.csv": {
       "get": {
-        "description": "The same log as a CSV download -- the repo's one export format.\n\nIt carries what the panel carries, truncation included, and only the retained\nwindow: this is an export of the record, not of all history.",
+        "description": "The same log as a CSV download -- the repo's one export format.\n\nIt carries what the panel carries, truncation included, and only the retained\nwindow: this is an export of the record, not of all history. A download has no\nfield to report a bound in, so an export that did not reach the end of the record\nsays so in its filename -- the one part of a saved file a reader still has.\n\nBounded only by what is retained, unlike the panel's page: this streams, so asking\nfor the whole record costs the reader a longer download rather than the service a\nlarger response to hold.",
         "operationId": "export_mcp_calls_admin_mcp_calls_csv_get",
         "parameters": [
           {
@@ -4800,6 +4834,16 @@
               "default": false,
               "title": "Failed Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],

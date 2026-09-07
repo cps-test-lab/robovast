@@ -170,11 +170,16 @@ class HTTPTransport(RobovastInterface):
         """
         return McpToolStats.model_validate(self._get(Routes.ADMIN_MCP_TOOLS))
 
-    def mcp_calls(self, limit: int = 200, tool: str = "",
-                  failed_only: bool = False) -> McpCalls:
-        """The MCP call log, newest first (see ``Routes.ADMIN_MCP_CALLS``)."""
+    def mcp_calls(self, limit: int = 200, tool: str = "", failed_only: bool = False,
+                  offset: int = 0) -> McpCalls:
+        """One page of the MCP call log, newest first (see ``Routes.ADMIN_MCP_CALLS``).
+
+        The reply carries ``total`` and ``truncated``: a page is not the record, and
+        ``offset`` is how the rest of it is reached.
+        """
         return McpCalls.model_validate(self._get(
-            Routes.ADMIN_MCP_CALLS, limit=limit, tool=tool, failed_only=failed_only))
+            Routes.ADMIN_MCP_CALLS, limit=limit, tool=tool, failed_only=failed_only,
+            offset=offset))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).

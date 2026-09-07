@@ -170,8 +170,41 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
     mcp.add_middleware(_DebugLoggingMiddleware())
 
 
+def _actor(context) -> str:
+    """Who made this call: ``"<client>/<session>"``, as far as the transport says.
+
+    The session is what separates one agent from another -- over streamable HTTP it is
+    the client's ``mcp-session-id``, stable for as long as that client stays connected,
+    so every call an agent makes carries the same one. The client name separates the
+    kinds of caller sharing a service (an editor's agent, the CLI, the web UI), which
+    the session id alone cannot.
+
+    Neither is a secret and neither is a person: a session id is opaque and dies with
+    the connection. What this must never do is fail -- an actor that could raise would
+    turn accounting into a way to break the call it accounts for -- so every lookup is
+    guarded and an unknown part is named as unknown rather than guessed.
+    """
+    client = session = ""
+    ctx = getattr(context, "fastmcp_context", None)
+    if ctx is None:
+        return ""
+    try:
+        request = ctx.request_context
+        info = getattr(getattr(request, "session", None), "client_params", None)
+        client = str(getattr(getattr(info, "clientInfo", None), "name", "") or "")
+    except Exception:  # noqa: BLE001 - an unnameable client is still a call to record
+        client = ""
+    try:
+        session = str(ctx.session_id or "")
+    except Exception:  # noqa: BLE001 - outside a request context there is no session
+        session = ""
+    if not (client or session):
+        return ""
+    return f"{client or 'unknown'}/{session or 'unknown'}"
+
+
 def _install_tool_stats(mcp: FastMCP) -> None:
-    """Record every tool call -- what was asked, what came back, how long it took.
+    """Record every tool call -- who asked, what was asked, what came back, how long it took.
 
     One middleware for all of them: no tool counts itself, and a tool added tomorrow is
     accounted for without knowing this exists. What it records and how much of a payload
@@ -201,6 +234,7 @@ def _install_tool_stats(mcp: FastMCP) -> None:
                     ok,
                     args=tool_stats.render(context.message.arguments or {}),
                     answer=answer,
+                    actor=_actor(context),
                 )
 
     mcp.add_middleware(_ToolStatsMiddleware())

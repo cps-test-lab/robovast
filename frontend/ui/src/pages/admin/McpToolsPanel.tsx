@@ -180,6 +180,7 @@ export function McpToolsPanel({ active }: { active: boolean }) {
       <Typography variant="caption" color="text.secondary">
         Kept in the central index: {retentionNote(stats.data.max_age_s, stats.data.max_rows)}.
         Arguments and answers are truncated to a few lines where they are recorded.
+        {calls.data ? ` Showing ${rows.length} of ${calls.data.total} matching calls.` : ''}
       </Typography>
 
       {calls.isPending ? <CircularProgress size={20} /> : null}
@@ -189,8 +190,10 @@ export function McpToolsPanel({ active }: { active: boolean }) {
       <Box>
         {rows.map((call, i) => <CallRow key={`${call.at}-${call.tool}-${i}`} call={call} />)}
       </Box>
-      {/* Only offered when the page is full: a shorter answer is the whole record. */}
-      {rows.length >= limit ? (
+      {/* The reply says whether more matched, so this no longer infers it from a full
+          page -- a page that happened to end exactly at the record's end offered a
+          button that fetched nothing. */}
+      {calls.data?.truncated ? (
         <Button size="small" sx={{ alignSelf: 'flex-start' }}
                 onClick={() => setLimit((n) => n + 200)}>
           Show more
