@@ -16,14 +16,19 @@
 
 """MCP plugin that exposes the RoboVAST example projects.
 
-Only examples that are **checked into git** are exposed. This is deliberate:
-untracked example directories are work-in-progress that may not currently work,
-and untracked files inside an example (``.cache/``, ``resolved/``,
+Only **authored** examples are exposed. This is deliberate: untracked example
+directories are work-in-progress that may not currently work, and untracked files
+inside an example (``.cache/``, ``resolved/``,
 ``.robovast_temp_variation_config_*``, ``_transient/`` …) are generated
-artifacts, not authored content. ``git ls-files`` is therefore the single,
-maintenance-free source of truth for "authored vs generated" — the plugin needs
-no per-example configuration and follows the examples automatically as they
-change.
+artifacts, not authored content. ``git ls-files`` answers "authored vs generated"
+in a checkout — the plugin needs no per-example configuration and follows the
+examples automatically as they change.
+
+A container image is the case git cannot answer: the source is copied in and
+``.git`` is not, so ``configs/examples/MANIFEST`` — the same list, committed and
+kept honest by ``make check-examples-manifest`` — is read instead. The order is
+git first: in a checkout the index is current by construction and a stale
+manifest must never hide an example someone just added.
 
 An *example* is any immediate subdirectory of ``configs/examples/`` that
 
@@ -60,7 +65,11 @@ def _find_examples_dir() -> Path | None:
     env = os.environ.get("ROBOVAST_EXAMPLES_DIR")
     if env:
         p = Path(env)
-        return p if p.is_dir() else None
+        if p.is_dir():
+            return p
+        logger.warning("ROBOVAST_EXAMPLES_DIR is set to %s, which is not a directory; "
+                       "no examples will be served.", env)
+        return None
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "configs" / "examples"
         if candidate.is_dir():
@@ -68,12 +77,16 @@ def _find_examples_dir() -> Path | None:
     return None
 
 
+#: The committed file list, read where git cannot answer. Written by
+#: ``tools/examples_manifest.py``; a file *about* the examples, so it is not one of them.
+MANIFEST_NAME = "MANIFEST"
+
+
 def _git_tracked_files(examples_dir: Path) -> list[str]:
     """Return git-tracked file paths under *examples_dir*, relative to it.
 
-    Returns an empty list when *examples_dir* is not inside a git checkout;
-    per the plugin's contract, no git checkout means no examples to expose (we
-    never fall back to guessing which on-disk files are authored).
+    Empty when *examples_dir* is not inside a git checkout — which is not the same
+    as "no examples"; see :func:`_authored_files`.
     """
     try:
         out = subprocess.run(
@@ -87,6 +100,40 @@ def _git_tracked_files(examples_dir: Path) -> list[str]:
         logger.debug("git ls-files failed in %s: %s", examples_dir, e)
         return []
     return [p for p in out.split("\0") if p]
+
+
+def _manifest_files(examples_dir: Path) -> list[str]:
+    """Return the file paths listed in *examples_dir*'s ``MANIFEST``, relative to it."""
+    manifest = examples_dir / MANIFEST_NAME
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.debug("no manifest at %s: %s", manifest, e)
+        return []
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.startswith("#")]
+
+
+def _authored_files(examples_dir: Path) -> list[str]:
+    """Return the authored file paths under *examples_dir*, relative to it.
+
+    Two sources, in this order, because only one of them can answer at a time:
+
+    1. ``git ls-files`` — a checkout, where the index is current by construction, so a
+       manifest that had gone stale must not hide an example someone just added.
+    2. ``MANIFEST`` — an image, where the source was copied in without ``.git``.
+
+    Both empty is still no examples: the contract never falls back to guessing which
+    on-disk files are authored, because the generated ones sit in the same directories.
+    """
+    tracked = _git_tracked_files(examples_dir)
+    if tracked:
+        return tracked
+    listed = _manifest_files(examples_dir)
+    if listed:
+        logger.info("%s is not a git checkout; reading the example list from %s",
+                    examples_dir, MANIFEST_NAME)
+    return listed
 
 
 def _extract_description(example_dir: Path, files: list[str]) -> str:
@@ -143,7 +190,7 @@ def _load_examples() -> tuple[Path | None, dict]:
         return None, examples
 
     grouped: dict[str, list[str]] = {}
-    for rel in _git_tracked_files(examples_dir):
+    for rel in _authored_files(examples_dir):
         name = rel.split("/", 1)[0]
         if name.startswith("_"):
             continue
@@ -166,11 +213,32 @@ def _load_examples() -> tuple[Path | None, dict]:
 # -- Tool functions ----------------------------------------------------------
 
 
+def _no_examples_reason() -> str:
+    """Why the catalog is empty, in terms of the thing to change.
+
+    Three different deployments reach this line and the fix differs for each, so the
+    reply names which one it is rather than sending everyone to the same variable.
+    """
+    examples_dir, _ = _load_examples()
+    env = os.environ.get("ROBOVAST_EXAMPLES_DIR")
+    if examples_dir is None:
+        if env:
+            return f"ROBOVAST_EXAMPLES_DIR is set to {env}, which is not a directory."
+        return ("no examples directory found; set ROBOVAST_EXAMPLES_DIR to a "
+                "configs/examples path.")
+    if (examples_dir / MANIFEST_NAME).is_file():
+        return (f"{examples_dir} is not a git checkout and its {MANIFEST_NAME} lists no "
+                f"example holding a .vast file.")
+    return (f"{examples_dir} is not a git checkout and carries no {MANIFEST_NAME}, so "
+            f"which of its files are authored cannot be known. A build that copies the "
+            f"examples in must copy the {MANIFEST_NAME} beside them.")
+
+
 def get_example(name: str = "") -> dict:
     """Worked RoboVAST example projects: the catalog, or one project's files.
 
     Copy one into a workspace as the starting point for a new ``.vast``. Only
-    git-committed examples are exposed; generated artifacts never are.
+    authored examples are exposed; generated artifacts never are.
 
     Args:
         name: Example to retrieve, e.g. ``"basic_nav"``. Empty lists what is available.
@@ -183,8 +251,7 @@ def get_example(name: str = "") -> dict:
     """
     _examples_dir, _examples = _load_examples()
     if not _examples:
-        return {"error": "no examples found; set ROBOVAST_EXAMPLES_DIR to a "
-                         "configs/examples path inside a git checkout."}
+        return {"error": _no_examples_reason()}
     if not name:
         examples = [{"name": n, "description": _examples[n]["description"],
                      "files": _examples[n]["files"]} for n in sorted(_examples)]
@@ -199,12 +266,13 @@ def get_example(name: str = "") -> dict:
     for rel in _examples[name]["files"]:
         path = base / rel
         entry: dict = {"path": rel}
-        # Absence first, and named for what it is. The catalog is the git index, which
-        # lists a file whether or not the checkout still holds it -- and ``is_binary``
-        # answers "binary" for anything it cannot open, so a file that is simply not
-        # there was reported as a binary asset the caller should fetch some other way.
+        # Absence first, and named for what it is. The catalog is a list of authored
+        # files -- the git index, or the manifest -- and either lists a file whether or
+        # not this tree still holds it. ``is_binary`` answers "binary" for anything it
+        # cannot open, so a file that is simply not there was reported as a binary asset
+        # the caller should fetch some other way.
         if not path.is_file():
-            entry["note"] = ("Tracked in git but not present in this checkout — "
+            entry["note"] = ("Listed as an authored file but not present here — "
                              "no content to read.")
         elif is_binary(path):
             entry["note"] = "Binary file — content omitted."
@@ -237,7 +305,7 @@ _TOOLS = [
 
 
 class ExamplesPlugin:
-    """Expose git-tracked ``configs/examples/`` projects as MCP tools."""
+    """Expose the authored ``configs/examples/`` projects as MCP tools."""
 
     name = "examples"
 

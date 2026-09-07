@@ -712,6 +712,13 @@ survives the parent campaign being deleted and a re-run of a re-run still names 
 campaign listing is paged, so a hover that had to find its parent in the list would answer
 differently depending on where you had scrolled.
 
+A re-run also gets a ``Config`` row saying which config version it read: ``v1 → v4,
+migrated`` when the ladder had to carry the parent's frozen ``.vast`` forward, and ``v4, as
+written`` when it did not. Both are worth a row, because a re-run that read a different
+config version than the campaign it reproduces is not repeating the same experiment — and
+without the second wording, "nothing was migrated" would look exactly like "nobody recorded
+it", which is what a re-run from before this was kept shows: no row.
+
 A campaign that ran **before this was recorded** has no hover at all. Its ``.vast`` basename
 could be read out of its snapshot, but that says nothing about which workspace, and filling in
 half the answer would read as though it knew the rest.

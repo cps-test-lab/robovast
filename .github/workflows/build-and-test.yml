@@ -60,6 +60,12 @@ jobs:
         run: |
           . venv/bin/activate && make check-config-fields
 
+      # The example catalog is git-derived in a checkout and manifest-derived in an
+      # image. Only this job has both, so it is the only place the two can be compared.
+      - name: Check the example manifest is current
+        run: |
+          . venv/bin/activate && make check-examples-manifest
+
       - name: Check the config version bump matches the schema change
         run: |
           . venv/bin/activate && make check-config-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}
