@@ -48,9 +48,6 @@ def get_postprocessing(campaign_id: str) -> dict:
     to compute *different* metrics later without re-executing the campaign. The
     immutable ``_config/`` snapshot is never changed; edits are versioned
     overrides. Pair with :func:`update_postprocessing` + :func:`run_postprocessing`.
-
-    Returns:
-        ``{campaign_id, source, entries, revisions}`` or ``{error}``.
     """
     try:
         return service_access.client_or_local() \
@@ -66,9 +63,6 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
     (``"rosbags_to_csv"``) or a single-key dict with params
     (``{"command": {"script": "postprocess.sh"}}``). Validated before writing;
     the ``_config/`` snapshot is untouched. Call :func:`run_postprocessing` to apply.
-
-    Returns:
-        ``{campaign_id, revision, entries}`` or ``{error}``.
     """
     from robovast.service.interface import UpdatePostprocessingRequest
     try:

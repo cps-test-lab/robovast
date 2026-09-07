@@ -174,37 +174,16 @@ def get_service_info() -> dict:
     expect instead. ``package_version`` is no substitute: it is the release, unchanged
     across every edit, so reading it as a revision defeats what this check exists for.
 
-    Returns:
-        ``{code_version, api_version, backend, results_address, sources_address}``, plus
-        ``package_version`` and ``code_revision`` when known, or ``{error}``.
+    **Check ``can_build_images`` before authoring a container that adds packages**, or the
+    refusal arrives at ``start_campaign``, after the push and the workspace;
+    ``build_unavailable`` then carries the reason. Absent is not ``false``, and it reports
+    the infrastructure a build needs rather than that a given build will be published.
 
-        ``code_version`` is what the compatibility handshake compares: the revision rather
-        than the release wherever one exists, which is every deployed image.
-
-        ``backend`` is the lane this service runs, fixed when it started. Use
-        ``get_resource_usage()`` to actually touch it before committing a long campaign.
-
-        ``results_root``/``sources_root`` appear only when **you** can open them (a
-        local-filesystem service on loopback); then read files directly instead of
-        relaying bytes through this interface. ``web_base`` prefixes a route into a
-        URL; absent when this deployment has none.
-
-        With a cluster lane: ``kube_context``, ``kube_context_source``, ``namespace``,
-        ``in_pod``, ``api_server`` — which cluster a campaign would land in.
-        ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
-        fine for a pilot, fragile for a large campaign's result transfers.
-
-        ``built_at`` is when the running image was built (RFC 3339, UTC); absent for a
-        source checkout, which has no build to date.
-
-        ``can_build_images`` says whether this deployment can build an experiment image at
-        all — check it before authoring a container that adds packages, because otherwise
-        the refusal arrives at ``start_campaign``, after the push and the workspace.
-        ``build_unavailable`` then carries the reason and the fix. Both are **absent** when
-        the service did not say; absent is not ``false``. It reports the infrastructure a
-        build needs, not that a given build will be published: a registry whose push
-        credential has gone stale reads ``true`` here and is refused by
-        ``build_experiment_image`` itself, before any layer is built.
+    ``backend`` is the lane, fixed at startup — ``get_resource_usage()`` actually touches
+    it. On a cluster, ``in_pod: false`` means campaigns are driven through a port-forward:
+    fine for a pilot, fragile for a large campaign's result transfers. ``results_root`` and
+    ``sources_root`` appear only when **you** can open them, and then reading files
+    directly beats relaying bytes through this interface.
     """
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE

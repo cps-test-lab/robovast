@@ -971,24 +971,19 @@ def get_resource_usage() -> dict:
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
     reservations, and ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
-    Returns:
-        ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
-        memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
-        jobs_pending, disk, disk_node, store, store_node, disk_unavailable,
-        storage_refusal}`` — cores and bytes — or ``{error}``.
+    **Size a sweep against ``*_reserved``, judge a finished one against ``*_measured``**:
+    reserved is what the scheduler committed, so it decides whether the next run fits;
+    ``cpu_used`` aliases whichever of the pair the lane leads with. A ``null`` anywhere here
+    is "no such reading", **never zero** — nothing reserves locally, no lane reports every
+    disk, and an empty reading is not an empty disk; ``metrics_unavailable`` says why.
 
-        **Size a sweep against ``*_reserved``, judge a finished one against
-        ``*_measured``**: reserved is what the scheduler committed; measured is what is
-        consumed. ``cpu_used`` aliases whichever the lane leads with. ``null`` in either
-        pair is "no such reading", never zero; ``metrics_unavailable`` says why.
-
-        ``disk`` (what runs write into) and ``store`` (the results store) are
-        ``{capacity_bytes, used_bytes}``, or **null: not reported, never an empty disk**.
-        On a cluster ``disk`` is ONE node's filesystem (``disk_node``), not a sum;
-        ``store_node`` is often another. Set, ``storage_refusal`` says why new work is
-        refused for disk space. ``jobs_running``/``jobs_pending`` is
-        work already queued across every campaign; ``exec_container``, a held
-        ``exec_in_container`` container and its memory.
+    ``disk`` is what runs write into and ``store`` is the results store, each
+    ``{capacity_bytes, used_bytes}`` or null. On a cluster ``disk`` is ONE node's filesystem
+    (``disk_node``) rather than a sum, and ``store_node`` is often another. When
+    ``storage_refusal`` is set it says why new work is refused for space.
+    ``jobs_running``/``jobs_pending`` count what the lane is already busy with across every
+    campaign, so free cores behind a long queue are not as free as they look;
+    ``exec_container`` is a held ``exec_in_container`` container and its memory.
     """
     client = service_access.service_client()
     if client is None:
@@ -1300,9 +1295,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
 def stop_container() -> dict:
     """Stop the held ``exec_in_container`` container. Frees the memory it holds.
 
-    Returns:
-        ``{stopped, target}`` — ``stopped: false`` when there was nothing to stop, which
-        is an empty result, not an error. Or ``{error}``.
+    Nothing held reports ``stopped: false``, which is an empty result rather than an error.
     """
     client = service_access.service_client()
     if client is None:

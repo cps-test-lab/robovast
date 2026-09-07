@@ -22,12 +22,16 @@ without touching those tools: this is a different question (what can *this speci
 offer, not what does robovast itself have), always needs an address, and can cost a
 container round trip — three reasons this is its own pair, not a mode of the existing one.
 
-* ``list_scenario_actions``/``get_scenario_action_details`` -- every action/modifier/
-  actor/struct a ``.osc`` file can reference in the image (``python3 -m
-  scenario_execution.introspection list-actions``, run inside it).
-* ``list_roqsim_plugins``/``get_roqsim_plugin_details`` -- every ``roqsim.plugins`` entry
-  a world YAML's ``components:`` list can add in the image (``python3 -m roqsim.introspection
-  list``, run inside it).
+One pair, ``list_image_catalog``/``get_image_catalog_entry``, over both catalogs a
+``catalog`` argument selects. They were four tools calling these same two helpers with a
+different constant, so the surface carried four descriptions of one question -- and the
+two that named their catalog in the tool name were the two callers most often got wrong,
+because nothing about them said they still needed an ``address``.
+
+* ``scenario_actions`` -- every action/modifier/actor/struct a ``.osc`` file can reference
+  in the image (``python3 -m scenario_execution.introspection list-actions``, run inside it).
+* ``roqsim_plugins`` -- every ``roqsim.plugins`` entry a world YAML's ``components:`` list
+  can add in the image (``python3 -m roqsim.introspection list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in
 this process's memory, keyed by ``(resolved image, group)`` -- and, where a group's list is
@@ -318,36 +322,44 @@ def _details(group: str, address: str, name: str) -> dict:
     return {"error": f"no {group.replace('_', ' ')} entry named {name!r} in {fetched['image']}"}
 
 
-def list_scenario_actions(address: str, query: str = "") -> dict:
-    """`.osc` action/modifier/actor/struct catalog, one line each.
+#: The catalogs an experiment image carries. One vocabulary, so a caller learns the pair of
+#: calls once rather than a pair per catalog.
+CATALOGS = ("scenario_actions", "roqsim_plugins")
 
-    Returns `{items, total, image, cache}`.
+
+def _bad_catalog(catalog: str) -> dict:
+    return {"error": f"unknown catalog {catalog!r}; known catalogs: {', '.join(CATALOGS)}"}
+
+
+def list_image_catalog(address: str, catalog: str = "scenario_actions",
+                       query: str = "") -> dict:
+    """What an experiment image can express, one line per entry.
+
+    ``scenario_actions``: the ``.osc`` actions, modifiers, actors and structs a scenario may
+    use. ``roqsim_plugins``: the ``roqsim.plugins`` a world may declare. A catalog belongs to
+    a built image, so *address* (``/sources/<workspace_id>/<path>``) names which to read.
     """
-    return _list("scenario_actions", address, query)
+    if catalog not in CATALOGS:
+        return _bad_catalog(catalog)
+    return _list(catalog, address, query)
 
 
-def get_scenario_action_details(address: str, name: str) -> dict:
-    """One catalog entry's detail: parameters, source, doc, resolvability."""
-    return _details("scenario_actions", address, name)
+def get_image_catalog_entry(address: str, name: str,
+                            catalog: str = "scenario_actions") -> dict:
+    """One entry in full. Same *address* and *catalog* as ``list_image_catalog``.
 
-
-def list_roqsim_plugins(address: str, query: str = "") -> dict:
-    """`roqsim.plugins` catalog, one line each. Same shape as `list_scenario_actions`."""
-    return _list("roqsim_plugins", address, query)
-
-
-def get_roqsim_plugin_details(address: str, name: str) -> dict:
-    """One plugin's config keys -- name, example and doc each -- plus a typed schema where the
-    plugin declares one. What a world YAML `components:` entry accepts.
+    A scenario action: its parameters, source library, doc and resolvability. A roqsim
+    plugin: its config keys -- name, example and doc each -- plus a typed schema where the
+    plugin declares one, which is what a world YAML `components:` entry accepts.
     """
-    return _details("roqsim_plugins", address, name)
+    if catalog not in CATALOGS:
+        return _bad_catalog(catalog)
+    return _details(catalog, address, name)
 
 
 _TOOLS = [
-    list_scenario_actions,
-    get_scenario_action_details,
-    list_roqsim_plugins,
-    get_roqsim_plugin_details,
+    list_image_catalog,
+    get_image_catalog_entry,
 ]
 
 
