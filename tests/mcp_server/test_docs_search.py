@@ -84,3 +84,40 @@ def test_reading_one_page_is_unbounded(corpus):
 
 def test_an_unknown_page_names_the_ones_there_are(corpus):
     assert "clustered" in docs.search_docs(page="nope")["error"]
+
+
+# -- Where the documentation is found -----------------------------------------
+#
+# The deployment that broke: robovast installed into site-packages, with the docs
+# nowhere above the module. The walk cannot reach them, so an image has to say where
+# they are -- and when it says it wrong, the reply has to distinguish that from a
+# deployment that never pointed at them at all.
+
+
+def test_an_env_pointing_at_a_real_directory_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROBOVAST_DOCS_DIR", str(tmp_path))
+    assert docs._find_docs_dir() == tmp_path
+
+
+def test_an_env_pointing_nowhere_serves_nothing_rather_than_other_docs(tmp_path, monkeypatch):
+    """Falling through to the walk would serve whichever docs/ happens to sit above the
+    module under a name the operator believes is theirs."""
+    monkeypatch.setenv("ROBOVAST_DOCS_DIR", str(tmp_path / "absent"))
+    assert docs._find_docs_dir() is None
+
+
+def test_a_misconfigured_path_is_named_in_the_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROBOVAST_DOCS_DIR", str(tmp_path / "absent"))
+    assert str(tmp_path / "absent") in docs._no_docs()["error"]
+
+
+def test_an_unset_env_is_reported_as_unset(monkeypatch):
+    monkeypatch.delenv("ROBOVAST_DOCS_DIR", raising=False)
+    assert "not found" in docs._no_docs()["error"]
+
+
+def test_a_source_checkout_needs_no_env(monkeypatch):
+    """The walk that keeps `pip install -e .` working."""
+    monkeypatch.delenv("ROBOVAST_DOCS_DIR", raising=False)
+    found = docs._find_docs_dir()
+    assert found is not None and any(found.glob("*.rst"))

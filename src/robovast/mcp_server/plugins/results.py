@@ -283,6 +283,21 @@ def get_campaign_summary(campaign_id: str) -> dict:
     if origin:
         result.update({k: v for k, v in origin[0].items() if v is not None})
 
+    # Which config version a re-run read. Its own read for the reason the block above is one:
+    # these columns arrived in store schema 13, so folding them in would cost every earlier
+    # campaign the origin it does have. `origin_config_version_from` is written on every
+    # re-run, so an empty step list says the frozen config was read exactly as written, where
+    # an absent key says nothing recorded it -- and a re-run that read a different config
+    # version than the campaign it reproduces is not repeating the same experiment.
+    migration = data_access.rows(campaign_id, """
+        SELECT origin_config_version_from, origin_config_migration_steps
+        FROM campaign.campaign LIMIT 1
+    """)
+    if migration and migration[0]["origin_config_version_from"] is not None:
+        steps = migration[0]["origin_config_migration_steps"]
+        result["origin_config_version_from"] = migration[0]["origin_config_version_from"]
+        result["origin_config_migration_steps"] = json.loads(steps) if steps else []
+
     # Whether this campaign can be re-run. Additive, like `advice` above: an agent that
     # ignores the key loses nothing, and one that reads it can decide whether to call
     # start_campaign(from_campaign=...) instead of burning a launch to find out. Extended
