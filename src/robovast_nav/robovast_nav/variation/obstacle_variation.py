@@ -259,16 +259,23 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> l
     for obj, (shape, size) in zip(obstacle_objects or [], obstacle_geometry or []):
         entry = convert_dataclasses_to_dict([obj])[0]
         position = entry.get('spawn_pose', {}).get('position', {})
-        instance = {'pos': [position.get('x', 0.0), position.get('y', 0.0)]}
+        # The pose in the shape the simulator's placement plugins read -- the same shape the
+        # spawn service states one in. `pos`/`yaw` were a second spelling of it, and a
+        # placement plugin that reads only `pose` treats them as absent: the obstacle then
+        # compiles at the ORIGIN, in a run whose whole subject is where the obstacle was put.
+        # No z: omitting it sits the obstacle on the floor, which is what a placement wants
+        # and what the campaign means by a 2-D position.
+        pose = {'position': {'x': position.get('x', 0.0), 'y': position.get('y', 0.0)}}
+        yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
+        if yaw:
+            pose['orientation'] = {'yaw': yaw}
+        instance = {'pose': pose}
         # The SAME name the trial uses. Without it a placement plugin invents its own
         # (`boxes_0`), so a scenario driving `obstacle_0` by name would address nothing --
         # the two channels would agree on how many obstacles exist and where, and disagree
         # about what they are called, which is the one mismatch nothing else would catch.
         if entry.get('entity_name'):
             instance['name'] = entry['entity_name']
-        yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
-        if yaw:
-            instance['yaw'] = yaw
         if size:
             instance['size'] = list(size)
         if shape and shape != 'box':
