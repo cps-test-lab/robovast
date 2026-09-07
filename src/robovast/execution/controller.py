@@ -541,8 +541,12 @@ class CampaignController:
         # than merging: a previous batch's failures must not carry into this one.
         # ``batch_since`` is stamped with them, and for the same reason: the counters
         # are only readable as a rate against the clock they reset with.
+        #
+        # ``outcomes_counted`` goes back to False with them, which is the whole of what it
+        # is for: from here until this batch's verdicts are tallied, a 0 in ``failed`` is
+        # "not counted yet" and not "nothing failed".
         self.state.update(runs={"completed": 0, "total": total, "no_result": 0,
-                                "failed": 0},
+                                "failed": 0, "outcomes_counted": False},
                           batch_since=time.time())
         self._batch_active.set()
 
@@ -624,7 +628,7 @@ class CampaignController:
                 logger.warning("Batch complete: %d trial(s) invalidated by the runner.",
                                invalid_runs_count)
             self.state.update_runs(failed=failed_runs, killed=killed_runs,
-                                   invalid=invalid_runs_count)
+                                   invalid=invalid_runs_count, outcomes_counted=True)
             self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
         # The same per-batch checkpoint the search loop takes. Redundant with
@@ -1161,8 +1165,7 @@ class CampaignController:
         finally:
             # Same tally as batch mode: a trial that ran and failed is invisible in the
             # resultless count, so surface it before the batch's progress is closed out.
-            if self.state is not None and (failed_runs or killed_runs
-                                           or invalid_runs_count):
+            if self.state is not None:
                 if failed_runs:
                     logger.warning("Batch %d: %d run(s) did not pass.",
                                    batch_idx, failed_runs)
@@ -1172,8 +1175,13 @@ class CampaignController:
                 if invalid_runs_count:
                     logger.warning("Batch %d: %d trial(s) invalidated by the runner.",
                                    batch_idx, invalid_runs_count)
+                # Written even when every count is zero, which it was not before: a batch
+                # that lost nothing must be distinguishable from one whose verdicts have
+                # not been read yet, and both read 0. ``outcomes_counted`` carries that
+                # difference, and it can only become true if this runs.
                 self.state.update_runs(failed=failed_runs, killed=killed_runs,
-                                       invalid=invalid_runs_count)
+                                       invalid=invalid_runs_count,
+                                       outcomes_counted=True)
             self._end_batch_progress()
         # What the loop needs if this batch scored nothing: not that it was empty, which it
         # can see, but which of the two ways every cell came back with nothing.
