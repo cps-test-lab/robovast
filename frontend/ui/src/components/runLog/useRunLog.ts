@@ -70,6 +70,11 @@ export interface RunLogData {
   truncated: boolean
   /** Absent `run_log` table (postprocessing predates it) vs. present but empty. */
   missingTable: boolean
+  /** The campaign has no rows in the index at all, i.e. postprocessing has not run for it.
+   *  Distinct from `missingTable`, which is a campaign that WAS ingested by an older
+   *  postprocessing: the remedy is the same but the reason a reader is looking at an empty
+   *  log is not, and an empty log with no explanation reads as a broken tab. */
+  notIngested: boolean
   total: number
 }
 
@@ -177,6 +182,7 @@ export function useRunLog(opts: UseRunLogOptions) {
       const rows: LogRow[] = []
       let truncated = false
       let missingTable = false
+      let notIngested = false
       for (let offset = 0; offset < maxRows; offset += PAGE) {
         const want = Math.min(PAGE, maxRows - offset)
         let page
@@ -196,6 +202,15 @@ export function useRunLog(opts: UseRunLogOptions) {
           throw e
         }
         const got = page.rows ?? []
+        // An empty first page carrying the index's "not in the index" note is a campaign
+        // postprocessing never ingested -- the service answers it as a result with a note
+        // rather than as an error, so there is nothing thrown to catch above. Same wording
+        // the Data browser matches on (`index_query.missing_campaign_note`), so the two tabs
+        // explain one state the same way.
+        if (offset === 0 && !got.length && /not in the index/i.test(page.note ?? '')) {
+          notIngested = true
+          break
+        }
         // Rows come back keyed by column name (`DataQueryResult.rows: list[dict]`).
         for (const row of got) rows.push(toRow(row as Record<string, unknown>))
         if (got.length < want) break
@@ -206,7 +221,7 @@ export function useRunLog(opts: UseRunLogOptions) {
       // "nothing logged before the clock started". Missing for a multi-run scope, where one
       // answer would not be true of every run.
       let clock: ClockProvenance | null = null
-      if (!missingTable && singleRun) {
+      if (!missingTable && !notIngested && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
@@ -231,7 +246,7 @@ export function useRunLog(opts: UseRunLogOptions) {
       // verdict once (`common/scenario_markers`) and wrote it here, so this view, the
       // playback clock and `search_run_logs` cut at the same moment.
       let verdict: Verdict | null = null
-      if (!missingTable && singleRun) {
+      if (!missingTable && !notIngested && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
@@ -264,6 +279,7 @@ export function useRunLog(opts: UseRunLogOptions) {
         }
       })
       return { rows, simTimes, simIndex, clock, singleRun, verdict, truncated, missingTable,
+        notIngested,
                total: rows.length }
     },
   })

@@ -401,6 +401,13 @@ export function RunLogView({
         </Typography>
       </Box>
     )
+  if (data?.notIngested)
+    return (
+      <Alert severity="info" variant="outlined" sx={{ m: 1, py: 0 }}>
+        This campaign has no rows in the results index, so there is no log to read yet.
+        Postprocessing builds them — run it from the Data tab.
+      </Alert>
+    )
   if (data?.missingTable)
     return (
       <Alert severity="info" variant="outlined" sx={{ m: 1, py: 0 }}>

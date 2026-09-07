@@ -16,7 +16,6 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
-import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import Divider from '@mui/material/Divider'
 import Paper from '@mui/material/Paper'
@@ -35,6 +34,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, isPreviewable, type CampaignSummary } from '@/lib/robovastClient'
 import { declaresScene3d } from '@/lib/previewRuns'
+import { PreviewChip } from '@/lib/preview/PreviewChip'
 import {
   firstRunSelection,
   resolveSelection,
@@ -70,7 +70,17 @@ const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 // would leave the scene with nothing driving it. It is the whole of the service's ALWAYS_ON_PANELS
 // -- a second always-on panel added there belongs here too, or it would be contributed to every run
 // view and then silently missing from this one.
-const PREVIEW_PANELS: ReadonlySet<string> = new Set(['scene3d', 'playback'])
+// `log` reads the run's own container output over the live job-log tail rather than the `run_log`
+// table, so it needs no index either -- see `lib/preview/PreviewRunLog`.
+const PREVIEW_PANELS: ReadonlySet<string> = new Set(['scene3d', 'playback', 'log'])
+
+// Where the log sits in a preview: a full-width bar along the bottom, so it reads beside the replay
+// rather than floating over it. `bottom` DOCKS -- PanelHost reserves the bar's height and lays the
+// `fill` scene out in what is left, offset clear of the playback bar below it -- where the panel's
+// own `bottom-center` default floats above the scene as a collapsed strip. That default is right
+// for a finished run, where the log is what you reach for when something looks wrong; in a preview
+// the log and the scene are the only two things there are.
+const PREVIEW_LOG_POSITION = { anchor: 'bottom' as const, height: '33%' }
 
 /** The run view's settings menu: does the run end at its scenario's verdict or run on through the
  *  teardown, and -- when a 3D view is mounted -- put its camera back where the scene opened.
@@ -343,7 +353,16 @@ export function RunView({
   const specs = useMemo(
     () => {
       const parsed = panels.data ? parsePanels(panels.data.panels) : []
-      return preview ? parsed.filter((p) => PREVIEW_PANELS.has(p.type)) : parsed
+      if (!preview) return parsed
+      // The campaign's declared position and bindings are for the post-hoc panel; in a preview the
+      // panel is a different reader of a different source, so the host says both here rather than
+      // asking every campaign to describe a mode it does not know about.
+      return parsed
+        .filter((p) => PREVIEW_PANELS.has(p.type))
+        .map((p) => (p.type === 'log'
+          ? { ...p, position: { ...p.position, ...PREVIEW_LOG_POSITION },
+              config: { ...p.config, preview: true } }
+          : p))
     },
     [panels.data, preview],
   )
@@ -655,21 +674,7 @@ export function RunView({
               <Box
                 sx={{ position: 'absolute', top: 8, right: 8, pointerEvents: 'none', zIndex: 1000 }}
               >
-                <Tooltip
-                  title={
-                    'This campaign is still running. Its finished runs replay in 3D from their own '
-                    + 'recordings; metrics, charts and pass/fail need postprocessing, which happens '
-                    + 'when the campaign ends. A run still in progress is listed but has nothing to '
-                    + 'replay yet.'
-                  }
-                >
-                  <Chip
-                    size="small"
-                    color="warning"
-                    label="Preview"
-                    sx={{ pointerEvents: 'auto' }}
-                  />
-                </Tooltip>
+                <PreviewChip />
               </Box>
             )}
           </Box>

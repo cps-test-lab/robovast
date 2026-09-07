@@ -36,6 +36,36 @@ from __future__ import annotations
 MAIN_CONTAINER = "robovast"
 
 
+#: The main container's log file. Every reader of a job's log dir has to agree on which file is
+#: whose container, so the naming lives here with :data:`MAIN_CONTAINER` rather than in whichever
+#: lane needed it first -- the local tail reads these files directly, and the cluster lane reads
+#: the same names back out of the object store once a job has uploaded them. The names are written
+#: by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a property of the
+#: artifact rather than of a lane.
+MAIN_LOG = "system.log"
+
+_SIDECAR_PREFIX = "system_"
+_SIDECAR_SUFFIX = ".log"
+
+
+#: Glob for a job's sidecar logs, spelled from the same two affixes as :func:`container_of_log_file`
+#: so a reader cannot look for files it would then fail to name.
+SIDECAR_LOG_GLOB = f"{_SIDECAR_PREFIX}*{_SIDECAR_SUFFIX}"
+
+
+def is_sidecar_log(filename: str) -> bool:
+    """Whether *filename* is a sidecar container's log in a job's ``logs/`` dir."""
+    return (filename.startswith(_SIDECAR_PREFIX) and filename.endswith(_SIDECAR_SUFFIX)
+            and len(filename) > len(_SIDECAR_PREFIX) + len(_SIDECAR_SUFFIX))
+
+
+def container_of_log_file(filename: str) -> str:
+    """``system_simulation.log`` -> ``simulation``; the main log -> :data:`MAIN_CONTAINER`."""
+    if filename == MAIN_LOG:
+        return MAIN_CONTAINER
+    return filename[len(_SIDECAR_PREFIX):-len(_SIDECAR_SUFFIX)]
+
+
 def tag_width(names) -> int:
     """Column width for :func:`tag_line`'s prefixes, so the log body stays aligned."""
     return max((len(n) for n in names), default=0)

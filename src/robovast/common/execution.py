@@ -2199,6 +2199,33 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
         yaml.dump(links, f, default_flow_style=False, sort_keys=True)
 
 
+#: The job-link manifest's location inside a campaign, as one path rather than two joins.
+#: A reader that has the campaign's bytes rather than its directory -- the cluster lane's
+#: object store -- needs the same address, and deriving it twice is how the two drift.
+JOB_LINKS_MANIFEST_REL = os.path.join("_transient", JOB_LINKS_MANIFEST)
+
+
+def resolve_job_artifact_rel(links: dict, job_name: str) -> str:
+    """``<config>/<run>`` -> its job-artifact dir, relative to the campaign root.
+
+    The path arithmetic of :func:`job_artifact_dir` without the filesystem: the manifest's
+    target is relative to the link's own directory, so it only becomes a campaign-relative
+    path after being joined with *job_name* and normalised. Split out because the cluster
+    lane resolves the same job against an object-store prefix, where there is no directory
+    to join against and re-deriving the arithmetic would let the two lanes disagree about
+    which job a run's artifacts are in.
+
+    Raises:
+        FileNotFoundError: When *links* has no entry for *job_name* — the artifacts are
+            unlocatable, which must not be reported as "no output".
+    """
+    target = links.get(f"{job_name}/job")
+    if not target:
+        raise FileNotFoundError(
+            f"no {JOB_LINKS_MANIFEST} entry for {job_name!r}")
+    return os.path.normpath(os.path.join(job_name, target))
+
+
 def read_job_links(campaign_dir) -> dict:
     """Load a campaign's ``{link: target}`` job-link manifest ({} when absent)."""
     manifest = os.path.join(campaign_dir, "_transient", JOB_LINKS_MANIFEST)
@@ -2233,11 +2260,11 @@ def job_artifact_dir(campaign_dir, job_name) -> str:
             the job's artifacts are unlocatable, which must not be reported as
             "no output".
     """
-    target = read_job_links(campaign_dir).get(f"{job_name}/job")
-    if not target:
-        raise FileNotFoundError(
-            f"no {JOB_LINKS_MANIFEST} entry for {job_name!r} in {campaign_dir!r}")
-    return os.path.normpath(os.path.join(campaign_dir, job_name, target))
+    try:
+        rel = resolve_job_artifact_rel(read_job_links(campaign_dir), job_name)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"{e} in {campaign_dir!r}") from None
+    return os.path.normpath(os.path.join(campaign_dir, rel))
 
 
 def create_job_links(campaign_dir) -> int:
