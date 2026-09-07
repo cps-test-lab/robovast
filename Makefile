@@ -162,6 +162,14 @@ config-fields: ## Regenerate compat/config_fields.json from the config models
 check-config-fields: ## Fail if compat/config_fields.json is out of date with the models
 	@python3 tools/config_fields.py --check
 
+.PHONY: examples-manifest
+examples-manifest: ## Regenerate configs/examples/MANIFEST from the git index
+	@python3 tools/examples_manifest.py --write
+
+.PHONY: check-examples-manifest
+check-examples-manifest: ## Fail if configs/examples/MANIFEST is out of date
+	@python3 tools/examples_manifest.py --check
+
 .PHONY: check-config-version
 check-config-version: ## Fail if a config version bump is missing, unnecessary, or left a sample behind
 	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)

@@ -387,6 +387,14 @@ class CampaignOrigin(BaseModel):
     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
     have to be revisited the first time an origin appears that is neither -- so switch on
     ``kind`` and never on whether ``from_campaign`` is empty.
+
+    **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+    migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+    read different config versions -- which makes them different experiments, and a reader
+    comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+    on every re-run, so "read a current config" is a fact rather than a silence:
+    :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+    :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
     """
 
     #: One of :class:`OriginKind`, as a plain string. Open vocabulary.
@@ -404,6 +412,17 @@ class CampaignOrigin(BaseModel):
     #: The campaign this one was re-run from -- the *immediate* parent, not the root of the
     #: chain. Only meaningful for ``kind == "retrigger"``.
     from_campaign: str = ""
+    #: The config version the source campaign's frozen ``.vast`` declared, which is the
+    #: version this run read it at before any migration. ``None`` means it was not recorded:
+    #: a launch that is not a re-run, or a re-run recorded before this was kept. Only
+    #: meaningful for ``kind == "retrigger"``.
+    config_version_from: Optional[int] = None
+    #: The migration ladder steps applied to reach the version this run actually ran, e.g.
+    #: ``["1_to_2", "2_to_3"]``; empty when the source config was already current. Kept
+    #: rather than derived from the two versions: once the baseline rises past
+    #: :attr:`config_version_from`, the ladder can no longer be replayed to say which steps
+    #: ran, and the last step is what names the version this run reached.
+    config_migration_steps: list[str] = Field(default_factory=list)
 
 
 class CampaignSummary(BaseModel):

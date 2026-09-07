@@ -186,8 +186,13 @@ ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 COPY docs /opt/robovast/docs
 ENV ROBOVAST_DOCS_DIR=/opt/robovast/docs
 # The `.. literalinclude::` targets in docs/example.rst, which are repository paths
-# outside docs/. Without them that page renders as unreadable-file placeholders.
+# outside docs/; and, under examples/, what `get_example` serves. Without the first that
+# page renders as unreadable-file placeholders; without the second the tool has no
+# catalog. `configs/examples/MANIFEST` travels with them and is what tells the tool which
+# of those files are authored -- git cannot answer that here, because `.git` is not in
+# the build context and nothing above site-packages is the repository.
 COPY configs /opt/robovast/configs
+ENV ROBOVAST_EXAMPLES_DIR=/opt/robovast/configs/examples
 
 # The revision this image's `COPY src` came from, captured here because this is the ONLY
 # point at which it is knowable. `get_app_version` asks git, from the directory the module
