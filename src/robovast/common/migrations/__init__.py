@@ -10,10 +10,14 @@ Public API:
 all four version surfaces (config, campaign store, analysis DB, host<->container).
 """
 
+import logging
+
 from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG_VERSION,
                      ConfigTooNew, ConfigTooOld, ConfigVersionError, UnmigratableConfig,
                      config_version, find_migration_markers, migration_marker, needs_upgrade,
                      upgrade_config)
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BASELINE_CONFIG_VERSION",
@@ -69,9 +73,41 @@ def upgrade_config_file(path, *, write: bool = False):
         if _only_the_version_moved(path, upgraded):
             _rewrite_version_line(path, upgraded.get("version"))
         else:
+            with open(path, "r", encoding="utf-8") as handle:
+                before = handle.read()
             with open(path, "w", encoding="utf-8") as handle:
                 yaml.dump_all(documents, handle)
+            with open(path, "r", encoding="utf-8") as handle:
+                _warn_about_lost_comments(path, before, handle.read())
     return upgraded, applied
+
+
+def _comment_counts(text: str):
+    """Every comment in *text*, counted. Text, because that is what the author will read."""
+    import collections  # pylint: disable=import-outside-toplevel
+    import re  # pylint: disable=import-outside-toplevel
+
+    return collections.Counter(m.group(0).strip() for m in re.finditer(r"#.*", text))
+
+
+def _warn_about_lost_comments(path, before: str, after: str) -> None:
+    """Say so when a rewrite dropped or doubled a comment, quoting the ones it did.
+
+    A step that restructures has to move the notes written against what it moved, and getting
+    that wrong is silent: the file still loads, still means the same thing, and is missing the
+    only record of why a value is what it is. Checked here rather than in each step, because
+    it is the rewrite that loses them and every step reaches this one.
+    """
+    before_counts, after_counts = _comment_counts(before), _comment_counts(after)
+    lost, gained = before_counts - after_counts, after_counts - before_counts
+    for label, counts in (("no longer in", lost), ("duplicated in", gained)):
+        if not counts:
+            continue
+        quoted = "; ".join(sorted(counts)[:3])
+        logger.warning(
+            "%s: %d comment(s) %s the upgraded file, e.g. %s. The migration moved what they "
+            "were written against without moving them; recover them from version control.",
+            path, sum(counts.values()), label, quoted)
 
 
 def _only_the_version_moved(path, upgraded) -> bool:
