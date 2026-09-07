@@ -18,10 +18,31 @@ export function isRerun(origin: CampaignOrigin): boolean {
   return origin.kind === 'retrigger'
 }
 
+/**
+ * Which config version a re-run read, as one line -- or '' when nothing was recorded.
+ *
+ * A re-run migrates a staged copy of the parent's frozen `.vast`, so two runs of "the same
+ * campaign" can read different config versions, and results that came out of different
+ * versions are not results of the same experiment. The step list is what separates the two
+ * answers worth having: empty means the config was read exactly as written, and only a null
+ * `config_version_from` means nobody recorded it.
+ */
+export function configVersionFact(origin: CampaignOrigin): string {
+  // The two fields are written together, so the version answers for both: a service that
+  // predates them sends neither, and this says nothing rather than guessing "as written".
+  if (!isRerun(origin) || origin.config_version_from == null) return ''
+  const steps = origin.config_migration_steps
+  if (steps.length === 0) return `v${origin.config_version_from}, as written`
+  // The last step names the version the ladder reached, which is the version this run ran.
+  const reached = steps[steps.length - 1].split('_to_').pop()
+  return `v${origin.config_version_from} → v${reached}, migrated`
+}
+
 /** The rows of the hover panel, in reading order. Empty values are dropped downstream. */
 export function originFacts(origin: CampaignOrigin): OriginFact[] {
   return [
     { label: 'Rerun of', value: isRerun(origin) ? origin.from_campaign : '' },
+    { label: 'Config', value: configVersionFact(origin) },
     { label: 'Workspace', value: origin.workspace_name },
     { label: 'ID', value: origin.workspace_id },
     { label: 'File', value: origin.config_path },
