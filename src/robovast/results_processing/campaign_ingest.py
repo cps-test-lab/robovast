@@ -170,10 +170,15 @@ def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
                name_map: dict = None, failed: list = None) -> dict:
     """Load one run directory's data files; return rows written per table.
 
-    A stem appearing twice in one run is a hard error, as it was for ``data.db``: two files
-    claiming one table means one silently wins, and which one depends on directory order.
-    A stem claiming a table the ingest builds itself is refused for the stronger reason that
-    neither wins -- the rows are appended to the same table and the counts silently double.
+    Two files claiming one *table* in one run is a hard error, as it was for ``data.db``.
+    Keyed on the table rather than on the filename, because the table is what decides
+    where rows go: ``run.clock_map.csv`` and ``run_clock_map.csv`` are two names and one
+    destination, and appending both files' rows into it doubles every count through that
+    table while raising nothing. (Sharing a destination by being too *long* for one is
+    handled where the name is derived -- see
+    :func:`~robovast.results_processing.postprocessing_plugins._csv_to_table_name`.)
+    A file claiming a table the ingest builds itself is refused for the stronger reason
+    that neither wins -- the rows are appended and the counts silently double.
 
     *failed*, when given, is where a file refused by :class:`~robovast.common.errors.
     TableColumnLimitExceeded` (an array flattened into more columns than a table can hold)
@@ -193,11 +198,11 @@ def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
     for path in _data_files(run_dir):
         stem = path.stem
         table = _csv_to_table_name(path.name)
-        if stem in seen:
+        if table in seen:
             raise ValueError(
-                f"Duplicate table name '{stem}' in run {run_id} of config "
+                f"Duplicate table name '{table}' in run {run_id} of config "
                 f"'{config_name}': '{path.relative_to(run_dir)}' conflicts with "
-                f"'{seen[stem].relative_to(run_dir)}'")
+                f"'{seen[table].relative_to(run_dir)}'")
         if table in reserved:
             raise ValueError(
                 f"'{path.relative_to(run_dir)}' in run {run_id} of config '{config_name}' "
@@ -205,7 +210,7 @@ def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
                 f"from the campaign record. Its rows would be appended to that table rather "
                 f"than replacing it, so every row would appear twice and every count through "
                 f"it would be wrong. Rename the file.")
-        seen[stem] = path
+        seen[table] = path
         if name_map is not None:
             name_map[stem] = table
 
