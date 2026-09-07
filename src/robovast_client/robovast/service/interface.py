@@ -2582,7 +2582,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a **new** campaign from what an existing one recorded; return its id.
 
         Reads the source campaign's frozen ``_config/`` and its ``_execution/`` records
@@ -2602,6 +2602,13 @@ class RobovastInterface(ABC):
         Everything downstream of the configuration is **re-expanded**: ``execution.generate``
         generators re-run (their cache is not archived), so a stochastic generator draws new
         samples. This is a re-run, not a replay of the same trials.
+
+        **The pre-flight is the gate, and it is here.** :meth:`check_retrigger` runs
+        service-side before anything is staged, and a blocking axis refuses the launch — so a
+        campaign whose recorded image no host can drive is answered in the call that would
+        have launched it, whichever client asked. ``force`` launches anyway, for an axis the
+        caller has decided they understand; it is the only way past, and the refusal names
+        every blocking axis with what to do about it.
 
         Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
         """
@@ -2624,10 +2631,13 @@ class RobovastInterface(ABC):
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         """Whether *campaign_id* can be re-run, and what is missing if not.
 
-        Answers without staging anything, starting a container or spending compute, so it is
-        the cheap thing to call before :meth:`retrigger_campaign` rather than launching to find
-        out. Reports every axis at once -- config version, host/container protocol, images,
-        third-party plugins, asset providers -- because they fail independently.
+        Answers without staging anything, starting a container or spending compute. Reports
+        every axis at once -- config version, host/container protocol, images, third-party
+        plugins, asset providers -- because they fail independently.
+
+        The same report :meth:`retrigger_campaign` refuses on, read without launching: this is
+        how a client explains a refusal before or instead of provoking it, not how the refusal
+        is decided.
 
         Computed service-side, like :meth:`validate_project`: a client-only install has no
         access to the service's results directory, so a client that tried to work this out for

@@ -53,6 +53,8 @@ Doing it by hand instead pushes the snapshot as a workspace and runs that:
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
 sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
 the recorded image is gone; otherwise prefer the retrigger, which reuses the exact bytes.
+All three launches are gated by the same pre-flight over these records; see
+:ref:`results-retrigger-preflight`.
 
 The structure inside is domain-specific, but typically includes:
 
@@ -1087,6 +1089,41 @@ provenance properties:
 Domain-specific provenance nodes (e.g. navigation map/mesh entities) are
 contributed automatically by variation plugins that implement
 ``collect_prov_metadata``; no manual configuration is required.
+
+
+.. _results-retrigger-preflight:
+
+Re-running a campaign: the pre-flight
+-------------------------------------
+
+Every re-run — **Retrigger campaign** in the web UI, ``vast campaign rerun <id>``,
+``start_campaign(from_campaign=<id>)`` over MCP, ``POST /campaigns/<id>/retrigger`` — is answered
+by the service walking the campaign's records first, and refusing one that cannot work as
+recorded: a launch that could only fail in the backend is refused before it starts. Five axes,
+which fail independently and are all reported together:
+
+``config``
+   the frozen ``.vast`` is readable, and at a version the migration ladder can carry forward.
+``host``
+   this robovast still speaks the recorded image's container protocol.
+``images``
+   a new run can start from the images the campaign recorded. A container whose image the campaign
+   *built* cannot be replaced, since the build context is not archived; one it merely declared is
+   resolved again at launch.
+``plugins``
+   third-party ``plugins:`` resolved to something re-installable.
+``providers``
+   which asset-provider distributions supplied the campaign.
+
+Only ``blocked`` refuses. ``unknown`` does not: a campaign recorded before a given field existed is
+exactly what a re-run of an old campaign is, and refusing it for a record nobody wrote would defeat
+the purpose. Every blocking verdict names the artifact and how to obtain it.
+
+Read the report without launching anything — it stages nothing and starts no container — with
+``vast campaign rerun --check <id>``, ``get_campaign_summary``'s ``retrigger`` key, or
+``GET /campaigns/<id>/retrigger/check``. Override it, for an axis you have decided you understand,
+with ``vast campaign rerun <id> --force``, ``start_campaign(from_campaign=<id>, force=True)``,
+**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body.
 
 
 .. _results-postprocessing:

@@ -248,6 +248,20 @@
         "title": "Body_query_campaign_data_sql_campaigns__campaign_id__query_post",
         "type": "object"
       },
+      "Body_retrigger_campaign_campaigns__campaign_id__retrigger_post": {
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "force"
+        ],
+        "title": "Body_retrigger_campaign_campaigns__campaign_id__retrigger_post",
+        "type": "object"
+      },
       "Body_validate_project_workspaces__workspace_id__validate_post": {
         "properties": {
           "check_world": {
@@ -6477,7 +6491,7 @@
     },
     "/campaigns/{campaign_id}/retrigger": {
       "post": {
-        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.",
+        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.",
         "operationId": "retrigger_campaign_campaigns__campaign_id__retrigger_post",
         "parameters": [
           {
@@ -6490,6 +6504,15 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_retrigger_campaign_campaigns__campaign_id__retrigger_post"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

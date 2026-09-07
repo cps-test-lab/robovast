@@ -2004,7 +2004,38 @@ class LocalTransport(RobovastInterface):
                 for name, axis in report["axes"].items()
             })
 
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    @staticmethod
+    def _admit_retrigger(report: dict, force: bool) -> None:
+        """Refuse a launch the pre-flight blocks on, unless the caller asked for it anyway.
+
+        On the operation rather than in each client, because a check a client may skip is not
+        a gate: the campaign whose recorded image is outside this host's protocol window then
+        fails in the backend, minutes after a launch that looked accepted. ``retrigger.check``
+        stages nothing and starts no container, so the launch pays a few record reads for it.
+
+        ``force`` is the caller's judgement about an axis they understand. It is logged
+        rather than carried onto the campaign, so the service's own log is where "this one was
+        launched past a refusal" can be read back.
+        """
+        from robovast.service.retrigger import RetriggerRefused
+
+        blocking = report["blocking"]
+        if not blocking:
+            return
+        axes = ", ".join(blocking)
+        if force:
+            logger.warning("retrigger of %s forced past a blocking pre-flight: %s",
+                           report["campaign_id"], axes)
+            return
+        raise RetriggerRefused(
+            f"cannot retrigger {report['campaign_id']!r}: its pre-flight blocks on {axes}.\n"
+            + "\n".join(f"  {name}: {report['axes'][name]['detail']}" for name in blocking)
+            + f"\n  Fix what the detail names, or re-run it anyway with force "
+              f"('vast campaign rerun {report['campaign_id']} --force', or force on the "
+              f"request). 'vast campaign rerun --check {report['campaign_id']}' reports "
+              f"every axis, including the ones that pass.")
+
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a new campaign from *campaign_id*'s own records (see the interface).
 
         A thin orchestrator: :mod:`robovast.service.retrigger` decides everything about the
@@ -2015,6 +2046,7 @@ class LocalTransport(RobovastInterface):
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
+        self._admit_retrigger(retrigger.check(source_dir, campaign_id), force)
         plan = retrigger.prepare(
             source_dir, campaign_id,
             workspaces_root=self.store.registry.root,

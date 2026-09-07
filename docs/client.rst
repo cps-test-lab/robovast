@@ -54,8 +54,9 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast campaign stop|stop-job|log``
      - Stop a campaign, kill one wedged job, read its infrastructure log.
    * - ``vast campaign rerun <id>``
-     - Launch a new campaign from what a past one recorded. ``--check`` reports whether it
-       can be, and costs nothing.
+     - Launch a new campaign from what a past one recorded. The service refuses one its
+       pre-flight blocks; ``--check`` reports every axis without launching, ``--force``
+       launches regardless (:ref:`results-retrigger-preflight`).
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
