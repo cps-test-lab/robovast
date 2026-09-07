@@ -1870,7 +1870,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # A campaign extending nothing takes the same path and copies one file, byte for byte,
     # comments and anchors intact.
     vast_src = campaign_data["vast"]
-    vast_dst = _archive_vast_sources(vast_src, campaign_config_dir)
+    _archive_vast_sources(vast_src, campaign_config_dir)
 
     # What the declared plugin specs resolved to. Recorded HERE because this is where the
     # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the
