@@ -139,7 +139,13 @@ def not_staged_sections() -> str:
     return f"_execution/{SECTIONS_DIR}/"
 
 
-def build_include(skip_bags: bool, batch_jobs: str = ""):
+#: The one subtree of a campaign staged separately, with its executable bits restored --
+#: see :func:`build_include`'s *exclude_config* and ``main``'s two ``download_prefix``
+#: calls.
+CONFIG_DIR = "_config"
+
+
+def build_include(skip_bags: bool, batch_jobs: str = "", *, exclude_config: bool = False):
     """Return the ``download_prefix`` predicate deciding what a pod is given.
 
     Called with each object's key **relative to the campaign prefix**, so it matches the
@@ -169,6 +175,10 @@ def build_include(skip_bags: bool, batch_jobs: str = ""):
     path exactly. Excluding what a staged run's ``job`` link points at would leave the link
     dangling, which reads downstream as a run whose artifacts were lost rather than as one
     this pod was never given.
+
+    *exclude_config*, set for the bulk (bag-and-CSV-dominated) fetch once :data:`CONFIG_DIR`
+    is staged on its own with its executable bits restored -- see ``main``. Without this the
+    bulk fetch would re-fetch the same handful of files a second time for no benefit.
     """
     from robovast.common.campaign_data import PROBE_DIR  # noqa: PLC0415
     sections_prefix = not_staged_sections()
@@ -178,6 +188,8 @@ def build_include(skip_bags: bool, batch_jobs: str = ""):
     def include(rel: str) -> bool:
         parts = rel.split("/")
         if parts[0] == PROBE_DIR:
+            return False
+        if exclude_config and parts[0] == CONFIG_DIR:
             return False
         if rel == NOT_STAGED_LOG or rel.startswith(sections_prefix):
             return False
@@ -224,12 +236,23 @@ def main() -> int:
                     bytes_done / (1 << 20), (bytes_total or 0) / (1 << 20))
 
     try:
-        count = storage.download_prefix(
+        # _config/ first, and staged on its own: it is a handful of files (the .vast, a
+        # scenario, run files, any script a `command:` postprocessing step names) whose
+        # size does not grow with the campaign, unlike the rest of the tree below. This is
+        # the one subtree a pod can actually execute something out of -- a `command` step
+        # execve()s a script from here -- so it is the one subtree whose executable bits
+        # are worth the metadata round-trip per file.
+        config_count = storage.download_prefix(
+            bucket, f"{campaign_prefix}{CONFIG_DIR}",
+            os.path.join(campaign_root, CONFIG_DIR),
+            executable_bits=True)
+        # Everything else: bags and CSVs are the transfer's dominant cost by orders of
+        # magnitude and nothing here executes them, so paying a metadata round-trip per
+        # file to restore a bit nothing reads would buy this fetch nothing. _config/ is
+        # excluded -- it was just staged above, with the bit this fetch would drop.
+        count = config_count + storage.download_prefix(
             bucket, campaign_prefix, campaign_root,
-            include=build_include(skip_bags, batch_jobs),
-            # The tree is read, never executed, so restoring per-file executable bits would
-            # buy nothing for one metadata round-trip per file -- the transfer's dominant
-            # cost at this file count.
+            include=build_include(skip_bags, batch_jobs, exclude_config=True),
             executable_bits=False,
             on_progress=in_pod_storage.download_progress_reporter(
                 report, interval=_PROGRESS_INTERVAL))

@@ -58,6 +58,7 @@ is ``UNKNOWN`` rather than genuinely textual will do it.
 
 import logging
 
+from robovast.common.errors import TableColumnLimitExceeded
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, widest)
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,14 @@ NOTE_WIDENING = "widening"
 #: retyped once a value gives it a verdict.
 _PG_TYPE = {UNKNOWN: "text", INTEGER: "bigint", REAL: "double precision", TEXT: "text"}
 
+#: Postgres's hard per-table column limit (actually ~1600, lower with wide types; this
+#: stays comfortably under it rather than chasing the exact number, which also depends on
+#: row layout). Checked here, in Python, before any DDL is sent -- a ``CREATE``/``ALTER``
+#: that fails *at* the database aborts the surrounding transaction, which would take every
+#: other table this ingest touches down with it. See :class:`~robovast.common.errors.
+#: TableColumnLimitExceeded`.
+_MAX_TABLE_COLUMNS = 1500
+
 
 def _quote(identifier: str) -> str:
     """Quote an identifier for DDL, doubling any embedded quote.
@@ -121,6 +130,26 @@ def _quote(identifier: str) -> str:
     is the one place that has to be right.
     """
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def _refuse_if_too_wide(table: str, column_count: int, *, source: str = "") -> None:
+    """Raise :class:`TableColumnLimitExceeded` if *column_count* would not fit.
+
+    Called before any DDL for *table* is sent -- see :data:`_MAX_TABLE_COLUMNS` on why
+    the check has to happen here rather than by reacting to Postgres's own refusal.
+    """
+    if column_count <= _MAX_TABLE_COLUMNS:
+        return
+    raise TableColumnLimitExceeded(
+        f"'{table}' would need {column_count} columns"
+        + (f" (from {source})" if source else "")
+        + f", past Postgres's practical per-table limit ({_MAX_TABLE_COLUMNS}). This is "
+        "almost always a message flattened one column per array element (a costmap, a "
+        "path, an occupancy grid) rather than a genuinely wide table -- store it losslessly "
+        "instead of flattening it (e.g. a dedicated handler like `costmap_to_csv`), or cap "
+        "how many array indices the generic CSV handler emits.",
+        next_step=f"replace the generic to_csv handler that produced '{table}' with one "
+        "that does not flatten an array into one column per element")
 
 
 def qualified(table: str, schema: str = METRIC_SCHEMA) -> str:
@@ -278,6 +307,7 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
 
     if not known:
         columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
+        _refuse_if_too_wide(table, len(columns), source=source)
         defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
         conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
         # The one index data.db also built: every read is scoped to a run or a campaign,
@@ -293,6 +323,15 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
         # and an unscoped table does not error, it answers with the whole corpus.
         _scope().secure_table(conn, table, schema)
         return widened
+
+    # Checked once, up front, for the whole batch of ALTERs this call is about to issue --
+    # not inside the loop below, so a batch that would tip the table over the limit is
+    # refused before its first, otherwise-fine column is added. Partial widening would
+    # leave the table's on-disk shape depending on dict iteration order for no benefit: the
+    # caller (ingest_run) discards this whole file's write on the refusal anyway.
+    new_columns = [c for c in types if c not in known]
+    if new_columns:
+        _refuse_if_too_wide(table, len(known) + len(new_columns), source=source)
 
     for column, verdict in types.items():
         if column not in known:

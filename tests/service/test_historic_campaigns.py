@@ -111,6 +111,29 @@ def test_an_archived_campaign_can_be_prepared_for_relaunch(campaign, tmp_path):
         plan.discard()
 
 
+@pytest.mark.parametrize("campaign", _campaigns(), ids=lambda d: d.name)
+def test_the_plan_states_which_config_version_the_relaunch_reads(campaign, tmp_path):
+    """A re-run of an archived campaign reads a config its parent never ran, whenever the
+    ladder had to carry it forward -- so the plan states the version and the steps for every
+    campaign, including the ones that needed neither. A silence there would leave "read as
+    written" indistinguishable from "nobody looked", which is what the new campaign records.
+    """
+    source = tmp_path / campaign.name
+    shutil.copytree(campaign, source)
+    declared = config_version(yaml.safe_load(
+        next(source.glob("_config/*.vast")).read_text(encoding="utf-8")))
+
+    plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
+                             description_limit=200, request_model=CreateCampaignRequestStub)
+    try:
+        assert plan.config_migration["from"] == declared
+        assert plan.config_migration["to"] == SUPPORTED_CONFIG_VERSION
+        assert plan.config_migration["steps"] == [
+            f"{v}_to_{v + 1}" for v in range(declared, SUPPORTED_CONFIG_VERSION)]
+    finally:
+        plan.discard()
+
+
 def test_a_migrated_relaunch_keeps_the_authors_comments(tmp_path):
     """A migration is exactly when someone opens the staged config to work out what it does,
     so stripping the notes that explain it is worst at precisely that moment."""

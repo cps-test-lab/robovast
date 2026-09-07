@@ -101,11 +101,14 @@ class RetriggerPlan:
     materialize: Callable[[], None]
     #: Delete the staged tree. Idempotent, so the failure paths can call it freely.
     discard: Callable[[], None]
-    #: ``{from, to, steps}`` when the source's config had to be migrated, else ``None``.
-    #: Carried so the new campaign can record that it is a *migrated* re-run rather than a
-    #: native one -- two runs of "the same campaign" that read different config versions are
-    #: not the same experiment, and a reader comparing their results has to be able to see it.
-    config_migration: "dict | None" = None
+    #: ``{from, to, steps}``: the config version the source's frozen ``.vast`` declared, the
+    #: version this run reads it at, and the ladder steps applied -- ``steps`` empty when it
+    #: was already current. Always stated, never ``None``, so the new campaign can record
+    #: that it is a *migrated* re-run rather than a native one, and record just as
+    #: definitely that it is not: two runs of "the same campaign" that read different config
+    #: versions are not the same experiment, and a reader comparing their results has to be
+    #: able to see it.
+    config_migration: dict
 
 
 #: Per-axis verdicts a pre-flight can return. A campaign is re-runnable only if every axis
@@ -480,7 +483,7 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     # file in place keeps them through the migration too -- so if anyone opens the staged
     # config, the notes explaining it are still there.
     shutil.copy2(vast_path, staged_vast)
-    if config_migration:
+    if config_migration["steps"]:
         from robovast.common.migrations import upgrade_config_file
         upgrade_config_file(staged_vast, write=True)
         logger.info("retrigger of %s: migrated its config %s -> %s (%s); the archived copy is "
@@ -501,21 +504,25 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     )
 
 
-def _config_migration_of(vast_path: Path) -> "dict | None":
-    """``{from, to, steps}`` when the frozen config needs migrating, else ``None``.
+def _config_migration_of(vast_path: Path) -> dict:
+    """``{from, to, steps}`` for the frozen config: the version it declares, the version a
+    re-run reads it at, and the ladder steps between them -- ``steps`` empty when there are
+    none.
 
-    Reported so the retriggered campaign can record that it was *migrated* rather than native.
-    Without it two runs of "the same campaign" are indistinguishable from two runs of the same
-    config, which is exactly the kind of difference a reader comparing their results has to be
-    able to see.
+    Answered even when nothing has to be migrated, because "read exactly as written" is half
+    of what the retriggered campaign records. Without the record, two runs of "the same
+    campaign" are indistinguishable from two runs of the same config -- exactly the kind of
+    difference a reader comparing their results has to be able to see -- and without the
+    empty case, a re-run that migrated nothing is indistinguishable from one that recorded
+    nothing.
     """
     from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, config_version,
                                             needs_upgrade, read_vast, upgrade_config)
 
     raw = read_vast(vast_path)
-    if not needs_upgrade(raw):
-        return None
-    _, applied = upgrade_config(raw)
+    applied: list = []
+    if needs_upgrade(raw):
+        _, applied = upgrade_config(raw)
     return {"from": config_version(raw), "to": SUPPORTED_CONFIG_VERSION, "steps": applied}
 
 

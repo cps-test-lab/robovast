@@ -1869,13 +1869,25 @@ export interface components {
          *     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
          *     have to be revisited the first time an origin appears that is neither -- so switch on
          *     ``kind`` and never on whether ``from_campaign`` is empty.
+         *
+         *     **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+         *     migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+         *     read different config versions -- which makes them different experiments, and a reader
+         *     comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+         *     on every re-run, so "read a current config" is a fact rather than a silence:
+         *     :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+         *     :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
          */
         CampaignOrigin: {
+            /** Config Migration Steps */
+            config_migration_steps: string[];
             /**
              * Config Path
              * @default
              */
             config_path: string;
+            /** Config Version From */
+            config_version_from: number | null;
             /**
              * From Campaign
              * @default
