@@ -54,21 +54,32 @@ def _scenario_mapping(parameters):
 
     items = list(parameters or [])
     scenario = _same_kind_of_mapping(items)
-    for item in items:
+    seq_comments = getattr(getattr(parameters, "ca", None), "items", None) or {}
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
             continue
         scenario.update(item)
-        source = getattr(item, "ca", None)
         target = getattr(scenario, "ca", None)
-        if source is None or target is None:
+        if target is None:
             continue
-        for key, comment in source.items.items():
+        # A note between two items is filed against whichever of them ruamel could reach:
+        # against the PREVIOUS item's key when its value was a scalar, and against THIS item's
+        # index on the sequence when it was not -- a flow list ends the line the note would
+        # have attached to. Both land on the same key of the mapping.
+        for key, comment in (getattr(item, "ca", None).items.items()
+                             if getattr(item, "ca", None) else ()):
             if key in scenario:
                 target.items[key] = comment
+        lead = (seq_comments.get(index) or [None, None, None, None])[1]
+        if lead and index > 0:
+            key = next(iter(item), None)
+            if key in scenario:
+                slot = target.items.setdefault(key, [None, None, None, None])
+                slot[1] = (slot[1] or []) + list(lead)
 
-    lead = getattr(getattr(parameters, "ca", None), "comment", None)
-    if lead is not None and getattr(scenario, "ca", None) is not None:
-        scenario.ca.comment = lead
+    # The comment that PRECEDES the FIRST item is not carried: it sits before the list, which
+    # is to say against the `parameters:` key of the block above, and that key does not move.
+    # Copying it here as the mapping's own lead prints it a second time.
     return scenario
 
 

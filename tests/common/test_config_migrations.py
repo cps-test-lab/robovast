@@ -6,6 +6,7 @@ are reproduced in ``migrations/fixtures/v1.vast`` instead.
 """
 
 import ast
+import logging
 import pathlib
 
 import pytest
@@ -399,3 +400,73 @@ configuration:
     # and it is still the document the step meant to produce
     assert yaml.safe_load(text)["configuration"][0]["parameters"]["scenario"] == {
         "map_file": "m.yaml", "goal": 3}
+
+
+def test_a_note_after_a_flow_list_survives_the_fold(tmp_path):
+    """The attachment point that is easy to miss.
+
+    ruamel files a note between two items against the PREVIOUS item's key -- unless that
+    item's value was a flow collection, which ends the line the note would have attached to.
+    Then it lands on the sequence, against the NEXT item's index. A fold that only reads the
+    first place deletes every note written after a list, silently.
+    """
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  - topics: ['/a',
+             '/b']
+  # SIXTY SECONDS -- the recorded value, and the reason it is not five
+  # second line of that reason
+  - wait: '60'
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    text = path.read_text(encoding="utf-8")
+
+    assert "# SIXTY SECONDS -- the recorded value, and the reason it is not five" in text
+    assert "# second line of that reason" in text
+    assert yaml.safe_load(text)["configuration"][0]["parameters"]["scenario"]["wait"] == "60"
+
+
+def test_the_note_before_the_first_item_is_not_printed_twice(tmp_path):
+    """It sits against the ``parameters:`` key, which does not move. Carrying it onto the
+    mapping as well emits it a second time -- and these blocks run to dozens of lines."""
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  # the reason for the map, at length
+  - map_file: m.yaml
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    assert path.read_text(encoding="utf-8").count("# the reason for the map, at length") == 1
+
+
+def test_a_rewrite_that_loses_a_comment_says_so(caplog):
+    """The guard that would have caught both of the above without anyone reading a diff."""
+    from robovast.common.migrations import _warn_about_lost_comments
+
+    with caplog.at_level(logging.WARNING):
+        _warn_about_lost_comments("c.vast", "a: 1  # kept\nb: 2  # why b is two\n",
+                                  "a: 1  # kept\n")
+    assert "why b is two" in caplog.text
+
+
+def test_a_faithful_rewrite_says_nothing(caplog):
+    from robovast.common.migrations import _warn_about_lost_comments
+
+    with caplog.at_level(logging.WARNING):
+        _warn_about_lost_comments("c.vast", "a: 1  # kept\n", "a: 1  # kept\n")
+    assert caplog.text == ""
