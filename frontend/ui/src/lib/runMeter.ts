@@ -114,5 +114,11 @@ export function runsFromSummary(summary: CampaignSummary): Status['runs'] {
     // meter path reads them; the live status is what reports them.
     killed: 0,
     invalid: 0,
+    // False, and not because the listing's tallies are untrustworthy — they come from recorded
+    // verdicts. Because this flag answers "are the failure counts final for the batch they
+    // describe", and a listing has no batch: its numbers are the whole campaign so far, which for
+    // a running one keeps moving. Saying `true` would vouch for a zero this row cannot vouch for,
+    // which is the exact false assurance the flag was added to remove.
+    outcomes_counted: false,
   }
 }
