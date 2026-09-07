@@ -939,7 +939,7 @@ def get_resource_usage() -> dict:
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
     reservations, and ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
-        Returns:
+    Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
         jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and
