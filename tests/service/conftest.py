@@ -18,6 +18,11 @@ Two narrow patches rather than a token argument threaded through ~17 call sites:
 
 Both are deliberately confined to ``tests/service``: the point is to keep every other
 test about its own subject, not to make authentication invisible.
+
+It also holds :class:`CreateCampaignRequestStub`, the request object
+``retrigger.prepare`` takes by injection. It lives here because more than one module
+calls ``prepare`` directly, and a per-module copy would drift from the field set the
+real request carries.
 """
 
 import pytest
@@ -31,6 +36,18 @@ TEST_TOKEN = "test-token"
 
 #: Ready-made header for a test that constructs a request by hand.
 AUTH_HEADERS = {"Authorization": f"Bearer {TEST_TOKEN}"}
+
+
+class CreateCampaignRequestStub:
+    """Stand-in for CreateCampaignRequest, which ``prepare`` takes by injection."""
+
+    _FIELDS = ("config_filter", "campaign_name", "runs", "postprocess", "upload_to_share",
+               "show_gui", "description", "workspace_id", "config_path")
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        for field in self._FIELDS:
+            self.__dict__.setdefault(field, None)
 
 
 def pytest_configure(config):
