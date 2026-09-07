@@ -28,6 +28,22 @@ _LADDER_REL = "src/robovast/common/migrations/config/__init__.py"
 _FIXTURES_REL = "src/robovast/common/migrations/fixtures"
 
 
+#: Annotations that never described a file that could exist, and the reason each is a
+#: correction rather than a change. Entries are removed once the release they correct has
+#: shipped -- this is not a place to park a breaking change.
+#:
+#: The third failure direction the two above do not cover: a field whose declared type
+#: disagrees with what the ladder that produces it always emitted. Nothing valid can carry
+#: the old shape, because the only route to that version is the step itself, so widening or
+#: narrowing the annotation to match cannot change what any file means. A version bump here
+#: would add a step that migrates nothing, which the README refuses for good reason.
+_ANNOTATION_CORRECTIONS = {
+    ("SearchConfig", "parameters"):
+        "v4's own ladder rewrites search.parameters into channels, so no v4 file has ever "
+        "carried the list this was annotated as",
+}
+
+
 def _git(*args, allow_fail: bool = False):
     result = subprocess.run(["git", *args], cwd=_REPO, capture_output=True, text=True,
                             check=False)
@@ -95,7 +111,12 @@ def classify(base: dict, head: dict) -> "tuple[bool, list[str], list[str]]":
                 additive.append(f"{key[0]} extra: {was_type} -> {is_type}")
             continue
         if was_type != is_type:
-            breaking.append(f"{key[0]}.{key[1]} type {was_type} -> {is_type}")
+            if key in _ANNOTATION_CORRECTIONS:
+                additive.append(
+                    f"{key[0]}.{key[1]} type {was_type} -> {is_type} "
+                    f"(correction: {_ANNOTATION_CORRECTIONS[key]})")
+            else:
+                breaking.append(f"{key[0]}.{key[1]} type {was_type} -> {is_type}")
         if is_required and not was_required:
             breaking.append(f"{key[0]}.{key[1]} became required")
         elif was_required and not is_required:

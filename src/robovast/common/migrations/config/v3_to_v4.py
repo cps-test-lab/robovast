@@ -41,14 +41,49 @@ def _scenario_mapping(parameters):
     The fold is not a reinterpretation: v3 already collapsed this list with ``dict.update``
     before anything read it, so a repeated key already meant "the last one". Writing it out as
     a mapping states what the file always meant.
+
+    **The comments come with it.** A campaign that documents its parameters does it here, one
+    note per line, and those notes are often the only record of why a value is what it is --
+    losing them to a restructuring nobody asked for would cost more than the restructuring
+    gains. ruamel files a sequence item's trailing comment (which spans the lines up to the
+    next item) against that item's key, so carrying each item's comment record onto the same
+    key of the mapping reproduces the layout the author wrote.
     """
     if isinstance(parameters, dict):
         return parameters          # already a mapping; nothing to fold
-    scenario = {}
-    for item in parameters or []:
-        if isinstance(item, dict):
-            scenario.update(item)
+
+    items = list(parameters or [])
+    scenario = _same_kind_of_mapping(items)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        scenario.update(item)
+        source = getattr(item, "ca", None)
+        target = getattr(scenario, "ca", None)
+        if source is None or target is None:
+            continue
+        for key, comment in source.items.items():
+            if key in scenario:
+                target.items[key] = comment
+
+    lead = getattr(getattr(parameters, "ca", None), "comment", None)
+    if lead is not None and getattr(scenario, "ca", None) is not None:
+        scenario.ca.comment = lead
     return scenario
+
+
+def _same_kind_of_mapping(items):
+    """An empty mapping that can hold comments when the items being folded carry any.
+
+    A plain ``dict`` for a plain document -- this step runs on both, and only the round-trip
+    loader produces anything with comments to keep.
+    """
+    if not any(hasattr(item, "ca") for item in items):
+        return {}
+    from ruamel.yaml.comments import \
+        CommentedMap  # pylint: disable=import-outside-toplevel
+
+    return CommentedMap()
 
 
 def _migrate_block(entry):

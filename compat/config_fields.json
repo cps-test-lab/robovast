@@ -918,7 +918,7 @@
     [
       "parameters",
       false,
-      "Union[list[dict[str, Any]], NoneType]"
+      "Union[dict[str, Any], NoneType]"
     ],
     [
       "per_batch",
