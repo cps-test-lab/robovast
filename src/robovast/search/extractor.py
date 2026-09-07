@@ -22,6 +22,21 @@ returns exactly what the search needs: the **objectives** (optimized) and the
 It is the one place SUT-specific evaluation lives — and is parameterized from the
 ``.vast`` (``extract.params``) and loadable from a local file. ``objectives`` and
 ``measures`` are named dicts so single- and multi-objective use the same shape.
+
+**Extraction runs between batches, before any postprocessing.** A search has to score
+a batch to ask the strategy for the next one, and postprocessing runs once, over the
+finished campaign. So the files in a run directory here are the ones the *runner* wrote
+— ``test.xml`` and whatever the scenario recorded — and **not** anything a
+``postprocessing:`` step produces. An extractor written against such a file finds it
+missing on every run of every cell, which is not a visible failure: the usual thing for
+code to do with a path that is not there is return ``None`` or ``0.0``, and a constant
+objective is a search with no gradient that looks exactly like a converged one. It has
+happened twice, in sibling extractors, and both times it was found by noticing that the
+score never moved rather than by anything reporting it.
+
+Declaring :attr:`Extractor.requires_run_files` is how to make it report: a declared file
+that is absent from every completed run is a :class:`NoSampleError` naming the file, not
+a number.
 """
 
 import logging
@@ -137,7 +152,30 @@ class Extractor(ABC):
     Constructed with the ``extract.params`` from the ``.vast`` (so thresholds /
     column names / aggregation can be swept without editing code). Aggregation
     over the config's runs is the extractor's responsibility.
+
+    Read this module's docstring on **when** :meth:`extract` runs before writing one:
+    the answer decides which files exist to read.
     """
+
+    #: Per-run files :meth:`extract` cannot do its job without, relative to a run
+    #: directory (``("nav2_behaviors.csv",)``). Checked by
+    #: :class:`~robovast.search.evaluator.Evaluator` before :meth:`extract` is called, and
+    #: a name absent from *every* completed run of a cell is a :class:`NoSampleError`
+    #: rather than whatever this extractor's own code does with a missing path.
+    #:
+    #: Absent from *some* runs is left alone deliberately: that is one trial's data being
+    #: odd, which an extractor aggregating over runs is the right place to decide about.
+    #: Absent from all of them is the structural case -- a file that only postprocessing
+    #: writes, or a name that has changed -- and it is the one that produces a constant
+    #: objective while the campaign looks healthy.
+    #:
+    #: Empty by default, so nothing is checked and nothing changes for an extractor that
+    #: does not declare. That is a real limitation: an author who does not know extraction
+    #: precedes postprocessing will not think to declare either. It is what the framework
+    #: can offer without reading third-party code, and ``vast config validate`` refuses a
+    #: declaration that is malformed so a typo here is not a check that silently does
+    #: nothing.
+    requires_run_files: "tuple[str, ...]" = ()
 
     def __init__(self, **params):
         self.params = params
