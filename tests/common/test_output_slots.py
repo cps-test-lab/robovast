@@ -704,6 +704,27 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     assert instances[0]["pos"] == [1.0, 2.0]
     # 'box' is the placement plugin's own default, so it is not restated per instance.
     assert "shape" not in instances[0]
+    # Nothing about motion by default: the instance takes the simulator's, and restating a
+    # default is noise that goes stale when the default moves.
+    assert "motion" not in instances[0]
+
+    # Scenery says so, because a simulator whose placements default to a physics body would let
+    # the robot push an obstacle off the position this variation chose -- the independent
+    # variable of the sweep.
+    scenery = _instances_for_sim([_Obj()], [("box", [0.5, 0.5, 1.0])], motion="static")
+    assert scenery[0]["motion"] == "static"
+
+
+def test_the_triggered_obstacle_keeps_the_movable_default():
+    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported.
+    SetEntityState refuses an entity with no free joint, so this is the one placement that must
+    NOT be welded -- while a plain placed obstacle is scenery and must be."""
+    from robovast_nav.variation.obstacle_variation import ObstacleVariation
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTrigger)
+
+    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION is None
+    assert ObstacleVariation.SIM_INSTANCES_MOTION == "static"
 
 
 def test_a_density_is_refused_where_a_single_obstacle_is_required():
