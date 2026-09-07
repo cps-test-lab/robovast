@@ -13,6 +13,10 @@ directory. What this file defends is the part only the wire and the worker can s
 * **Import registers, it does not merely extract.** Listings answer from the store, so a
   campaign that extracted but did not register lists blank -- which looks like success to
   everything except the person reading it.
+* **What arrives can be re-run.** Importing an old result is worth doing because the campaign
+  becomes one of ours: listable, readable, and launchable again. The retrigger pre-flight is
+  tested against fixture directories elsewhere; only here does it meet a directory the import
+  itself produced, which is the one a user would actually re-run.
 * **A refusal happens before any bytes move.** A bad archive, a name that is not a campaign
   id, and a collision with a campaign already here are all synchronous errors on the POST. If
   any of them slipped into the worker instead, the caller would get a ref for an import that
@@ -40,13 +44,17 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 from starlette.testclient import TestClient
 
 from robovast.client.status import TERMINAL_PHASES
+from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
+from robovast.service import retrigger
 from robovast.service.app import build_app
 from robovast.service.client import LocalTransport
-from robovast.service.interface import Routes
+from robovast.service.interface import DESCRIPTION_MAX_LEN, Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.conftest import CreateCampaignRequestStub
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -175,6 +183,44 @@ def test_a_historic_archive_uploads_imports_and_then_lists(env, fixture, tmp_pat
     assert fixture.name in {c["campaign_id"]
                             for c in client.get(Routes.CAMPAIGNS).json()["campaigns"]}
     assert (transport._campaigns_root() / fixture.name / "campaign.db").is_file()
+
+
+@pytest.mark.parametrize("fixture", _fixtures(), ids=lambda d: d.name)
+def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_path):
+    """A campaign that arrived over the wire can be re-run from where the import put it.
+
+    Import and retrigger are joined only here. ``test_historic_campaigns.py`` prepares a
+    ``copytree`` of the fixture, so it never reads what the import produced -- the extracted
+    layout, the ``campaign.db`` the listing answers from, and the directory
+    ``claim_campaign_dir`` handed out. Those are exactly the records the pre-flight and the
+    staging read back, so "upload an old result, then re-run it" is a guarantee only when the
+    directory under test is the imported one.
+
+    Parameterized over the fixture directory rather than pinned to one version, so a new
+    ladder step's fixture is covered here the moment it is committed -- the same contract the
+    tests around it state.
+    """
+    client, transport, _ = env
+    archive = _archive(fixture, tmp_path / "out" / f"{fixture.name}.tar.gz")
+
+    _import(client, _upload(client, archive))
+    assert _settle(client, fixture.name) == "finished"
+
+    imported = transport._campaigns_root() / fixture.name
+    report = retrigger.check(imported, fixture.name)
+    assert report["runnable"] is True, report["blocking"]
+
+    plan = retrigger.prepare(imported, fixture.name,
+                             workspaces_root=transport.store.registry.root,
+                             description_limit=DESCRIPTION_MAX_LEN,
+                             request_model=CreateCampaignRequestStub)
+    try:
+        # Whatever version was uploaded, what a re-run launches is a current config: the lane
+        # that runs it reads only the current shape.
+        staged = yaml.safe_load(Path(plan.config_path).read_text(encoding="utf-8"))
+        assert staged["version"] == SUPPORTED_CONFIG_VERSION
+    finally:
+        plan.discard()
 
 
 def test_an_older_archive_reports_the_migration_it_needed(env, tmp_path):

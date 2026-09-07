@@ -25,24 +25,13 @@ from robovast.common.common import load_config
 from robovast.common.migrations import SUPPORTED_CONFIG_VERSION, config_version
 from robovast.service import retrigger
 from robovast.service.retrigger import AXIS_BLOCKED, AXIS_OK, AXIS_UNKNOWN, AXIS_UPGRADABLE
+from tests.service.conftest import CreateCampaignRequestStub
 
 _FIXTURES = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
 
 def _campaigns():
     return sorted(d for d in _FIXTURES.iterdir() if d.is_dir())
-
-
-class _Request:
-    """Stand-in for CreateCampaignRequest, which ``prepare`` takes by injection."""
-
-    _FIELDS = ("config_filter", "campaign_name", "runs", "postprocess", "upload_to_share",
-               "show_gui", "description", "workspace_id", "config_path")
-
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-        for field in self._FIELDS:
-            self.__dict__.setdefault(field, None)
 
 
 def test_there_are_fixtures_for_every_shipped_config_version():
@@ -112,7 +101,7 @@ def test_an_archived_campaign_can_be_prepared_for_relaunch(campaign, tmp_path):
     before = next(source.glob("_config/*.vast")).read_bytes()
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
-                             description_limit=200, request_model=_Request)
+                             description_limit=200, request_model=CreateCampaignRequestStub)
     try:
         staged = yaml.safe_load(pathlib.Path(plan.config_path).read_text(encoding="utf-8"))
         assert staged["version"] == SUPPORTED_CONFIG_VERSION
@@ -130,7 +119,7 @@ def test_a_migrated_relaunch_keeps_the_authors_comments(tmp_path):
     shutil.copytree(campaign, source)
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
-                             description_limit=200, request_model=_Request)
+                             description_limit=200, request_model=CreateCampaignRequestStub)
     try:
         assert plan.config_migration["from"] == 1
         text = pathlib.Path(plan.config_path).read_text(encoding="utf-8")
@@ -151,7 +140,7 @@ def test_a_recorded_pilot_stays_a_pilot(tmp_path):
         encoding="utf-8"))
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
-                             description_limit=200, request_model=_Request)
+                             description_limit=200, request_model=CreateCampaignRequestStub)
     try:
         assert plan.request.config_filter == recorded["config_filter"]
         assert plan.request.runs == recorded["runs"]
