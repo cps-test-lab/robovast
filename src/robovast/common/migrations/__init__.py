@@ -3,14 +3,18 @@
 Public API:
 
 * :func:`upgrade_config` / :func:`upgrade_config_file` — bring a ``.vast`` forward.
+* :func:`read_vast` / :func:`classify_config` — read an archived ``.vast`` and say what
+  version it is and whether it can be carried forward.
 * :data:`SUPPORTED_CONFIG_VERSION`, :data:`BASELINE_CONFIG_VERSION` — the config surface.
 * the refusals: :class:`ConfigTooNew`, :class:`ConfigTooOld`, :class:`UnmigratableConfig`.
 
 ``README.md`` in this directory is the entry point for adding a migration step, and lists
-all four version surfaces (config, campaign store, analysis DB, host<->container).
+all three version surfaces (config, campaign store, host<->container).
 """
 
 import logging
+from dataclasses import dataclass, field
+from typing import Any
 
 from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG_VERSION,
                      ConfigTooNew, ConfigTooOld, ConfigVersionError, UnmigratableConfig,
@@ -19,21 +23,101 @@ from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG
 
 logger = logging.getLogger(__name__)
 
+#: What :func:`classify_config` found. Every state but :data:`CONFIG_CURRENT` and
+#: :data:`CONFIG_UPGRADABLE` is a refusal ``upgrade_config`` raises; what a caller *does*
+#: about each is policy and stays with the caller.
+CONFIG_CURRENT = "current"              # already at the supported version
+CONFIG_UPGRADABLE = "upgradable"        # older, and the ladder carries it forward
+CONFIG_NEWER = "newer"                  # written by a newer robovast
+CONFIG_UNVERSIONED = "unversioned"      # no ``version:``, or one that is not an integer
+CONFIG_TOO_OLD = "too_old"              # below the oldest version the ladder starts from
+CONFIG_UNMIGRATABLE = "unmigratable"    # a step refused; the config uses something removed
+
 __all__ = [
     "BASELINE_CONFIG_VERSION",
+    "CONFIG_CURRENT",
+    "CONFIG_NEWER",
+    "CONFIG_TOO_OLD",
+    "CONFIG_UNMIGRATABLE",
+    "CONFIG_UNVERSIONED",
+    "CONFIG_UPGRADABLE",
+    "ConfigClassification",
     "MIGRATION_MARKER",
     "SUPPORTED_CONFIG_VERSION",
     "ConfigTooNew",
     "ConfigTooOld",
     "ConfigVersionError",
     "UnmigratableConfig",
+    "classify_config",
     "config_version",
     "find_migration_markers",
     "migration_marker",
     "needs_upgrade",
+    "read_vast",
     "upgrade_config",
     "upgrade_config_file",
 ]
+
+
+@dataclass(frozen=True)
+class ConfigClassification:
+    """What version an archived ``.vast`` is, and whether it can be carried forward."""
+
+    #: One of the ``CONFIG_*`` states.
+    state: str
+    #: The ``version:`` as the file states it -- ``None`` when absent, and not necessarily an
+    #: integer, which is itself one of the things a caller has to report.
+    version: Any
+    #: The ladder steps that would run, in order. Empty unless the state is
+    #: :data:`CONFIG_UPGRADABLE`.
+    steps: list = field(default_factory=list)
+    #: The refusal :func:`upgrade_config` raises for this config, empty when it does not
+    #: refuse. It names the version found and what to do, so a caller reports it rather than
+    #: composing a second wording of the same refusal.
+    message: str = ""
+
+
+def classify_config(raw: dict) -> ConfigClassification:
+    """Which of the six states *raw* is in, from what the ladder itself says.
+
+    Asked by *doing* the migration rather than by inspecting the version first: the version is
+    untrusted input from a file this robovast did not write, and every way it can be wrong --
+    absent, a string, a float, ahead, behind the baseline -- is already a distinct refusal
+    :func:`upgrade_config` raises with a message naming it. Pre-classifying on the version
+    duplicates that ladder, and a pre-classification that disagrees with it reports the
+    opposite of what is wrong.
+
+    Does not mutate *raw*, and raises nothing: this is the question asked *about* a config
+    that may well be unusable.
+    """
+    version = config_version(raw)
+    try:
+        _, applied = upgrade_config(raw)
+    except ConfigTooNew as e:
+        return ConfigClassification(CONFIG_NEWER, version, message=str(e))
+    except ConfigTooOld as e:
+        return ConfigClassification(CONFIG_TOO_OLD, version, message=str(e))
+    except UnmigratableConfig as e:
+        return ConfigClassification(CONFIG_UNMIGRATABLE, version, message=str(e))
+    except ConfigVersionError as e:
+        return ConfigClassification(CONFIG_UNVERSIONED, version, message=str(e))
+    if not applied:
+        return ConfigClassification(CONFIG_CURRENT, version)
+    return ConfigClassification(CONFIG_UPGRADABLE, version, steps=applied)
+
+
+def read_vast(vast_path) -> dict:
+    """The first YAML document of an archived ``.vast``, unvalidated.
+
+    Read directly rather than through ``load_config``: this is a *diagnosis* of a file that may
+    well be too old to validate, and the strict reader would raise before the report could say
+    so -- turning the answer into the failure it was asked about.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    with open(vast_path, "r", encoding="utf-8") as handle:
+        documents = list(yaml.safe_load_all(handle))
+    return (documents[0] if documents else None) or {}
 
 
 def upgrade_config_file(path, *, write: bool = False):

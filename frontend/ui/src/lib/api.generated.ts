@@ -809,7 +809,7 @@ export interface paths {
         put?: never;
         /**
          * Retrigger Campaign
-         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.
+         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.
          */
         post: operations["retrigger_campaign_campaigns__campaign_id__retrigger_post"];
         delete?: never;
@@ -1728,6 +1728,14 @@ export interface components {
             max_rows: number;
             /** Sql */
             sql: string;
+        };
+        /** Body_retrigger_campaign_campaigns__campaign_id__retrigger_post */
+        Body_retrigger_campaign_campaigns__campaign_id__retrigger_post: {
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
         };
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
@@ -5666,7 +5674,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_retrigger_campaign_campaigns__campaign_id__retrigger_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

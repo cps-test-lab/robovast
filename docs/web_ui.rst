@@ -217,6 +217,14 @@ It provides four views:
   resolved again at launch, exactly as a fresh launch from the workspace would, and the
   new campaign says which containers that applied to, because it will not be running
   the same bytes.
+  Every re-run goes through the **pre-flight** (:ref:`the same five axes
+  <results-retrigger-preflight>` the CLI's ``vast campaign rerun --check`` prints), and
+  the service refuses on a blocking one — a config no migration step carries forward, an
+  image outside this host's container-protocol window — so a re-run that could only fail
+  in the backend is answered before it launches. The browser reads that report first and
+  says which axis blocks, in a dialog whose **Re-run anyway** starts the campaign
+  regardless: the override belongs to whoever has decided they understand the axis. A
+  refusal that arrives anyway is the service's own sentence, in a sticky error notice.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt

@@ -43,6 +43,7 @@ import {
   isTerminalPhase,
   type CampaignSummary,
   type JobSummary,
+  type RetriggerAxis,
   type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
@@ -417,7 +418,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // Unlike the two entries below it, this one produces a DIFFERENT campaign — so it
   // invalidates the listing (where the new card appears) and nothing about this one.
   const retrigger = useMutation({
-    mutationFn: () => robovast.retriggerCampaign(id),
+    mutationFn: (force: boolean) => robovast.retriggerCampaign(id, force),
     // The same key its success uses: retrying replaces the refusal in place rather than leaving
     // a stale one above the notice that supersedes it.
     onError: failed('Retrigger failed — this campaign was not modified.', `retrigger:${id}`),
@@ -435,9 +436,47 @@ function CampaignCard({ summary, newest, openedByLink }: {
     },
   })
 
-  const onRetrigger = () => {
+  // The service runs the re-run pre-flight itself and refuses on a blocking axis, so a campaign
+  // whose recorded image no host here can drive cannot be launched from the browser to fail in
+  // the backend minutes later. It is read here as well, and for the opposite purpose: to say
+  // WHICH axis blocks, and offer the override in the same gesture, rather than as a refusal the
+  // reader has to act on a second time. Unreadable is not a verdict — the launch goes ahead and
+  // the service's own refusal is what answers.
+  const onRetrigger = async () => {
     closeMenu()
-    retrigger.mutate()
+    let blocking: string[] = []
+    let axes: Record<string, RetriggerAxis> = {}
+    try {
+      const report = await robovast.retriggerCheck(id)
+      blocking = report.runnable ? [] : report.blocking
+      axes = report.axes
+    } catch {
+      blocking = []
+    }
+    if (blocking.length) {
+      const ok = await confirm({
+        title: 'This campaign cannot be re-run as recorded',
+        message: (
+          <>
+            Its pre-flight blocks on {blocking.join(', ')}:
+            <ul>
+              {blocking.map((name) => (
+                <li key={name}>
+                  <strong>{name}</strong>: {axes[name]?.detail}
+                </li>
+              ))}
+            </ul>
+            Re-running anyway starts a campaign the service expects to fail — worth doing only
+            for an axis you have decided you understand. <code>{id}</code> is untouched either
+            way.
+          </>
+        ),
+        confirmLabel: 'Re-run anyway',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    retrigger.mutate(blocking.length > 0)
   }
 
   const share = useMutation({

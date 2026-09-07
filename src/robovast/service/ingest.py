@@ -339,38 +339,56 @@ def _check_completeness(campaign_dir: Path) -> dict:
 
 
 def _check_config(campaign_dir: Path) -> dict:
-    """Can the frozen ``.vast`` be brought to the current version?"""
-    from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, ConfigVersionError,
-                                            config_version, needs_upgrade, upgrade_config)
-    from robovast.service.retrigger import _read_vast
+    """Can the frozen ``.vast`` be brought to the current version?
 
+    :func:`~robovast.common.migrations.classify_config` says *what* the config is; this says
+    what an import does about it, which is not what a retrigger does. Only ``newer`` is
+    non-blocking here: a campaign from a robovast ahead of this one still lists and displays,
+    and refusing it would discard a campaign somebody already has for a re-run they may never
+    ask for. Every other refusal blocks, because nothing can read the configuration at all.
+    """
+    from robovast.common.migrations import (CONFIG_CURRENT, CONFIG_NEWER, CONFIG_TOO_OLD,
+                                            CONFIG_UNMIGRATABLE, CONFIG_UNVERSIONED,
+                                            CONFIG_UPGRADABLE, SUPPORTED_CONFIG_VERSION,
+                                            classify_config, read_vast)
     from robovast.common.results_utils import campaign_vast_or_none
 
-    found = campaign_vast_or_none(campaign_dir)
-    if found is None:
+    # What to do about each refusal. The message says what is wrong with the file; these say
+    # where the campaign can still be read from, which is the part an importer can act on.
+    recovery = {
+        CONFIG_UNVERSIONED: "repair _config/<name>.vast to state the version it was authored "
+                            "against, or re-export the campaign from the service that ran it",
+        CONFIG_TOO_OLD: "read it with the robovast_revision its _execution/ records name",
+        CONFIG_UNMIGRATABLE: "vast campaign rerun <campaign> --to-workspace <name>, which "
+                             "materialises it with every outstanding decision marked",
+    }
+
+    vast_path = campaign_vast_or_none(campaign_dir)
+    if vast_path is None:
         return _stage(STAGE_FAILED, "no .vast under _config/")
     try:
-        raw = _read_vast(found)
+        raw = read_vast(vast_path)
     except Exception as e:  # pylint: disable=broad-except
-        return _stage(STAGE_FAILED, f"{found.name} could not be parsed: {e}")
+        return _stage(STAGE_FAILED, f"{vast_path.name} could not be parsed: {e}")
 
-    version = config_version(raw)
-    if not needs_upgrade(raw):
-        if version == SUPPORTED_CONFIG_VERSION:
-            return _stage(STAGE_OK, f"config version {version}", version=version)
+    found = classify_config(raw)
+    if found.state == CONFIG_CURRENT:
+        return _stage(STAGE_OK, f"config version {found.version}", version=found.version)
+    if found.state == CONFIG_UPGRADABLE:
+        return _stage(STAGE_MIGRATED,
+                      f"config version {found.version} migrates to {SUPPORTED_CONFIG_VERSION} "
+                      f"when read; the archived file is not modified",
+                      version=found.version, steps=found.steps)
+    if found.state == CONFIG_NEWER:
         return _stage(STAGE_NEWER,
-                      f"config version {version} is newer than this robovast supports "
-                      f"({SUPPORTED_CONFIG_VERSION}). It will display best-effort, but a "
-                      f"re-run needs a newer robovast -- a format cannot be migrated "
-                      f"backwards.", version=version)
-    try:
-        _, applied = upgrade_config(raw)
-    except ConfigVersionError as e:
-        return _stage(STAGE_FAILED, str(e), version=version)
-    return _stage(STAGE_MIGRATED,
-                  f"config version {version} migrates to {SUPPORTED_CONFIG_VERSION} when read; "
-                  f"the archived file is not modified",
-                  version=version, steps=applied)
+                      f"{found.message} The campaign will display best-effort, but a re-run "
+                      f"needs the newer robovast.", version=found.version)
+    if found.state == CONFIG_UNVERSIONED:
+        # No integer version to carry: what the file states instead is in the message, which
+        # is the only place it can be reported without pretending it was a version.
+        return _stage(STAGE_FAILED, found.message, recovery=recovery[found.state])
+    return _stage(STAGE_FAILED, found.message, version=found.version,
+                  recovery=recovery[found.state])
 
 
 def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:

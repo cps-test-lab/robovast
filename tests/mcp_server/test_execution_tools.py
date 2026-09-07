@@ -142,9 +142,9 @@ class _FakeClient:
         self.calls.append(("create_campaign", request))
         return CampaignRef(campaign_id="svc-campaign-1")
 
-    def retrigger_campaign(self, campaign_id):
+    def retrigger_campaign(self, campaign_id, force=False):
         from robovast.service.interface import CampaignRef
-        self.calls.append(("retrigger_campaign", campaign_id))
+        self.calls.append(("retrigger_campaign", campaign_id, force))
         return CampaignRef(campaign_id="svc-campaign-2")
 
     def get_status(self, campaign_id):
@@ -209,8 +209,27 @@ def test_from_campaign_retriggers_instead_of_creating(service):
     assert out == {"campaign_id": "svc-campaign-2",
                    "retriggered_from": "pilot-2026-08-08-120000",
                    "next_step": execution._wait_next_step("svc-campaign-2")}
-    name, cid = service.calls[-1]
+    name, cid, forced = service.calls[-1]
     assert name == "retrigger_campaign" and cid == "pilot-2026-08-08-120000"
+    assert forced is False
+
+
+def test_force_reaches_the_retrigger(service):
+    """The service is what refuses a blocked re-run, so the override has to travel to it --
+    an argument this tool accepted and dropped would leave the caller told it had forced
+    something it had not."""
+    execution.start_campaign(from_campaign="pilot-2026-08-08-120000", force=True)
+    name, cid, forced = service.calls[-1]
+    assert name == "retrigger_campaign" and cid == "pilot-2026-08-08-120000"
+    assert forced is True
+
+
+def test_force_without_from_campaign_is_refused_not_ignored(service):
+    """It overrides the re-run pre-flight, and a workspace launch has none: accepting it there
+    would report an override of a policy that was never consulted."""
+    out = execution.start_campaign(workspace_id="ws-1", force=True)
+    assert "force" in out["error"] and "from_campaign" in out["error"]
+    assert not any(call[0] == "create_campaign" for call in service.calls)
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -232,7 +251,7 @@ def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs
     assert "error" in out
     assert next(iter(kwargs)) in out["error"]
     # Refused before anything was launched.
-    assert not any(name == "retrigger_campaign" for name, _ in service.calls)
+    assert not any(call[0] == "retrigger_campaign" for call in service.calls)
 
 
 def test_service_start_passes_description(service):
