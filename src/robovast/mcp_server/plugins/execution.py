@@ -266,7 +266,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    show_gui: bool = False, description: str = "",
-                   from_campaign: str = "") -> dict:
+                   from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     The only way an experiment is executed: a ``docker compose`` produces no pinned image,
@@ -282,10 +282,14 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         workspace_id: **Required unless ``from_campaign``** — the workspace holding the
             project. There is no server-side "current project".
         from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
-            untouched, **taking no other argument** — the record supplies them, so a pilot
-            stays a pilot. Re-expands, so stochastic generators redraw. Can be refused; read
-            ``get_campaign_summary``'s ``retrigger`` key first, which says why and costs
-            nothing.
+            untouched, **taking no other argument but ``force``** — the record supplies them,
+            so a pilot stays a pilot. Re-expands, so stochastic generators redraw. Refused
+            when its pre-flight blocks (an image no host here can drive, a config no ladder
+            carries); ``get_campaign_summary``'s ``retrigger`` key says so beforehand and
+            costs nothing.
+        force: Re-run despite a blocking pre-flight axis, for one you have decided you
+            understand. With ``from_campaign`` only — a workspace launch has no pre-flight
+            to override.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -323,6 +327,12 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         if len(description) > DESCRIPTION_MAX_LEN:
             return {"error": f"description is {len(description)} characters; the limit "
                              f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
+        if force and not from_campaign:
+            # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
+            # workspace launch it would name a policy this call never consults.
+            return {"error": "force overrides the re-run pre-flight, which only a "
+                             "from_campaign launch has — drop it, or name the campaign to "
+                             "re-run."}
         if from_campaign:
             # Named rather than dropped: a retrigger takes these from what the source
             # campaign recorded, so accepting them here would answer a different question
@@ -338,7 +348,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                         f"recorded, so {', '.join(supplied)} cannot be set at the same time "
                         f"— drop them, or start from a workspace instead. The retriggered "
                         f"campaign's description is derived from the source's."}
-            ref = client.retrigger_campaign(from_campaign)
+            ref = client.retrigger_campaign(from_campaign, force)
             out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
                    "next_step": _wait_next_step(ref.campaign_id)}
             if ref.note:
@@ -939,7 +949,7 @@ def get_resource_usage() -> dict:
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
     reservations, and ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
-        Returns:
+    Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
         jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and

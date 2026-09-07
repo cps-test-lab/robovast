@@ -11,7 +11,7 @@ from robovast.common.config import PostprocessResourcesConfig, validate_config
 def test_the_block_reaches_the_model_from_a_whole_config():
     """Declared under ``results_processing``, not under ``execution`` -- so a campaign
     sizes the step that converts its bags without touching what its runs were given."""
-    config = validate_config({"version": 3,
+    config = validate_config({"version": 4,
                               "execution": {"containers": {"scenario": {"image": "ghcr.io/x/y:1"}},
                                             "runs": 1},
                               "results_processing": {"resources": {"cpu": 8,

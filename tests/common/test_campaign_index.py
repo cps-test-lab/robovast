@@ -11,11 +11,12 @@ from robovast.common.store import (STORE_FILENAME, CampaignStore, read_campaign_
                                    read_campaign_description)
 
 VAST = textwrap.dedent("""\
-    version: 3
+    version: 4
     configuration:
     - name: ca
       parameters:
-      - speed: 1.0
+        scenario:
+          speed: 1.0
     execution:
       containers: {scenario: {image: img}}
       runs: 2

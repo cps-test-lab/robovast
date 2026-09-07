@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: quadrotor_landing_optuna
 # Optuna TPE search. Run with:

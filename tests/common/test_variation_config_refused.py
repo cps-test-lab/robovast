@@ -65,7 +65,7 @@ def _project(tmp_path, *limits):
         """) for i, limit in enumerate(limits))
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 3
+        version: 4
         metadata: {name: refused-draw-test}
         configuration:
         """) + textwrap.indent(blocks, "  ") + textwrap.dedent("""\
@@ -120,7 +120,7 @@ def test_a_plugin_that_breaks_is_not_a_refused_draw(tmp_path):
     """))
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 3
+        version: 4
         metadata: {name: refused-draw-test}
         configuration:
         - name: cell0

@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: basic_nav_roqsim
   title: Basic nav2 navigation on the roqsim (MuJoCo) TurtleBot 4 (Depot)

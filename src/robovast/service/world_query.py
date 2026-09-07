@@ -52,6 +52,8 @@ import re
 import shlex
 import tempfile
 
+from robovast.common.config_channels import SIM, channel
+
 logger = logging.getLogger(__name__)
 
 #: Where a staged document is written. Writable by an unprivileged container, unlike the
@@ -266,11 +268,11 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
 
     _add(None, campaign_sim_block(execution))
     for config in (parameters.get("configuration") or []):
-        if not isinstance(config, dict) or not config.get("sim"):
+        if not isinstance(config, dict) or not channel(config, SIM):
             continue
         try:
             resolved = merge_sim_block(
-                execution, flatten_sim_block(config.get("sim") or {}), vast_dir)
+                execution, flatten_sim_block(channel(config, SIM)), vast_dir)
         except Exception as exc:  # noqa: BLE001 - a bad block is the schema's to report
             logger.debug("could not resolve sim block for %s: %s",
                          config.get("name"), exc)

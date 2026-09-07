@@ -42,7 +42,7 @@ def _campaign_root(tmp_path):
     root = tmp_path / "campaign-c"
     (root / "_config").mkdir(parents=True)
     (root / "_config" / "c.vast").write_text(
-        "version: 3\nmetadata: {name: c}\n", encoding="utf-8")
+        "version: 4\nmetadata: {name: c}\n", encoding="utf-8")
     return str(root)
 
 def test_a_pure_python_plugin_stays_in_process():
@@ -430,7 +430,7 @@ def test_a_batch_conversion_runs_at_the_campaigns_declared_size(monkeypatch, tmp
     campaign = tmp_path / "campaign-c"
     (campaign / "_config").mkdir(parents=True)
     (campaign / "_config" / "c.vast").write_text(
-        "version: 3\nmetadata: {name: c}\n"
+        "version: 4\nmetadata: {name: c}\n"
         "results_processing:\n  resources:\n    cpu: 6\n    memory: 12Gi\n",
         encoding="utf-8")
 

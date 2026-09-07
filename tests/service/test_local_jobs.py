@@ -450,7 +450,7 @@ def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path
 
     vast = tmp_path / "proj" / "c.vast"
     vast.parent.mkdir(parents=True)
-    vast.write_text("version: 3\n")
+    vast.write_text("version: 4\n")
     project = types.SimpleNamespace(config_path=str(vast))
     config = types.SimpleNamespace(plugins=["./plugins/backend-1.0-py3-none-any.whl"])
 
@@ -795,7 +795,7 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
 #: -- stubbing ``_campaign_execution`` was what hid a returned pydantic model AND a health command
 #: sent to the wrong container, for as long as both existed.
 _ROS_SHAPE_VAST = """\
-version: 3
+version: 4
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -811,7 +811,7 @@ execution:
 #: the simulator IS the scenario container and the role must resolve to it rather than to a name
 #: nothing started. (An *absent* simulation block is a third case -- a campaign with no simulator.)
 _STEPPED_VAST = """\
-version: 3
+version: 4
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -838,7 +838,7 @@ _RESOURCE_CSVS = ("@@ resource_usage_main.csv\n"
 #: A campaign with no simulator at all: nothing to ask about itself, which is a normal answer and
 #: must never render as a healthy run.
 _NO_SIM_VAST = """\
-version: 3
+version: 4
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -1331,7 +1331,7 @@ def test_a_run_without_a_tree_yet_says_so_rather_than_showing_an_empty_one(trans
 #: config is only that reading it *works*, so a fixture shaped for some other question would couple
 #: these tests to that question.
 _PULL_VAST = """\
-version: 3
+version: 4
 metadata: {name: t}
 configuration:
 - name: cfga

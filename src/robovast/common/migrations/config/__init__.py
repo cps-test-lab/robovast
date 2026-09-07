@@ -1,6 +1,6 @@
 """The ``.vast`` config version ladder.
 
-One of four version surfaces in robovast; ``migrations/README.md`` lists them all and is
+One of three version surfaces in robovast; ``migrations/README.md`` lists them all and is
 the entry point for adding a step to any of them.
 
 Mirrors :mod:`robovast.common.store`'s proven shape: a supported version, an ordered
@@ -13,6 +13,7 @@ reach ``main``.
 # keyed on the markers -- so the insertion point is stated rather than guessed at.
 from . import v1_to_v2  # noqa: F401
 from . import v2_to_v3  # noqa: F401
+from . import v3_to_v4  # noqa: F401
 # <new-migration-import>
 
 #: The oldest version the ladder starts from. Raising this is a deliberate, announced act
@@ -21,7 +22,7 @@ from . import v2_to_v3  # noqa: F401
 BASELINE_CONFIG_VERSION = 1
 
 #: The version a config is brought to, and the only one authoring accepts.
-SUPPORTED_CONFIG_VERSION = 3
+SUPPORTED_CONFIG_VERSION = 4
 
 #: ``_MIGRATIONS[i]`` upgrades a config from ``BASELINE_CONFIG_VERSION + i`` to
 #: ``+ i + 1``. **Append only; never edit an existing entry** -- an edit changes what an
@@ -30,6 +31,7 @@ SUPPORTED_CONFIG_VERSION = 3
 _MIGRATIONS = [
     v1_to_v2.migrate,
     v2_to_v3.migrate,
+    v3_to_v4.migrate,
     # <new-migration-entry>
 ]
 

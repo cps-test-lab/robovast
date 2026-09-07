@@ -14,7 +14,7 @@ from robovast.results_processing.postprocessing import (POSTPROCESS_CONVERT_DEFA
 
 def _vast(tmp_path, body: str) -> str:
     path = tmp_path / "campaign.vast"
-    path.write_text(f"version: 3\nmetadata: {{name: x}}\n{body}", encoding="utf-8")
+    path.write_text(f"version: 4\nmetadata: {{name: x}}\n{body}", encoding="utf-8")
     return str(path)
 
 
@@ -74,7 +74,7 @@ def test_the_local_lane_caps_the_container_it_runs(tmp_path, monkeypatch):
     campaign = tmp_path / "campaign-x"
     (campaign / "_config").mkdir(parents=True)
     (campaign / "_config" / "x.vast").write_text(
-        "version: 3\nmetadata: {name: x}\n"
+        "version: 4\nmetadata: {name: x}\n"
         "results_processing:\n  resources:\n    cpu: 500m\n    memory: 2Gi\n",
         encoding="utf-8")
 
@@ -120,7 +120,7 @@ def test_the_config_dir_answers_when_the_tree_holds_no_frozen_config(tmp_path):
     results.mkdir()
     config_dir = tmp_path / "cfg"
     config_dir.mkdir()
-    (config_dir / "c.vast").write_text("version: 3\n", encoding="utf-8")
+    (config_dir / "c.vast").write_text("version: 4\n", encoding="utf-8")
 
     assert _campaign_config_path(str(results), str(config_dir)) == str(config_dir / "c.vast")
 
@@ -140,5 +140,5 @@ def test_an_ambiguous_config_dir_is_not_guessed_at(tmp_path):
     from robovast.results_processing.postprocessing_plugins import _campaign_config_path
 
     for name in ("a.vast", "b.vast"):
-        (tmp_path / name).write_text("version: 3\n", encoding="utf-8")
+        (tmp_path / name).write_text("version: 4\n", encoding="utf-8")
     assert _campaign_config_path(str(tmp_path), str(tmp_path)) is None

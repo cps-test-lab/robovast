@@ -588,13 +588,47 @@ class _FakeBatch:
         self.calls.append('create')
 
 
+class _FakeCore:
+    """Enough of CoreV1Api for the blocked-pod probe behind _stuck_job.
+
+    *pods* are handed to the real pod-signal code, so a test says what Kubernetes says and
+    the classification stays the shared one rather than a second opinion written here.
+    """
+
+    def __init__(self, pods=(), events=()):
+        self.pods, self.events = list(pods), list(events)
+
+    def list_namespaced_pod(self, namespace, label_selector=None):
+        return type('L', (), {'items': self.pods})()
+
+    def list_namespaced_event(self, namespace, field_selector=None):
+        reason = (field_selector or '').split('=')[-1]
+        return type('L', (), {'items': [e for e in self.events
+                                        if e.reason == reason]})()
+
+    def list_node(self):
+        return type('L', (), {'items': []})()
+
+
+def _unpullable_pod(job='job-x'):
+    """A pod whose image will never arrive -- the blocked shape the pod's own status carries."""
+    waiting = type('W', (), {'reason': 'ImagePullBackOff', 'message': 'no such image'})()
+    cs = type('CS', (), {'state': type('S', (), {'waiting': waiting})()})()
+    return type('P', (), {
+        'metadata': type('M', (), {'name': f'{job}-pod', 'labels': {'job-name': job}})(),
+        'spec': type('Sp', (), {'node_name': 'node-a'})(),
+        'status': type('St', (), {'phase': 'Pending', 'conditions': [],
+                                  'init_container_statuses': [],
+                                  'container_statuses': [cs]})()})()
+
+
 def test_a_running_job_is_adopted_not_replaced():
     """Two postprocesses of one campaign must not race each other's pods."""
     batch = _FakeBatch(active=1)
 
     # Reported as adoption rather than as bare success: the caller has to know it is a
     # waiter on someone else's Job, because that decides what it may write and delete.
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_ADOPTED
+    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
 
@@ -605,8 +639,43 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     """
     batch = _FakeBatch(active=None)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
+
+
+def test_an_active_job_whose_pod_cannot_start_is_replaced_not_adopted():
+    """``status.active`` counts a pod that will never run, so adopting on that field alone
+    makes a campaign unrecoverable: the attempt waits on an outcome that is not coming, and
+    every retrigger after it adopts the same Job and waits again. Re-running postprocessing
+    is the documented recovery, so it has to be able to reach a new pod.
+    """
+    batch = _FakeBatch(active=1)
+    core = _FakeCore(pods=[_unpullable_pod()])
+
+    assert pj._adopt_or_replace(batch, core, 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert batch.calls.index('delete') < batch.calls.index('create')
+    assert not pj._live_job(batch, core, 'ns', 'job-x')
+
+
+def test_a_job_queued_behind_a_busy_cluster_is_still_adopted():
+    """The counterpart, and the reason the check asks for the reasons that will NOT clear:
+    a pod waiting for a node or a throttled pull is the work in flight adoption exists for,
+    and replacing its Job would throw away a conversion that was about to run.
+    """
+    waiting = type('W', (), {'reason': 'ImagePullBackOff',
+                             'message': 'toomanyrequests: rate limit exceeded'})()
+    cs = type('CS', (), {'state': type('S', (), {'waiting': waiting})()})()
+    pod = type('P', (), {
+        'metadata': type('M', (), {'name': 'job-x-pod', 'labels': {'job-name': 'job-x'}})(),
+        'spec': type('Sp', (), {'node_name': 'node-a'})(),
+        'status': type('St', (), {'phase': 'Pending', 'conditions': [],
+                                  'init_container_statuses': [],
+                                  'container_statuses': [cs]})()})()
+    batch = _FakeBatch(active=1)
+
+    assert pj._adopt_or_replace(batch, _FakeCore(pods=[pod]), 'ns', 'job-x',
+                                {}) == pj._JOB_ADOPTED
+    assert 'delete' not in batch.calls
 
 
 def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
@@ -1090,8 +1159,9 @@ class _SubmitBatch:
         if self.existing_active is None:
             from kubernetes.client.rest import ApiException
             raise ApiException(status=404)
-        return type('J', (), {'status': type('S', (), {
-            'active': self.existing_active})()})()
+        return type('J', (), {
+            'metadata': type('M', (), {'uid': 'job-uid'})(),
+            'status': type('S', (), {'active': self.existing_active})()})()
 
     def create_namespaced_job(self, namespace, body):
         self.calls.append('create-job')
@@ -1119,6 +1189,10 @@ class _SubmitCore:
 
     def replace_namespaced_config_map(self, name, namespace, body):
         self.calls.append('replace-cm')
+
+    def patch_namespaced_config_map(self, name, namespace, body):
+        self.calls.append('own-cm')
+        self.owner = ((body.get("metadata") or {}).get("ownerReferences") or [None])[0]
 
     def delete_namespaced_config_map(self, name, namespace):
         self.calls.append('delete-cm')
@@ -1167,8 +1241,17 @@ def test_adopting_a_live_job_does_not_touch_the_scripts_it_mounts(monkeypatch):
     assert calls == ['read-job']
 
 
-def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch):
-    """Nothing is running under this name, so this attempt owns the scripts it writes."""
+def test_a_fresh_submit_hands_the_scripts_to_the_job_that_mounts_them(monkeypatch):
+    """Nothing is running under this name, so this attempt writes the scripts -- and then
+    gives them away.
+
+    The ConfigMap outlives the wait on purpose. A waiter stops waiting for reasons that say
+    nothing about the Job (its own deadline, a stop, a service restart), and deleting the
+    scripts on the way out takes the mount away from a Job that is still running: the pod
+    that follows cannot start at all, so the Job stays active forever, the campaign stays in
+    postprocessing, and its log ends mid-step. The ownerReference is what makes that
+    unexpressible -- the Job's own ttlSecondsAfterFinished is what collects it.
+    """
     calls = []
     core = _SubmitCore(calls=calls)
     batch = _SubmitBatch(existing_active=None, calls=calls)
@@ -1177,8 +1260,9 @@ def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch
 
     assert ok is True
     # The scripts land before the Job -- the pod holds in ContainerCreating until the
-    # volume source exists -- and are swept up once the Job is done.
-    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
+    # volume source exists -- and are handed to it, never deleted, after.
+    assert calls == ['read-job', 'create-cm', 'create-job', 'read-job', 'own-cm']
+    assert core.owner["kind"] == "Job" and core.owner["uid"] == "job-uid"
 
 
 def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
@@ -1191,7 +1275,27 @@ def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
     ok, _message = _submit(monkeypatch, core, batch)
 
     assert ok is True
-    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
+    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job',
+                     'read-job', 'own-cm']
+
+
+def test_a_configmap_no_job_ever_mounted_is_deleted(monkeypatch):
+    """The one case the cleanup still exists for: the ConfigMap was written and the Job
+    create then failed, so nothing mounts it and leaving it behind is a pure leak."""
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    def _refuse(namespace, body):
+        calls.append('create-job')
+        from kubernetes.client.rest import ApiException
+        raise ApiException(status=500)
+
+    batch.create_namespaced_job = _refuse
+    ok, message = _submit(monkeypatch, core, batch)
+
+    assert ok is False and "could not create postprocessing job" in message
+    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
 
 
 # -- Unknown is not failure --------------------------------------------------

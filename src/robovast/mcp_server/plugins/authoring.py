@@ -101,14 +101,24 @@ def create_upload(address: str, executable: bool = False) -> dict:
 
     Returns:
         ``{token, path, expires_in, url}``; the URL lapses after ``expires_in`` seconds,
-        so request a new one rather than reusing a stale grant.
+        so request a new one rather than reusing a stale grant. ``url`` is absent only
+        when nobody can name an origin for it (see ``service_access.web_url``).
     """
-    from robovast.service.interface import CreateUploadRequest
+    from robovast.service.interface import CreateUploadRequest, Routes
+    client = service_access.client_or_local()
     try:
-        return service_access.client_or_local().create_upload(CreateUploadRequest(
-            address=address, executable=executable)).model_dump()
+        grant = client.create_upload(CreateUploadRequest(
+            address=address, executable=executable))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+    if not grant.url:
+        # The HTTP route handler (`app.py`) sets this on the way out; a caller reaching
+        # the same implementation in-process (the MCP mounted inside the service) skips
+        # that handler entirely, so without this the grant is unusable — every other
+        # side-channel URL in this package (files.py, execution.py, results.py) resolves
+        # itself the same way rather than depending on a layer above it.
+        grant.url = service_access.web_url(client, Routes.upload(grant.token))
+    return grant.model_dump()
 
 
 #: Shared note for the two tools that take *address*. Written once: the two make the same
@@ -118,11 +128,16 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
 #: workspace is not on this host at all, so a filesystem read would check a different
 #: file, or none, and report the verdict as if it were about the one the campaign runs.
+#:
+#: **Indented to the docstrings it is spliced into.** A paragraph at column 0 in a body
+#: indented by four leaves the docstring with no common indent, so ``Args:``/``Returns:``
+#: stop being recognised as sections and are served as prose in the tool description --
+#: on every request, duplicating what the parameter schema already carries.
 _ADDRESS_LANE = """
-A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so this
-is the file the campaign will actually run. Anything else is read as a path on the
-MCP-server host — for authoring before a workspace exists, and the only lane with no
-service running. ``lane`` says which answered.
+    A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
+    this is the file the campaign will actually run. Anything else is read as a path on
+    the MCP-server host — for authoring before a workspace exists, and the only lane with
+    no service running. ``lane`` says which answered.
 """
 
 

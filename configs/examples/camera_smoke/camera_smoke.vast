@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: camera_smoke
   title: Does offscreen rendering work on the node this job landed on?

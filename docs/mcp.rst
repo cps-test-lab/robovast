@@ -45,9 +45,12 @@ with no workspace involved at all. Campaigns are workspace-independent, and the 
 one came from may be gone — its own ``_config/`` is the durable source of truth. It
 produces a new campaign and leaves the source untouched, so it works whatever state that
 campaign ended in, and it replays the recorded launch, so re-running a one-config pilot
-stays a one-config pilot. It takes no other argument (passing one is an error rather than
-being ignored), and it is refused when the campaign recorded no usable image: a campaign's
-build context is not archived in its results, so launch it from its workspace instead.
+stays a one-config pilot. It takes no other argument but ``force`` (passing one is an error
+rather than being ignored), and the service refuses it when the pre-flight blocks — a campaign
+that recorded no usable image, whose build context is not archived either, has to be launched
+from its workspace instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
+verdict without launching, and ``force`` re-runs despite it
+(:ref:`results-retrigger-preflight`).
 
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 **config** is one scenario parameter set within a campaign.
@@ -245,8 +248,8 @@ must call the lister to learn the name the getter needs. So an **empty argument 
 
    * - Call
      - Answers
-   * - ``get_cli_help()`` / ``get_cli_help("workspace run")``
-     - the command tree / one command's ``--help``
+   * - ``get_cli_help()`` / ``("workspace run")`` / ``(search=…)``
+     - the command groups / one command's ``--help`` / a keyword search of the tree
    * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
      - the page list / matching excerpts / one page in full
    * - ``get_example()`` / ``get_example("basic_nav")``

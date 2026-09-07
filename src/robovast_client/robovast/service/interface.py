@@ -387,6 +387,14 @@ class CampaignOrigin(BaseModel):
     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
     have to be revisited the first time an origin appears that is neither -- so switch on
     ``kind`` and never on whether ``from_campaign`` is empty.
+
+    **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+    migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+    read different config versions -- which makes them different experiments, and a reader
+    comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+    on every re-run, so "read a current config" is a fact rather than a silence:
+    :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+    :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
     """
 
     #: One of :class:`OriginKind`, as a plain string. Open vocabulary.
@@ -404,6 +412,17 @@ class CampaignOrigin(BaseModel):
     #: The campaign this one was re-run from -- the *immediate* parent, not the root of the
     #: chain. Only meaningful for ``kind == "retrigger"``.
     from_campaign: str = ""
+    #: The config version the source campaign's frozen ``.vast`` declared, which is the
+    #: version this run read it at before any migration. ``None`` means it was not recorded:
+    #: a launch that is not a re-run, or a re-run recorded before this was kept. Only
+    #: meaningful for ``kind == "retrigger"``.
+    config_version_from: Optional[int] = None
+    #: The migration ladder steps applied to reach the version this run actually ran, e.g.
+    #: ``["1_to_2", "2_to_3"]``; empty when the source config was already current. Kept
+    #: rather than derived from the two versions: once the baseline rises past
+    #: :attr:`config_version_from`, the ladder can no longer be replayed to say which steps
+    #: ran, and the last step is what names the version this run reached.
+    config_migration_steps: list[str] = Field(default_factory=list)
 
 
 class CampaignSummary(BaseModel):
@@ -2582,7 +2601,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a **new** campaign from what an existing one recorded; return its id.
 
         Reads the source campaign's frozen ``_config/`` and its ``_execution/`` records
@@ -2602,6 +2621,13 @@ class RobovastInterface(ABC):
         Everything downstream of the configuration is **re-expanded**: ``execution.generate``
         generators re-run (their cache is not archived), so a stochastic generator draws new
         samples. This is a re-run, not a replay of the same trials.
+
+        **The pre-flight is the gate, and it is here.** :meth:`check_retrigger` runs
+        service-side before anything is staged, and a blocking axis refuses the launch — so a
+        campaign whose recorded image no host can drive is answered in the call that would
+        have launched it, whichever client asked. ``force`` launches anyway, for an axis the
+        caller has decided they understand; it is the only way past, and the refusal names
+        every blocking axis with what to do about it.
 
         Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
         """
@@ -2624,10 +2650,13 @@ class RobovastInterface(ABC):
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         """Whether *campaign_id* can be re-run, and what is missing if not.
 
-        Answers without staging anything, starting a container or spending compute, so it is
-        the cheap thing to call before :meth:`retrigger_campaign` rather than launching to find
-        out. Reports every axis at once -- config version, host/container protocol, images,
-        third-party plugins, asset providers -- because they fail independently.
+        Answers without staging anything, starting a container or spending compute. Reports
+        every axis at once -- config version, host/container protocol, images, third-party
+        plugins, asset providers -- because they fail independently.
+
+        The same report :meth:`retrigger_campaign` refuses on, read without launching: this is
+        how a client explains a refusal before or instead of provoking it, not how the refusal
+        is decided.
 
         Computed service-side, like :meth:`validate_project`: a client-only install has no
         access to the service's results directory, so a client that tried to work this out for

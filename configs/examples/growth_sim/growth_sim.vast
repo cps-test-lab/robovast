@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: growth_sim
 configuration:
@@ -19,8 +19,9 @@ configuration:
       - 200
 - name: test-fixed-values
   parameters:
-  - growth_rate: 0.07
-  - initial_population: 123
+    scenario:
+      growth_rate: 0.07
+      initial_population: 123
 execution:
   containers:
     scenario:

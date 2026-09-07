@@ -81,6 +81,13 @@ _BAR = "=" * 60
 _campaign_id_lock = threading.Lock()
 _LAST_CAMPAIGN_ID: str | None = None
 
+#: S3-compatible bucket names are capped at 63 characters, and the cluster lane's
+#: embedded object store uses the campaign id as its bucket name verbatim (see
+#: ``in_pod_storage.campaign_storage_location``). Refused HERE, at mint time -- before
+#: any pod or Job exists -- rather than left to surface as a storage-layer 400 once a
+#: campaign has already been accepted and started.
+_MAX_CAMPAIGN_ID_LEN = 63
+
 
 def _sanitise_campaign_name(name: str) -> str:
     """Bucket/dir-safe slug for a user-supplied campaign name.
@@ -119,6 +126,17 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
         while True:
             now = datetime.now()
             cid = f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
+            if len(cid) > _MAX_CAMPAIGN_ID_LEN:
+                # The timestamp suffix's length is fixed, so this is deterministic in
+                # `name` alone -- refused on the first iteration, not discovered by
+                # spinning the collision loop.
+                budget = _MAX_CAMPAIGN_ID_LEN - (len(cid) - len(name))
+                raise CampaignConfigError(
+                    f"Campaign id {cid!r} is {len(cid)} characters, past the "
+                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster lane's storage "
+                    f"backend puts on a bucket name. The timestamp suffix is fixed, so "
+                    f"the campaign name/slug {name!r} ({len(name)} chars) is what has to "
+                    f"shorten -- to {budget} characters or fewer.")
             if cid != _LAST_CAMPAIGN_ID:
                 _LAST_CAMPAIGN_ID = cid
                 return cid

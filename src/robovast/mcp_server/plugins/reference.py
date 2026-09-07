@@ -120,20 +120,40 @@ def _command_tree() -> list[dict]:
     return out
 
 
-def get_cli_help(command: str = "") -> dict:
-    """``vast`` CLI reference: the command tree, or one command's full ``--help``.
+def _matches(entry: dict, terms: list[str]) -> bool:
+    """Does *entry* carry every term, in its path or its one-line help?
+
+    AND rather than OR: a caller searching ``"campaign log"`` wants the one command that is
+    both, and an OR over two common words returns most of the tree -- which is the listing
+    the search exists to avoid.
+    """
+    haystack = f"{entry['command']} {entry['help']}".lower()
+    return all(term in haystack for term in terms)
+
+
+def get_cli_help(command: str = "", search: str = "") -> dict:
+    """``vast`` CLI reference: the command groups, one command's ``--help``, or a search.
 
     Args:
-        command: Space-separated path, e.g. ``"workspace run"``. Empty lists every
-            command with its one-line help.
+        command: Space-separated path, e.g. ``"workspace run"``. Empty lists the groups.
+        search: Terms that must ALL match a command's path or short help, at any depth.
 
     Returns:
-        ``{commands, total}`` when listing, else ``{command, help}``, or ``{error}``
-        naming what the level it failed at does offer.
+        ``{commands, total}`` listing or searching, else ``{command, help}``, or
+        ``{error}`` naming what the level it failed at offers.
     """
+    if search:
+        terms = search.lower().split()
+        found = [e for e in _command_tree() if _matches(e, terms)]
+        return {"commands": found, "total": len(found), "search": search}
     if not command:
-        commands = _command_tree()
-        return {"commands": commands, "total": len(commands)}
+        # The groups, not the leaves. Every leaf is one call away and most callers want one
+        # area, so a full tree charges every caller for the 80-odd commands they did not
+        # ask about -- and a caller looking for a particular verb should be searching.
+        commands = [e for e in _command_tree() if e["command"].count(" ") == 1]
+        return {"commands": commands, "total": len(commands),
+                "note": "Top-level groups. Pass `command` for one group's or command's "
+                        "own help, or `search` to find a command by keyword."}
     # An unknown path is a caller mistake, and every other tool on this surface answers
     # one with ``{"error": ...}``. Raised, it arrives as a protocol-level failure, which
     # reads as a broken server rather than as a misspelled argument.
@@ -149,21 +169,17 @@ def get_service_info() -> dict:
 
     Call this first when something behaves unexpectedly: a service loads robovast **once,
     at startup**, so after an edit a reachable service may still be running the old code.
-    Compare ``code_revision`` with your tree (``git rev-parse --short HEAD``) and restart it
-    if they differ.
-
-    **When ``code_revision`` is absent, this check is unavailable** — probe for the
-    behaviour you expect instead. ``package_version`` is no substitute: it is the release,
-    unchanged across every edit, so reading it as a revision silently defeats the one thing
-    this check exists for.
+    Compare ``code_revision`` with your tree (``git rev-parse --short HEAD``) and restart
+    it if they differ. **Absent, the check is unavailable** — probe for the behaviour you
+    expect instead. ``package_version`` is no substitute: it is the release, unchanged
+    across every edit, so reading it as a revision defeats what this check exists for.
 
     Returns:
         ``{code_version, api_version, backend, results_address, sources_address}``, plus
         ``package_version`` and ``code_revision`` when known, or ``{error}``.
 
-        ``code_version`` is what the compatibility handshake compares, and is the revision
-        rather than the release wherever one exists — which is every deployed image. Ask
-        ``package_version`` for the release.
+        ``code_version`` is what the compatibility handshake compares: the revision rather
+        than the release wherever one exists, which is every deployed image.
 
         ``backend`` is the lane this service runs, fixed when it started. Use
         ``get_resource_usage()`` to actually touch it before committing a long campaign.

@@ -305,9 +305,9 @@ class HTTPTransport(RobovastInterface):
             self._post(Routes.job_stop(campaign_id), job_name=job_name,
                        reason=reason, source=source))
 
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         return CampaignRef.model_validate(
-            self._post(Routes.campaign_retrigger(campaign_id)))
+            self._post(Routes.campaign_retrigger(campaign_id), {"force": force}))
 
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None

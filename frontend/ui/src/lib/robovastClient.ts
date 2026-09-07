@@ -153,6 +153,12 @@ export const UI_RESULT_BYTES = 8 * 1024 * 1024
 
 export type CampaignRef = Schemas['CampaignRef']
 
+// Whether a campaign can be re-run, per axis (config version, container protocol, images,
+// plugins, asset providers). `blocking` names the axes that stop it, and each axis's `detail`
+// says what to do about it.
+export type RetriggerReport = Schemas['RetriggerReport']
+export type RetriggerAxis = Schemas['RetriggerAxis']
+
 export type ActionResult = Schemas['ActionResult']
 
 // Whether a run's 3D geometry is ready, and what the wait is on if not. Mirrors CampaignDataStatus'
@@ -564,10 +570,21 @@ export const robovast = {
     ),
 
   // Launch a NEW campaign from this one's frozen config and pinned image — the source is
-  // untouched, and the returned id is the new campaign's, not this one's. Refuses (400) when
-  // the campaign never recorded an image its runs could start from.
-  retriggerCampaign: (campaignId: string) =>
-    request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`),
+  // untouched, and the returned id is the new campaign's, not this one's. The service runs the
+  // pre-flight and refuses (400) on a blocking axis, naming each one; `force` launches anyway.
+  retriggerCampaign: (campaignId: string, force = false) =>
+    request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`, {
+      force,
+    }),
+
+  // The same pre-flight the retrigger enforces, read without launching — so a refusal can be
+  // explained, and the override offered, before the button is pressed rather than after. Costs
+  // nothing: it stages nothing and starts no container.
+  retriggerCheck: (campaignId: string) =>
+    request<RetriggerReport>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/retrigger/check`,
+    ),
 
   // Permanently delete one campaign wholesale (local dir / cluster object-store data +
   // leftover Jobs + cache). Refused by the service while the campaign is still running.

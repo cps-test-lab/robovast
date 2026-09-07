@@ -67,32 +67,108 @@ class VariationConfig(BaseModel):
     # model_config = ConfigDict(extra='forbid')
 
 
-class ScenarioParameterConfig(BaseModel):
-    model_config = ConfigDict(extra='allow')
+class ParametersConfig(BaseModel):
+    """The fixed values a configuration writes, grouped by the channel they land in.
+
+    One grammar for all three, so which channel a value goes to is said by the key it is
+    under and never by the shape that key happens to have. It is also what lets a preset
+    carry any mix of them without a spelling of its own.
+
+    * ``scenario:`` -- what the trial does: parameters the ``.osc`` declares.
+    * ``sim:`` -- what it runs in: nested against the simulator backend's own schema.
+    * ``sut:`` -- how the system under test is configured: FLAT ``<source>.<path>`` keys,
+      because everything after the source name belongs to that file's format and may be an
+      XPath, which no nested mapping can express.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    scenario: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Fixed values for parameters the scenario file declares. Checked against "
+        "the .osc's declared names, so a parameter no scenario has is refused rather than "
+        "passed to nobody.")
+    sim: Optional[dict] = Field(
+        default=None,
+        description="Fixed values for the simulator this configuration runs in, as a nested "
+        "mapping against the backend's own schema (e.g. "
+        "`{overrides: {components: {ceiling: {enabled: false}}}}`). Merged over "
+        "`execution.containers.simulation`, which stays the campaign-wide default.")
+    sut: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Fixed values for how the system under test is configured, as a FLAT "
+        "mapping of `<source>.<path>` to value (e.g. "
+        "`{'nav2.local_costmap.local_costmap.ros__parameters.plugins': [...]}`). "
+        "`{$absent: true}` removes the node. Merged under any variation writing the same "
+        "destination.")
+
+
+class ConfigurationPreset(BaseModel):
+    """A reusable configuration body, composed by a configuration entry's ``use:``.
+
+    Exactly :class:`ConfigurationConfig` minus the parts that belong to one configuration --
+    its ``name`` and its own ``use:``. A preset that could carry fields a configuration cannot,
+    or fewer, would be a second schema for one thing and the reader of a ``use:`` would have to
+    know which.
+
+    **Presets do not nest.** One flat level is what keeps "read the entry and the presets it
+    names" a complete account of what a configuration runs; sharing presets between *files* is
+    what ``extends:`` is for. It also removes the cycle question rather than answering it.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    parameters: Optional[ParametersConfig] = None
+    variations: Optional[list[VariationConfig]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_configuration_only_keys(cls, data):
+        """Name ``name:`` and ``use:`` specifically rather than let them read as misspellings.
+
+        Both are correct one level up, so "extra inputs are not permitted" would send the
+        author looking for a typo in a key they spelled right.
+        """
+        if not isinstance(data, dict):
+            return data
+        reasons = {
+            "name": "a preset has no name of its own -- it is named by the key it is defined "
+                    "under, and a preset used twice would give two configurations one name",
+            "use": "presets do not compose other presets; a configuration lists every preset "
+                   "it uses, and sharing presets across files is what 'extends:' is for",
+        }
+        for key, why in reasons.items():
+            if key in data:
+                raise ValueError(f"a preset may not set {key!r}: {why}.")
+        return data
 
 
 class ConfigurationConfig(BaseModel):
+    """One configuration of a campaign: what the trial runs, and what it runs against.
+
+    **Unknown keys are refused.** Pydantic's default is to ignore them, and a configuration
+    entry is the worst place in the file for that: every key here decides what the trial is
+    configured with, so one that is dropped gives a campaign that executes its full sweep
+    against an unconfigured baseline and reports each cell normally. A misspelling
+    (``paramaters``, ``variation``) has exactly that shape and is the likely case.
+
+    Reading an *archived* campaign is deliberately not held to this -- see
+    :func:`validate_config`'s ``strict`` argument.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
     name: str = Field(
         description="Unique scenario identifier, also used as the results "
         "directory name. Lowercase only; no underscores, spaces, or periods "
         "(e.g. 'nav2-controller-comparison').")
-    parameters: Optional[list[ScenarioParameterConfig]] = None
-    sim: Optional[dict] = Field(
+    use: Optional[list[str]] = Field(
         default=None,
-        description="Fixed values for the simulator this configuration runs in, as a "
-        "nested mapping against the backend's own schema (e.g. "
-        "`{overrides: {components: {ceiling: {enabled: false}}}}`). The sibling of "
-        "`parameters` for the other channel: `parameters` is what the trial does, `sim` "
-        "is what it runs in. Merged over `execution.containers.simulation`, which stays "
-        "the campaign-wide default.")
-    sut: Optional[dict[str, Any]] = Field(
-        default=None,
-        description="Fixed values for how the system under test is configured in this "
-        "configuration, as a FLAT mapping of `<source>.<path>` to value (e.g. "
-        "`{'nav2.local_costmap.local_costmap.ros__parameters.plugins': [...]}`). Flat and "
-        "not nested, unlike `sim`: everything after the source name belongs to that file's "
-        "format and may be an XPath, which no nested mapping can express. `{$absent: true}` "
-        "removes the node. Merged under any variation writing the same destination.")
+        description="Presets this configuration is composed from, applied left to right. "
+        "Each names an entry of the top-level `configuration_presets:`. Anything this "
+        "configuration states itself wins over every preset. Resolved and removed when the "
+        "file is loaded, so nothing downstream sees it.")
+    parameters: Optional[ParametersConfig] = None
     variations: Optional[list[VariationConfig]] = None
 
     @field_validator('name')
@@ -2151,7 +2227,13 @@ class SearchConfig(BaseModel):
     # unknown keys) so the marker references survive for the validator below and
     # the substitution in Compose; the plugin params are validated at generation.
     variations: Optional[list[dict[str, Any]]] = None
-    parameters: Optional[list[dict[str, Any]]] = None
+    #: The fixed half of the template, in the same shape a configuration entry carries it:
+    #: channels under ``parameters:``. Compose expands this block into a configuration per
+    #: generation, so a shape of its own here would be a second grammar for one thing -- and
+    #: the v3 -> v4 ladder rewrites it exactly as it rewrites a configuration's.
+    #: Raw rather than :class:`ParametersConfig` for the reason the note above gives: a model
+    #: that drops unknown keys would take the ``$name`` markers with them.
+    parameters: Optional[dict[str, Any]] = None
     # Postprocessing run over each batch's results before extract (e.g. to write
     # metrics.csv). Same format/loader as results_processing.postprocessing:
     # entry-point name, ``./path.py:Class`` file ref, or ``{name: {params}}``.
@@ -2238,6 +2320,15 @@ class SearchConfig(BaseModel):
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
+    extends: Optional[str] = Field(
+        default=None,
+        description=(
+            "Another .vast this campaign is built on, as a path relative to this file and "
+            "resolving under the campaign's own project directory. Its content is merged in "
+            "before anything reads the campaign: mappings merge at every depth, lists and "
+            "scalars are replaced, and this file wins. The base may extend a base in turn. "
+            "Declared here only so the key is discoverable and a raw file validates; the "
+            "loader resolves and removes it, so nothing downstream ever sees it."))
     metadata: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
     plugins: Optional[list[str]] = Field(
@@ -2256,6 +2347,13 @@ class ConfigV1(BaseModel):
             "composing (so variation names resolve) and before postprocessing (so "
             "postprocessing plugins and their deps resolve, including on a re-run)."),
     )
+    configuration_presets: Optional[dict[str, ConfigurationPreset]] = Field(
+        default=None,
+        description=(
+            "Reusable configuration bodies, each named by its key and composed by a "
+            "configuration entry's `use:`. A mapping rather than a list: preset names have "
+            "no order, and a duplicate name is then a YAML error instead of a silent "
+            "last-wins. Resolved and removed when the file is loaded."))
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None
@@ -2317,12 +2415,49 @@ _V1_MIGRATION = (
     "container and must state its own image and command.")
 
 
-def validate_config(config: dict):
+def _drop_unknown_configuration_keys(config: dict) -> dict:
+    """A copy of *config* with keys no ``configuration`` entry declares removed, each logged.
+
+    Serves :func:`validate_config`'s lenient mode only. An archived campaign carrying such a
+    key ran with it ignored, so refusing to read it back would lose the results over a key
+    that never affected them; dropping it reproduces what the campaign actually did.
+    """
+    entries = config.get("configuration")
+    if not isinstance(entries, list):
+        return config
+    known = set(ConfigurationConfig.model_fields)
+    cleaned, dropped = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            cleaned.append(entry)
+            continue
+        extra = [k for k in entry if k not in known]
+        if not extra:
+            cleaned.append(entry)
+            continue
+        dropped.append((entry.get("name"), extra))
+        cleaned.append({k: v for k, v in entry.items() if k in known})
+    if not dropped:
+        return config
+    for name, extra in dropped:
+        logger.warning(
+            "configuration %r declares %s, which is not a configuration key; the campaign ran "
+            "with it ignored and it is dropped here too. Valid keys: %s",
+            name, ", ".join(repr(k) for k in extra), ", ".join(sorted(known)))
+    return {**config, "configuration": cleaned}
+
+
+def validate_config(config: dict, strict: bool = True):
     """
     Validate the configuration settings.
 
     Args:
-        settings: The settings dictionary to validate
+        config: The settings dictionary to validate
+        strict: Refuse a ``configuration`` entry carrying a key the schema does not declare.
+            True for authoring and launching, where such a key is a misspelling whose cost is
+            a campaign configured differently than its file reads. False for reading an
+            *archived* campaign, which already ran: the key changed nothing then, and refusing
+            it now would make a finished campaign unreadable rather than catching anything.
     Raises:
         ValueError: If required sections are missing
     """
@@ -2363,6 +2498,8 @@ def validate_config(config: dict):
             + "\nResolve them and remove the markers; 'vast configuration validate' lists what "
               "is left.")
     logger.debug(f"Config version {version} is supported")
+    if not strict:
+        config = _drop_unknown_configuration_keys(config)
     return get_validated_config(config, ConfigV1)
 
 

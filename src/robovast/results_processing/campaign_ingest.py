@@ -167,14 +167,25 @@ def _reserved_tables() -> frozenset:
 
 
 def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
-               name_map: dict = None) -> dict:
+               name_map: dict = None, failed: list = None) -> dict:
     """Load one run directory's data files; return rows written per table.
 
     A stem appearing twice in one run is a hard error, as it was for ``data.db``: two files
     claiming one table means one silently wins, and which one depends on directory order.
     A stem claiming a table the ingest builds itself is refused for the stronger reason that
     neither wins -- the rows are appended to the same table and the counts silently double.
+
+    *failed*, when given, is where a file refused by :class:`~robovast.common.errors.
+    TableColumnLimitExceeded` (an array flattened into more columns than a table can hold)
+    is recorded instead of raised -- ``(table, relative_path, message)`` appended to it. That
+    one file's rows are skipped and every other file in this run, and every other run in the
+    campaign, still ingests: see :func:`ingest_campaign`, which collects this across the
+    whole walk and raises once at the end so the campaign still ends up degraded rather than
+    silently complete. Without *failed* the exception propagates as it always did, for any
+    caller that has not opted into per-file isolation.
     """
+    from robovast.common.errors import TableColumnLimitExceeded  # noqa: PLC0415
+
     reserved = _reserved_tables()
     written = {}
     seen = {}
@@ -205,8 +216,16 @@ def ingest_run(sink, run_dir: Path, config_name: str, run_id, *,
             verdict = _scenario_verdict(rows)
 
         context = {"config_name": config_name, "run_id": run_id}
-        written[table] = sink.write(table, rows, context=context,
-                                    source=f"{config_name}/{run_id}/{path.name}")
+        try:
+            written[table] = sink.write(table, rows, context=context,
+                                        source=f"{config_name}/{run_id}/{path.name}")
+        except TableColumnLimitExceeded as e:
+            if failed is None:
+                raise
+            rel = path.relative_to(run_dir)
+            logger.error("index: skipping %s in run %s of config '%s': %s",
+                        rel, run_id, config_name, e)
+            failed.append((table, f"{config_name}/{run_id}/{rel}", str(e)))
 
     if verdict:
         written[SCENARIO_TIMESTAMPS_TABLE] = sink.write(
@@ -944,6 +963,16 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     index_schema.record_note(conn, RUNS_TABLE, "probed", _PROBED_NOTE,
                              kind=index_schema.NOTE_DOC)
 
+    # Collects ``(table, path, message)`` for a file refused by TableColumnLimitExceeded
+    # (see ingest_run) instead of letting the first one abort the walk. Every other file
+    # and every other run still ingests and commits -- an array-flattened CSV in one run
+    # must not cost the rest of an otherwise-healthy campaign its queryable index -- and
+    # this is raised once, below, after the walk and every builder that follows it have
+    # run: that keeps the "a failure here fails postprocessing" contract intact (the
+    # campaign still comes out of this function reporting a failure) without discarding
+    # everything ingest_run before the first bad file would otherwise have thrown away.
+    failed: list = []
+
     walk = [(Path(config_dir).name, run_dir)
             for config_dir in list_config_dirs(str(root))
             for run_dir in list_run_dirs(config_dir)]
@@ -951,7 +980,7 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     for config_name, run_dir in walk:
         run_path = Path(run_dir)
         written = ingest_run(sink, run_path, config_name, int(run_path.name),
-                             name_map=name_map)
+                             name_map=name_map, failed=failed)
         for table, count in written.items():
             totals[table] = totals.get(table, 0) + count
         advance()
@@ -998,4 +1027,23 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
 
     logger.info("index: ingested %s (%s)", campaign_id,
                 ", ".join(f"{t}={n}" for t, n in sorted(totals.items())) or "nothing")
+
+    if failed:
+        # Raised LAST, after every well-behaved file and every builder above has already
+        # ingested and committed (the index connection is autocommit -- see
+        # common.index_db -- so none of that is undone by raising now). The caller still
+        # sees this campaign's ingest as failed, which is the point: an index missing a
+        # table it should have is a real degradation and must not report as clean, it is
+        # just no longer a total loss of the rest of the campaign's data alongside it.
+        from robovast.common.errors import TableColumnLimitExceeded  # noqa: PLC0415
+        tables = ", ".join(sorted({t for t, _p, _m in failed}))
+        raise TableColumnLimitExceeded(
+            f"{campaign_id}: {len(failed)} data file(s) could not be indexed because they "
+            f"would give a table more columns than Postgres allows (affected table(s): "
+            f"{tables}); every other file ingested normally. "
+            + "; ".join(f"{p}: {m}" for _t, p, m in failed[:3])
+            + (f" (+{len(failed) - 3} more)" if len(failed) > 3 else ""),
+            next_step="replace the generic to_csv handler that produced the affected "
+            "table(s) with one that does not flatten an array into one column per element")
+
     return totals

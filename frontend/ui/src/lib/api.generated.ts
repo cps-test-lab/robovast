@@ -809,7 +809,7 @@ export interface paths {
         put?: never;
         /**
          * Retrigger Campaign
-         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.
+         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.
          */
         post: operations["retrigger_campaign_campaigns__campaign_id__retrigger_post"];
         delete?: never;
@@ -1729,6 +1729,14 @@ export interface components {
             /** Sql */
             sql: string;
         };
+        /** Body_retrigger_campaign_campaigns__campaign_id__retrigger_post */
+        Body_retrigger_campaign_campaigns__campaign_id__retrigger_post: {
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
             /**
@@ -1861,13 +1869,25 @@ export interface components {
          *     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
          *     have to be revisited the first time an origin appears that is neither -- so switch on
          *     ``kind`` and never on whether ``from_campaign`` is empty.
+         *
+         *     **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+         *     migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+         *     read different config versions -- which makes them different experiments, and a reader
+         *     comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+         *     on every re-run, so "read a current config" is a fact rather than a silence:
+         *     :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+         *     :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
          */
         CampaignOrigin: {
+            /** Config Migration Steps */
+            config_migration_steps: string[];
             /**
              * Config Path
              * @default
              */
             config_path: string;
+            /** Config Version From */
+            config_version_from: number | null;
             /**
              * From Campaign
              * @default
@@ -5666,7 +5686,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_retrigger_campaign_campaigns__campaign_id__retrigger_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

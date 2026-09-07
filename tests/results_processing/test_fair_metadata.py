@@ -56,7 +56,7 @@ def _derived(campaign_dir, agent_id):
 
 
 VAST = """\
-version: 3
+version: 4
 configuration:
 - name: ca
   parameters:

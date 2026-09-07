@@ -78,6 +78,29 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
 logger = logging.getLogger(__name__)
 
 
+def _extended_bases(candidates, project_dir):
+    """Of *candidates*, the ones another candidate names in its ``extends:``.
+
+    A base is identified by something extending it, not by its shape. Guessing from shape --
+    "no ``execution:`` block, so a fragment" -- would also swallow a campaign someone is
+    halfway through writing, turning a validation error that names the missing section into
+    "this workspace has no .vast file".
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    bases = set()
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first = next(iter(yaml.safe_load_all(f)), None)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        ext = first.get("extends") if isinstance(first, dict) else None
+        if isinstance(ext, str) and ext.strip():
+            bases.add(Path(os.path.abspath(os.path.join(os.path.dirname(str(path)), ext))))
+    return bases
+
+
 def _as_dir(rel_path: str) -> str:
     """The directory form of a relative path — what a listing echoes back, so that
     concatenating it with an entry yields that entry's address."""
@@ -767,6 +790,11 @@ class LocalTransport(RobovastInterface):
                 v for v in sorted(project_dir.rglob("*.vast"))
                 if not any(part.startswith(".") or part in PINNED_SKIP_DIRS
                            for part in v.relative_to(project_dir).parts)]
+            # A base another .vast is built on is not itself a campaign to launch, so it does
+            # not make the workspace ambiguous. One that nothing extends still does -- an
+            # orphan is indistinguishable from a second campaign, and saying so is right.
+            bases = _extended_bases(vasts, project_dir)
+            vasts = [v for v in vasts if Path(os.path.abspath(str(v))) not in bases] or vasts
             if not vasts:
                 raise ValueError(
                     f"workspace {workspace_id!r} has no .vast file; "
@@ -1923,8 +1951,8 @@ class LocalTransport(RobovastInterface):
         import yaml
 
         from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, UnmigratableConfig,
-                                                find_migration_markers, upgrade_config_file)
-        from robovast.service.retrigger import _read_vast
+                                                find_migration_markers, read_vast,
+                                                upgrade_config_file)
 
         info = self.create_workspace(CreateWorkspaceRequest(name=workspace_name,
                                                             from_campaign=campaign_id))
@@ -1943,7 +1971,7 @@ class LocalTransport(RobovastInterface):
                 with open(staged, "w", encoding="utf-8") as handle:
                     yaml.dump(e.partial, handle, default_flow_style=False, sort_keys=False)
 
-        markers = find_migration_markers(_read_vast(staged))
+        markers = find_migration_markers(read_vast(staged))
         logger.warning(
             "materialised %s as work order in workspace %s: %d unresolved marker(s). It will not "
             "validate until each is resolved, which is deliberate.",
@@ -1976,7 +2004,38 @@ class LocalTransport(RobovastInterface):
                 for name, axis in report["axes"].items()
             })
 
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    @staticmethod
+    def _admit_retrigger(report: dict, force: bool) -> None:
+        """Refuse a launch the pre-flight blocks on, unless the caller asked for it anyway.
+
+        On the operation rather than in each client, because a check a client may skip is not
+        a gate: the campaign whose recorded image is outside this host's protocol window then
+        fails in the backend, minutes after a launch that looked accepted. ``retrigger.check``
+        stages nothing and starts no container, so the launch pays a few record reads for it.
+
+        ``force`` is the caller's judgement about an axis they understand. It is logged
+        rather than carried onto the campaign, so the service's own log is where "this one was
+        launched past a refusal" can be read back.
+        """
+        from robovast.service.retrigger import RetriggerRefused
+
+        blocking = report["blocking"]
+        if not blocking:
+            return
+        axes = ", ".join(blocking)
+        if force:
+            logger.warning("retrigger of %s forced past a blocking pre-flight: %s",
+                           report["campaign_id"], axes)
+            return
+        raise RetriggerRefused(
+            f"cannot retrigger {report['campaign_id']!r}: its pre-flight blocks on {axes}.\n"
+            + "\n".join(f"  {name}: {report['axes'][name]['detail']}" for name in blocking)
+            + f"\n  Fix what the detail names, or re-run it anyway with force "
+              f"('vast campaign rerun {report['campaign_id']} --force', or force on the "
+              f"request). 'vast campaign rerun --check {report['campaign_id']}' reports "
+              f"every axis, including the ones that pass.")
+
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a new campaign from *campaign_id*'s own records (see the interface).
 
         A thin orchestrator: :mod:`robovast.service.retrigger` decides everything about the
@@ -1987,6 +2046,7 @@ class LocalTransport(RobovastInterface):
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
+        self._admit_retrigger(retrigger.check(source_dir, campaign_id), force)
         plan = retrigger.prepare(
             source_dir, campaign_id,
             workspaces_root=self.store.registry.root,
@@ -2000,7 +2060,7 @@ class LocalTransport(RobovastInterface):
             self._guard_new_campaign()
             ref = self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
-                origin=self._retrigger_origin(campaign_id),
+                origin=self._retrigger_origin(campaign_id, plan.config_migration),
                 materialize=plan.materialize,
                 discard=plan.discard,
                 pinned_images=plan.pinned_images))
@@ -2014,8 +2074,8 @@ class LocalTransport(RobovastInterface):
         self._notifier(campaign_id).retriggered(ref.campaign_id)
         return ref
 
-    def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
-        """The origin to record for a re-run of *source_id*.
+    def _retrigger_origin(self, source_id: str, config_migration: dict) -> CampaignOrigin:
+        """The origin to record for a re-run of *source_id*, staged as *config_migration* says.
 
         Built here rather than in :mod:`robovast.service.retrigger`, which deliberately
         does not import the service interface.
@@ -2026,6 +2086,10 @@ class LocalTransport(RobovastInterface):
         Copied rather than resolved by walking ``from_campaign`` later, because the listing
         is paginated (a reader may not hold the parent at all) and because a parent is
         routinely deleted -- lineage that evaporates with it is lineage nobody can rely on.
+
+        The config version comes from the plan that staged the tree, so the record states
+        the version this run actually read rather than the one the source's frozen ``.vast``
+        would migrate to if it were staged again today.
 
         None of this is a link: the re-run runs from the source's frozen ``_config/``
         (:mod:`robovast.service.retrigger` says why), never from the workspace named here,
@@ -2038,7 +2102,9 @@ class LocalTransport(RobovastInterface):
             from_campaign=source_id,
             workspace_id=parent.workspace_id if parent else "",
             workspace_name=parent.workspace_name if parent else "",
-            config_path=parent.config_path if parent else "")
+            config_path=parent.config_path if parent else "",
+            config_version_from=config_migration["from"],
+            config_migration_steps=config_migration["steps"])
 
     def _admit_image_provenance(self, target, request: CreateCampaignRequest) -> None:
         """Refuse to launch a campaign whose image nobody could later identify.
@@ -2985,14 +3051,18 @@ class LocalTransport(RobovastInterface):
         ``data.db`` would promote — this is the live path, so it sees them where the
         recovery path (which runs only once nothing is driving the campaign) mostly cannot:
 
-        * a build **in progress**. The file appears at 0%, so a campaign would spend the whole
-          of a twenty-minute ``data.db`` build reporting that its results were ready. The web
-          UI gates its Results views on exactly this flag, so it would offer them over a
-          database being appended to.
+        * a build **in progress**, which the *phase* decides. The file appears at 0%, so a
+          campaign would otherwise spend the whole of a twenty-minute ``data.db`` build
+          reporting that its results were ready, and the web UI gates its Results views on
+          exactly this flag -- it would offer them over a database being appended to. Read
+          from the phase and not from "some earlier attempt left an error", which is a fact
+          about the past that happens to correlate: a first postprocess, or a re-run of one
+          that previously succeeded, has no such error and is no less in progress.
         * a build that **failed**. ``postprocessing_error`` sets the flag False on purpose;
           promoting it back would hide the error behind "results are ready".
         """
-        if snap.postprocessed or snap.postprocessing_error:
+        if (snap.postprocessed or snap.postprocessing_error
+                or snap.phase == Phase.POSTPROCESSING):
             return snap
         from robovast.common.campaign_data import campaign_has_derived_data
         try:
@@ -4265,6 +4335,22 @@ class LocalTransport(RobovastInterface):
         # Results views over a build that did not finish. Read before the lock: it is disk
         # (and on the cluster lane, store) I/O, and nothing about it needs the map held.
         prior = self._prior_outcome(campaign_id)
+        # ...except the verdict this operation is here to REPLACE, which is both fields and
+        # only for a postprocess. That message describes an attempt that has ended, and
+        # carrying it makes the campaign report "postprocessing failed" for as long as the
+        # run meant to fix it lasts -- naming a cause the attempt in flight has already
+        # disproved. The flag goes with it: the previous run's provenance record is still on
+        # disk, so a rebuild would otherwise report "results are ready" over the data it is
+        # replacing, which is the state ``_derive_postprocessed`` refuses to promote *to* and
+        # so must not be handed either. ``work`` writes both when it ends -- cleared on
+        # success, replaced on failure -- and erring towards False meanwhile is the direction
+        # ``campaign_has_derived_data`` already calls the recoverable one.
+        #
+        # A share carries both unchanged: it is not redoing the postprocess, so the verdict
+        # it holds is still the current one.
+        rerunning = phase == Phase.POSTPROCESSING
+        carried_error = None if rerunning else prior.postprocessing_error
+        carried_flag = False if rerunning else prior.postprocessed
         with self._lock:
             existing = self._campaigns.get(campaign_id)
             if existing is not None and not self._is_done(existing):
@@ -4278,8 +4364,8 @@ class LocalTransport(RobovastInterface):
                             "— wait for that to finish")
             state = ControllerState()
             state.update(campaign_id=campaign_id,
-                         postprocessed=prior.postprocessed,
-                         postprocessing_error=prior.postprocessing_error,
+                         postprocessed=carried_flag,
+                         postprocessing_error=carried_error,
                          share_error=prior.share_error,
                          error=prior.error,
                          mode=prior.mode)
@@ -4728,12 +4814,13 @@ class LocalTransport(RobovastInterface):
         # the rest of the snapshot config being re-validatable.
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         from robovast.service.interface import CampaignPlotsResponse
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         plots = []
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for p in (visualization_block(cfg, "results", "data_browser", "plots") or []):
                 if isinstance(p, dict) and p.get("query"):
                     plots.append({"title": p.get("title", ""), "query": p["query"],
@@ -5172,11 +5259,12 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         workloads: dict = {}
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for view in (visualization_block(cfg, "results", "explorer", "notebooks") or []):
                 if not isinstance(view, dict):
                     continue

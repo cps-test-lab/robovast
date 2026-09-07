@@ -45,6 +45,7 @@ from rdflib import DCAT, DCTERMS, FOAF, PROV, Namespace
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
+from robovast.common.results_utils import campaign_vast_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -586,12 +587,9 @@ def generate_prov_metadata(
     graph.append(abstract_scenario)
 
     # Discover the .vast file from the campaign's _config/ directory
-    vast_file_name = None
     config_dir = campaign_dir / "_config"
-    if config_dir.is_dir():
-        vast_files = list(config_dir.glob("*.vast"))
-        if vast_files:
-            vast_file_name = vast_files[0].name
+    found = campaign_vast_or_none(campaign_dir)
+    vast_file_name = found.name if found is not None else None
 
     if vast_file_name is None:
         # Without this the next line joins a None and raises a TypeError naming neither

@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 # A search-style base: no configuration: block — Compose synthesizes each config
 # purely from the param-set overrides.
 BASE_VAST = textwrap.dedent("""\
-    version: 3
+    version: 4
     execution:
       containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
       runs: 1
@@ -78,7 +78,7 @@ def test_compose_yields_one_config_per_param_set(base_vast, tmp_path):
 # a searched variable ($tg) — exercises substitution through the real generation
 # chain via the dependency-free ParameterVariationList plugin.
 TEMPLATE_VAST = textwrap.dedent("""\
-    version: 3
+    version: 4
     execution:
       containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
       runs: 1
@@ -183,7 +183,7 @@ def test_a_searchs_strategy_and_extractor_are_archived(tmp_path):
 
     vast = project / "searched.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 3
+        version: 4
         execution:
           containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
           runs: 1
