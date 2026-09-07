@@ -197,6 +197,19 @@ because a reader told "a month" during a burst that emptied it in a day would be
 thing. An unreachable index is reported as ``status`` rather than as an empty list, for the same
 reason: "nothing was called" and "the record cannot be read" are different answers.
 
+A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
+``limit``/``offset`` it was actually read with, because a page that reported none of them read as
+the whole record — and beside a ranking summarising a month, a page holding an afternoon is a
+disagreement nothing announced. ``offset`` walks the rest. The CSV export is bounded only by what
+is retained, since it streams rather than being held in one response; a download has no field to
+report a bound in, so an export that did not reach the end of the record says so in the filename
+it arrives under, which is the part of a saved file a reader still has later.
+
+Each row also names its caller. ``actor`` is ``"<client>/<session>"`` as the transport reports
+them: the session separates one agent from another, the client name separates the kinds of caller
+sharing a service. It is empty where the transport names neither, which is absent rather than
+anonymous.
+
 The **origin** row is the cheapest tier and the one most often missed. A value that is a pure
 function of wall-clock plus one stored origin is transported as the *origin*, never as the value:
 the reader already has a clock. A ``time`` budget's elapsed seconds is the case that established

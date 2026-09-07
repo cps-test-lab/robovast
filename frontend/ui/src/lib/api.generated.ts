@@ -119,7 +119,8 @@ export interface paths {
          * @description The MCP call log, newest first -- what each call was given and what it answered.
          *
          *     Arguments and answers are truncated where they are recorded, not here; the cap is
-         *     ``robovast.mcp_server.tool_stats``.
+         *     ``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether
+         *     more remain, because a page that reported neither read as the whole record.
          */
         get: operations["get_mcp_calls_admin_mcp_calls_get"];
         put?: never;
@@ -142,7 +143,13 @@ export interface paths {
          * @description The same log as a CSV download -- the repo's one export format.
          *
          *     It carries what the panel carries, truncation included, and only the retained
-         *     window: this is an export of the record, not of all history.
+         *     window: this is an export of the record, not of all history. A download has no
+         *     field to report a bound in, so an export that did not reach the end of the record
+         *     says so in its filename -- the one part of a saved file a reader still has.
+         *
+         *     Bounded only by what is retained, unlike the panel's page: this streams, so asking
+         *     for the whole record costs the reader a longer download rather than the service a
+         *     larger response to hold.
          */
         get: operations["export_mcp_calls_admin_mcp_calls_csv_get"];
         put?: never;
@@ -2918,6 +2925,11 @@ export interface components {
         /**
          * McpCalls
          * @description A page of the call log, newest first.
+         *
+         *     The page reports its own bounds, for the reason :class:`McpToolStats` reports the
+         *     retained window: a reader given rows and no total cannot tell a record that ended
+         *     from a page that did, and will read a busy afternoon as the whole month the ranking
+         *     beside it summarises. :attr:`offset` walks the rest.
          */
         McpCalls: {
             /** Calls */
@@ -2928,10 +2940,30 @@ export interface components {
              */
             detail: string;
             /**
+             * Limit
+             * @default 0
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
              * Status
              * @default ok
              */
             status: string;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /**
          * McpToolStat
@@ -4507,6 +4539,7 @@ export interface operations {
                 limit?: number;
                 tool?: string;
                 failed_only?: boolean;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -4540,6 +4573,7 @@ export interface operations {
                 limit?: number;
                 tool?: string;
                 failed_only?: boolean;
+                offset?: number;
             };
             header?: never;
             path?: never;

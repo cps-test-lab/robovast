@@ -422,6 +422,11 @@ export type ShareListing = {
 
 // -- the interface (Phase-0 subset the M1 UI needs) -------------------------
 
+//: Ceiling for the CSV export's `limit`, matching the record's own row cap
+//: (`mcp_server/tool_stats.MAX_ROWS`). Asking for more than exists is harmless; asking
+//: for less than exists is the bug this replaced.
+const MCP_CALLS_EXPORT_MAX = 200_000
+
 export const robovast = {
   version: () => request<VersionInfo>('GET', '/version'),
 
@@ -446,17 +451,21 @@ export const robovast = {
 
   // The calls themselves, newest first. Arguments and answers arrive already truncated
   // (see mcp_server/tool_stats.py) -- the client never receives a whole file body.
-  mcpCalls: (limit = 200, tool = '', failedOnly = false) => {
+  mcpCalls: (limit = 200, tool = '', failedOnly = false, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (tool) params.set('tool', tool)
     if (failedOnly) params.set('failed_only', 'true')
+    if (offset) params.set('offset', String(offset))
     return request<McpCalls>('GET', `/admin/mcp-calls?${params.toString()}`)
   },
 
   // Direct URL of the log as CSV (a GET the browser downloads), same shape as
   // archiveUrl above. It carries the retained window only, not all history.
   mcpCallsCsvUrl: (tool = '', failedOnly = false) => {
-    const params = new URLSearchParams({ limit: '2000' })
+    // The whole retained record, not a page of it: the route streams, and an export
+    // silently cut at a page boundary is read as the record ending there. What the
+    // service could not fit still says so, in the downloaded file's name.
+    const params = new URLSearchParams({ limit: String(MCP_CALLS_EXPORT_MAX) })
     if (tool) params.set('tool', tool)
     if (failedOnly) params.set('failed_only', 'true')
     return `${BASE}/admin/mcp-calls.csv?${params.toString()}`

@@ -201,6 +201,37 @@ def route_description(route) -> str:
     return ""
 
 
+#: The panel's page ceiling. The record retains far more (``tool_stats.MAX_ROWS``); this
+#: bounds one JSON response the service has to hold in memory, which the streamed CSV
+#: export does not have to and so does not share.
+_MCP_CALLS_PAGE_MAX = 2000
+
+
+def _page_limit(asked: int, ceiling: int) -> int:
+    """The page size actually used, so a caller can be told what it got.
+
+    Returned rather than applied silently: a request for more rows than are served came
+    back looking like the whole record, and a clamp nobody reports is indistinguishable
+    from a record that ended there.
+    """
+    return max(1, min(int(asked), ceiling))
+
+
+def _read_mcp_calls(limit: int, tool: str, failed_only: bool, offset: int):
+    """One page of the MCP call log with the total that page was cut from.
+
+    Both reads go through the same filter, so the count can never describe a different
+    set than the rows beside it.
+    """
+    from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
+
+    calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only,
+                                      offset=max(0, offset))
+    total = tool_stats.LOG.count_calls(tool=tool, failed_only=failed_only)
+    return ([McpCall(at=c.at, tool=c.tool, duration_ms=c.duration_ms, ok=c.ok,
+                     args=c.args, answer=c.answer, actor=c.actor) for c in calls], total)
+
+
 def build_app(impl: RobovastInterface, mount_mcp: bool = True,
               auth_token: str | None = None):
     """Build the FastAPI app bound to *impl* (lazy import; needs ``fastapi``).
@@ -984,30 +1015,37 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return McpToolStats(tools=rows, **window)
 
     @app.get(Routes.ADMIN_MCP_CALLS, response_model=McpCalls, tags=["admin"])
-    def get_mcp_calls(limit: int = 200, tool: str = "",
-                      failed_only: bool = False) -> McpCalls:
+    def get_mcp_calls(limit: int = 200, tool: str = "", failed_only: bool = False,
+                      offset: int = 0) -> McpCalls:
         """The MCP call log, newest first -- what each call was given and what it answered.
 
         Arguments and answers are truncated where they are recorded, not here; the cap is
-        ``robovast.mcp_server.tool_stats``.
+        ``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether
+        more remain, because a page that reported neither read as the whole record.
         """
         from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
-        from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
 
+        applied = _page_limit(limit, _MCP_CALLS_PAGE_MAX)
         try:
-            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+            calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
         except IndexUnreachableError as exc:
             return McpCalls(status="index-unreachable", detail=str(exc))
-        return McpCalls(calls=[McpCall(at=c.at, tool=c.tool, duration_ms=c.duration_ms,
-                                       ok=c.ok, args=c.args, answer=c.answer, actor=c.actor)
-                               for c in calls])
+        return McpCalls(calls=calls, total=total, limit=applied, offset=max(0, offset),
+                        truncated=max(0, offset) + len(calls) < total)
 
     @app.get(Routes.ADMIN_MCP_CALLS_CSV, tags=["admin"])
-    def export_mcp_calls(limit: int = 2000, tool: str = "", failed_only: bool = False):
+    def export_mcp_calls(limit: int = 2000, tool: str = "", failed_only: bool = False,
+                         offset: int = 0):
         """The same log as a CSV download -- the repo's one export format.
 
         It carries what the panel carries, truncation included, and only the retained
-        window: this is an export of the record, not of all history.
+        window: this is an export of the record, not of all history. A download has no
+        field to report a bound in, so an export that did not reach the end of the record
+        says so in its filename -- the one part of a saved file a reader still has.
+
+        Bounded only by what is retained, unlike the panel's page: this streams, so asking
+        for the whole record costs the reader a longer download rather than the service a
+        larger response to hold.
         """
         import csv  # pylint: disable=import-outside-toplevel
         import io  # pylint: disable=import-outside-toplevel
@@ -1017,8 +1055,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
 
+        applied = _page_limit(limit, tool_stats.MAX_ROWS)
         try:
-            calls = tool_stats.LOG.read_calls(limit=limit, tool=tool, failed_only=failed_only)
+            calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
         except IndexUnreachableError as exc:
             # A download cannot carry a status field the way the JSON routes do, so the
             # unreachable index has to be the response rather than an empty file that
@@ -1038,9 +1077,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             yield buffer.getvalue()
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        partial = "" if max(0, offset) + len(calls) >= total else f"-partial-of-{total}"
         return StreamingResponse(
             rows(), media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="mcp-calls-{stamp}.csv"'})
+            headers={"Content-Disposition":
+                     f'attachment; filename="mcp-calls-{stamp}{partial}.csv"'})
 
     # -- authoring help (static; config editor) -----------------------------
 

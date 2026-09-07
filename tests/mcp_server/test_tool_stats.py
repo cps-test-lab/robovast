@@ -170,3 +170,76 @@ def test_pending_rows_are_written_at_exit(log, monkeypatch):
     tool_stats.LOG.flush()
 
     assert [c.tool for c in log.read_calls()] == ["list_campaigns"]
+
+
+def test_the_middleware_records_who_called(log, monkeypatch):
+    """``actor`` was declared everywhere and written nowhere.
+
+    The column, the model field and the CSV header all existed; the middleware -- the only
+    production caller of ``record`` -- never passed one, so every row said the same empty
+    thing. A record that cannot separate one caller's calls from another's cannot answer
+    the question it is kept for, and an always-empty column is indistinguishable from a
+    capability nobody uses.
+
+    Driven through a real client rather than by calling ``record`` directly: what broke was
+    the wiring between the two, which only a call arriving over a transport exercises.
+    """
+    import asyncio
+
+    from fastmcp import Client, FastMCP
+
+    from robovast.mcp_server.server import _install_tool_stats
+
+    monkeypatch.setattr(tool_stats, "LOG", log)
+    mcp = FastMCP("test")
+
+    @mcp.tool
+    def ping() -> dict:
+        return {"ok": True}
+
+    _install_tool_stats(mcp)
+
+    async def _call():
+        async with Client(mcp) as client:
+            await client.call_tool("ping", {})
+
+    asyncio.run(_call())
+    log.flush()
+
+    recorded = log.read_calls()
+    assert [c.tool for c in recorded] == ["ping"]
+    actor = recorded[0].actor
+    assert actor, "the middleware recorded a call with no caller"
+    client_name, _, session = actor.partition("/")
+    assert client_name and session, f"actor is not <client>/<session>: {actor!r}"
+
+
+def test_a_caller_the_transport_cannot_name_is_recorded_as_absent():
+    """Accounting must never be able to break the call it accounts for.
+
+    ``_actor`` reaches through several optional layers of a request context, and outside a
+    request there is no session at all. Every lookup is guarded, because a raise here would
+    turn a bookkeeping detail into a failed tool call -- and an unnameable caller is an
+    empty actor, which reads as "not recorded", not as a caller called "unknown".
+    """
+    from robovast.mcp_server.server import _actor
+
+    class _NoContext:
+        fastmcp_context = None
+
+    class _HostileContext:
+        @property
+        def fastmcp_context(self):
+            class _Ctx:
+                @property
+                def request_context(self):
+                    raise RuntimeError("no request context here")
+
+                @property
+                def session_id(self):
+                    raise RuntimeError("nor a session")
+            return _Ctx()
+
+    assert _actor(_NoContext()) == ""
+    assert _actor(_HostileContext()) == ""
+    assert _actor(object()) == ""

@@ -272,7 +272,7 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
             if not as_csv:
                 _echo_target(label)
             if show_calls or as_csv:
-                answer = client.mcp_calls(limit=limit, tool=tool, failed_only=failed)
+                answer = _all_mcp_calls(client, limit, tool, failed)
             else:
                 answer = client.mcp_tool_stats()
     except Exception as e:  # noqa: BLE001
@@ -291,6 +291,11 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
         for call in answer.calls:
             writer.writerow([call.at, call.tool, round(call.duration_ms, 3), call.ok,
                              call.args, call.answer, call.actor])
+        # stderr, so a redirected CSV stays a CSV. A short export that says nothing is
+        # read as the whole record, which is the reason this line exists at all.
+        if answer.truncated:
+            click.echo(f"note: {len(answer.calls)} of {answer.total} matching calls; "
+                       f"raise --limit for the rest", err=True)
         return
 
     if show_calls:
@@ -300,11 +305,14 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
         for call in answer.calls:
             when = datetime.fromtimestamp(call.at).strftime('%Y-%m-%d %H:%M:%S')
             mark = 'ok  ' if call.ok else 'FAIL'
-            click.echo(f"  {when}  {mark}  {call.duration_ms:8.1f} ms  {call.tool}")
+            who = f"  {call.actor}" if call.actor else ''
+            click.echo(f"  {when}  {mark}  {call.duration_ms:8.1f} ms  {call.tool}{who}")
             if call.args:
                 click.echo(f"      args:   {_indented(call.args)}")
             if call.answer:
                 click.echo(f"      answer: {_indented(call.answer)}")
+        click.echo(f"\n  {len(answer.calls)} of {answer.total} matching calls"
+                   + (' -- raise --limit for the rest' if answer.truncated else ''))
         return
 
     ranked = sorted(answer.tools, key=lambda t: (-t.calls, t.tool))
@@ -319,6 +327,25 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     click.echo(f"\n  {len(ranked)} tools; the record covers the last "
                f"{int(answer.max_age_s // 86400)} days or {answer.max_rows} calls, "
                f"whichever is shorter.")
+
+
+def _all_mcp_calls(client, limit: int, tool: str, failed: bool):
+    """Up to *limit* calls, following the service's pages rather than stopping at one.
+
+    The route bounds one response; the record holds far more. Asking for a large window
+    and being handed one page looked exactly like a record that ended there, so the
+    client walks the pages and reports the total it walked toward.
+    """
+    page = client.mcp_calls(limit=limit, tool=tool, failed_only=failed)
+    while page.truncated and len(page.calls) < limit:
+        nxt = client.mcp_calls(limit=limit - len(page.calls), tool=tool,
+                               failed_only=failed, offset=len(page.calls))
+        if not nxt.calls:
+            break  # the record shrank under us (pruning); report what was actually read
+        page.calls.extend(nxt.calls)
+        page.total, page.truncated = nxt.total, nxt.truncated
+    page.truncated = len(page.calls) < page.total
+    return page
 
 
 #: Width of the terminal ranking bar. Blocks rather than a percentage: the question it
