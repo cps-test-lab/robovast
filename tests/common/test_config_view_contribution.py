@@ -136,6 +136,23 @@ def test_obstacle_extents_come_from_what_the_campaign_declared():
     assert boxes[0].label == "obstacle_0"
 
 
+def test_the_instances_list_is_found_whichever_way_it_states_a_placement():
+    """The list is located by SHAPE, so the shape it is written in decides whether it is found
+    at all -- and an obstacle whose size is not found is not drawn, silently.
+
+    A variation writes `pose` now; a campaign RECORDED earlier keeps the `pos` it was written
+    with, and this reads stored configurations. Refusing the old spelling would blank the
+    obstacles out of every earlier campaign's map rather than report anything.
+    """
+    for placement in ({"pose": {"position": {"x": 3.0, "y": 4.0}}}, {"pos": [3.0, 4.0]}):
+        config = _nav_config(sim={"plugins.boxes.instances": [
+            {"name": "obstacle_0", "size": [0.5, 0.5, 1.0], **placement}]})
+        boxes = [m for m in config_view.obstacle_contribution(config).markers if m.kind == "box"]
+        assert len(boxes) == 1, placement
+        # The size comes from the instances list; finding no list means no size, and no marker.
+        assert boxes[0].size == [0.5, 0.5, 1.0], placement
+
+
 def test_a_spawn_only_campaign_falls_back_to_the_xacro_arguments():
     # No `instances` binding: a run-time spawner is the only description of the obstacle,
     # so its argument string is the only place the extents exist.
