@@ -1534,9 +1534,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
               tags=["campaigns"],
               description="Launch a new campaign from an existing one's frozen config and "
-                          "pinned image. The source campaign is not modified.")
-    def retrigger_campaign(campaign_id: str) -> CampaignRef:
-        return _guard(lambda: impl.retrigger_campaign(campaign_id))
+                          "pinned image. The source campaign is not modified. Refused (400) "
+                          "when the pre-flight blocks on an axis, naming each one; force "
+                          "launches anyway.")
+    def retrigger_campaign(campaign_id: str,
+                           force: bool = Body(False, embed=True)) -> CampaignRef:
+        return _guard(lambda: impl.retrigger_campaign(campaign_id, force))
 
     @app.post(Routes.CLEANUP_DATA, response_model=ActionResult, tags=["campaigns"])
     def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:

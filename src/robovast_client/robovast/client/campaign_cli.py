@@ -220,7 +220,8 @@ def _report_rerunnable(client, label, campaign_id, *, exit_when_blocked):
                    'Costs nothing: it answers from what the campaign recorded. Exits '
                    'non-zero when an axis is genuinely blocked.')
 @click.option('--force', is_flag=True,
-              help='Launch even when the pre-flight reports a blocking axis.')
+              help='Ask the service to launch even though the pre-flight reports a blocking '
+                   'axis. What is being overridden is printed before the launch.')
 @click.option('--to-workspace', 'to_workspace', default='', metavar='NAME',
               help='Do not launch. Materialise the campaign as a workspace with its config '
                    'migrated as far as it could be and a marker at every decision left, to '
@@ -234,9 +235,10 @@ def rerun(campaign_id, check_only, force, to_workspace,  # pylint: disable=redef
     than today's. A config older than the current version is migrated into the staging copy;
     the archived one is left exactly as its author wrote it.
 
-    The pre-flight runs first, because launching to discover the image is gone wastes the launch
-    -- and its refusal names what is missing. ``--force`` proceeds anyway, which is worth having
-    for an axis you have decided you understand.
+    The service runs the pre-flight itself and refuses on a blocking axis, naming what is
+    missing -- so a re-run that could only fail in the backend is answered before the launch.
+    ``--force`` tells it to proceed anyway, which is worth having for an axis you have decided
+    you understand.
     """
     try:
         with service_client(namespace, context) as (client, label):
@@ -247,20 +249,18 @@ def rerun(campaign_id, check_only, force, to_workspace,  # pylint: disable=redef
             if to_workspace:
                 _materialize_work_order(client, campaign_id, to_workspace)
                 return
+            # Read the pre-flight to EXPLAIN the launch, not to gate it: the service runs it
+            # again and is what refuses. So this prints the axes a refusal will not mention --
+            # the ones that pass with a caveat, and, under --force, the ones being overridden.
             report = client.check_retrigger(campaign_id)
-            if not report.runnable and not force:
+            if force:
                 for name in report.blocking:
-                    click.echo(click.style(f"  {name}: ", fg="red")
+                    click.echo(click.style(f"  forcing past {name}: ", fg="red")
                                + report.axes[name].detail, err=True)
-                click.echo("", err=True)
-                click.echo(f"refusing to re-run. Run 'vast campaign rerun --check "
-                           f"{campaign_id}' for the full report, or --force to proceed anyway.",
-                           err=True)
-                sys.exit(1)
             for name, axis in sorted(report.axes.items()):
                 if axis.verdict in ("upgradable", "unknown"):
                     click.echo(f"note: {name}: {axis.detail}", err=True)
-            ref = client.retrigger_campaign(campaign_id)
+            ref = client.retrigger_campaign(campaign_id, force)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
