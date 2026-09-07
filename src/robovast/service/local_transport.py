@@ -390,6 +390,16 @@ def _show_gui_note(request, raw_config: dict) -> str:
             "may appear. Add the block if its scenario takes a headless parameter.")
 
 
+def _index_id(campaign: str) -> str | None:
+    """The id the index knows *campaign* by, or ``None`` when it is not one.
+
+    Both query surfaces accept a campaign id or an absolute directory to analyse. Only the
+    id scopes the index; a path scopes nothing, so it has to be resolved to a campaign the
+    way it always was. Returning ``None`` is what asks the reader to do that.
+    """
+    return None if os.path.isabs(campaign) else (campaign or None)
+
+
 class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
@@ -4731,8 +4741,15 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
+        # The id, not only the path it resolves to. The rows are in the central index, so
+        # the campaign needs no directory here -- and on the cluster lane it deliberately
+        # has none, `_query_dir` naming an unfetched cache dir. Left to derive the id from
+        # that path, a query against a campaign whose cache dir exists but is empty was
+        # refused with a message about a missing directory, which is neither the reason
+        # nor something the caller can act on. Its siblings on this class already pass it.
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
-                               max_bytes=max_bytes, campaigns=campaigns)
+                               max_bytes=max_bytes, campaigns=campaigns,
+                               campaign_id=_index_id(campaign_id))
         return DataQueryResult(campaign_id=campaign_id, **result)
 
     def stream_campaign_query_csv(self, campaign_id: str, sql: str):
