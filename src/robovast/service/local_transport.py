@@ -3013,14 +3013,18 @@ class LocalTransport(RobovastInterface):
         ``data.db`` would promote — this is the live path, so it sees them where the
         recovery path (which runs only once nothing is driving the campaign) mostly cannot:
 
-        * a build **in progress**. The file appears at 0%, so a campaign would spend the whole
-          of a twenty-minute ``data.db`` build reporting that its results were ready. The web
-          UI gates its Results views on exactly this flag, so it would offer them over a
-          database being appended to.
+        * a build **in progress**, which the *phase* decides. The file appears at 0%, so a
+          campaign would otherwise spend the whole of a twenty-minute ``data.db`` build
+          reporting that its results were ready, and the web UI gates its Results views on
+          exactly this flag -- it would offer them over a database being appended to. Read
+          from the phase and not from "some earlier attempt left an error", which is a fact
+          about the past that happens to correlate: a first postprocess, or a re-run of one
+          that previously succeeded, has no such error and is no less in progress.
         * a build that **failed**. ``postprocessing_error`` sets the flag False on purpose;
           promoting it back would hide the error behind "results are ready".
         """
-        if snap.postprocessed or snap.postprocessing_error:
+        if (snap.postprocessed or snap.postprocessing_error
+                or snap.phase == Phase.POSTPROCESSING):
             return snap
         from robovast.common.campaign_data import campaign_has_derived_data
         try:
@@ -4293,6 +4297,22 @@ class LocalTransport(RobovastInterface):
         # Results views over a build that did not finish. Read before the lock: it is disk
         # (and on the cluster lane, store) I/O, and nothing about it needs the map held.
         prior = self._prior_outcome(campaign_id)
+        # ...except the verdict this operation is here to REPLACE, which is both fields and
+        # only for a postprocess. That message describes an attempt that has ended, and
+        # carrying it makes the campaign report "postprocessing failed" for as long as the
+        # run meant to fix it lasts -- naming a cause the attempt in flight has already
+        # disproved. The flag goes with it: the previous run's provenance record is still on
+        # disk, so a rebuild would otherwise report "results are ready" over the data it is
+        # replacing, which is the state ``_derive_postprocessed`` refuses to promote *to* and
+        # so must not be handed either. ``work`` writes both when it ends -- cleared on
+        # success, replaced on failure -- and erring towards False meanwhile is the direction
+        # ``campaign_has_derived_data`` already calls the recoverable one.
+        #
+        # A share carries both unchanged: it is not redoing the postprocess, so the verdict
+        # it holds is still the current one.
+        rerunning = phase == Phase.POSTPROCESSING
+        carried_error = None if rerunning else prior.postprocessing_error
+        carried_flag = False if rerunning else prior.postprocessed
         with self._lock:
             existing = self._campaigns.get(campaign_id)
             if existing is not None and not self._is_done(existing):
@@ -4306,8 +4326,8 @@ class LocalTransport(RobovastInterface):
                             "— wait for that to finish")
             state = ControllerState()
             state.update(campaign_id=campaign_id,
-                         postprocessed=prior.postprocessed,
-                         postprocessing_error=prior.postprocessing_error,
+                         postprocessed=carried_flag,
+                         postprocessing_error=carried_error,
                          share_error=prior.share_error,
                          error=prior.error,
                          mode=prior.mode)

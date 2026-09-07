@@ -233,6 +233,61 @@ def test_dispatch_keeps_a_recorded_postprocessing_failure_visible(transport):
         transport._campaigns[cid].thread.join(2)
 
 
+def test_a_re_run_of_postprocessing_drops_the_verdict_it_is_replacing(transport):
+    """The counterpart to the test above, and the line between them is which op is running.
+
+    A share must not blank the postprocessing verdict, because it is not redoing it. A
+    postprocess is: that message describes an attempt that has ended, and carrying it makes
+    the campaign report "postprocessing failed" for the whole of the run meant to fix it --
+    while naming a cause the running attempt has already disproved. The web UI renders
+    exactly that, so a recovery in progress reads as a failure.
+    """
+    cid = "camp-2026-07-17-145500"
+    _finished_campaign(transport, cid, phase=Phase.FINISHED,
+                       postprocessing_error="cannot start: Unschedulable")
+
+    release = threading.Event()
+    assert transport._dispatch_background(cid, phase=Phase.POSTPROCESSING,
+                                          work=lambda state: release.wait(2)).ok
+    try:
+        live = _summary(transport, cid)
+        assert live.postprocessing_error in (None, "")
+        # And still not "results are ready": the phase is what refuses that now.
+        assert live.postprocessed is False
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
+def test_a_rebuild_over_finished_data_is_not_still_results_are_ready(transport):
+    """A re-run of a postprocess that SUCCEEDED leaves the previous provenance record on
+    disk, and that record is the whole evidence for ``postprocessed``.
+
+    So while the rebuild replaces the derived data, the campaign would go on reporting that
+    its results are ready -- and the web UI gates its Results views on exactly that flag.
+    Nothing else refuses it here: there is no error to read the in-progress state off, which
+    is why that state has to come from the phase.
+    """
+    from robovast.common.campaign_data import POSTPROCESSING_RECORD
+
+    cid = "camp-2026-07-17-146000"
+    _finished_campaign(transport, cid, phase=Phase.FINISHED)
+    record = transport._campaigns_root() / cid / POSTPROCESSING_RECORD
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("entries:\n  - output: out.csv\n", encoding="utf-8")
+    # The record alone reads as finished results, which is what makes this worth refusing.
+    assert _summary(transport, cid).postprocessed is True
+
+    release = threading.Event()
+    assert transport._dispatch_background(cid, phase=Phase.POSTPROCESSING,
+                                          work=lambda state: release.wait(2)).ok
+    try:
+        assert _summary(transport, cid).postprocessed is False
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+
 def test_dispatch_keeps_a_recorded_share_failure_visible(transport):
     """The same, the other way round: postprocessing must not hide a failed upload.
 
