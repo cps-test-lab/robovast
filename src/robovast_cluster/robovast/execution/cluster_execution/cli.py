@@ -1103,7 +1103,8 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     Campaign data lives in the object store and survives both.
     """
     from .cluster_setup import apply_controller_rbac
-    from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
+    from .service_deploy import (deploy_service, ensure_registry_htpasswd, published_url,
+                                 read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  verify_store_pod_infrastructure, wait_for_rollout,
                                  wait_for_service_ready)
@@ -1201,9 +1202,20 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             # so a script that did not pass --yes fails loudly instead of rolling over a
             # campaign nobody was watching.
             click.confirm("  roll anyway?", abort=True)
+        # Recovered (or minted, on a deployment that has none yet) exactly as `cluster setup`
+        # does, and for the same reason: the push Secret is rendered from host AND password
+        # and replaced on conflict, so upgrading with the host alone rewrites it without the
+        # built-in registry's entry. The registry goes on demanding the password its htpasswd
+        # still holds, and the next experiment-image build pushes anonymously and gets a 401
+        # naming a registry -- with the upgrade that removed the credential well behind it.
+        # `ensure_registry_htpasswd` is also what keeps the two halves in step: it reads the
+        # password back from this same Secret, so it cannot recover one after an upgrade has
+        # dropped it.
+        registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
-                       registry_host=ingress_host, public_origin=public_origin)
+                       registry_host=ingress_host, registry_password=registry_password,
+                       public_origin=public_origin)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #
