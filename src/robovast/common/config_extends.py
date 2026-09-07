@@ -20,7 +20,7 @@ import copy
 import os
 from pathlib import Path
 
-import yaml
+from robovast.common import yaml_strict
 
 #: The key itself, consumed here and never seen by the schema.
 EXTENDS_KEY = "extends"
@@ -78,7 +78,7 @@ def _walk(config_path, project_dir, seen, raw=None):
     """``(merged, chain)`` for *config_path*, bases first. *chain* is nearest-last."""
     config_path = Path(os.path.abspath(config_path))
     if raw is None:
-        loaded = yaml.safe_load(config_path.read_text()) or {}
+        loaded = yaml_strict.load(config_path.read_text(), path=config_path) or {}
         if not isinstance(loaded, dict):
             raise ValueError(f"{config_path} must be a mapping at the top level.")
         raw = loaded
