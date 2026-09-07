@@ -1055,7 +1055,60 @@ def _search_problems(search, vast_dir):
                         "search-extractor",
                         f"'{plugin}' does not override the 'extract' method.",
                         field="search.extract.plugin"))
+                else:
+                    problems.extend(
+                        _requires_run_files_problems(extractor_cls, plugin))
 
+    return problems
+
+
+def _requires_run_files_problems(extractor_cls, plugin):
+    """Refuse a malformed ``requires_run_files`` rather than checking nothing at runtime.
+
+    The declaration is what turns a file the extractor cannot find into a
+    ``NoSampleError`` instead of whatever its own code does with a missing path. A typo in
+    it therefore fails the way the thing it protects against fails -- silently, and
+    looking fine -- so it is checked here, where a wrong declaration is still cheap.
+
+    A bare string is refused rather than accepted: iterating one yields its characters, so
+    ``requires_run_files = "poses.csv"`` would ask for a run file called ``p``. An absolute
+    path or one climbing out of the run directory is refused too; the names are resolved
+    against a run directory and nothing else.
+    """
+    from pathlib import PurePosixPath  # pylint: disable=import-outside-toplevel
+
+    declared = getattr(extractor_cls, "requires_run_files", ())
+    field = "search.extract.plugin"
+    if isinstance(declared, str):
+        return [_problem(
+            "search-extractor",
+            f"'{plugin}' declares requires_run_files as a single string "
+            f"({declared!r}), which iterates as its characters -- so it would ask for a "
+            f"run file named {declared[:1]!r}. Use a tuple: ({declared!r},).",
+            field=field)]
+    try:
+        names = list(declared)
+    except TypeError:
+        return [_problem(
+            "search-extractor",
+            f"'{plugin}' declares requires_run_files as {type(declared).__name__}, which "
+            f"cannot be iterated. It is a tuple of per-run filenames.",
+            field=field)]
+    problems = []
+    for name in names:
+        if not isinstance(name, str) or not name:
+            problems.append(_problem(
+                "search-extractor",
+                f"'{plugin}' declares a requires_run_files entry that is not a filename: "
+                f"{name!r}.", field=field))
+            continue
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts:
+            problems.append(_problem(
+                "search-extractor",
+                f"'{plugin}' declares requires_run_files entry {name!r}, which is not "
+                f"relative to a run directory. The names are resolved inside one run's "
+                f"directory and nowhere else.", field=field))
     return problems
 
 
