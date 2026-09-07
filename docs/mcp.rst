@@ -245,8 +245,8 @@ must call the lister to learn the name the getter needs. So an **empty argument 
 
    * - Call
      - Answers
-   * - ``get_cli_help()`` / ``get_cli_help("workspace run")``
-     - the command tree / one command's ``--help``
+   * - ``get_cli_help()`` / ``("workspace run")`` / ``(search=…)``
+     - the command groups / one command's ``--help`` / a keyword search of the tree
    * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
      - the page list / matching excerpts / one page in full
    * - ``get_example()`` / ``get_example("basic_nav")``
