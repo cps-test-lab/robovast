@@ -237,3 +237,104 @@ def test_a_reply_that_could_not_read_anything_does_not_re_arm(hook, capsys):
     campaign = _handed_off(hook, capsys)
     _rearm_response(hook, campaign, {"simulator": None, "unavailable": ["could not read"]})
     assert _check(hook, capsys) is None
+
+
+def _poll(hook, campaign, capsys, session="s1", tool="mcp__robovast__get_campaign_status"):
+    hook.poll({"session_id": session, "tool_name": tool,
+               "tool_response": {"campaign_id": campaign, "status": "running"}},
+              _ledger(hook, session))
+    out = capsys.readouterr().out.strip()
+    return json.loads(out) if out else None
+
+
+def _context(reply):
+    return reply["hookSpecificOutput"]["additionalContext"]
+
+
+def test_reading_one_status_is_not_polling(hook, capsys):
+    """The shape being caught is a loop, not a look. Checking a campaign a few times
+    across a turn is honest use and must stay silent."""
+    _start(hook, "camp-a")
+    for _ in range(hook.POLL_LIMIT - 1):
+        assert _poll(hook, "camp-a", capsys) is None
+
+
+def test_a_status_loop_is_told_what_waiting_actually_is(hook, capsys):
+    """The defect: an agent spinning on get_campaign_status inside its turn.
+
+    ``check`` runs at Stop and so never saw it — and by the time the turn ended the agent
+    had been watching all along, so nothing looked wrong.
+    """
+    _start(hook, "camp-a")
+    hook.delegated({"session_id": "s1", "tool_input": {"command": "true"}},
+                   _ledger(hook))  # not a waiter; camp-a stays unattended
+    replies = [_poll(hook, "camp-a", capsys) for _ in range(hook.POLL_LIMIT)]
+
+    assert all(r is None for r in replies[:-1])
+    context = _context(replies[-1])
+    assert "vast campaign wait camp-a" in context
+    assert "run_in_background=true" in context
+
+
+def test_it_says_so_once_and_then_stays_quiet(hook, capsys):
+    """A guard that fires on every call is one agents learn to scroll past — the same
+    reasoning the rest of this module already applies to its Stop block."""
+    _start(hook, "camp-a")
+    for _ in range(hook.POLL_LIMIT):
+        _poll(hook, "camp-a", capsys)
+
+    for _ in range(20):
+        assert _poll(hook, "camp-a", capsys) is None
+
+
+def test_a_campaign_a_waiter_owns_is_not_told_to_start_another(hook, capsys):
+    """Backgrounding a second waiter is not the fix when one is already running; the
+    reads are still waste, and the message has to say the true reason."""
+    _start(hook, "camp-a")
+    hook.delegated({"session_id": "s1",
+                    "tool_input": {"command": "vast campaign wait camp-a"}},
+                   _ledger(hook))
+
+    reply = None
+    for _ in range(hook.POLL_LIMIT):
+        reply = _poll(hook, "camp-a", capsys) or reply
+
+    context = _context(reply)
+    assert "already owns" in context
+    assert "vast campaign wait camp-a" not in context, \
+        "telling it to start a waiter that is already running teaches the wrong thing"
+
+
+def test_reads_outside_the_window_do_not_accumulate(hook, capsys, monkeypatch):
+    """A slow trickle across a long session is not a loop."""
+    _start(hook, "camp-a")
+    now = time.time()
+    for i in range(hook.POLL_LIMIT * 3):
+        monkeypatch.setattr(time, "time",
+                            lambda i=i: now + i * (hook.POLL_WINDOW_S / 2))
+        assert _poll(hook, "camp-a", capsys) is None
+
+
+def test_a_job_state_read_is_a_diagnosis_not_a_poll(hook, capsys):
+    """``poll`` shares its matcher with ``rearm``, which wants get_job_state too."""
+    _start(hook, "camp-a")
+    for _ in range(hook.POLL_LIMIT * 2):
+        assert _poll(hook, "camp-a", capsys,
+                     tool="mcp__robovast__get_job_state") is None
+
+
+def test_polling_two_campaigns_counts_them_apart(hook, capsys):
+    _start(hook, "camp-a")
+    _start(hook, "camp-b")
+    for _ in range(hook.POLL_LIMIT - 1):
+        _poll(hook, "camp-a", capsys)
+        _poll(hook, "camp-b", capsys)
+
+    assert _poll(hook, "camp-a", capsys) is not None
+    assert _poll(hook, "camp-b", capsys) is not None
+
+
+def test_a_status_read_for_no_campaign_is_ignored(hook, capsys):
+    hook.poll({"session_id": "s1", "tool_name": "mcp__robovast__get_campaign_status",
+               "tool_response": {}}, _ledger(hook))
+    assert capsys.readouterr().out.strip() == ""
