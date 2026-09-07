@@ -93,8 +93,12 @@ def _only_the_version_moved(path, upgraded) -> bool:
         return False
     if not isinstance(before, dict):
         return False
-    strip = lambda doc: {k: v for k, v in doc.items() if k != "version"}  # noqa: E731
-    return strip(before) == strip(dict(upgraded))
+    return _without_version(before) == _without_version(dict(upgraded))
+
+
+def _without_version(document: dict) -> dict:
+    """*document* minus the one key the ladder is always allowed to change."""
+    return {k: v for k, v in document.items() if k != "version"}
 
 
 def _rewrite_version_line(path, version) -> None:

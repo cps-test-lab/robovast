@@ -105,20 +105,18 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         store_path.unlink()  # rebuild from scratch (schema/state may have changed)
 
     # The vast copy carries evaluation.visualization for the GUI; tolerate absence.
-    config_dir = campaign_dir / "_config"
     config_json: dict = {}
-    vast_files = [campaign_vast_or_none(campaign_dir)]
-    vast_files = [v for v in vast_files if v is not None]
-    if vast_files:
+    vast_file = campaign_vast_or_none(campaign_dir)
+    if vast_file is not None:
         try:
             # `upgrade=True`: this reads an ARCHIVED config, which may predate the current
             # version. The strict policy would raise, and the except below would swallow it into
             # an empty config -- so an old campaign's store rebuilt fine and silently lost the
             # visualization block the GUI reads from it, for exactly the campaigns whose store
             # had to be reconstructed. The archived file itself is not rewritten.
-            config_json = load_config(str(vast_files[0]), upgrade=True)
+            config_json = load_config(str(vast_file), upgrade=True)
         except Exception as e:  # pylint: disable=broad-except
-            logger.warning("Could not load %s for campaign store: %s", vast_files[0], e)
+            logger.warning("Could not load %s for campaign store: %s", vast_file, e)
 
     with CampaignStore(store_path) as store:
         # Paths are stored relative to the campaign root (the dir holding
