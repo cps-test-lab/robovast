@@ -30,7 +30,7 @@ sim:
 
 components:
   # Spawn pose matches gz tb4_simulation_launch.py (world -8, 0); AMCL seeds at the map origin.
-  - spawn_robot: {model: turtlebot4, pos: [-8.0, 0.0], yaw: 0.0}
+  - spawn_robot: {model: turtlebot4, pose: {position: {x: -8.0, y: 0.0}, orientation: {yaw: 0.0}}}
     name: robot
     components:
       # Ground-truth leaf frame map -> turtlebot4_base_link_gt for offline path evaluation (not
