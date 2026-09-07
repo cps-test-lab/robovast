@@ -842,8 +842,9 @@ Only two things remain configurable, both about *other people's* registries:
 .. code-block:: bash
 
    # Credentials for a private registry a .vast names in its `image:` field. Purely a
-   # PULL credential -- the build registry is in-pod and open, so nothing needs a push
-   # credential. Applied to campaign pods, aux/exec pods and the service's own image.
+   # PULL credential for THAT registry -- the build registry's own push credential is
+   # minted automatically at `setup` (see above) and is never configured here. Applied
+   # to campaign pods, aux/exec pods and the service's own image.
    ROBOVAST_REGISTRY_SERVER=harbor.example.org
    ROBOVAST_REGISTRY_USERNAME=<user>
    ROBOVAST_REGISTRY_PASSWORD=<token>
