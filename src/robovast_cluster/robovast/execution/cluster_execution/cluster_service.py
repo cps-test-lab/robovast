@@ -2095,6 +2095,28 @@ class ClusterService(LocalTransport):
                 f"`kubectl -n {self.namespace} get deploy/{BUILDKITD_NAME}`; "
                 f"`vast service upgrade` re-applies it if it is missing.")
 
+        # And here for the same reason, one step further on: a build whose push will be
+        # refused is a build that installs every package and then fails at its last step.
+        # Nothing upstream could have said so -- `can_build_images` answers whether this
+        # deployment has a registry configured, which is a property of how it was set up,
+        # and the cache probe above is a manifest read, which a registry may serve while
+        # refusing to receive one. So the credential is asked directly, once, before the
+        # context is copied and staged.
+        #
+        # Only a registry that answered *and* refused stops a build; an unreachable one
+        # does not (see `push_refused`). The verdict is the one the post-build classifier
+        # already gives this failure -- infrastructure, not a `build:` entry to edit --
+        # just arrived before the compute.
+        if self._images.push_refused(image_ref):
+            raise ImageBuildFailed(
+                f"this deployment's image registry refused the credential it would push "
+                f"'{spec.tag}' with, so the build would fail at its last step after "
+                f"installing everything. That is an infrastructure problem and not "
+                f"fixable by editing `build:`: the push Secret is minted at "
+                f"`vast cluster setup` and re-read by `vast service upgrade`, so a "
+                f"credential rotated since this deployment was set up needs one of those. "
+                f"`vast doctor -n {self.namespace}` says which.")
+
         # Registered *before* staging so a concurrent build's context sweep can see
         # this build is in flight — its context exists in the object store for the
         # whole upload, while its Job does not exist yet.

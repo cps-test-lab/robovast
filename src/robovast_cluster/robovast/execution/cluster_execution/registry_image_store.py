@@ -34,8 +34,8 @@ from robovast.service.image_build import build_hash
 from robovast.service.image_store import ImageBuildStore, ImageRef, build_identity
 
 from .cluster_image_build import build_id_for, concrete_image_ref
-from .registry_client import (PRESENT, UNKNOWN, manifest_created,
-                              manifest_digest, manifest_state)
+from .registry_client import (PRESENT, PUSH_REFUSED, UNKNOWN, manifest_created,
+                              manifest_digest, manifest_state, push_state)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,28 @@ class RegistryImageStore(ImageBuildStore):
                 f"registry and its credentials (vast cluster setup) rather than "
                 f"rebuilding.")
         return state == PRESENT
+
+    def push_refused(self, image_ref: str) -> bool:
+        """True only when the registry says this deployment's credential may **not** push.
+
+        Here for the reason :meth:`published_digest` gives: the credential triple lives on
+        this object, and a second place resolving it would be a second place to get it
+        wrong.
+
+        Deliberately not "may push" -- the verdict is asymmetric. ``PUSH_UNKNOWN`` (an
+        unreachable registry, a status that is neither an acceptance nor a refusal) reads
+        as False here, so a build goes ahead exactly as it did before. Only a registry
+        that answered, and refused, stops one. Refusing a build over a registry that did
+        not answer would trade a late failure for an early one that is sometimes wrong,
+        and the campaign lane already survives an unreachable registry by rebuilding.
+        """
+        registry = self.registry(require=False)
+        state = push_state(
+            image_ref,
+            dockerconfigjson=self.push_dockerconfig(registry.push_secret_name),
+            insecure=registry.insecure,
+            ca_path=self.ca_path(registry.ca_configmap_name))
+        return state == PUSH_REFUSED
 
     def published_digest(self, image_ref: str) -> str:
         """What *image_ref*'s tag points at in the registry now, or ``""`` when unknown.
