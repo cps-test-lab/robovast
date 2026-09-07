@@ -169,9 +169,14 @@ def check(source_dir, source_id: str) -> dict:
 
 
 def _check_config(source_dir: Path) -> dict:
-    """Whether the frozen ``.vast`` can be brought to the current config version."""
-    from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, ConfigVersionError,
-                                            config_version, upgrade_config)
+    """Whether the frozen ``.vast`` can be brought to the current config version.
+
+    :func:`~robovast.common.migrations.classify_config` says *what* the config is; this says
+    what a retrigger does about it. Everything the ladder refuses blocks here, because a
+    re-run reads the config for real: unlike an import, there is no useful best-effort.
+    """
+    from robovast.common.migrations import (CONFIG_CURRENT, CONFIG_UPGRADABLE,
+                                            SUPPORTED_CONFIG_VERSION, classify_config, read_vast)
     from robovast.common.results_utils import campaign_vast
 
     try:
@@ -182,36 +187,20 @@ def _check_config(source_dir: Path) -> dict:
                      f"reconstruct from ({e}). Launch it again from the workspace it came "
                      f"from.")
     try:
-        raw = _read_vast(vast_path)
+        raw = read_vast(vast_path)
     except Exception as e:  # pylint: disable=broad-except
         return _axis(AXIS_BLOCKED, f"{vast_path.name} could not be read: {e}")
 
-    version = config_version(raw)
-    if version == SUPPORTED_CONFIG_VERSION:
-        return _axis(AXIS_OK, f"config version {version} is current", version=version)
-    try:
-        _, applied = upgrade_config(raw)
-    except ConfigVersionError as e:
-        return _axis(AXIS_BLOCKED, str(e), version=version)
-    return _axis(AXIS_UPGRADABLE,
-                 f"config version {version} will be migrated to "
-                 f"{SUPPORTED_CONFIG_VERSION} in the staging copy; the archived file is not "
-                 f"modified",
-                 version=version, steps=applied)
-
-
-def _read_vast(vast_path: Path) -> dict:
-    """The first YAML document of a frozen ``.vast``, unvalidated.
-
-    Read directly rather than through ``load_config``: this is a *diagnosis* of a file that may
-    well be too old to validate, and the strict reader would raise before the report could say
-    so -- turning the answer into the failure it was asked about.
-    """
-    import yaml
-
-    with open(vast_path, "r", encoding="utf-8") as handle:
-        documents = list(yaml.safe_load_all(handle))
-    return (documents[0] if documents else None) or {}
+    found = classify_config(raw)
+    if found.state == CONFIG_CURRENT:
+        return _axis(AXIS_OK, f"config version {found.version} is current", version=found.version)
+    if found.state == CONFIG_UPGRADABLE:
+        return _axis(AXIS_UPGRADABLE,
+                     f"config version {found.version} will be migrated to "
+                     f"{SUPPORTED_CONFIG_VERSION} in the staging copy; the archived file is not "
+                     f"modified",
+                     version=found.version, steps=found.steps)
+    return _axis(AXIS_BLOCKED, found.message, version=found.version)
 
 
 def _unpinned_is_fatal(images, campaign_config) -> bool:
@@ -276,10 +265,11 @@ def _read_vast_or_empty(source_dir: Path) -> dict:
     The pre-flight must survive a campaign whose config is missing or unreadable -- that is a
     separate axis with its own verdict, and this one must not raise on its way to reporting.
     """
+    from robovast.common.migrations import read_vast
     from robovast.common.results_utils import campaign_vast
 
     try:
-        return _read_vast(campaign_vast(Path(source_dir)))
+        return read_vast(campaign_vast(Path(source_dir)))
     except Exception:  # pylint: disable=broad-except
         return {}
 
@@ -520,9 +510,9 @@ def _config_migration_of(vast_path: Path) -> "dict | None":
     able to see.
     """
     from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, config_version,
-                                            needs_upgrade, upgrade_config)
+                                            needs_upgrade, read_vast, upgrade_config)
 
-    raw = _read_vast(vast_path)
+    raw = read_vast(vast_path)
     if not needs_upgrade(raw):
         return None
     _, applied = upgrade_config(raw)
