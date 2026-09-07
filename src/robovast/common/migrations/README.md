@@ -67,6 +67,11 @@ An unnecessary bump is a CI failure, not a style nit: `tools/check_config_versio
 classifies the diff of the committed field snapshot and refuses a bump that the schema
 change does not justify.
 
+That tool also holds every shipped `version:` to `SUPPORTED_CONFIG_VERSION` — the
+examples under `configs/examples/` and the YAML samples in `docs/` — because strict
+authoring accepts no other, so a sample on any other version is a starting point that
+would be refused.
+
 ### Three kinds of breaking change
 
 - **Mechanical restructuring** — keys move, fold, or are renamed. A step handles it.

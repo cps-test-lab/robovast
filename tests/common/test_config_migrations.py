@@ -109,6 +109,26 @@ def test_baseline_reaches_supported_and_validates():
     validate_config(upgraded)
 
 
+def test_every_shipped_example_declares_the_supported_version():
+    """The examples are what a reader copies, and strict authoring accepts one version only.
+
+    Nothing else reaches them: the ladder's own assert sees the steps, the golden fixtures
+    see each step's transform, and neither looks at a file shipped beside them. An example
+    left on an older version hands the reader a starting point ``vast`` refuses.
+    """
+    examples = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples"
+    shipped = sorted(examples.rglob("*.vast"))
+    assert shipped, f"no examples under {examples}; the glob or the layout changed"
+    stale = {}
+    for path in shipped:
+        declared = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("version")
+        if declared != SUPPORTED_CONFIG_VERSION:
+            stale[str(path.relative_to(examples))] = declared
+    assert not stale, (
+        f"examples declaring a version other than {SUPPORTED_CONFIG_VERSION}: {stale} — "
+        f"upgrade each with 'vast configuration upgrade'")
+
+
 def test_upgrade_does_not_mutate_its_input():
     """Callers hand us a config they still hold -- reading must not rewrite it."""
     raw = _load(_FIXTURES / f"v{BASELINE_CONFIG_VERSION}.vast")
