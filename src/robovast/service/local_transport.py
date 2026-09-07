@@ -1951,8 +1951,8 @@ class LocalTransport(RobovastInterface):
         import yaml
 
         from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, UnmigratableConfig,
-                                                find_migration_markers, upgrade_config_file)
-        from robovast.service.retrigger import _read_vast
+                                                find_migration_markers, read_vast,
+                                                upgrade_config_file)
 
         info = self.create_workspace(CreateWorkspaceRequest(name=workspace_name,
                                                             from_campaign=campaign_id))
@@ -1971,7 +1971,7 @@ class LocalTransport(RobovastInterface):
                 with open(staged, "w", encoding="utf-8") as handle:
                     yaml.dump(e.partial, handle, default_flow_style=False, sort_keys=False)
 
-        markers = find_migration_markers(_read_vast(staged))
+        markers = find_migration_markers(read_vast(staged))
         logger.warning(
             "materialised %s as work order in workspace %s: %d unresolved marker(s). It will not "
             "validate until each is resolved, which is deliberate.",

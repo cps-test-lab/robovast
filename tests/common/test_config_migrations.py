@@ -13,9 +13,11 @@ import pytest
 import yaml
 
 from robovast.common.config import validate_config
-from robovast.common.migrations import (BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION,
-                                        ConfigTooNew, ConfigTooOld, ConfigVersionError,
-                                        needs_upgrade, upgrade_config, upgrade_config_file)
+from robovast.common.migrations import (BASELINE_CONFIG_VERSION, CONFIG_CURRENT, CONFIG_NEWER,
+                                        CONFIG_TOO_OLD, CONFIG_UNVERSIONED, CONFIG_UPGRADABLE,
+                                        SUPPORTED_CONFIG_VERSION, ConfigTooNew, ConfigTooOld,
+                                        ConfigVersionError, classify_config, needs_upgrade,
+                                        upgrade_config, upgrade_config_file)
 from robovast.common.migrations import config as ladder
 from robovast.common.migrations.config import v2_to_v3
 
@@ -107,6 +109,26 @@ def test_baseline_reaches_supported_and_validates():
     validate_config(upgraded)
 
 
+def test_every_shipped_example_declares_the_supported_version():
+    """The examples are what a reader copies, and strict authoring accepts one version only.
+
+    Nothing else reaches them: the ladder's own assert sees the steps, the golden fixtures
+    see each step's transform, and neither looks at a file shipped beside them. An example
+    left on an older version hands the reader a starting point ``vast`` refuses.
+    """
+    examples = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples"
+    shipped = sorted(examples.rglob("*.vast"))
+    assert shipped, f"no examples under {examples}; the glob or the layout changed"
+    stale = {}
+    for path in shipped:
+        declared = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("version")
+        if declared != SUPPORTED_CONFIG_VERSION:
+            stale[str(path.relative_to(examples))] = declared
+    assert not stale, (
+        f"examples declaring a version other than {SUPPORTED_CONFIG_VERSION}: {stale} — "
+        f"upgrade each with 'vast configuration upgrade'")
+
+
 def test_upgrade_does_not_mutate_its_input():
     """Callers hand us a config they still hold -- reading must not rewrite it."""
     raw = _load(_FIXTURES / f"v{BASELINE_CONFIG_VERSION}.vast")
@@ -139,6 +161,38 @@ def test_version_below_baseline_is_refused():
 def test_unusable_version_is_refused(raw):
     with pytest.raises(ConfigVersionError):
         upgrade_config(raw)
+
+
+@pytest.mark.parametrize("raw,state", [
+    ({"version": SUPPORTED_CONFIG_VERSION, "execution": {}}, CONFIG_CURRENT),
+    ({"version": BASELINE_CONFIG_VERSION, "execution": {"image": "img:1"}}, CONFIG_UPGRADABLE),
+    ({"version": SUPPORTED_CONFIG_VERSION + 1}, CONFIG_NEWER),
+    ({"version": BASELINE_CONFIG_VERSION - 1}, CONFIG_TOO_OLD),
+    ({}, CONFIG_UNVERSIONED),
+    ({"version": None}, CONFIG_UNVERSIONED),
+    ({"version": "2"}, CONFIG_UNVERSIONED),
+])
+def test_classification_follows_the_ladder_rather_than_the_version_field(raw, state):
+    """Every reading path asks this one question, so it must answer from what the ladder does.
+
+    A version that is absent or not an integer is *unversioned*: there is nothing to start the
+    ladder from. Reading the field first and comparing it against the supported version puts
+    those configs on whichever side of the comparison the field happens to fall, which is a
+    verdict about an ordering that does not exist.
+    """
+    found = classify_config(raw)
+    assert found.state == state
+    assert bool(found.message) is (state not in (CONFIG_CURRENT, CONFIG_UPGRADABLE)), \
+        "a refusal carries the ladder's own message; a usable config has none to carry"
+
+
+def test_classification_names_the_steps_a_migration_would_apply():
+    """The steps are what a caller records as *how* a campaign was brought forward, so they
+    are part of the classification rather than something a caller re-derives."""
+    found = classify_config(_load(_FIXTURES / f"v{BASELINE_CONFIG_VERSION}.vast"))
+    assert found.state == CONFIG_UPGRADABLE
+    assert found.version == BASELINE_CONFIG_VERSION
+    assert found.steps == [f"{a}_to_{b}" for a, b in _step_versions()]
 
 
 def test_secondary_containers_both_authored_shapes():

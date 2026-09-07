@@ -18,6 +18,7 @@ Two properties are load-bearing and easy to lose:
 
 import pathlib
 
+import pytest
 import yaml
 
 from robovast.service.retrigger import (AXIS_BLOCKED, AXIS_OK, AXIS_UNKNOWN, AXIS_UPGRADABLE,
@@ -75,6 +76,21 @@ def test_a_config_from_a_newer_robovast_is_blocked(tmp_path):
     axis = check(root, root.name)["axes"]["config"]
     assert axis["verdict"] == AXIS_BLOCKED
     assert "upgrade robovast" in axis["detail"]
+
+
+@pytest.mark.parametrize("config,says", [
+    ({"execution": {}}, "declares no 'version:'"),
+    ({"version": "4", "execution": {}}, "must be an integer"),
+])
+def test_a_config_with_no_usable_version_is_blocked_and_says_which(tmp_path, config, says):
+    """There is nothing to start the ladder from, so a re-run cannot read this config at all.
+    The detail has to name that; a verdict about how the version compares to the supported one
+    describes an ordering the file does not have."""
+    root = _campaign(tmp_path, config=config)
+    axis = check(root, root.name)["axes"]["config"]
+    assert axis["verdict"] == AXIS_BLOCKED
+    assert says in axis["detail"]
+    assert check(root, root.name)["runnable"] is False
 
 
 def test_an_unreadable_config_is_diagnosed_not_raised(tmp_path):

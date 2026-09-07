@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 3
+   version: 4
    extends: common/base.vast     # optional; see Extends
    metadata:
      title: "Project Title"
@@ -35,12 +35,12 @@ Version
 
 **Required:** Yes
 
-Specifies the version of the configuration file format. The current version is ``3``, and it
-is the only one a file you are authoring may declare.
+Specifies the version of the configuration file format. A file you are authoring may
+declare only the current one:
 
 .. code-block:: yaml
 
-   version: 3
+   version: 4
 
 An **older** version is migrated forward rather than refused:
 
@@ -96,7 +96,7 @@ meant to change -- a container's resources, a postprocessing step, a dashboard.
 
 .. code-block:: yaml
 
-   version: 3
+   version: 4
    extends: common/nav2-base.vast
    execution:
      containers:
@@ -881,9 +881,12 @@ Every block takes the same keys:
    environment and start command so the campaign does not restate them. See
    :doc:`simulators`.
 
-This replaces four keys that version 1 had: ``execution.image``,
-``execution.resources``, ``execution.secondary_containers`` and the top-level ``build:``
-section. A version-1 file is refused with a message naming what each became.
+A version-1 file spreads the same settings across four keys — ``execution.image``,
+``execution.resources``, ``execution.secondary_containers`` and a top-level ``build:``
+section — and the ladder's first step folds all four into ``containers``. Authoring requires
+the current version, so such a file is refused there, with ``vast configuration upgrade`` and
+a line naming what each of the four becomes; an archived campaign that carries them is
+migrated in memory when it is read, and its file is left as its author wrote it.
 
 The ``containers`` package keys are distinct from the top-level ``plugins:`` field:
 ``plugins:`` installs *variation-type* packages into the **composer** (before config
@@ -2156,7 +2159,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 3
+   version: 4
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc
