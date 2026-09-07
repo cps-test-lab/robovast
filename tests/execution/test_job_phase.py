@@ -18,7 +18,8 @@
 
 import types
 
-from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
+from robovast.execution.cluster_execution.cluster_execution import (blocked_and_contended_reasons,
+                                                                    blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,
                                                                     pod_container_failures,
                                                                     pod_invalidating_restart,
@@ -308,6 +309,100 @@ def test_unschedulable_without_node_sizes_shows_as_blocked_in_the_listing():
               for j, p, d in ((x.job, x.phase, x.detail)
                             for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["gpu-job"] == ("blocked", "Unschedulable: Insufficient cpu.")
+
+
+def _setup_stuck_pod(job="conv-job", age_s=600.0):
+    """A pod the scheduler DID place whose containers have never started.
+
+    The shape a missing ConfigMap produces, and the point of the test: it is character for
+    character the shape of a pod that is three seconds into a large image pull. Every
+    container reports ``PodInitializing`` and nothing else, so the pod carries no evidence
+    at all -- which is why the verdict needs an Event and a grace.
+    """
+    import datetime as _dt
+
+    initializing = types.SimpleNamespace(state=types.SimpleNamespace(
+        waiting=types.SimpleNamespace(reason="PodInitializing", message=None),
+        running=None, terminated=None))
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=f"{job}-pod", labels={"job-name": job}),
+        spec=types.SimpleNamespace(node_name="a-node"),
+        status=types.SimpleNamespace(
+            phase="Pending", reason=None, conditions=[types.SimpleNamespace(
+                type="PodScheduled", status="True", reason=None, message=None)],
+            init_container_statuses=[initializing], container_statuses=[initializing],
+            start_time=_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=age_s)))
+
+
+class _EventCore(_Core):
+    """A `_Core` that also serves Events, and counts how often it was asked for them."""
+
+    def __init__(self, pods, events=()):
+        super().__init__(pods)
+        self._events = list(events)
+        self.event_reads = 0
+
+    def list_namespaced_event(self, namespace, field_selector=None):
+        self.event_reads += 1
+        reason = (field_selector or "").split("=")[-1]
+        return types.SimpleNamespace(
+            items=[e for e in self._events if e.reason == reason])
+
+
+def _mount_failure(pod_name, message):
+    return types.SimpleNamespace(
+        reason="FailedMount", message=message,
+        involved_object=types.SimpleNamespace(name=pod_name))
+
+
+def test_a_pod_that_cannot_mount_its_volumes_is_blocked_with_the_kubelets_message():
+    """The third shape of "Pending forever", and the one with no trace in the pod itself.
+
+    A Job whose pod cannot mount a volume stays ``active`` indefinitely, so a wait on it
+    can only time out and call the outcome unknown -- days later, in a log that ends
+    mid-step with nothing said. The kubelet's Event names the object that is missing,
+    which is the whole diagnosis, so it is carried through verbatim.
+    """
+    msg = ('MountVolume.SetUp failed for volume "scripts" : '
+           'configmap "robovast-postproc-scripts-x" not found')
+    core = _EventCore([_setup_stuck_pod()], [_mount_failure("conv-job-pod", msg)])
+
+    assert blocked_job_reasons(core, "ns", "sel") == {"conv-job": f"FailedMount: {msg}"}
+
+
+def test_a_mount_failure_is_not_recoverable_contention():
+    """`blocked - contended` is what will not recover on its own, and a ConfigMap that is
+    not there never arrives -- unlike a throttled pull or a busy node."""
+    core = _EventCore([_setup_stuck_pod()],
+                      [_mount_failure("conv-job-pod", "configmap not found")])
+    blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert "conv-job" in blocked and contended == {}
+
+
+def test_a_pod_still_within_the_grace_is_not_reported_blocked():
+    """A pod seconds old looks exactly like the wedged one, so the verdict waits. It has
+    to: the postprocess wait acts on a blocked reason the moment it appears, and a reason
+    that is true of a healthy pod at t=0 would fail a conversion about to succeed.
+    """
+    core = _EventCore([_setup_stuck_pod(age_s=1.0)],
+                      [_mount_failure("conv-job-pod", "configmap not found")])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
+
+
+def test_a_pod_getting_on_with_it_costs_no_event_read():
+    """Events are read only once a pod has sat in the candidate shape past the grace --
+    the same laziness the node list gets, and for the same reason: this runs on every poll
+    of every batch."""
+    core = _EventCore([_pod("j", "Running")])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
+    assert core.event_reads == 0
+
+
+def test_a_stuck_looking_pod_with_no_mount_failure_is_left_alone():
+    """The long pull this shape is otherwise indistinguishable from: no Event, no verdict.
+    Reporting on the shape alone would call every cold start a fault."""
+    core = _EventCore([_setup_stuck_pod()])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
 
 
 def test_a_schedulable_pod_is_not_reported_blocked():
