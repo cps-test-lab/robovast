@@ -46,7 +46,14 @@ def _find_docs_dir() -> Path | None:
     env = os.environ.get("ROBOVAST_DOCS_DIR")
     if env:
         p = Path(env)
-        return p if p.is_dir() else None
+        if p.is_dir():
+            return p
+        # A set-but-wrong path is a misconfiguration, not a request to search elsewhere:
+        # falling through to the walk would serve some *other* docs directory under a
+        # name the operator believes is theirs. Say so and serve nothing.
+        logger.warning("ROBOVAST_DOCS_DIR is set to %s, which is not a directory; "
+                       "no documentation will be served.", env)
+        return None
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "docs"
         if candidate.is_dir() and any(candidate.glob("*.rst")):
@@ -341,6 +348,16 @@ if _docs_dir is not None:
 
 
 def _no_docs() -> dict:
+    """The reply when no docs were loaded.
+
+    It names which of the two ways that happened, because the fix differs: an unset
+    variable is a deployment that never pointed at the docs, a set one is a path that
+    does not hold them.
+    """
+    env = os.environ.get("ROBOVAST_DOCS_DIR")
+    if env:
+        return {"error": f"ROBOVAST_DOCS_DIR is set to {env}, which is not a readable "
+                         "documentation directory."}
     return {"error": "documentation directory not found; set ROBOVAST_DOCS_DIR to the "
                      "docs/ path."}
 

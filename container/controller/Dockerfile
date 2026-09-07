@@ -175,6 +175,20 @@ RUN pip install --no-cache-dir ./src/robovast_cluster
 COPY --from=ui-build /ui/dist /opt/robovast/ui
 ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 
+# The documentation the `search_docs` MCP tool serves, and the env it reads. Same reason
+# the UI needs one: the tool's fallback walks *up* from its own module, which here is in
+# site-packages with nothing above it, so without this the only doc source an agent has
+# answers every query with "documentation directory not found".
+#
+# Placed under /opt/robovast because the page set is resolved relative to the docs
+# directory's parent: README.md and each src/*/README.md are served as pages too, and
+# those are already at that path.
+COPY docs /opt/robovast/docs
+ENV ROBOVAST_DOCS_DIR=/opt/robovast/docs
+# The `.. literalinclude::` targets in docs/example.rst, which are repository paths
+# outside docs/. Without them that page renders as unreadable-file placeholders.
+COPY configs /opt/robovast/configs
+
 # The revision this image's `COPY src` came from, captured here because this is the ONLY
 # point at which it is knowable. `get_app_version` asks git, from the directory the module
 # lives in -- which in this image is site-packages, with no `.git` anywhere above it, so the
