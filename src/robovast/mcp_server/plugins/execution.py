@@ -1239,6 +1239,11 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
     ``command="tail -200 <log_path>"``.
 
+    **The run is bounded and the caller does not set the bound**: it follows from what is run
+    (a config's ``execution.timeout``, else a fixed cap), so a diagnostic waits as long as the
+    campaign would. The reply names the limit that applied. There is no ``timeout`` argument —
+    a run needing longer needs ``execution.timeout`` raised.
+
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
         workspace_id, config_path: A workspace and which ``.vast`` in it.
@@ -1298,6 +1303,9 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
 
 def stop_container() -> dict:
     """Stop the held ``exec_in_container`` container. Frees the memory it holds.
+
+    **Takes no arguments**: there is only ever one, and it belongs to this service rather than
+    to a workspace or campaign, so there is nothing to name.
 
     Returns:
         ``{stopped, target}`` — ``stopped: false`` when there was nothing to stop, which
