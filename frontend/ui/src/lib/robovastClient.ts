@@ -90,6 +90,13 @@ const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
 export const isTerminalPhase = (phase: string | undefined): boolean =>
   !!phase && !RUNNING_PHASES.has(phase)
 
+// Phases before the run loop starts. They have no progress bar of their own, so the only
+// signal that one is wedged rather than slow is how long it has been held — and nothing a
+// campaign stages for a reader exists yet (see `mayHaveStagedConfig`).
+export const PRE_RUN_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'initializing', 'building', 'starting', 'plugin install', 'variation',
+])
+
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
 export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
