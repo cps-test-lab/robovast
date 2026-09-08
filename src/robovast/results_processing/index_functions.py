@@ -33,7 +33,11 @@ have are created under exactly the same spellings and the same semantics:
   between the two neighbouring samples, which is what the SQLite implementation did and
   what ``percentile_cont`` does natively. Getting the scale wrong here would return the
   1st-percentile value for a query asking for the 95th, which is a plausible number and a
-  wrong answer.
+  wrong answer. ``PERCENTILE`` is defined here for the connection that queries the index
+  directly; a query that passes through
+  :mod:`~robovast.results_processing.index_dialect` reaches the server as
+  ``percentile_cont`` instead, because this definition costs quadratic time in the rows
+  of a group and that module says why.
 * ``REGEXP(pattern, value)`` is created as a function rather than left to Postgres' ``~``
   operator, because the argument order is part of the contract: SQLite's registered
   function takes ``(pattern, value)`` while ``~`` reads ``value ~ pattern``. A silent swap

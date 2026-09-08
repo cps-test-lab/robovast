@@ -81,7 +81,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
-                                         RunOptions)
+                                         RunOptions, ShareStopped)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
@@ -3945,15 +3945,51 @@ class KubernetesBackend(ExecutionBackend):
         # *in*; a metadata walk is cheap next to the upload that reads all of it anyway.
         on_member = getattr(progress_callback, "on_member", None)
         if on_member is not None:
+            # Before the metadata walk, let alone the transfer: a share already cancelled
+            # must not start reading a campaign that can be a terabyte.
+            progress_callback.raise_if_stopped()
             progress_callback.set_source_total(
                 campaign_archive.campaign_source_bytes(campaign_root))
-        with campaign_archive.campaign_tar_stream(campaign_root,
-                                                  on_member=on_member) as stream:
-            provider.upload_archive_stream(stream, object_name,
-                                           progress_callback=progress_callback)
+        try:
+            with campaign_archive.campaign_tar_stream(campaign_root,
+                                                      on_member=on_member) as stream:
+                provider.upload_archive_stream(stream, object_name,
+                                               progress_callback=progress_callback)
+        except ShareStopped as stopped:
+            # Name the object on the way out. This path is chunked with no resume, so what
+            # is on the share now is a truncated archive under the real name, and only the
+            # caller that catches this can decide to discard it -- but only this scope
+            # knows what it was called.
+            stopped.object_name = object_name
+            raise
         if on_member is not None:
             progress_callback.finish()
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
+
+    def discard_partial_share(self, object_name: str) -> str:
+        """Delete the truncated archive a cancelled upload left on the share.
+
+        The streamed path is chunked and cannot resume, so an interrupted upload leaves a
+        partial object under the archive's real name -- and that object lists and downloads
+        exactly like a complete one, failing only at the far end, on somebody else's
+        service, after a full transfer. That is the shape
+        ``DockerBackend._refuse_unimportable`` exists to keep off a share, and a
+        cancellation must not manufacture it.
+
+        Raises if the delete did not happen, and does **not** soften that into a note: it
+        cannot tell a provider that will not delete from an object that was never created
+        (``remove_archive`` raises for both), and guessing between them is what would make
+        the report wrong. ``controller.share_cancelled_detail`` is the one caller that
+        must not raise over a cancellation, and it words the uncertainty there.
+        """
+        from . import in_pod_upload  # pylint: disable=import-outside-toplevel
+        provider = in_pod_upload.load_provider_from_env()
+        if provider is None:
+            raise CampaignConfigError(
+                f"cannot remove the partial '{object_name}': no share is configured "
+                "(ROBOVAST_SHARE_TYPE unset).")
+        provider.remove_archive(object_name)
+        return f"the partial '{object_name}' was removed from the share."
 
     def count_run_artifacts(self, campaign_id: str,
                             campaign_root: str) -> int | None:

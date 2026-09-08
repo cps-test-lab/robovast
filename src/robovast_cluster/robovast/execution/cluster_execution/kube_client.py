@@ -281,12 +281,21 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
     """
     import time
 
+    from kubernetes.client.rest import ApiException
     from kubernetes.stream import stream
 
-    resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
-                  container=container, command=list(command),
-                  stderr=True, stdin=stdin_data is not None, stdout=True,
-                  tty=False, _preload_content=False)
+    try:
+        resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
+                      container=container, command=list(command),
+                      stderr=True, stdin=stdin_data is not None, stdout=True,
+                      tty=False, _preload_content=False)
+    except ApiException as exc:
+        # Named here because this is the call that failed. The handshake is the one part of
+        # an exec that fails before the command exists, and unlabelled it was reported by
+        # whichever wrapper happened to enclose the call -- pointing a caller at an
+        # operation that had in fact succeeded.
+        raise RuntimeError(f"could not open an exec stream into {pod}/{container}: "
+                           f"{api_error_reason(exc)}") from exc
     out, err = [], []
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
@@ -438,6 +447,74 @@ def api_transport_errors(what: str):
                 "Check that the cluster is running and reachable (VPN, kubeconfig "
                 "context, 'kubectl cluster-info')."
             ) from exc
+
+#: A websocket handshake the peer answered with an ordinary HTTP response. ``websocket``
+#: puts the code in its message and appends the response headers; only the code is a fact
+#: about the failure.
+_HANDSHAKE_STATUS = re.compile(r"Handshake status (\d{3})")
+
+
+def _status_message(body) -> str:
+    """The ``message`` of a Kubernetes ``Status`` object, or ``""`` if the body is not one."""
+    if not body:
+        return ""
+    try:
+        parsed = json.loads(body if isinstance(body, (str, bytes, bytearray)) else str(body))
+    except (TypeError, ValueError):
+        return ""
+    message = parsed.get("message") if isinstance(parsed, dict) else None
+    return str(message).strip()[:400] if message else ""
+
+
+def _handshake_failure(reason: str) -> str:
+    """A websocket upgrade answered with an ordinary HTTP response, stated as that.
+
+    The API server serves exec as a stream, so an answer that is not a protocol switch
+    means the request never arrived at the exec subresource as one. ``200`` is both the
+    common case and the confusing one: read raw, the failure says "OK".
+    """
+    found = _HANDSHAKE_STATUS.search(reason or "")
+    if not found:
+        return ""
+    return ("the connection was never upgraded to a websocket -- the request for the "
+            f"stream was answered with an ordinary HTTP {found.group(1)} response, so "
+            "either something between this client and the API server answered it, or the "
+            "API server does not serve that subresource as a stream")
+
+
+def _first_segment(reason: str) -> str:
+    """The head of a reason string: its first line, up to the client's own separator.
+
+    Built by keeping the part that describes the failure rather than by naming the parts
+    to remove, so a reason shape this has never seen still comes through short.
+    """
+    head = (reason or "").split(" -+-+- ")[0].strip()
+    return head.splitlines()[0].strip()[:400] if head else ""
+
+
+def api_error_reason(exc) -> str:
+    """What an ``ApiException`` says, in one line a caller can act on.
+
+    ``ApiException.reason`` is not an HTTP reason phrase, and must not be reported as
+    though it were. The generated client's stream helper turns *any* exception into
+    ``ApiException(status=0, reason=str(e))``, so a failed websocket handshake arrives as
+    that exception's whole repr -- response headers, an audit id and a ``None`` body,
+    joined by the websocket library's separators. Forwarded verbatim it hands a caller
+    several hundred characters that name nothing to fix, and buries the one fact that
+    matters.
+
+    So the fields are read in the order they carry meaning: the API server's own message
+    when the body holds a ``Status``, a handshake failure said plainly, else the head of
+    the reason.
+    """
+    status = getattr(exc, "status", 0) or 0
+    reason = str(getattr(exc, "reason", "") or "")
+    detail = (_status_message(getattr(exc, "body", None))
+              or _handshake_failure(reason)
+              or _first_segment(reason)
+              or exc.__class__.__name__)
+    return f"HTTP {status}: {detail}" if status else detail
+
 
 def parse_resource(val):
     """A Kubernetes resource quantity as a number; ``0`` for missing or unparseable.

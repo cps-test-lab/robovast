@@ -748,3 +748,77 @@ def test_restricting_the_packages_affects_the_hash(tmp_path):
 def test_no_ros_packages_renders_no_workspace_lines(tmp_path):
     df = generate_dockerfile(BuildSpec(tag="t", system_packages=["git"]), tmp_path, BASE)
     assert "colcon" not in df and "/ws/src" not in df
+
+
+# -- a colcon failure is not a push failure ------------------------------------------------------
+_COLCON_LOG = """
+#6 ERROR: failed to configure registry cache importer: unexpected status from HEAD request to
+https://registry.invalid/v2/sut-abc/manifests/buildcache: 401 Unauthorized
+#10 55.61   Add the installation prefix of "test_msgs" to CMAKE_PREFIX_PATH or set
+#10 55.61   "test_msgs_DIR" to a directory containing one of the above files.
+#10 55.61 Failed   <<< nav2_util [1.09s, exited with code 1]
+#10 55.62 Summary: 3 packages finished [54.8s]
+error: failed to solve: process "/bin/bash -xo pipefail -c colcon build --packages-up-to \
+nav2_smac_planner" did not complete successfully: exit code: 1
+"""
+
+
+def test_a_failed_colcon_build_names_the_package_and_stays_agent_fixable():
+    """The registry words appear in almost every build log, and mean nothing on their own.
+
+    BuildKit's cache importer logs a plain `401 Unauthorized` whenever the registry serves no
+    cache manifest for this tag yet -- i.e. on every first build of a project. Matching the bare
+    word against the whole log reported a `ros_packages` compile error as a push failure, with
+    `fixable_by: infra` and "the build itself succeeded": two false statements that between them
+    send the agent to the cluster operator instead of to the one missing entry in this container's
+    own `system_packages`.
+    """
+    err = classify_build_error(_COLCON_LOG)
+    assert err.phase == "source-build"
+    assert err.fixable_by == "agent"
+    assert err.entry == "nav2_util", "name the package, not the RUN line every build shares"
+    assert "system_packages" in err.message
+    assert "push" not in err.message
+
+
+def test_a_registry_failure_is_only_claimed_when_the_build_got_that_far():
+    """A push failure is a statement that the image WAS built, so it needs that to be true."""
+    err = classify_build_error(
+        'error pushing to registry: denied: requested access to the resource is denied\n')
+    assert err.phase == "push"
+    assert err.fixable_by == "infra"
+    # ... and the same words, in a log that stopped at a failing step, are not one.
+    stopped = classify_build_error(
+        'denied: requested access to the resource is denied\n'
+        'error: failed to solve: process "/bin/sh -c false" did not complete successfully\n')
+    assert stopped.phase != "push"
+    assert stopped.fixable_by == "agent"
+
+
+def test_a_daemon_that_dies_mid_build_is_infra_and_says_so():
+    """The other failure the cache-chatter gate has to keep apart from a push.
+
+    A build daemon that accepts the build and goes away part-way through a compile leaves the
+    client reporting a broken stream, not a refused dial, so none of the dial-time wordings
+    match -- and the failure would fall through to the same bare `unauthorized` in the
+    cache-importer line and come back as a rejected push credential.
+    """
+    err = classify_build_error(
+        "#11 88.78 Starting >>> nav2_behavior_tree\n"
+        " > importing cache manifest from registry.invalid/sut-abc:buildcache:\n"
+        "  401 Unauthorized\n"
+        "error: failed to receive status: rpc error: code = Unavailable desc = error reading "
+        "from server: EOF\n")
+    assert err.phase == "builder"
+    assert err.fixable_by == "infra"
+    assert "push" not in err.message
+
+
+def test_cache_chatter_alone_never_becomes_a_push_failure():
+    """A first build always logs it, so reading it as a push failure would fire on every one."""
+    err = classify_build_error(
+        " > importing cache manifest from registry.invalid/sut-abc:buildcache:\n"
+        "#6 ERROR: failed to configure registry cache importer: unexpected status from HEAD "
+        "request: 401 Unauthorized\n"
+        "something else went wrong\n")
+    assert err.phase != "push"

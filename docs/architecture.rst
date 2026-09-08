@@ -153,7 +153,11 @@ ingest, the metadata, the provenance record) run in this process and are cancell
 pod, so a stop landing during the ingest interrupts it — and that is survivable for the
 reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
 clears a campaign's rows before writing them, so a re-run replaces a partial load rather
-than doubling it.
+than doubling it. An ingest handed a directory that holds no campaign at all — neither
+``campaign.db`` nor a single run directory — is refused *before* that clear, so a wrong
+path cannot empty a campaign's rows and then record the emptiness as its answer: the
+registry's entry is what separates "ingested and measured nothing" from "never ingested",
+and a query trusts it to make that distinction.
 
 What neither lane leaves is a campaign that *claims* derived data it does not have. The
 provenance record is written last, after the ingest, precisely so that its presence means

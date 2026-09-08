@@ -39,6 +39,21 @@ _ALLOWED = {
     "src/robovast/service/ingest.py": "ingest report: legacy per-campaign analysis DB",
 }
 
+#: Directory names holding build output rather than source, skipped wherever they appear
+#: under a scanned tree.
+#:
+#: Scanning them is redundant *by construction*: every one is a derivative of a tree this
+#: already reads, so a hit inside one is either a duplicate of a source hit or -- the case
+#: that actually bit -- a stale build, where the bundle still carries a predicate the
+#: source has already dropped. Either way the verdict stops being about the code and starts
+#: being about whether someone last ran a build, which is the shape this guard exists to
+#: refuse. ``src/robovast/_ui`` is a staged copy of ``frontend/ui/dist`` (``make
+#: ui-stage``) and the ``dist`` trees are ``npm run build`` output; all are git-ignored.
+#:
+#: A generated directory missing from this set costs a false positive, never a silent pass,
+#: which is the right way round for a guard.
+_GENERATED_DIRS = frozenset({"node_modules", "dist", "_ui"})
+
 _JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx")
 _JS_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 #: A string or regex literal carrying the name. ``data\.db`` covers a JS regex, where the
@@ -52,7 +67,7 @@ def _sources():
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*")):
-            if not path.is_file() or "node_modules" in path.parts:
+            if not path.is_file() or _GENERATED_DIRS.intersection(path.parts):
                 continue
             if path.suffix == ".py" or path.suffix in _JS_SUFFIXES:
                 yield path

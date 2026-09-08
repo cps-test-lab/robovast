@@ -199,6 +199,26 @@ class TableColumnLimitExceeded(ActionableError):
     include_traceback = False
 
 
+class CampaignNotIngestable(ActionableError):
+    """A directory carries no campaign, so ingesting it would assert something false.
+
+    The registry exists to separate "ingested and measured nothing" from "never ingested",
+    and each tolerance on the ingest path is right on its own: a missing ``campaign.db`` is
+    survivable, because a campaign that ended badly still has its runs on disk and is
+    exactly the one worth reading; an empty run walk is survivable, because a campaign
+    whose every draw failed to compose really did produce no runs. Together they would let
+    a directory holding neither -- a cluster cache dir the service never filled, an extract
+    that stopped partway -- be recorded as ingested, after which a query answers ``0`` rows
+    with no note and a reader takes a pipeline failure for a fact about the experiment.
+
+    So the pair is refused where either alone is not: no record *and* no run directory
+    means the ingest was aimed at something that is not this campaign's data. Refused
+    before the campaign's existing rows are cleared, so a mis-aimed ingest cannot empty a
+    campaign that has them.
+    """
+    include_traceback = False
+
+
 class ImageStoreUnavailable(RuntimeError):
     """Raised when an image store could not be asked whether an image is there.
 

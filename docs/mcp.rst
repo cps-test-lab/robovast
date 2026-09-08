@@ -193,6 +193,15 @@ variation's auxiliary one. That is why it can be the cheap tier and still settle
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
 
+**A check that did not run is not a pass.** ``valid`` covers every check the reply reports on,
+so a world nobody could look at makes it ``false``; ``world_checked`` says which of the three
+happened (it ran, it could not, it was not asked for); and the problem carries
+``severity: "unchecked"``. A caller branching on the boolean — which is what a boolean is for
+— is therefore never told a campaign is good to run because the most expensive thing about it
+was skipped, and it can still tell "could not check" from "is wrong" without matching on
+English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
+and ``valid`` stays true.
+
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
 remember and map onto their situation:
@@ -586,8 +595,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
-   service considers live (all lanes).
+   scenario Jobs). It lands on whatever is *running*, and the reply says which: the
+   **runs** (the batches that finished are still postprocessed and indexed, so the
+   campaign stays queryable), **postprocessing** (results kept, derived data not
+   computed — re-run it), or the **share upload** (cancelled, partial archive removed).
+   A campaign that is already over is refused rather than silently accepted.
+   ``list_campaigns(running_only=True)`` reports the campaigns the service considers
+   live (all lanes).
 
    ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
    the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a
