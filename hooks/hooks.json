@@ -38,6 +38,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py rearm",
             "statusMessage": "Noting a campaign reported as wedged"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py poll",
+            "statusMessage": "Noting a campaign read in a loop"
           }
         ]
       }

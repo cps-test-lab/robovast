@@ -28,13 +28,14 @@ entry-point group.
 import contextvars
 import json
 import logging
+import re
 import time
 
 from fastmcp import FastMCP
 from mcp.types import Icon
 
 from . import tool_stats
-from .registry import load_plugins
+from .registry import load_plugins, registered_tools
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,64 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
     mcp.add_middleware(_DebugLoggingMiddleware())
 
 
+#: Address-shaped tools take one string rather than the ids a caller is holding, and a
+#: caller that has just used a tool taking ``workspace_id``/``campaign_id`` reaches for
+#: those. Naming the form costs nothing until a call has already failed.
+_ADDRESS_HINT = ("`address` is one string: `/sources/<workspace_id>/<path>` for a project "
+                 "file, `/results/<campaign_id>/<path>` for a campaign's output")
+
+
+def _argument_help(mcp: FastMCP, tool_name: str, message: str) -> str:
+    """*message*, plus what this tool would have accepted.
+
+    A rejected call is answered by pydantic, which knows the argument that was wrong and
+    not the ones that would have been right — so a caller is told ``address`` is missing
+    and never told what an address looks like, or that ``top`` is unexpected and never
+    which of ``limit``/``tail`` this tool has. It then guesses again.
+
+    Written here rather than as parameters on each tool: alternatives would cost schema on
+    every request forever to answer a question that only arises once a call has failed.
+    """
+    try:
+        tool = registered_tools(mcp).get(tool_name)
+        accepted = sorted((getattr(tool, "parameters", None) or {}).get("properties", {}))
+    except Exception:  # noqa: BLE001 - help is help; it must never replace the real error
+        return message
+    if not accepted:
+        return message
+    extra = f"{tool_name} accepts: {', '.join(accepted)}."
+    # Only when `address` is the argument that was missing. Matched on the error's own
+    # line for it rather than on the word anywhere in the text, which any tool with
+    # "address" in its *name* would have satisfied.
+    missing_address = re.search(r"^address\n\s+Missing required argument", message, re.M)
+    if "address" in accepted and missing_address:
+        extra += f" {_ADDRESS_HINT}."
+    return f"{message}\n{extra}"
+
+
+def _install_argument_help(mcp: FastMCP) -> None:
+    """Answer a rejected call with the arguments the tool does have.
+
+    One middleware for the whole surface, so a tool added tomorrow explains itself without
+    knowing this exists -- the same reason the call record is one middleware.
+    """
+    from fastmcp.server.middleware import Middleware  # pylint: disable=import-outside-toplevel
+
+    class _ArgumentHelpMiddleware(Middleware):
+        async def on_call_tool(self, context, call_next):  # type: ignore[override]
+            try:
+                return await call_next(context)
+            except Exception as exc:
+                text = str(exc)
+                # Only a rejected *call*: a tool that raised while running has its own
+                # message, and appending a parameter list to it would be noise.
+                if "validation error" not in text:
+                    raise
+                raise type(exc)(_argument_help(mcp, context.message.name, text)) from exc
+
+    mcp.add_middleware(_ArgumentHelpMiddleware())
+
+
 def _install_tool_stats(mcp: FastMCP) -> None:
     """Record every tool call -- what was asked, what came back, how long it took.
 
@@ -284,6 +343,7 @@ def create_server(
     plugin_names = [p.name for p in plugins]
 
     _install_warning_forwarding(mcp)
+    _install_argument_help(mcp)
     _install_tool_stats(mcp)
 
     logger.info(

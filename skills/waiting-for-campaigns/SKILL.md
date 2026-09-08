@@ -30,6 +30,17 @@ campaign then reports success.
 
 Backgrounded, it costs you nothing: you stay free, and you are notified when it exits.
 
+## Reading the status in a loop is not waiting
+
+`get_campaign_status` is one look at a campaign nobody is waiting on. Called in a loop it is
+not a substitute for the wait above: it learns nothing sooner, and every read spends context
+on an answer that has not changed. A campaign holds `running` for its whole life, so a loop
+that stops when the status changes is a loop that runs until the campaign ends.
+
+More than a handful of reads of one campaign inside five minutes and the hook says so, once.
+If you find yourself checking again because the last answer was "running", background the
+waiter instead: that is the call that tells you when the answer changes.
+
 ## 4 and 5 are a hand-off, not an ending
 
 **The campaign is still running and nothing is waiting on it now.** Neither exit touched the
