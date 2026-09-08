@@ -1927,7 +1927,7 @@ class ClusterService(LocalTransport):
         label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
-            raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
+            return self._archived_job_log(campaign_id, job_name, offset)
         pod = pods.items[0]
         tail = self._job_log_tail(campaign_id, job_name)
         try:
@@ -1936,10 +1936,79 @@ class ClusterService(LocalTransport):
                 text, next_offset = tail.merged.slice_from(offset)
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                raise KeyError(
-                    f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
+                return self._archived_job_log(campaign_id, job_name, offset)
             raise
         return LogChunk(text=text, next_offset=next_offset, eof=terminal)
+
+    def _archived_job_log(self, campaign_id: str, job_name: str, offset: int) -> LogChunk:
+        """A finished job's log, read from the campaign's objects instead of its pod.
+
+        A pod is deleted when its Job is cleaned up, so for most of a campaign's life the
+        live source above is gone while the same output is durable in the object store: the
+        job mirrors ``/out`` there as it ends, which is also what makes an already-finished
+        run of a still-running campaign readable at all. Without this the log of every run
+        but the executing one is a 404.
+
+        Merged and tagged through the same :class:`MergedLogBuffer` as both live tails, so a
+        reader sees one stream with the same ``[container]`` prefixes rather than a
+        differently-shaped archive. The files are complete and immutable here, so ordering
+        is per file rather than per poll, and the whole buffer is built on each call --
+        there is no delta to track, and ``eof`` is unconditionally true.
+
+        Raises:
+            KeyError: When the campaign has no such job, or its artifacts were never
+                uploaded (a run killed before it could mirror). Reported as absent rather
+                than as an empty log, which would read as a run that said nothing.
+        """
+        import yaml
+
+        from robovast.common.execution import (
+            JOB_LINKS_MANIFEST_REL, resolve_job_artifact_rel)
+        from robovast.common.log_tail import (MAIN_LOG, MergedLogBuffer,
+                                              container_of_log_file, is_sidecar_log,
+                                              tag_width)
+
+        storage, bucket, prefix = self._campaign_object_location(campaign_id,
+                                                                 interactive=True)
+        manifest = storage.read_object(bucket, f"{prefix}{JOB_LINKS_MANIFEST_REL}")
+        if manifest is None:
+            raise KeyError(
+                f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
+                f"job {job_name!r}")
+        try:
+            job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
+        except FileNotFoundError as e:
+            raise KeyError(f"{e} in campaign {campaign_id!r}") from None
+
+        log_prefix = f"{prefix}{job_rel}/logs/"
+        objects, _ = storage.list_entries(bucket, log_prefix)
+        names = sorted(key[len(log_prefix):] for key, _ in objects)
+        # Main container first, then the sidecars in name order -- the local lane's order,
+        # so the same job does not read differently depending on which lane served it.
+        files = [n for n in names if n == MAIN_LOG]
+        files += [n for n in names if is_sidecar_log(n)]
+        if not files:
+            raise KeyError(
+                f"job {job_name!r} of campaign {campaign_id!r} uploaded no logs")
+
+        multi = len(files) > 1
+        containers = [container_of_log_file(n) for n in files]
+        width = tag_width(containers) if multi else 0
+        entries = []
+        for file_order, (name, container) in enumerate(zip(files, containers)):
+            raw = storage.read_object(bucket, f"{log_prefix}{name}") or b""
+            lines = raw.decode("utf-8", errors="replace").split("\n")
+            # A file ending in a newline splits with a trailing "" that is not a line. Only
+            # the last one: a blank line inside the log is the container's own output.
+            if lines and lines[-1] == "":
+                lines.pop()
+            for line_order, line in enumerate(lines):
+                entries.append(((file_order, line_order), container, line))
+
+        merged = MergedLogBuffer()
+        merged.append(entries, multi=multi, width=width)
+        text, next_offset = merged.slice_from(offset)
+        return LogChunk(text=text, next_offset=next_offset, eof=True)
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 

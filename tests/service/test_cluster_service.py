@@ -1762,13 +1762,63 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
     assert "mujoco model loaded" in lines[0]
 
 
-def test_get_job_log_missing_pod_raises(cs, monkeypatch):
+class _JobLogStorage:
+    """An object store holding one campaign's uploaded job artifacts, keyed by object name."""
+
+    def __init__(self, objects):
+        self.objects = dict(objects)
+
+    def read_object(self, bucket, key):
+        return self.objects.get(key)
+
+    def list_entries(self, bucket, prefix="", delimited=False):
+        return [(k, len(v)) for k, v in sorted(self.objects.items()) if k.startswith(prefix)], []
+
+
+def _no_pod(cs, monkeypatch, objects):
+    """A job whose pod is gone, and a campaign whose objects are *objects*."""
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[])
 
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    storage = _JobLogStorage(objects)
+    monkeypatch.setattr(cs, "_campaign_object_location",
+                        lambda cid, *, interactive=False: (storage, "bkt", f"{cid}/"))
+
+
+def test_get_job_log_of_a_finished_job_is_read_from_the_campaign_objects(cs, monkeypatch):
+    """No pod is the normal state of a finished job, not an error.
+
+    The job mirrored ``/out`` to the object store as it ended, so its log is read from there:
+    resolved through the job-link manifest to the artifact dir, main container first, the
+    sidecars after it, and tagged the way the live tail tags them so a run reads the same
+    whichever source served it.
+    """
+    from robovast.common.execution import JOB_LINKS_MANIFEST_REL
+    _no_pod(cs, monkeypatch, {
+        f"camp/{JOB_LINKS_MANIFEST_REL}": b"cfg/0/job: ../../_jobs/cfg-0\n",
+        "camp/_jobs/cfg-0/logs/system.log": b"mujoco model loaded\nrun ended\n",
+        "camp/_jobs/cfg-0/logs/system_simulation.log": b"sim up\n",
+        "camp/_jobs/cfg-0/logs/rosout.csv": b"not a container log\n",
+    })
+
+    chunk = cs.get_job_log("camp", "cfg/0")
+
+    assert chunk.eof, "an archived log is complete"
+    lines = chunk.text.splitlines()
+    assert [line.split("]")[0] + "]" for line in lines] == [
+        "[robovast]", "[robovast]", "[simulation]"]
+    assert "mujoco model loaded" in lines[0]
+    assert "not a container log" not in chunk.text
+    # The offset protocol continues past the archive the same way it does past a live tail.
+    assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
+
+
+def test_get_job_log_of_a_job_that_archived_nothing_is_absent(cs, monkeypatch):
+    """A job with no pod AND no uploaded logs is reported absent, not as an empty log."""
+    _no_pod(cs, monkeypatch, {})
     with pytest.raises(KeyError):
         cs.get_job_log("camp", "gone")
 

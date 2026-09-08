@@ -16,7 +16,9 @@ import Typography from '@mui/material/Typography'
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
-import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
+import {
+  robovast, hasRecordedRuns, hasResults, isPreviewable, type CampaignSummary,
+} from '@/lib/robovastClient'
 import { formatDataFetchLabel, progressPercent } from '@/lib/format'
 import {
   resolveSelection,
@@ -27,6 +29,7 @@ import {
 import { LOG_TAB_SLUG, type ResultsSel } from '@/lib/hashNav'
 import { openResultsView } from '@/lib/nav'
 import { RunViewIcon } from '@/components/viewIcons'
+import { PreviewChip } from '@/lib/preview/PreviewChip'
 import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
@@ -65,12 +68,15 @@ export function ExplorerView({
   // Whether this campaign actually has the config/run the URL names, and which round proposed it.
   // The rows are the tree's own query (same key, so this is served from its cache), and a finished
   // campaign's are fixed — so this is a derivation, not something to keep watching.
-  // Only finished+postprocessed campaigns have the notebooks and the queryable rows this view is
-  // built on. The Results container lists those the Run view can PREVIEW while they run as well —
-  // the three views share one selection, so they must share one list — and filtering here is how
-  // this one declines them. Kept defensive like the Data browser's own filter, since `campaigns`
-  // is a prop.
-  const explorable = useMemo(() => campaigns.filter(hasResults), [campaigns])
+  // The container's own predicate, so this view admits exactly what the three share a selection
+  // over. A finished+postprocessed campaign is the full view: its notebooks and its queryable rows.
+  // A campaign that is still running has neither, and shows only its Log tab — a run's containers
+  // write their output as they go, so that one tab has a source before postprocessing has run.
+  // Kept defensive like the Data browser's own filter, since `campaigns` is a prop.
+  const explorable = useMemo(
+    () => campaigns.filter((c) => hasResults(c) || isPreviewable(c)),
+    [campaigns],
+  )
 
   // Looked up in `explorable`, not in every campaign handed over: a campaign this view declines is
   // one it must not query either. Selecting a running campaign in the Run view leaves it in the
@@ -194,6 +200,7 @@ export function ExplorerView({
             tab={tab}
             onTab={(next) => commit(resolved.sel, next)}
             canReplay={!!campaign && hasRecordedRuns(campaign)}
+            preview={!!campaign && isPreviewable(campaign)}
           />
         </Box>
       )}
@@ -203,7 +210,14 @@ export function ExplorerView({
 
 // Right pane: the selected node's evaluation.visualization notebooks, executed for this node and
 // shown as HTML — the web equivalent of the desktop `vast eval gui`.
-function SelectionDetail(props: NodeProps & { tab: string; onTab: (tab: string) => void; canReplay: boolean }) {
+function SelectionDetail(
+  props: NodeProps & {
+    tab: string
+    onTab: (tab: string) => void
+    canReplay: boolean
+    preview: boolean
+  },
+) {
   if (!props.campaignId) {
     return (
       <Alert severity="info" variant="outlined">
@@ -260,14 +274,24 @@ function NotebookPanel({
   tab,
   onTab,
   canReplay,
-}: NodeProps & { tab: string; onTab: (tab: string) => void; canReplay: boolean }) {
+  preview,
+}: NodeProps & {
+  tab: string
+  onTab: (tab: string) => void
+  canReplay: boolean
+  preview: boolean
+}) {
   // The selection's levels are the backend's level names, so this needs no translation — a
   // 'batch' node asks for the campaign's `batch:` notebook.
   const { level, configName, runId } = nodeParams(sel)
 
+  // Not asked for a campaign that is still running: a notebook is executed against the index, so
+  // there is no answer to fetch yet, and a failed request would be reported as a problem where the
+  // truth is simply "not until this finishes".
   const vis = useQuery({
     queryKey: ['visualizations', campaignId],
     queryFn: () => robovast.listCampaignVisualizations(campaignId),
+    enabled: !preview,
     retry: false,
     staleTime: 60_000,
   })
@@ -288,7 +312,7 @@ function NotebookPanel({
       onTab(workloads[0]?.name ?? (showLog ? LOG_TAB_SLUG : ''))
   }, [names, tab, showLog]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const logScope: LogTabScope = { campaignId, level, configName, runId }
+  const logScope: LogTabScope = { campaignId, level, configName, runId, preview }
 
   // A failed workload list is reported *beside* the tabs rather than instead of them: the log
   // does not depend on it, and hiding a working view because an unrelated request failed is
@@ -316,6 +340,9 @@ function NotebookPanel({
           ))}
           {showLog ? <Tab value={LOG_TAB_SLUG} label="Log" sx={{ minHeight: 36, py: 0 }} /> : null}
         </Tabs>
+        {/* Beside the tabs, where the reader is looking when they wonder why there is only one:
+            the chip carries the reason. */}
+        {preview ? <PreviewChip /> : null}
         {sel.level === 'run' && canReplay ? (
           <Tooltip title="Replay this run in the Run view">
             <IconButton
@@ -329,8 +356,14 @@ function NotebookPanel({
           </Tooltip>
         ) : null}
       </Stack>
-      {vis.isPending && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
-      {!workloads.length && !showLog && !vis.isPending ? (
+      {vis.isPending && !preview && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
+      {preview && !showLog ? (
+        <Typography variant="caption" color="text.secondary">
+          This campaign is still running. Select one of its finished runs to read its log — its
+          charts and notebooks are built by postprocessing when the campaign ends.
+        </Typography>
+      ) : null}
+      {!preview && !workloads.length && !showLog && !vis.isPending ? (
         <Typography variant="caption" color="text.secondary">
           No notebook visualizations declared for this {level}. Select a run to read its log.
         </Typography>
