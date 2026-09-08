@@ -145,6 +145,72 @@ def test_a_missing_campaign_db_still_ingests_the_data(conn, tmp_path):
     assert totals["poses"] == 4
 
 
+def test_a_campaign_record_with_no_runs_still_ingests(conn, tmp_path):
+    """Zero runs is a real answer when the record is there to vouch for it.
+
+    A campaign whose every draw failed to compose ran nothing and is still fully
+    accounted for, so the guard below must be the *pair* -- no record and no runs --
+    and never either half alone.
+    """
+    totals = campaign_ingest.ingest_campaign(conn, _campaign(tmp_path, runs=()), "camp-a")
+
+    assert totals["campaign"] == 1
+    registered = conn.execute(
+        f'SELECT 1 FROM "{index_schema.CAMPAIGNS_TABLE}" WHERE campaign_id = %s',
+        ("camp-a",)).fetchone()
+    assert registered is not None, "the record vouches for the campaign; it stays ingested"
+
+
+def test_a_directory_holding_no_campaign_is_refused_rather_than_recorded(conn, tmp_path):
+    """The registry must not be made to assert that a pipeline failure measured nothing.
+
+    An ingest aimed at a directory with neither the record nor one run directory has been
+    handed something that is not the campaign -- an unfilled cache dir, an extract that
+    stopped partway. Recorded, it becomes indistinguishable from a campaign that genuinely
+    produced no data: the query path finds a registry entry, so it answers zero rows with
+    no note at all.
+    """
+    from robovast.common.errors import CampaignNotIngestable
+
+    empty = tmp_path / "camp-a"
+    empty.mkdir()
+
+    with pytest.raises(CampaignNotIngestable, match="holds no campaign to ingest"):
+        campaign_ingest.ingest_campaign(conn, str(empty), "camp-a")
+
+    # Through the predicate the query path itself uses, rather than raw SQL: that is the
+    # property under test, and a refusal this early leaves the registry table uncreated,
+    # which is the strongest form of "never ingested" and not one a SELECT can read.
+    from robovast.results_processing import index_query
+
+    assert not index_query._campaign_exists(conn, "camp-a"), (  # pylint: disable=protected-access
+        "a refused ingest must leave the campaign reading as never ingested, so a query "
+        "against it says so instead of answering zero rows")
+
+
+def test_a_refused_ingest_leaves_the_rows_it_was_aimed_at_alone(conn, tmp_path):
+    """Refused above the clear, so a wrong path cannot empty a campaign that has rows.
+
+    The clear runs first on the ordinary path so a re-ingest replaces rather than doubles.
+    Were the refusal below it, aiming an ingest at the wrong directory would delete the
+    campaign's rows and only then decline to write any back.
+    """
+    from robovast.common.errors import CampaignNotIngestable
+
+    campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
+    before = conn.execute(
+        "SELECT COUNT(*) FROM poses WHERE campaign_id = 'camp-a'").fetchone()[0]
+
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    with pytest.raises(CampaignNotIngestable):
+        campaign_ingest.ingest_campaign(conn, str(empty), "camp-a")
+
+    after = conn.execute(
+        "SELECT COUNT(*) FROM poses WHERE campaign_id = 'camp-a'").fetchone()[0]
+    assert after == before > 0, "the campaign's rows must survive an ingest that was refused"
+
+
 def test_the_name_map_records_the_sanitised_table_name(conn, tmp_path):
     """A reader has to find the table a file became after the name was sanitised."""
     tree = _campaign(tmp_path, runs=(("goal-1", 0),),
