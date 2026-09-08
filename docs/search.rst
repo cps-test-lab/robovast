@@ -514,6 +514,36 @@ of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
 ``elapsed_s`` — directly SQL-queryable) and mirrored in
 ``SearchReport.extra['stop']``; the campaign analysis notebook prints it.
 
+Stopping a search part-way
+--------------------------
+
+Ending a search by hand is a normal way to end one — the budget is a ceiling, not a
+target — and **what it measured stays queryable**. Stopping the runs stops only the runs:
+the batches that completed are postprocessed and indexed like any other campaign's, so the
+campaign ends with its derived data present.
+
+Which phase it ends in says where the stop landed. A stop seen at a batch boundary is an
+ordinary stopping criterion to the loop — recorded as ``stop_kind = 'external'`` — and the
+campaign ends ``finished``; one that cut a batch short ends ``stopped``. Either way the
+cells it did score are in the index.
+
+Its cells are read the way a finished search's are:
+
+.. code-block:: sql
+
+   SELECT batch, paramset_id, objective, params_json
+   FROM run_view WHERE campaign_id = '<id>' ORDER BY batch, objective DESC;
+
+The per-batch objective trajectory is served from ``campaign.db`` directly
+(``GET /campaigns/{id}/search/history``, and ``objective_history`` on the campaign status),
+so it needs no postprocessing at all and is available while the search is still running.
+
+A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
+the runs and their results are kept and only the derived data is missing, which
+``postprocessing_error`` records and ``vast campaign postprocess`` supplies. A stop during
+``sharing`` cancels the upload and removes the partial archive. What each stop leaves is
+in the reply it returns.
+
 Surviving a service restart
 ---------------------------
 

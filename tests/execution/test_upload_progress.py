@@ -90,8 +90,11 @@ def test_stream_progress_reader_has_no_len_or_fileno():
 # ---------------------------------------------------------------------------
 
 class _RecordingState:
-    def __init__(self):
+    def __init__(self, share_stop_requested=False):
         self.extra = {}
+        # Part of the contract UploadProgress reads: every sample asks whether the upload
+        # is still wanted before it publishes anything.
+        self.share_stop_requested = share_stop_requested
 
     def update(self, **fields):
         if "extra" in fields:
@@ -125,9 +128,12 @@ def test_progress_cb_none_without_state():
 class _CountingState:
     """A ControllerState stand-in that also counts how often it was written."""
 
-    def __init__(self):
+    def __init__(self, share_stop_requested=False):
         self.extra = {}
         self.writes = 0
+        # Part of the contract UploadProgress reads, not decoration: every sample asks
+        # whether the upload is still wanted before it publishes anything.
+        self.share_stop_requested = share_stop_requested
 
     def update(self, **fields):
         if "extra" in fields:

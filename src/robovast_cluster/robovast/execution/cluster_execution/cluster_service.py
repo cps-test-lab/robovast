@@ -57,7 +57,9 @@ from pathlib import Path
 from robovast.client import file_address
 from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
-from robovast.execution.control_server import STOP_DURING_POSTPROCESSING, Phase, is_running
+from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
+                                               STOP_SCOPE_MESSAGES, Phase, is_running,
+                                               stop_scope_for_phase)
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
@@ -2742,22 +2744,30 @@ class ClusterService(LocalTransport):
         than this campaign's property. ``_await_build_image`` detaches instead.
 
         A campaign already **postprocessing** is likewise not reached by that teardown --
-        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by the flag
-        instead: ``run_conversion_job`` polls it and deletes the Job. The reply says what
-        that leaves, because it differs from stopping a run: the runs are over and their
-        results are complete, so the campaign still ends as ``finished``, only without its
-        derived data.
+        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by its own
+        scope instead: ``run_conversion_job`` polls it and deletes the Job.
+
+        Which unit of work a stop lands on is
+        :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, shared
+        with the local lane so the two cannot disagree, and the reply it carries says what
+        that stop leaves behind.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
-        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
-        entry.state.request_stop()
+        phase = entry.state.snapshot().phase
+        scope = stop_scope_for_phase(phase)
+        if scope is None:
+            return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
+        entry.state.request_stop(scope)
+        if scope != STOP_RUNS:
+            # The teardown is label-scoped to ``jobgroup=scenario-runs``, so it would not
+            # reach a postprocessing Job or an upload anyway; not calling it keeps this
+            # from reading as though it might.
+            return ActionResult(ok=True, message=STOP_SCOPE_MESSAGES[scope])
         self._teardown_campaign_jobs(campaign_id)
-        if postprocessing:
-            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:

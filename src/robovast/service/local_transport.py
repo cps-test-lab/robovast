@@ -56,8 +56,9 @@ from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
 from robovast.common.host_display import require_host_display
 from robovast.common.campaign_data import read_campaign_finished_at
 from robovast.common.store import read_campaign_created_at, read_campaign_description
-from robovast.execution.control_server import (STOP_DURING_POSTPROCESSING, ControllerState, Phase,
-                                               Status, failure_detail, is_terminal)
+from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
+                                               ControllerState, Phase, Status, failure_detail,
+                                               is_terminal, stop_scope_for_phase)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
                                         UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
@@ -607,6 +608,11 @@ class LocalTransport(RobovastInterface):
         self._results_dir = results_dir
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
+        #: True once :meth:`shutdown` has begun. Read by work that is worth starting only
+        #: if it can finish: a shutdown stops every live campaign, so from a worker's side
+        #: it is indistinguishable from an operator's Stop, and the analysis a stop leaves
+        #: owed must not be started against storage this process is about to lose.
+        self._shutting_down = False
         # Incremental job-log tails, so a log panel polling twice a second folds in only
         # each container's delta instead of re-reading whole files. LRU-bounded so a
         # long-lived service does not accumulate buffers. Shared with ClusterService,
@@ -2347,6 +2353,19 @@ class LocalTransport(RobovastInterface):
                 # outcome so "stopped" survives a service restart.
                 logger.info("Campaign %s stopped by request", campaign_id)
                 self._record_campaign_stopped(campaign_id, results_dir, state, backend)
+                # The batches that DID finish are complete on disk, so their analysis is
+                # still owed. `controller._finish_campaign` cannot run it on this path --
+                # on Ctrl+C the storage tunnel dies with the controller's process group --
+                # but the service can, and `_record_campaign_stopped` above draws exactly
+                # that line ("succeeds for a Stop-button stop; on Ctrl+C the tunnel is
+                # already gone"). So it runs here, ending back at `stopped`: how the
+                # campaign ended is not this step's to restate.
+                #
+                # Skipped while shutting down, for that same tunnel reason, and skipped
+                # for a campaign that asked for no postprocessing.
+                if request.postprocess and not self._shutting_down:
+                    self._postprocess(campaign_id, results_dir, state, entry,
+                                      ends_at=Phase.STOPPED)
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
                 # Not every failed campaign is a bug. A typo'd --config filter, a
@@ -2367,10 +2386,21 @@ class LocalTransport(RobovastInterface):
                     campaign_id, results_dir, state, e, backend)
                 return
             else:
-                # Analysis postprocessing (rosbags → CSV → data.db) — what the eval
-                # viewer / `query_campaign_data_sql` read. The batch/search loop leaves
-                # it separate, so run it here when the caller asked (the default).
-                if request.postprocess and self._postprocess_in_process():
+                # Analysis postprocessing — what the eval viewer and
+                # `query_campaign_data_sql` read. The batch/search loop leaves it
+                # separate, so run it here when the caller asked (the default).
+                #
+                # The second clause covers a stop that landed BETWEEN batches, where the
+                # loop ends cleanly rather than raising: the controller's own chain skips
+                # itself whenever a stop was requested, so on a lane that relies on that
+                # chain nothing would postprocess at all and a search stopped at a batch
+                # boundary would lose the analysis of every batch it completed.
+                # Ends at `finished` either way, which is not this branch's choice: a stop
+                # seen at a batch boundary is an ordinary stopping criterion to the loop
+                # (`stop_kind="external"`), so the campaign really did finish. Only the
+                # raising path -- the run cut mid-batch -- ends `stopped`.
+                stopped_runs = state.stop_requested and not self._shutting_down
+                if request.postprocess and (self._postprocess_in_process() or stopped_runs):
                     self._postprocess(campaign_id, results_dir, state, entry)
             finally:
                 # This lane's outermost scope, so the campaign ends here — on every
@@ -2873,11 +2903,19 @@ class LocalTransport(RobovastInterface):
                                          campaign_id=request.campaign_id or "")
         return ImageResolution(image=found.identity)
 
-    def _postprocess(self, campaign_id, results_dir, state, entry):
-        """Run analysis postprocessing for a just-finished local campaign.
+    def _postprocess(self, campaign_id, results_dir, state, entry,
+                     ends_at=Phase.FINISHED):
+        """Run analysis postprocessing for a just-ended local campaign.
 
-        Advances the phase ``... → postprocessing → finished`` and generates the
-        campaign's ``data.db``; a failure surfaces via status (phase ``failed``).
+        Advances the phase ``... → postprocessing → *ends_at*`` and generates the
+        campaign's derived data; a failure surfaces via status.
+
+        *ends_at* is **how the campaign ended**, not a result of this step: a campaign
+        whose runs were stopped postprocesses the batches that did finish and then goes
+        back to ``stopped``. The same rule
+        :func:`~robovast.execution.status_recovery.record_step_outcome` applies on the
+        re-run path -- a step that runs after a campaign has ended does not get to restate
+        how it ended -- so this is that rule's second caller rather than a second answer.
         """
         from robovast.client.logging_config import (add_campaign_log_handler,
                                                     remove_campaign_log_handler)
@@ -2902,9 +2940,9 @@ class LocalTransport(RobovastInterface):
             ok, message = run_postprocessing(
                 results_dir=results_dir, campaign=campaign_id,
                 output_callback=stage_output_callback(state, logger.info),
-                # The stop flag is only *checked* before this step (see
-                # controller._finish_campaign), so without it here a campaign stopped
-                # once postprocessing has begun runs to the end regardless.
+                # Reads the postprocessing scope, so this ends only for a stop aimed at
+                # the analysis. Without it a stop landing once postprocessing has begun
+                # would run to the end regardless.
                 should_stop=stop_checker(state))
             if ok:
                 from robovast.results_processing.postprocessing import \
@@ -2913,25 +2951,25 @@ class LocalTransport(RobovastInterface):
                         str(Path(results_dir) / campaign_id)):
                     state.update(postprocessed=True)
                 state.update(postprocessing_error=None)
-                state.set_phase(Phase.FINISHED)
+                state.set_phase(ends_at)
             else:
-                # The runs finished — a postprocessing failure keeps phase=finished
-                # (not a run failure) and records the reason on its own field, so it is
-                # re-triggerable and distinct from a failed run. Mirrors the cluster
-                # auto-chain in controller._chain_postprocessing.
+                # The runs are over — a postprocessing failure does not change how the
+                # campaign ended (that is ``ends_at``) and records the reason on its own
+                # field, so it is re-triggerable and distinct from a failed run. Mirrors
+                # the cluster auto-chain in controller._chain_postprocessing.
                 #
-                # A cancelled run lands here too and keeps that shape: its runs finished
-                # and their results are complete, so the campaign is not ``stopped`` —
-                # only its derived data is missing, which is what the field says and a
-                # re-run supplies. Told apart by the flag, not by the message.
-                cancelled = state.stop_requested
+                # A cancelled postprocess lands here too and keeps that shape: the runs and
+                # their results are complete, so only the derived data is missing, which is
+                # what the field says and a re-run supplies. Told apart by the flag, not by
+                # the message.
+                cancelled = state.postprocessing_stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
-                state.set_phase(Phase.FINISHED, stage=(
+                state.set_phase(ends_at, stage=(
                     message if cancelled else f"postprocessing failed: {message}"))
         except Exception as e:  # noqa: BLE001 - surfaced via status
             logger.exception("Postprocessing for %s failed", campaign_id)
             state.update(postprocessing_error=failure_detail(e), postprocessed=False)
-            state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {e}")
+            state.set_phase(ends_at, stage=f"postprocessing failed: {e}")
         finally:
             # Re-write the durable outcome to reflect the final postprocessing state: the
             # record _finish_campaign writes is made while postprocessing is still pending.
@@ -3259,22 +3297,28 @@ class LocalTransport(RobovastInterface):
         same image, and the image is a cache entry rather than this campaign's property.
         ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
 
-        A campaign already **postprocessing** is stopped by the flag too: the pipeline polls
-        it, so the step in flight is torn down rather than run to the end. What that leaves
-        is said in the reply rather than left to be discovered, because the outcome differs
-        from stopping a run -- the runs are over and their results are complete, so the
-        campaign still ends as ``finished``, only without its derived data.
+        **What a stop lands on depends on what is running**, and
+        :func:`~robovast.execution.control_server.stop_scope_for_phase` is what decides --
+        the campaign's runs, its postprocessing, or its upload to share. The reply says
+        which, because the three leave different things behind, and a campaign that is
+        already over is refused rather than told a stop was requested.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(ok=False, message=f"campaign {campaign_id} not tracked here")
-        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
-        entry.state.request_stop()
-        self._kill_scenario_container()
-        if postprocessing:
-            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
-        return ActionResult(ok=True, message="stop requested")
+        phase = entry.state.snapshot().phase
+        scope = stop_scope_for_phase(phase)
+        if scope is None:
+            return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
+        entry.state.request_stop(scope)
+        # Only where a run is what is being stopped: during postprocessing or an upload
+        # there is no scenario container, and the pipeline/upload poll their own scope.
+        if scope == STOP_RUNS:
+            self._kill_scenario_container()
+        return ActionResult(
+            ok=True,
+            message=STOP_SCOPE_MESSAGES.get(scope, "stop requested"))
 
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: "str | None" = None, source: str = "api") -> ActionResult:
@@ -4037,6 +4081,9 @@ class LocalTransport(RobovastInterface):
         None of that happens on a lane that :meth:`_adopts_on_restart`: there the
         campaigns are meant to outlive this process, and the successor re-attaches.
         """
+        # Set before anything is torn down, so a worker reaching its own tail during the
+        # teardown sees it and does not start work this process cannot finish.
+        self._shutting_down = True
         # Held containers first, and unconditionally: they are the ones nothing else
         # reaps, and a service with no running campaign would otherwise return below while
         # still holding a multi-gigabyte image. Every slot, not just the caller's -- a query
@@ -4061,7 +4108,9 @@ class LocalTransport(RobovastInterface):
             return
         logger.info("Shutting down — stopping %d running campaign(s)", len(running))
         for entry in running:
-            entry.state.request_stop()
+            # The run scope: what this is for is ending the campaign so its container
+            # teardown runs before the process exits.
+            entry.state.request_stop(STOP_RUNS)
         self._terminate_running_campaigns(running)
         for entry in running:
             if entry.thread is not None:
@@ -4450,7 +4499,7 @@ class LocalTransport(RobovastInterface):
             notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
-            elif state.stop_requested:
+            elif state.postprocessing_stop_requested:
                 # A re-run is a tracked campaign while it lasts, so ``stop_campaign``
                 # reaches it and ends it. What comes back then is the operator's own
                 # doing, and announcing it as a failure would file that under faults.
@@ -4473,8 +4522,9 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
-            from robovast.execution.backends import RunOptions
-            from robovast.execution.controller import make_upload_progress_cb
+            from robovast.execution.backends import RunOptions, ShareStopped
+            from robovast.execution.controller import (make_upload_progress_cb,
+                                                       share_cancelled_detail)
             from robovast.execution.status_recovery import record_step_outcome
 
             # Its own phase file, so the campaign log shows what an upload did under a SHARE
@@ -4499,6 +4549,15 @@ class LocalTransport(RobovastInterface):
                                        progress_callback=make_upload_progress_cb(state))
                 ok, message = True, "upload-to-share complete"
                 logger.info("✓ %s", message)
+            except ShareStopped as e:
+                # An upload is a tracked campaign while it lasts, so ``stop_campaign``
+                # reaches it. What comes back then is the operator's own doing, so it is
+                # logged as a cancellation rather than an error -- and the partial is
+                # discarded (or named) before anything is recorded. It still lands on
+                # ``share_error``, because what a reader does next is the same as after a
+                # failure: re-trigger the share.
+                ok, message = False, share_cancelled_detail(backend, e)
+                logger.info("⏹  upload-to-share cancelled: %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
                 ok, message = False, failure_detail(e)
                 logger.error("✗ upload-to-share failed: %s", message)
