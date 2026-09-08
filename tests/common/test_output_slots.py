@@ -719,6 +719,47 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     assert scenery[0]["motion"] == "static"
 
 
+def test_the_trigger_point_states_the_height_the_obstacle_stands_at():
+    """A scenario revealing the obstacle must state a whole pose, so the slot must carry one.
+
+    The distance test that fires the trigger is planar, so z rode along as 0.0 -- a height a
+    floor-standing obstacle is never at. The teleport that follows the trigger is not planar:
+    given 0.0 it seats a 1 m box half a metre inside the floor, and the solver answers the
+    penetration by launching it. The number is fixed here because two channels depend on it
+    agreeing -- the instance the simulator compiles, and the pose the scenario asks for.
+    """
+    from dataclasses import dataclass, field
+
+    from robovast_nav.data_model import Orientation, Pose, Position
+    from robovast_nav.variation.obstacle_variation import resting_z
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTrigger)
+
+    @dataclass
+    class _Obj:
+        entity_name: str = "dynamic_0"
+        model: str = "box.sdf.xacro"
+        xacro_arguments: str = "width:=0.5, length:=0.5, height:=1.0"
+        spawn_pose: Pose = field(default_factory=lambda: Pose(
+            position=Position(x=1.0, y=2.0), orientation=Orientation(yaw=0.0)))
+
+    class _Stub:
+        _current_trigger_distance = 1.5
+
+    values = ObstacleVariationWithDistanceTrigger._post_process(
+        _Stub(), [_Obj()], [], [], [("box", [0.5, 0.5, 1.0])])
+    assert values["trigger_point"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+    # The origin is the prop's CENTRE, so standing on the floor is half the declared height --
+    # the same number a placement plugin applies to an instance that omits z, which is how
+    # `_instances_for_sim` writes them.
+    assert resting_z([0.5, 0.5, 1.0]) == 0.5
+    assert resting_z([0.4, 0.4, 0.8]) == 0.4
+    # No declared geometry, no height to report: the channels that lack a size are the ones
+    # that never compile the obstacle, and 0.0 is what they have always said.
+    assert resting_z(None) == 0.0
+
+
 def test_the_triggered_obstacle_keeps_the_movable_default():
     """The point of a distance trigger is an obstacle revealed mid-run, which means teleported.
     SetEntityState refuses an entity with no free joint, so this is the one placement that must
