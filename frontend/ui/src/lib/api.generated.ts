@@ -503,8 +503,8 @@ export interface paths {
          * Stream Job Log
          * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
          *
-         *     A finished job is served too, from whatever durable copy its lane keeps, and ends
-         *     with an ``eof`` event rather than a stream error.
+         *     A **finished** job is served too, not only a running one. What the events mean,
+         *     and which residual case is still an error, is ``_sse_log_stream``'s to say.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
