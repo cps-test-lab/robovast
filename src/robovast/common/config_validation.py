@@ -141,7 +141,8 @@ def _build_context_advisories(config_path):
         f"transferred once per built container on every build. The largest entries are: "
         f"{biggest}. Campaign outputs and the standard ignored names are already "
         f"excluded, so anything left is going into the image build on purpose or by "
-        f"accident -- if by accident, move it out of the project directory.")]
+        f"accident -- if by accident, move it out of the project directory.",
+        severity="advice")]
 
 
 def _resource_advisories(config_path):
@@ -190,7 +191,8 @@ def _resource_advisories(config_path):
         "the run's AVAILABLE_MEM (downward API limits.memory) reports the NODE's memory "
         "as its budget, so a process sizing itself from it will size itself to the node. "
         "Declare resources.memory for every container that declares resources.cpu. "
-        "get_campaign_summary on a comparable finished campaign reports what it used.")]
+        "get_campaign_summary on a comparable finished campaign reports what it used.",
+        severity="advice")]
 
 
 def _calibration_role_advisories(config_path):
@@ -239,7 +241,7 @@ def _calibration_role_advisories(config_path):
         "thing under test never throttles mid-plan, and it keys on the name. The name is "
         "also what a scenario's remote(\"ipc:///ipc/<name>\") and exec_in_container use, so "
         "rename those with it.",
-        field="execution.containers")]
+        field="execution.containers", severity="advice")]
 
 
 def _liveness_advisories(config_path):
@@ -268,12 +270,19 @@ def _liveness_advisories(config_path):
         "Set execution.timeout to the longest a single run should legitimately take; "
         "get_campaign_summary on a comparable finished campaign reports what its runs "
         "took.",
-        field="execution.timeout")]
+        field="execution.timeout", severity="advice")]
 
 
-def _problem(stage, message, config=None, field=None):
-    """Build one structured problem entry."""
-    return {"stage": stage, "config": config, "field": field, "message": message}
+def _problem(stage, message, config=None, field=None, severity="error"):
+    """Build one structured problem entry.
+
+    ``severity`` defaults to ``error`` because that is what a check reports when it
+    reports anything; an advisory has to say so (``advice``), and so does a check that
+    could not run (``unchecked``). See ``ValidationProblem``: the three are acted on
+    differently, and only ``advice`` leaves ``valid`` true.
+    """
+    return {"stage": stage, "config": config, "field": field, "message": message,
+            "severity": severity}
 
 
 def _safe_load(config_path):
@@ -1477,7 +1486,7 @@ def _search_composition_report(config_path):
             "search-composition",
             f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
             f"set(s) could not be composed: {listed}. {outlook}",
-            field="search.search_space"))
+            field="search.search_space", severity="advice"))
 
     # Counts describe one composed batch, not the whole campaign: how many configs a
     # search ultimately evaluates depends on its budget and on how many draws turn out

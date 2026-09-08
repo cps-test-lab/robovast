@@ -4043,6 +4043,16 @@ export interface components {
          *
          *     ``stage`` is the check that failed (``file``/``parse``/``schema``/
          *     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
+         *
+         *     ``severity`` states which of three answers this is, because a caller acts on them
+         *     differently and the text alone cannot be branched on:
+         *
+         *     - ``error`` — the campaign is wrong. It makes ``valid`` false.
+         *     - ``advice`` — a checked fact worth saying (a large build context, a container with
+         *       no memory limit). ``valid`` stays true; the campaign runs.
+         *     - ``unchecked`` — a check this report covers could not run here, so *nothing* was
+         *       learned about it either way. It makes ``valid`` false without being a defect in
+         *       the file, and its message names what would settle it.
          */
         ValidationProblem: {
             /** Config */
@@ -4055,6 +4065,11 @@ export interface components {
              */
             message: string;
             /**
+             * Severity
+             * @default error
+             */
+            severity: string;
+            /**
              * Stage
              * @default
              */
@@ -4063,6 +4078,16 @@ export interface components {
         /**
          * ValidationReport
          * @description Collect-all validation result (mirrors ``validate_project_file``).
+         *
+         *     ``valid`` means every check this report covers ran **and** passed, so a caller may
+         *     act on that one boolean — which is the only thing a boolean is good for. A check
+         *     that could not run makes it false and appears as an ``unchecked`` problem: "I could
+         *     not look" and "it is fine" are different answers, and a caller that reads only
+         *     ``valid`` must not be handed the second when the first is true.
+         *
+         *     ``world_checked`` is the three-state answer for the one check that needs a
+         *     container: ``True`` it ran and the world loads and compiles, ``False`` it was asked
+         *     for and could not run, ``None`` it was not asked for (``check_world=False``).
          */
         ValidationReport: {
             /**
@@ -4087,6 +4112,8 @@ export interface components {
              * @default false
              */
             valid: boolean;
+            /** World Checked */
+            world_checked: boolean | null;
         };
         /**
          * VariationPreview

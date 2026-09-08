@@ -4523,13 +4523,18 @@ class LocalTransport(RobovastInterface):
             project = self._resolve_project(workspace_id, path)
             result = validate_project_file(project.config_path)
         except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
-            return ValidationReport(valid=False, problems=[
-                ValidationProblem(stage="error", message=str(e))])
+            return ValidationReport(
+                valid=False, world_checked=False if check_world else None,
+                problems=[ValidationProblem(stage="error", message=str(e))])
         # Only once the cheap checks pass. Compiling a world for a file with a schema
         # error spends a container to report something already in the reply, and the world
         # a broken file names is not necessarily the one it will name when it is fixed.
         if check_world and result.get("valid"):
             result = self._with_world_check(workspace_id, path, project, result)
+        elif check_world:
+            # Asked for and not performed, so it is False rather than None: the caller's
+            # question was "and does the world load?", and this reply does not answer it.
+            result = {**result, "world_checked": False}
         return ValidationReport.model_validate(result)
 
     def _with_world_check(self, workspace_id: str, path: str, project,
@@ -4542,9 +4547,12 @@ class LocalTransport(RobovastInterface):
         The container is *held* (see ``ExecRequest.query``), so a second validation of the
         same project costs an exec rather than a container start.
 
-        A failure of the check itself is never a failure of the campaign: an advisory says
-        the world was not checked and why, and ``valid`` is left as the cheap checks found
-        it.
+        A failure of the check itself is never a *defect in the campaign*, but it is not a
+        pass either: it comes back as an ``unchecked`` problem naming what would settle it,
+        and ``world_checked`` says which of the three happened. ``valid`` covers this check,
+        so an unchecked world makes it false -- a caller that reads only the boolean, which
+        is what a boolean is for, must not be told the file is good to run when the most
+        expensive thing about it was never looked at.
         """
         from robovast.common.common import load_config
         from robovast.service.world_query import world_problems
@@ -4558,14 +4566,24 @@ class LocalTransport(RobovastInterface):
                 config_path=path,
                 vast_dir=str(Path(project.config_path).parent),
                 parameters=parameters)
-        except Exception as e:  # noqa: BLE001 - an unavailable check is not a bad campaign
-            logger.debug("the world check did not run: %s", e)
-            return result
+        except Exception as e:  # noqa: BLE001 - the check crashing is not a bad campaign
+            # Reported, not logged and dropped. A caller cannot see this service's log, so
+            # swallowing it returned a reply that had checked nothing and said so nowhere.
+            logger.warning("the world check did not run: %s", e)
+            problems = [{
+                "stage": "world", "config": None, "severity": "unchecked",
+                "field": "execution.containers.simulation.config",
+                "message": ("this campaign's world was NOT checked: the check itself "
+                            f"failed here ({e}). Next: nothing about the .vast changes "
+                            "this -- it is a defect in the service, whose log carries the "
+                            "traceback (`vast service log`).")}]
         if not problems:
-            return result
-        fatal = [p for p in problems if "was NOT checked" not in p["message"]]
+            return {**result, "world_checked": True}
+        unchecked = [p for p in problems if p.get("severity") == "unchecked"]
+        binding = [p for p in problems if p.get("severity", "error") != "advice"]
         return {**result,
-                "valid": result.get("valid", False) and not fatal,
+                "world_checked": not unchecked,
+                "valid": bool(result.get("valid")) and not binding,
                 "problems": list(result.get("problems") or []) + problems}
 
     def preview_configurations(

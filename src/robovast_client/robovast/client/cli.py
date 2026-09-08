@@ -538,11 +538,23 @@ def workspace_validate(workspace, vast_path, no_world_check, namespace, context)
             for problem in report.problems:
                 where = " ".join(p for p in (problem.config, problem.field) if p)
                 location = f" [{where}]" if where else ""
-                click.echo(f"  {problem.stage}{location}: {problem.message}")
+                # The severity is printed, not inferred from the wording: "could not
+                # check" and "is wrong" ask different things of the reader.
+                click.echo(f"  {problem.severity} {problem.stage}{location}: "
+                           f"{problem.message}")
 
             if not report.valid:
+                unchecked = [p for p in report.problems if p.severity == "unchecked"]
+                errors = [p for p in report.problems if p.severity == "error"]
+                if errors:
+                    raise click.ClickException(
+                        f"{len(errors)} problem(s) — fix them and validate again."
+                        + (f" A further {len(unchecked)} check(s) did not run."
+                           if unchecked else ""))
                 raise click.ClickException(
-                    f"{len(report.problems)} problem(s) — fix them and validate again.")
+                    f"{len(unchecked)} check(s) could not run here, so this is not a "
+                    "pass: fix what they name, or ask for the narrower verdict with "
+                    "--no-world-check.")
             click.echo(
                 f"✓ valid: {report.configs} configuration(s) × "
                 f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")

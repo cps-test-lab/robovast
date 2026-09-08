@@ -3896,7 +3896,7 @@
         "type": "object"
       },
       "ValidationProblem": {
-        "description": "One problem from :meth:`RobovastInterface.validate_project`.\n\n``stage`` is the check that failed (``file``/``parse``/``schema``/\n``scenario``/``generation``/plugin-ref/\u2026); ``config``/``field`` locate it.",
+        "description": "One problem from :meth:`RobovastInterface.validate_project`.\n\n``stage`` is the check that failed (``file``/``parse``/``schema``/\n``scenario``/``generation``/plugin-ref/\u2026); ``config``/``field`` locate it.\n\n``severity`` states which of three answers this is, because a caller acts on them\ndifferently and the text alone cannot be branched on:\n\n- ``error`` \u2014 the campaign is wrong. It makes ``valid`` false.\n- ``advice`` \u2014 a checked fact worth saying (a large build context, a container with\n  no memory limit). ``valid`` stays true; the campaign runs.\n- ``unchecked`` \u2014 a check this report covers could not run here, so *nothing* was\n  learned about it either way. It makes ``valid`` false without being a defect in\n  the file, and its message names what would settle it.",
         "properties": {
           "config": {
             "anyOf": [
@@ -3925,6 +3925,11 @@
             "title": "Message",
             "type": "string"
           },
+          "severity": {
+            "default": "error",
+            "title": "Severity",
+            "type": "string"
+          },
           "stage": {
             "default": "",
             "title": "Stage",
@@ -3935,13 +3940,14 @@
           "config",
           "field",
           "message",
+          "severity",
           "stage"
         ],
         "title": "ValidationProblem",
         "type": "object"
       },
       "ValidationReport": {
-        "description": "Collect-all validation result (mirrors ``validate_project_file``).",
+        "description": "Collect-all validation result (mirrors ``validate_project_file``).\n\n``valid`` means every check this report covers ran **and** passed, so a caller may\nact on that one boolean \u2014 which is the only thing a boolean is good for. A check\nthat could not run makes it false and appears as an ``unchecked`` problem: \"I could\nnot look\" and \"it is fine\" are different answers, and a caller that reads only\n``valid`` must not be handed the second when the first is true.\n\n``world_checked`` is the three-state answer for the one check that needs a\ncontainer: ``True`` it ran and the world loads and compiles, ``False`` it was asked\nfor and could not run, ``None`` it was not asked for (``check_world=False``).",
         "properties": {
           "configs": {
             "default": 0,
@@ -3969,6 +3975,17 @@
             "default": false,
             "title": "Valid",
             "type": "boolean"
+          },
+          "world_checked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "World Checked"
           }
         },
         "required": [
@@ -3976,7 +3993,8 @@
           "problems",
           "runs_per_config",
           "total_trials",
-          "valid"
+          "valid",
+          "world_checked"
         ],
         "title": "ValidationReport",
         "type": "object"

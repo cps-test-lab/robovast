@@ -41,12 +41,14 @@ import {
   hasResults,
   isPreviewable,
   isTerminalPhase,
+  PRE_RUN_PHASES,
   type CampaignSummary,
   type JobSummary,
   type RetriggerAxis,
   type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
+import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { useCampaignStream } from '@/components/CampaignStreamProvider'
 import { useToasts } from '@/components/ToastProvider'
@@ -79,12 +81,6 @@ import { LaunchBar } from './LaunchBar'
 // sessions never click. Mounted only once opened, so the chunk is fetched on first use.
 const PostprocessingDialog = lazyView('Postprocessing settings',
   () => import('./PostprocessingDialog').then((m) => ({ default: m.PostprocessingDialog })))
-
-// Phases before the run loop starts. They have no progress bar of their own, so the only
-// signal that one is wedged rather than slow is how long it has been held.
-const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
-  'initializing', 'building', 'starting', 'plugin install', 'variation',
-])
 
 // The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
 // zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
@@ -517,11 +513,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
-  // A campaign freezes its project into `_config/` only once variation has expanded, so during a
-  // pre-run phase there is provably nothing to open and the shortcut is hidden rather than offered
-  // and answered with a 404. From then on it stays, running or finished: the configuration a
-  // campaign is running is worth reading while it runs.
-  const hasConfig = !PRE_RUN_PHASES.has(phase)
+  // Hidden until the campaign can have a frozen `_config/` at all, rather than offered and
+  // answered with a 404 — see mayHaveStagedConfig for which phases those are and why the gate
+  // only goes one way. From then on it stays, running or finished: the configuration a campaign
+  // is running is worth reading while it runs.
+  const hasConfig = mayHaveStagedConfig(phase)
   // How long the current phase has been held, shown only while a *pre-run* phase is in
   // effect. Those are the phases with no progress bar to watch, so a stalled project
   // push or image build otherwise looks exactly like a slow one — indefinitely.

@@ -1060,8 +1060,24 @@ def _declares(spec: Optional[BuildSpec], requirement: str) -> bool:
 #: happened to mention "connection refused") is far lower than the cost of the miss it replaces.
 _BUILDER_UNREACHABLE = re.compile(
     r"failed to dial|connection refused|transport: Error while dialing|"
-    r"context deadline exceeded|no such host|connection reset by peer",
+    r"context deadline exceeded|no such host|connection reset by peer|"
+    # The daemon accepted the build and then went away part-way through it: the client's
+    # stream ends rather than being refused, so none of the dial-time wordings above appear.
+    r"failed to receive status|error reading from server: EOF|rpc error: code = Unavailable",
     re.IGNORECASE)
+
+#: Lines about BuildKit's *cache* interaction with the registry, which are not the push and are
+#: routinely not even a failure -- importing a cache manifest for a tag the registry has never
+#: seen answers `401 Unauthorized`, i.e. on every first build of a project. Dropped before the
+#: registry heuristics below run, because those match bare words over the whole log and one such
+#: line was enough to report any failure as a rejected push credential.
+_CACHE_CHATTER = re.compile(r"^.*(?:cache manifest|registry cache (?:importer|exporter)).*$",
+                            re.IGNORECASE | re.MULTILINE)
+
+#: colcon's own per-package verdict, which names the package that failed. Anchored on
+#: colcon's wording rather than on the shell wrapper's, so it reports the PACKAGE the agent
+#: has to act on instead of the RUN line every ``ros_packages`` build shares.
+_COLCON_FAILED = re.compile(r"^.*?Failed\s+<<<\s+(\S+)", re.MULTILINE)
 
 
 def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBuildError:
@@ -1149,9 +1165,35 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
             message=f"pip found no matching distribution for '{missing}'",
             log_tail=tail)
 
-    low = log.lower()
-    if ("pull access denied" in low or "manifest unknown" in low
-            or "not found: manifest" in low or "failed to resolve source" in low):
+    # `low` drives the substring tests below, and it is the log MINUS BuildKit's cache
+    # chatter: those tests match bare words ("denied", "unauthorized"), and a cache manifest
+    # the registry has never served answers `401 Unauthorized` on every first build of a
+    # project. That line alone was enough to report any failure as a rejected push
+    # credential, i.e. as `fixable_by: infra` with "the build itself succeeded" -- which
+    # sends you to the cluster operator over a missing entry in this container's own
+    # package list, or over a build daemon that died mid-compile.
+    low = _CACHE_CHATTER.sub("", log).lower()
+
+    # A colcon build of `ros_packages` that failed. Before the registry heuristics, because a
+    # source build reaching the registry at all is the exception.
+    if _COLCON_FAILED.search(log):
+        failed = ", ".join(dict.fromkeys(_COLCON_FAILED.findall(log)))
+        return ImageBuildError(
+            phase="source-build", fixable_by="agent", entry=failed,
+            message=f"the colcon build of ros_packages failed on: {failed}. `ros_packages` "
+                    "builds `--packages-up-to`, so a repository's own dependencies are built "
+                    "too and a package none of them named can still fail here -- a missing "
+                    "build or test dependency goes in that container's system_packages",
+            log_tail=tail)
+
+    # Everything from here on describes a registry interaction, and a registry interaction
+    # can only be the failure if the image was actually built: BuildKit stops at the first
+    # failing step and says `failed to solve:`, so nothing was pushed and the phrase "the
+    # build itself succeeded" would be a false statement about a build that did not.
+    reached_push = "failed to solve:" not in low
+
+    if reached_push and ("pull access denied" in low or "manifest unknown" in low
+                         or "not found: manifest" in low or "failed to resolve source" in low):
         return ImageBuildError(
             phase="base-pull", fixable_by="infra",
             message="could not pull the base image (server-side registry/base "
@@ -1161,7 +1203,8 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     # know *which* knob — asserting "registry credentials" for every push failure sends
     # you looking for a Secret when the registry host simply does not resolve from inside
     # the cluster.
-    if "failed to push" in low or "error pushing" in low or "denied" in low or "unauthorized" in low:
+    if reached_push and ("failed to push" in low or "error pushing" in low
+                         or "denied" in low or "unauthorized" in low):
         if "no such host" in low or "server misbehaving" in low:
             detail = ("the registry hostname does not resolve from inside the cluster "
                       "(DNS); the build itself succeeded")

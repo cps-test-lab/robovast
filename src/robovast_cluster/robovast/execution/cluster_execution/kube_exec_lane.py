@@ -158,7 +158,7 @@ class KubeExecLane:
                    slot: str = SLOT_USER) -> None:
         from kubernetes.client.rest import ApiException
 
-        from .kube_client import wait_pod_ready
+        from .kube_client import api_error_reason, wait_pod_ready
         core = self._client()
         self.stop_held(slot)
         # An aux container stages nothing: its runner mirrors its own workspace through the
@@ -169,7 +169,8 @@ class KubeExecLane:
                 self._namespace, self._held_manifest(spec, deadline_s, prefix, slot))
         except ApiException as e:
             self._discard_staged(slot)
-            raise RuntimeError(f"could not start exec pod: {e.reason}") from e
+            raise RuntimeError(
+                f"could not start exec pod: {api_error_reason(e)}") from e
         try:
             wait_pod_ready(core, self._namespace, _pod_name(slot))
         except BaseException:
@@ -269,7 +270,7 @@ class KubeExecLane:
         """
         from kubernetes.client.rest import ApiException
 
-        from .kube_client import wait_pod_gone
+        from .kube_client import api_error_reason, wait_pod_gone
         core = self._client()
         pod = _pod_name(slot)
         existed = False
@@ -280,7 +281,7 @@ class KubeExecLane:
             existed = True
         except ApiException as e:
             if e.status != 404:
-                logger.warning("deleting %s failed: %s", pod, e.reason)
+                logger.warning("deleting %s failed: %s", pod, api_error_reason(e))
         if existed:
             wait_pod_gone(core, self._namespace, pod)
         # Unconditional: a previous process may have left a tree with no pod beside it,
@@ -354,13 +355,13 @@ def _sweep_held_pods(lane) -> list:
     """
     from kubernetes.client.rest import ApiException
 
-    from .kube_client import wait_pod_gone
+    from .kube_client import api_error_reason, wait_pod_gone
     core = lane._client()  # noqa: SLF001 - the lane's own helper, called from its module
     try:
         found = core.list_namespaced_pod(lane._namespace,  # noqa: SLF001
                                          label_selector=POD_LABEL)
     except ApiException as e:
-        logger.warning("could not list stray exec pods: %s", e.reason)
+        logger.warning("could not list stray exec pods: %s", api_error_reason(e))
         return []
     deleted = []
     for pod in found.items:
@@ -370,7 +371,7 @@ def _sweep_held_pods(lane) -> list:
                                        grace_period_seconds=0)
         except ApiException as e:
             if e.status != 404:
-                logger.warning("deleting %s failed: %s", name, e.reason)
+                logger.warning("deleting %s failed: %s", name, api_error_reason(e))
             continue
         wait_pod_gone(core, lane._namespace, name)  # noqa: SLF001
         deleted.append(name)
