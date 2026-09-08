@@ -98,15 +98,19 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
         severity: evt.kind === 'failed' ? 'warning' : evt.kind === 'started' ? 'info' : 'success',
         message,
         note,
-        // Offered only once the results actually exist: `finished` is reached before
-        // postprocessing, and a campaign without it never grows the data these views read.
+        // Offered only once the results actually exist, which is the whole of the question and
+        // is what `hasResults` answers: the end of a campaign is reached before postprocessing,
+        // and one without it never grows the data these views read. Deliberately not also gated
+        // on `kind === 'finished'` -- a STOPPED campaign's ending event carries kind 'stopped',
+        // and its completed batches are postprocessed like any other's, so that clause withheld
+        // the link from exactly the campaign whose partial results someone wanted.
         //
         // A failure gets somewhere to go instead. The notice states the first line of the
         // reason and then clears itself, so the card -- which has the whole of it, and the
         // logs beside it -- has to be one click away rather than a search through the list.
         action: evt.kind === 'failed'
           ? { label: 'Open campaign', onClick: () => openCampaignCard(evt.campaignId) }
-          : evt.kind === 'finished' && hasResults(evt.summary)
+          : hasResults(evt.summary)
             ? { label: 'View results', onClick: () => openResultsView('explorer', evt.campaignId) }
             : undefined,
       })

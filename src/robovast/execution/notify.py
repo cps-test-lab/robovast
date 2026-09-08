@@ -219,6 +219,19 @@ class Notifier:
         self._announce("campaign.upload_failed", f"Upload to share FAILED: {reason}",
                        severity="warning", priority=4, tags="warning")
 
+    def upload_cancelled(self, reason: str) -> None:
+        """An upload to share was cancelled by a stop.
+
+        Its own event rather than :meth:`upload_failed`, for the same reason
+        :meth:`postprocessing_cancelled` is not a failure: the operator asked for this,
+        and filing a deliberate act under faults sends whoever reads it looking for a
+        fault that is not there. Not terminal — the campaign and its results are
+        untouched and the upload can be asked for again.
+        """
+        self._announce("campaign.upload_cancelled",
+                       f"Upload to share CANCELLED: {reason}",
+                       severity="warning", priority=3, tags="octagonal_sign")
+
     def postprocessed(self) -> None:
         """A re-run of postprocessing produced its derived data."""
         self._announce("campaign.postprocessed", "Postprocessing complete.",

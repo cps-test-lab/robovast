@@ -348,6 +348,12 @@ class BaseShareProvider(ABC):
     def remove_archive(self, object_name: str) -> None:
         """Remove *object_name* from the share.
 
+        Two callers: ``vast share remove``, and the discard of what an interrupted
+        upload left (``KubernetesBackend.discard_partial_share``). The second is why
+        raising for an object that is not there stays correct — an operator naming a
+        missing archive needs to be told, and the discard path words its own uncertainty
+        rather than having this one guess for it.
+
         Args:
             object_name: The object/file name on the share (as returned by
                 :meth:`list_campaign_archives`).

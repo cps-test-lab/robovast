@@ -276,13 +276,30 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
     Uses Python's built-in gzip (no ``pigz`` dependency) since this runs on the
     local host where ``pigz`` may be absent; the stream variants use ``pigz`` on the
     driver/service image where it is present.
+
+    **Written to a temporary name and renamed once complete**, so the archive's final
+    name never exists in a half-written state. Reading a truncated ``.tar.gz`` fails
+    late and confusingly -- the file lists in ``_archives/`` and is offered for download
+    like any other -- and this writer is interrupted by ordinary things: a cancelled
+    upload-to-share, a killed service, a full disk. The rename is atomic within the
+    directory, and the partial is removed on the way out of any failure.
     """
     campaign_root = os.path.normpath(str(campaign_root))
     arcname = os.path.basename(campaign_root)
     os.makedirs(archive_dir, exist_ok=True)
     out_path = os.path.join(archive_dir, name or f"{arcname}.tar.gz")
-    with tarfile.open(out_path, "w:gz") as tar:
-        _add_campaign_tree(tar, campaign_root, exclude, on_member)
+    part_path = f"{out_path}.part"
+    try:
+        with tarfile.open(part_path, "w:gz") as tar:
+            _add_campaign_tree(tar, campaign_root, exclude, on_member)
+        os.replace(part_path, out_path)
+    except BaseException:
+        # BaseException, not Exception: a KeyboardInterrupt through here would otherwise
+        # leave exactly the partial this exists to prevent, and Ctrl+C on ``vast serve``
+        # is one of the ways this write ends.
+        with contextlib.suppress(OSError):
+            os.unlink(part_path)
+        raise
     logger.info("Wrote campaign archive %s", out_path)
     return out_path
 
