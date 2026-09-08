@@ -1051,39 +1051,40 @@ class ClusterService(LocalTransport):
 
     @contextlib.contextmanager
     def _aux_runner_context(self, tag, project, *, hold=False):
-        """An aux container for *tag*'s span + the container-runner factory for this thread.
+        """The container-runner factory for this thread, over *tag*'s span.
 
         Entered inside the thread that composes, so the factory (a ContextVar) is scoped to
         exactly the composition that reads it — concurrent campaigns never clobber each
         other's aux target, and it is reset on the way out because a request thread is
         reused while a worker thread is not.
 
-        A project whose variations need no helper image creates nothing and installs no
-        factory. Discovery still runs, and still propagates: "we could not tell whether one
-        is needed" must not read as "none is".
+        Installed **unconditionally**, and it creates a container only when something asks
+        for one: nothing here reads the project to decide whether a helper image will be
+        wanted. Deciding that here is a second copy of what composition enumerates — a
+        variation, an ``execution.generate`` generator, the simulator backend's input-files
+        query — and whatever the copy does not cover refuses a campaign while composing, on
+        a container it declared. A span that asks for nothing still creates nothing, which is
+        what deciding in advance was for.
 
         The two spans differ only in who owns the container's death — see
-        :meth:`LocalTransport._aux_runner_context`. A campaign's pod is deleted here;
+        :meth:`LocalTransport._aux_runner_context`. A campaign's pods are deleted here;
         a held one is released to the exec manager's reaper.
         """
+        del project
         from robovast.common.config_generation import set_container_runner_factory
         from robovast.service.world_query import _reset_factory
 
-        from .container_runner import AuxPodSession, required_container_specs
+        from .container_runner import AuxPodSession
 
-        specs = required_container_specs(project.config_path)
-        if not specs:
-            yield
-            return
         if hold:
-            with self._held_aux_runners(tag, specs) as factory:
+            with self._held_aux_runners(tag) as factory:
                 token = set_container_runner_factory(factory)
                 try:
                     yield
                 finally:
                     _reset_factory(token)
             return
-        with AuxPodSession(tag, specs, self.namespace, core_v1=self._k8s(),
+        with AuxPodSession(tag, self.namespace, core_v1=self._k8s(),
                            kube_context=self.kube_context,
                            pull_secret=self._registry_pull_secret(),
                            **self._aux_store_kwargs()) as session:
@@ -1094,14 +1095,18 @@ class ClusterService(LocalTransport):
                 _reset_factory(token)
 
     @contextlib.contextmanager
-    def _held_aux_runners(self, tag, specs):
-        """Hold one aux container per spec through the exec manager; yield their factory.
+    def _held_aux_runners(self, tag):
+        """Yield a factory that holds an aux container through the exec manager on demand.
 
         The manager already owns every held container's lifetime — idle reap, a hard
         deadline baked into the pod, an LRU cap and a stray sweep after a restart — so this
-        adds no second policy. The specs are held as *query* slots because that policy is
+        adds no second policy. A spec is held as a *query* slot because that policy is
         already this one: a warm image and nothing else, since a runner mirrors its
         workspace around each command and leaves nothing behind between them.
+
+        Held when the factory is first called for a spec, like the campaign span's pods and
+        for the same reason: an authoring loop that composes a sweep needing no helper image
+        must not hold one, and nothing before the composition knows which it is.
 
         On the way out the slots are released, not stopped: the next preview of the same
         project reuses a warm pod, and two previews running at once cannot destroy each
@@ -1113,21 +1118,24 @@ class ClusterService(LocalTransport):
         from .kube_exec_lane import HELD_CONTAINER
         store = self._aux_store_kwargs()
         slots = {}
-        try:
-            for spec in specs:
+
+        def hold(spec):
+            name = spec.container_name()
+            if name not in slots:
                 # The image is what makes the pod worth reusing, and the project is what
                 # keeps two of them apart; the pod holds nothing else that could differ.
-                identity = ("aux", tag, spec.container_name(), spec.image)
+                identity = ("aux", tag, name, spec.image)
                 held = ExecSpec(image=spec.image, command="",
                                 config_dir=tempfile.mkdtemp(prefix="robovast_aux_hold_"),
                                 env=dict(spec.env or {}), config_name=str(tag),
                                 image_identity=spec.image, aux_spec=spec)
-                slots[spec.container_name()] = self._exec_manager.hold(
-                    held, identity, AUX_HOLD_LIMIT_S)
+                slots[name] = self._exec_manager.hold(held, identity, AUX_HOLD_LIMIT_S)
+            return slots[name]
 
+        try:
             def factory(spec):
                 return ClusterContainerRunner(
-                    spec, container_name(slots[spec.container_name()]), self.namespace,
+                    spec, container_name(hold(spec)), self.namespace,
                     self._k8s(), storage=store["storage"], bucket=store["bucket"],
                     owner_id=str(tag), kube_context=self.kube_context,
                     container=HELD_CONTAINER)
@@ -3700,6 +3708,10 @@ class ClusterService(LocalTransport):
         The pod is also the only thing that knows why a build has not started yet, so *on_wait*
         is reported from it: on this lane the wait before the exporter runs is a scheduling
         decision and an image pull, and an image this cluster cannot pull never gets past it.
+        Created on entry rather than at the first command, unlike a composition's: this
+        caller knows the one image it needs, so it can pay the pull where it is able to
+        report it — which is what makes the wait a stage of the build rather than an
+        unexplained pause inside it.
         """
         import hashlib
 
@@ -3718,11 +3730,12 @@ class ClusterService(LocalTransport):
 
         @contextlib.contextmanager
         def context():
-            with AuxPodSession(tag, [spec], self.namespace, core_v1=self._k8s(),
+            with AuxPodSession(tag, self.namespace, core_v1=self._k8s(),
                                pull_secret=pull_secret,
                                kube_context=self.kube_context,
                                on_pending=_pod_wait_reporter(on_wait),
                                **self._aux_store_kwargs()) as session:
+                session.provision(spec)
                 yield session.runner_factory()
 
         return context

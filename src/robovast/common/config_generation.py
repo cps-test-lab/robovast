@@ -37,7 +37,7 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_c
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
-from .errors import missing_input_error
+from .errors import AuxContainerUnavailable, missing_input_error
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
@@ -155,8 +155,6 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
         # container: the alternative is `docker run` in a Popen that raises a bare
         # FileNotFoundError deep in the variation, which reads as a broken .vast. Conditional
         # on docker being genuinely absent, so a local host that has it is untouched.
-        from robovast.common.errors import \
-            AuxContainerUnavailable  # pylint: disable=import-outside-toplevel
         who = purpose or "a variation"
         raise AuxContainerUnavailable(
             f"{who} requires the auxiliary container '{spec.container_name()}' "
@@ -304,6 +302,13 @@ def _backend_run_files(vast_dir, parameters):
         if isinstance(declared, ContainerQuery):
             return _run_input_files_query(declared, vast_dir)
         return [str(p) for p in (declared or [])]
+    except AuxContainerUnavailable:
+        # NOT swallowed, unlike a backend that cannot be resolved. The backend answered:
+        # this world is made of files only the simulator can enumerate, and nothing here
+        # could ask. Dropping that leaves the campaign staging the one file it named -- so
+        # the run pulls its image, schedules its pod and dies on a parent world that never
+        # travelled, which is the failure the query exists to prevent.
+        raise
     except Exception as exc:  # noqa: BLE001 - reported by validation, not here
         logger.debug("simulator backend declared no input files: %s", exc)
         return []
@@ -342,7 +347,8 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     second, diverging copy of an installed asset into the campaign.
     """
     runner = _make_container_runner(query.spec, image_project=image_project,
-                                    image_project_tag=image_project_tag)
+                                    image_project_tag=image_project_tag,
+                                    purpose="the simulator's input-files query")
     if runner is None:
         return []
     lines = []
@@ -576,7 +582,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable(
             f"this campaign's world is described by its own built image ({image}), which does "
             "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(query.spec)
+    runner = _make_container_runner(query.spec, purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
@@ -933,6 +939,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                 run_query=lambda query: _run_input_files_query(
                     query, vast_dir, image_project=image_project,
                     image_project_tag=image_project_tag))
+        except AuxContainerUnavailable:
+            # Raised whether or not the campaign writes the channel, for the reason
+            # `_backend_run_files` gives: what a world is made of is not a matter of taste
+            # a campaign can decline, and an incomplete answer reads exactly like a
+            # complete one until the run opens a file that never travelled.
+            raise
         except Exception as exc:  # noqa: BLE001 - as above
             if uses_channel:
                 raise

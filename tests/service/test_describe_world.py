@@ -136,7 +136,8 @@ def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda spec, **kwargs: _Runner())
     with pytest.raises(WorldQueryUnavailable, match="unrecognized arguments"):
         describe_world_payload(
             {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
@@ -171,7 +172,8 @@ def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda spec, **kwargs: _Runner())
     payload, image = describe_world_payload(
         {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
                                                        "image": "img:1"}}},
