@@ -615,12 +615,12 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
 .. note::
 
-   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same **live
-   per-job** view the web UI Monitor shows: the current batch's jobs with their
+   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
+   **per-job** view the web UI Monitor shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
-   live log of a single **running** job (its scenario container's output — the
-   running pod's log on the cluster, the live ``system.log`` file locally). A
-   finished job whose pod has been garbage-collected has no live log.
+   log of a single job. A **finished** job is served as readily as a running one:
+   locally the containers write their files in place, and on the cluster a pod that
+   has gone is read from the campaign's objects instead.
 
    Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
    on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that

@@ -501,8 +501,10 @@ export interface paths {
         };
         /**
          * Stream Job Log
-         * @description Server-sent events: one running job's log, tailed live (``Last-Event-ID``
-         *     resumes). A finished job whose pod was garbage-collected has no live log.
+         * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
+         *
+         *     A finished job is served too, from whatever durable copy its lane keeps, and ends
+         *     with an ``eof`` event rather than a stream error.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;

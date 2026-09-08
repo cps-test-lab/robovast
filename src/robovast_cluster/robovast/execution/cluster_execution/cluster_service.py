@@ -1899,14 +1899,16 @@ class ClusterService(LocalTransport):
         return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a running Job's live pod log from byte *offset* onward.
+        """Serve a Job's log from byte *offset* onward, live from its pod or from the store.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
         plus any sim/SUT sidecars; see :class:`PodLogTail`). Reads are
         incremental: a cached tail keeps the full assembled text so the byte offset
         still maps onto it, but each poll only pulls the delta from the kube API
-        rather than the whole log. Live source only; a missing pod raises (→ 404).
+        rather than the whole log. A pod that is gone is not an error: the log comes from
+        the campaign's objects instead (:meth:`_archived_job_log`), which is the ordinary
+        state of every finished job.
 
         A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
         native sidecars, so kubelet runs them *during* the init phase, while the pod is
