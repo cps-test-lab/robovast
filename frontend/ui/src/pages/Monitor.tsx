@@ -517,11 +517,13 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
-  // A campaign freezes its project into `_config/` only once variation has expanded, so during a
-  // pre-run phase there is provably nothing to open and the shortcut is hidden rather than offered
-  // and answered with a 404. From then on it stays, running or finished: the configuration a
-  // campaign is running is worth reading while it runs.
-  const hasConfig = !PRE_RUN_PHASES.has(phase)
+  // A campaign freezes its project into `_config/` when its first batch is prepared, and an
+  // imported one when the archive lands — so through those phases there is provably nothing to
+  // open and the shortcut is hidden rather than offered and answered with a 404. It is a
+  // one-way gate, not a guarantee: the controller advances to `running` before that first batch
+  // is staged, and no bounded signal on this payload separates the two (see the Status
+  // docstring), so the window is left to the Config view to report honestly.
+  const hasConfig = !PRE_RUN_PHASES.has(phase) && phase !== 'importing'
   // How long the current phase has been held, shown only while a *pre-run* phase is in
   // effect. Those are the phases with no progress bar to watch, so a stalled project
   // push or image build otherwise looks exactly like a slow one — indefinitely.

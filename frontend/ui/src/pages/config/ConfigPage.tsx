@@ -19,6 +19,7 @@ import { useToasts } from '@/components/ToastProvider'
 import { ConfigEditorPane } from './ConfigEditorPane'
 import { ConfigListPane } from './ConfigListPane'
 import { ConfigViewPane } from './ConfigViewPane'
+import { campaignConfigNote } from './campaignConfig'
 import { FilesView } from './FilesView'
 import { useConfigEditor } from './useConfigEditor'
 
@@ -50,6 +51,19 @@ export function ConfigPage({
     : { kind: 'workspace', id: workspaceId }
   const active = useActiveView()
   const editor = useConfigEditor(source)
+
+  // The campaign's phase, read only once the listing has already failed — it decides which absence
+  // the message names, and the normal path never poses the question. Shares the campaign view's
+  // key, so an answer that page already polled is free.
+  const campaignStatus = useQuery({
+    queryKey: ['status', campaignId],
+    queryFn: () => robovast.getStatus(campaignId),
+    enabled: campaignMode && !!editor.filesError,
+    retry: false,
+  })
+  const note = campaignMode && editor.filesError
+    ? campaignConfigNote(editor.filesError, campaignStatus.data?.phase)
+    : ''
 
   // Workspaces come and go outside this tab — another session, another agent, the CLI. The page
   // is kept mounted once visited, so without this gate the list is whatever it was on the first
@@ -151,12 +165,17 @@ export function ConfigPage({
         </Alert>
       ) : null}
       {editor.filesError ? (
-        <Alert severity="error" variant="outlined">
+        <Alert
+          severity="error"
+          variant="outlined"
+          action={
+            <Button size="small" color="inherit" onClick={() => void editor.refetchFiles()}>
+              Retry
+            </Button>
+          }
+        >
           {editor.filesError.message}
-          {campaignMode
-            ? ' — this campaign froze no configuration under _config/, which is what a campaign'
-              + ' that failed before its configuration was staged looks like.'
-            : null}
+          {note ? ` — ${note}` : null}
         </Alert>
       ) : null}
       {/* One header row in both modes. Where a workspace has a picker, a campaign has nothing

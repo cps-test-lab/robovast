@@ -1287,9 +1287,16 @@ Reading the configuration a campaign ran
 
 **Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
 frozen ``_config/`` — the configuration it was actually staged with — at
-``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
-(after variation expansion) and stays for the rest of its life, so the configuration of a
-campaign that is still running can be read while it runs.
+``#/config/campaign/<campaign_id>``. It appears once the campaign has left its pre-run phases
+and stays for the rest of its life, so the configuration of a campaign that is still running
+can be read while it runs.
+
+The snapshot itself is staged when the campaign's **first batch is prepared**, which is after
+the controller has advanced to ``running`` — so between those two points the menu entry is
+offered and the address it opens is genuinely not there yet. The Config view reports that as
+what it is (the configuration is not staged yet, with a **Retry**) rather than as a campaign
+that never froze one; the two absences look identical from a listing and only the campaign's
+phase separates them.
 
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
