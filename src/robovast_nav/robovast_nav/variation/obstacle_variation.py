@@ -233,6 +233,25 @@ class ObstacleVariationConfig(DestinationConfig):
         return v
 
 
+def resting_z(size) -> float:
+    """The z a placement plugin seats an obstacle of these extents at, standing on the floor.
+
+    A placement plugin puts a prop's ORIGIN at its centre, so a floor-standing prop's z is half
+    its height. :func:`_instances_for_sim` leans on that by omitting z and letting the plugin
+    apply it; a *scenario* that has to state the pose itself -- a teleport, a spawn -- has no
+    such default and needs the number said out loud. This is the one place it is computed, so
+    the two channels describe one placement rather than two that can drift.
+
+    Getting it wrong is not a near miss: an obstacle stated a few centimetres low is seated
+    INSIDE the floor, and the solver answers that penetration by launching it metres upward.
+
+    A campaign that declares no ``size`` gets 0.0, which is what the geometry-free channels have
+    always reported. That case cannot reach a placement: ``size`` is required wherever the
+    ``instances`` slot is bound, which is exactly where a simulator compiles the obstacle.
+    """
+    return float(size[2]) / 2.0 if size and len(size) >= 3 else 0.0
+
+
 def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> list:
     """The placement as *geometry*: what a list-valued placement plugin compiles.
 
@@ -538,7 +557,7 @@ class ObstacleVariation(NavVariation):
         objects_parameter_name = self.parameters.binding("objects")[1]
         values = {
             'objects': convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else [],
-            **self._post_process(obstacle_objects, obstacle_anchors, path),
+            **self._post_process(obstacle_objects, obstacle_anchors, path, obstacle_geometry),
         }
         # The same placement, described for the simulator: what must be COMPILED IN so the
         # trial has something to drive. Written in the same call as the trial's view, because
@@ -567,13 +586,16 @@ class ObstacleVariation(NavVariation):
         Base implementation returns 0.0 (no restriction)."""
         return 0.0
 
-    def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
+    def _post_process(self, obstacle_objects, obstacle_anchors, path, obstacle_geometry) -> dict:
         """Return additional scenario parameters to merge after obstacle placement.
 
         Called after all obstacle_configs have been placed successfully.
         *obstacle_objects*: List[StaticObject]
         *obstacle_anchors*: List[Position] — path anchors matching each obstacle
         *path*: full planned path (List[Position])
+        *obstacle_geometry*: List[(shape, size)] in placement order, so a hook reporting a
+        pose can state the z a placement plugin would apply (:func:`resting_z`) rather than
+        leaving a scenario to guess at one.
 
         Base implementation returns an empty dict."""
         return {}
