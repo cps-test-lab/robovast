@@ -510,13 +510,35 @@ def _entity_names_in(value) -> set:
     return set()
 
 
+#: What settles a world query the simulator itself answered by failing: the image is the
+#: only thing that can change the answer.
+_IMAGE_STEP = ("the simulator in {image} answered the query itself, so that image is what "
+               "decides it: check the world path it names, and repin or rebuild the image "
+               "if it does not understand the query.")
+
+#: What settles a world query that nothing ran. Kept apart from _IMAGE_STEP because the two
+#: send a caller to opposite places, and the reply is the only thing that can tell them
+#: apart -- a lane that cannot start a container says nothing about the .vast.
+_LANE_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
+              "execution lane can start a container (get_resource_usage, or `vast service "
+              "resources`) and validate again.")
+
+
 class WorldQueryUnavailable(RuntimeError):
     """The world could not be described, with the reason a caller can act on.
 
     Not "this campaign is wrong": it is unverifiable from here. Kept distinct from a plain
     ``ValueError`` so a caller pre-*checking* can carry on (and warn) while a caller *asking*
     can report why. Collapsing the two makes a failed lookup indistinguishable from a clean one.
+
+    ``next_step`` is what would settle the question, and it is the whole value of this
+    exception to a caller who cannot: a reason with no remedy leaves an agent guessing at
+    the ``.vast`` for a failure that was never about the file.
     """
+
+    def __init__(self, message: str, *, next_step: str = ""):
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
@@ -581,16 +603,18 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         # The command's own last words, not the runner's: an old image whose simulator does not
         # know a flag says so itself ("unrecognized arguments: --overridable"), and that names
         # the remedy. Without this the CalledProcessError left the service returning a bare 500.
+        spoke = _command_failure(lines)
         raise WorldQueryUnavailable(
-            f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or str(exc)}") from None
+            f"{name} could not describe this world in {image}: {spoke or exc}",
+            next_step=(_IMAGE_STEP.format(image=image) if spoke else _LANE_STEP)) from None
     finally:
         runner.close()
     payload = _last_json_line(lines)
     if payload is None:
         raise WorldQueryUnavailable(
             f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or '(no output)'}")
+            f"{_command_failure(lines) or '(no output)'}",
+            next_step=_IMAGE_STEP.format(image=image))
     return payload, image
 
 
