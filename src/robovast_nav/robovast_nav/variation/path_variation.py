@@ -23,7 +23,8 @@ from pydantic import BaseModel, ConfigDict
 from rdflib import Namespace
 
 from robovast.common import FileCache
-from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
+from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
+                                                      DestinationConfig,
                                                       ProvContribution,
                                                       VariationInfeasibleError)
 
@@ -59,6 +60,16 @@ class PathVariationRandomConfig(DestinationConfig):
     #: ``list of pose_3d``). Inferring it by comparing the destination name to the literal
     #: string ``"goal_pose"`` would let the name both choose the shape and then be ignored --
     #: and contradict the scenario, failing at run time.
+    #: ``start`` may name a destination on the ``sim`` channel too, and then the simulator
+    #: compiles the robot where the path begins instead of the trial moving it once the run is
+    #: going. One pose, both destinations, written from one call::
+    #:
+    #:     scenario: {start: start_pose, goal: goal_pose}
+    #:     sim:      {start: components.robot.pose}
+    #:
+    #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
+    #: quaternion and tells them apart by the keys present -- and an omitted z means the
+    #: model's own resting height, which is what a wheeled base needs.
     SLOTS = ("start", "goal")
 
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
@@ -85,8 +96,12 @@ class StartGoalSlots:  # pylint: disable=no-member
     """
 
     def _start_destination(self) -> str:
-        """The parameter the ``start`` slot is bound to."""
-        return self.parameters.binding("start")[1]
+        """The scenario parameter the ``start`` slot is bound to.
+
+        Named by channel because ``start`` may also name a destination in the world; this is
+        the trial's half of it.
+        """
+        return next(d for c, d in self.parameters.bindings("start") if c == SCENARIO_CHANNEL)
 
     def _goal_destination(self):
         """``(destination, single_pose_mode)`` for the ``goal`` slot.
@@ -466,6 +481,16 @@ class PathVariationRasterizedConfig(DestinationConfig):
     #: shape likewise comes from the scenario's declaration, not from
     #: ``num_goal_poses == 1`` -- a second rule for the same question could disagree both
     #: with the scenario and with the other path variation.
+    #: ``start`` may name a destination on the ``sim`` channel too, and then the simulator
+    #: compiles the robot where the path begins instead of the trial moving it once the run is
+    #: going. One pose, both destinations, written from one call::
+    #:
+    #:     scenario: {start: start_pose, goal: goal_pose}
+    #:     sim:      {start: components.robot.pose}
+    #:
+    #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
+    #: quaternion and tells them apart by the keys present -- and an omitted z means the
+    #: model's own resting height, which is what a wheeled base needs.
     SLOTS = ("start", "goal")
 
     #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
