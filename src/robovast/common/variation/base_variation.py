@@ -220,11 +220,7 @@ class DestinationConfig(VariationConfig):
                     raise ValueError(
                         f"'{slot}' is not an output of this variation; its outputs are: "
                         + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
-                if slot in bound:
-                    raise ValueError(
-                        f"output '{slot}' is bound to both '{bound[slot]}' and '{channel}'; "
-                        "an output goes to one channel")
-                bound[slot] = channel
+                bound.setdefault(slot, []).append(channel)
         missing = [s for s in self.SLOTS if s not in bound]
         if missing:
             raise ValueError(
@@ -253,16 +249,43 @@ class DestinationConfig(VariationConfig):
         return any(isinstance(getattr(self, c), dict) and slot in getattr(self, c)
                    for c in CHANNELS)
 
+    def bindings(self, slot: str) -> tuple:
+        """Every ``(channel, destination)`` *slot* is bound to, in channel order.
+
+        One output may be wanted on both sides of the compile boundary -- a start pose the
+        simulator places the robot at and the stack under test is told about is ONE value with
+        two destinations, not two outputs. Binding it twice says that; a second slot carrying
+        the same value would say it by inventing a synonym, and then the two names could drift
+        apart while describing one fact.
+
+        Several destinations, not several values: a slot whose two sides carry *different*
+        content is two outputs and stays two slots, the way an obstacle's spawner arguments
+        and its compiled geometry do.
+        """
+        found = tuple(
+            (channel, getattr(self, channel)[slot])
+            for channel in CHANNELS
+            if isinstance(getattr(self, channel), dict) and slot in getattr(self, channel)
+        )
+        if not found:
+            raise KeyError(
+                f"'{slot}' is not an output of this variation; its outputs are: "
+                + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+        return found
+
     def binding(self, slot: str) -> tuple:
-        """``(channel, destination)`` for one output slot."""
-        for channel in CHANNELS:
-            mapping = getattr(self, channel)
-            # pylint: disable-next=unsupported-membership-test,unsubscriptable-object
-            if isinstance(mapping, dict) and slot in mapping:
-                return channel, mapping[slot]  # pylint: disable=unsubscriptable-object
-        raise KeyError(
-            f"'{slot}' is not an output of this variation; its outputs are: "
-            + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+        """The one ``(channel, destination)`` *slot* is bound to.
+
+        For a caller that means "the destination", singular. A slot bound to several is
+        refused rather than answered with the first, because which one that is depends on
+        channel order -- a caller wanting a particular channel is asking :meth:`bindings`.
+        """
+        found = self.bindings(slot)
+        if len(found) > 1:
+            raise KeyError(
+                f"output '{slot}' is bound to {len(found)} channels "
+                f"({', '.join(c for c, _ in found)}); ask bindings() for all of them")
+        return found[0]
 
     def outputs(self) -> dict:
         """``{channel: [destination, ...]}`` -- what this variation writes and where.
@@ -443,8 +466,11 @@ class Variation():
         """
         by_channel: dict = {c: {} for c in CHANNELS}
         for slot, value in values_by_slot.items():
-            channel, destination = self.parameters.binding(slot)
-            by_channel[channel][destination] = value
+            # Every destination the slot names, so one value wanted on both sides of the
+            # compile boundary is written to both from this one call -- which is the whole
+            # reason this method exists, applied to a slot rather than to the set of them.
+            for channel, destination in self.parameters.bindings(slot):
+                by_channel[channel][destination] = value
         extra = {kwarg: by_channel[channel] for channel, kwarg in _VALUES_KWARG.items()}
         return self.update_config(
             config, by_channel[SCENARIO_CHANNEL], **extra, **kwargs)

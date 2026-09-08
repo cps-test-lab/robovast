@@ -71,9 +71,16 @@ def test_an_unknown_slot_is_refused_naming_the_real_ones():
         TwoOutputs(scenario={"map": "map_file", "meshh": "x"})
 
 
-def test_a_slot_cannot_go_to_both_channels():
-    with pytest.raises(ValidationError, match="goes to one channel"):
-        TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+def test_a_slot_may_go_to_both_channels():
+    """One value is one output however many places need it.
+
+    This used to be refused. What the rule cost was a plugin having to invent a second slot
+    for the same value -- one name per channel, describing one fact, free to drift apart --
+    and the campaign then binding both. Several destinations is what a binding says; several
+    VALUES is still several slots.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "a"), (SIM_CHANNEL, "b"))
 
 
 def test_slots_refuse_a_bare_name():
@@ -129,6 +136,46 @@ def test_update_slots_routes_each_output_to_its_channel():
                                  {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
 
     assert out["config"] == {"map_file": "maps/a.yaml"}
+    assert out["sim"] == {"plugins.floorplan.mesh": "3d/a.stl"}
+
+
+def test_one_output_may_name_a_destination_on_each_channel():
+    """One value both sides of the compile boundary need is one output, not two.
+
+    A start pose the simulator places the robot at and the stack under test is told about is
+    the same pose. Carrying it as a second slot would name the same fact twice, and the two
+    names could then drift apart; binding it twice says what is true.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "plugins.floorplan.mesh"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "mesh_file"),
+                                    (SIM_CHANNEL, "plugins.floorplan.mesh"))
+    # Both destinations are declared, so validation and preview see the pair.
+    assert cfg.outputs() == {SCENARIO_CHANNEL: ["map_file", "mesh_file"],
+                             SIM_CHANNEL: ["plugins.floorplan.mesh"]}
+
+
+def test_the_single_binding_accessor_refuses_a_slot_bound_twice():
+    """Answering with the first would make the result depend on channel order."""
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "plugins.floorplan.mesh"})
+    assert cfg.binding("map") == (SCENARIO_CHANNEL, "map_file")
+    with pytest.raises(KeyError, match="bindings"):
+        cfg.binding("mesh")
+
+
+def test_a_slot_bound_twice_is_written_to_both_destinations():
+    """The value reaches every destination from the one call, so the two cannot disagree."""
+    # pylint: disable-next=no-value-for-parameter
+    variation = _Slotted.__new__(_Slotted)
+    variation.parameters = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                                      sim={"mesh": "plugins.floorplan.mesh"})
+    variation._config_child_indices = {}
+
+    out = variation.update_slots({"name": "cfg"},
+                                 {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
+
+    assert out["config"] == {"map_file": "maps/a.yaml", "mesh_file": "3d/a.stl"}
     assert out["sim"] == {"plugins.floorplan.mesh": "3d/a.stl"}
 
 

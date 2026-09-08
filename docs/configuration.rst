@@ -508,9 +508,25 @@ map at run time, while the simulator has to compile the mesh into its model — 
 artifacts sit on opposite sides of :ref:`the compile boundary <sim-channel>`, and no single
 key could say so.
 
-Every declared slot must be bound, each to exactly one channel; an unknown slot is refused
-naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
-for a simulator to compile is one — which are simply not produced when left unbound.
+Every declared slot must be bound; an unknown slot is refused naming the ones that exist. A
+plugin may also declare *optional* outputs — obstacle geometry for a simulator to compile is
+one — which are simply not produced when left unbound.
+
+A slot may name a destination on **more than one** channel, for the case where one value is
+wanted on both sides of the compile boundary. A drawn start pose is the example: the simulator
+compiles the robot where the path begins, and the stack under test is told where that is —
+one pose, so the trial no longer has to move the robot itself once the run is going.
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_pose}
+       sim:      {start: components.robot.pose}
+
+Both destinations are written from the one call, so they cannot disagree. Binding the second
+is optional and changes nothing for a campaign that leaves it out. Note what this is *not*:
+two outputs whose contents differ — an obstacle's spawner arguments and its compiled geometry
+— remain two slots, because they are two values rather than one value in two places.
 
 
 .. _sut-channel:
