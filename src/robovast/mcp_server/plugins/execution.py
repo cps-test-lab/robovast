@@ -859,14 +859,13 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
                 hide_shutdown: bool = True) -> dict:
-    """What is one **running** job doing? Its containers' live stdout/stderr.
+    """What is one job doing, or what did it do? Its containers' stdout/stderr.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    Live source only — a finished job whose pod was garbage-collected has none; read the
-    campaign log instead. Every container the job runs is merged into one stream, each
-    line tagged ``[<container>]`` when there is more than one.
+    A **finished** job is served as readily as a running one -- its output is durable
+    either way. Every container is merged into one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.

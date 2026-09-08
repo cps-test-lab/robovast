@@ -1493,8 +1493,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
-        """Server-sent events: one running job's log, tailed live (``Last-Event-ID``
-        resumes). A finished job whose pod was garbage-collected has no live log."""
+        """Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
+
+        A **finished** job is served too, not only a running one. What the events mean,
+        and which residual case is still an error, is ``_sse_log_stream``'s to say."""
         return StreamingResponse(
             _sse_log_stream(
                 request,
