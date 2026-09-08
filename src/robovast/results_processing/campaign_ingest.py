@@ -923,6 +923,10 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     metric rows for this campaign are cleared first, so re-ingesting after a re-postprocess
     lands the same rows rather than doubling them.
 
+    A directory carrying neither ``campaign.db`` nor one run directory is refused with
+    :class:`~robovast.common.errors.CampaignNotIngestable` before anything is cleared: a
+    campaign recorded from it would be indistinguishable from one that measured nothing.
+
     *output* receives a line per phase and a throttled counter over each walk. It is the only
     account this step gives of itself: it is postprocessing's longest by a wide margin on a
     campaign of any size, it is the last one to run, and the phase it runs in has no run
@@ -934,6 +938,25 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     output = output or logger.info
     totals = {}
     name_map: dict = {}
+
+    store = root / "campaign.db"
+    walk = [(Path(config_dir).name, run_dir)
+            for config_dir in list_config_dirs(str(root))
+            for run_dir in list_run_dirs(config_dir)]
+
+    # Refused here, above the clear, so a mis-aimed ingest cannot empty a campaign that has
+    # rows and then record the emptiness as its answer. Neither half is an error alone --
+    # see the tolerances below -- but a directory with no record and no run directory is not
+    # a campaign that ended badly, it is not this campaign's data, and recording it would
+    # spend the one distinction the registry exists to make.
+    if not store.is_file() and not walk:
+        from robovast.common.errors import CampaignNotIngestable  # noqa: PLC0415
+        raise CampaignNotIngestable(
+            f"{campaign_id}: {root} holds no campaign to ingest -- neither a campaign.db "
+            "nor a single run directory. Its rows in the index, if any, are left as they "
+            "are rather than replaced by this.",
+            next_step=f"check that {root} is the campaign's results directory and that it "
+            "was extracted completely, then ingest it again")
 
     # Before the write, and on every ingest: this repairs anything the per-table path
     # could not have covered -- relations created before the campaign scope existed, or
@@ -949,7 +972,6 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
         logger.info("index: cleared %s rows for %s before re-ingest",
                     sum(cleared.values()), campaign_id)
 
-    store = root / "campaign.db"
     if store.is_file():
         output(f"index: reading the campaign record of {campaign_id}")
         totals.update(dimension_ingest.mirror_campaign_record(conn, str(store), campaign_id))
@@ -978,9 +1000,6 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     # everything ingest_run before the first bad file would otherwise have thrown away.
     failed: list = []
 
-    walk = [(Path(config_dir).name, run_dir)
-            for config_dir in list_config_dirs(str(root))
-            for run_dir in list_run_dirs(config_dir)]
     advance = _walk_progress("ingesting run", len(walk), output)
     for config_name, run_dir in walk:
         run_path = Path(run_dir)
