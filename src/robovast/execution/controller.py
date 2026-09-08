@@ -57,7 +57,7 @@ from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.search.extractor import NoSampleError
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
-                       RunOptions)
+                       RunOptions, ShareStopped)
 from .control_server import Phase, failure_detail, is_terminal
 from .notify import Notifier
 
@@ -1542,7 +1542,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                 # ``postprocessing_error`` says and a re-run supplies. Told apart by the
                 # flag rather than by the message, so both stages' wordings are covered
                 # without either of them becoming a contract.
-                cancelled = state.stop_requested
+                cancelled = state.postprocessing_stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
                 state.set_phase(Phase.FINISHED, stage=(
                     message if cancelled else f"postprocessing failed: {message}"))
@@ -1768,6 +1768,19 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
             state.set_phase(Phase.SHARING)
         backend.share_campaign(campaign_root, options,
                                progress_callback=make_upload_progress_cb(state))
+    except ShareStopped as e:
+        # The operator's own doing, so it is recorded as a cancellation and announced as
+        # one: filing a deliberate act under faults sends whoever reads it looking for a
+        # fault that is not there. Same field as a failure, because what a reader does
+        # next is the same -- re-trigger the share -- and same best-effort contract: the
+        # campaign and its results are untouched.
+        detail = share_cancelled_detail(backend, e)
+        logger.info("Upload-to-share cancelled; continuing with the campaign. %s", detail)
+        if state is not None:
+            state.update(share_error=detail)
+        if notifier is not None:
+            notifier.upload_cancelled(detail)
+        return
     except Exception as e:  # pylint: disable=broad-except
         # A provider's own refusal (bad credentials, a URL that is not the share, a
         # remote that said no) is self-contained and opts out of the tail via
@@ -1791,6 +1804,34 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old
         # controller's ``provider.SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
+
+
+def share_cancelled_detail(backend, stopped: ShareStopped) -> str:
+    """Discard a cancelled upload's partial artifact; return what to record.
+
+    The cleanup is the reason this is not just a message. A cancelled upload leaves a
+    truncated archive behind, and a truncated archive "uploads, lists and downloads
+    exactly like a good one, and only fails at the far end" -- the very shape
+    ``DockerBackend._refuse_unimportable`` exists to keep off a share. So the partial is
+    removed, and where the provider cannot remove it the sentence **names the object it
+    left** rather than reporting a clean cancellation over a share that now holds a
+    half-written campaign.
+    """
+    detail = str(stopped)
+    if not stopped.object_name:
+        return detail
+    try:
+        note = backend.discard_partial_share(stopped.object_name)
+    except Exception as e:  # noqa: BLE001 - the cancellation is the news, not this
+        # Reported, never raised: a cleanup that failed must not turn a cancellation into
+        # an error. Worded as uncertainty because that is what it is -- the delete may
+        # have been refused, or the object may never have been created -- and asserting
+        # either would be the kind of wrong answer that looks right.
+        logger.warning("Could not discard the partial upload %s: %s",
+                       stopped.object_name, e)
+        return (f"{detail} — a partial '{stopped.object_name}' may be left on the "
+                f"share: {e}")
+    return f"{detail} {note}".strip() if note else detail
 
 
 class UploadProgress:
@@ -1836,14 +1877,32 @@ class UploadProgress:
             self._source_total = max(0, int(total or 0))
             self._publish(force=True)
 
+    def raise_if_stopped(self) -> None:
+        """End the upload if its stop scope was set.
+
+        This object is where the check belongs because it is the only thing both live
+        loops already call — the archiver's writer thread through :meth:`on_member` and
+        the sending thread through :meth:`__call__` — so one poll covers building the
+        archive and putting it on the wire. Nothing below here has to know what a campaign
+        or a scope is, which is the same reason ``stop_checker`` is a predicate.
+
+        Called from both, so a cancellation lands whichever side is doing the work: a
+        local archive write drives only ``on_member``, and a resumable path-based upload
+        only ``__call__``.
+        """
+        if self._state.share_stop_requested:
+            raise ShareStopped("upload to share cancelled by stop request")
+
     def on_member(self, nbytes: int) -> None:
         """Count *nbytes* of campaign payload as consumed by the archiver."""
+        self.raise_if_stopped()
         with self._lock:
             self._source_done += max(0, int(nbytes or 0))
             self._publish()
 
     def __call__(self, sent, total) -> None:
         """The providers’ progress callback: *sent* bytes on the wire so far."""
+        self.raise_if_stopped()
         with self._lock:
             self._sent = sent
             # A provider that knows its total (the path-based, resumable upload) has a

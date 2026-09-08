@@ -595,8 +595,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
-   service considers live (all lanes).
+   scenario Jobs). It lands on whatever is *running*, and the reply says which: the
+   **runs** (the batches that finished are still postprocessed and indexed, so the
+   campaign stays queryable), **postprocessing** (results kept, derived data not
+   computed — re-run it), or the **share upload** (cancelled, partial archive removed).
+   A campaign that is already over is refused rather than silently accepted.
+   ``list_campaigns(running_only=True)`` reports the campaigns the service considers
+   live (all lanes).
 
    ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
    the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a

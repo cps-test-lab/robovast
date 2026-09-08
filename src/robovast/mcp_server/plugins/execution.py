@@ -905,9 +905,12 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign. The service owns the teardown (containers, cluster Jobs).
 
-    A campaign waiting for an image is detached instead, so a build a sibling may share is
-    not cancelled. One in ``postprocessing`` has that cancelled and ends ``finished``
-    without derived data.
+    A stop lands on whatever is *running*, and ``note`` says which. **Runs**: they end, but
+    the batches that finished are still postprocessed, so ``query_campaign_data_sql`` keeps
+    answering for them — stopping a search part-way is a normal way to end one.
+    **Postprocessing**: cancelled, leaving results but no derived data
+    (``run_postprocessing`` gets it back). **Sharing**: cancelled, partial object removed
+    or named. One waiting for an image detaches; one already over is refused.
 
     Args:
         campaign_id: The id from ``start_campaign``.

@@ -23,6 +23,7 @@ backfilled
 backgrounded
 backgrounding
 bagfile
+balancer
 basename
 behaviour
 behaviours
@@ -66,6 +67,7 @@ containerd
 costmap
 costmaps
 cpu
+cpufreq
 CSV
 Ctrl
 cyber
@@ -269,6 +271,7 @@ postprocessed
 postprocesses
 postprocessing
 pre
+preemptible
 prefetch
 preflight
 preload
@@ -277,6 +280,7 @@ preprocess
 prewarm
 prewarmed
 prober
+pullable
 pushdown
 px
 py
@@ -378,6 +382,8 @@ symlink
 symlinks
 sys
 sysinfo
+tailnet
+Tailscale
 teardown
 terminality
 tf
@@ -431,6 +437,7 @@ untyped
 unvalidated
 unwatched
 upserted
+userspace
 vconcat
 Vega
 venv

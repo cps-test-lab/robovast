@@ -23,7 +23,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
                                                                    DEFAULT_AUX_DEADLINE_SECONDS,
                                                                    aux_pod_name,
                                                                    build_aux_pod_manifest)
-from robovast.execution.control_server import Phase
+from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -1813,9 +1813,11 @@ def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
 # -- stop (terminates in-flight cluster workloads) --------------------------
 
 def _stop_state(flagged, phase=Phase.RUNNING):
-    """A control-channel double for stop: the flag, and the phase the reply is chosen by."""
+    """A control-channel double for stop: which scope was flagged, and the phase it is
+    chosen by. Records the scope rather than a bare boolean -- which unit of work a stop
+    lands on is the thing under test."""
     return types.SimpleNamespace(
-        request_stop=lambda: flagged.update(stopped=True),
+        request_stop=lambda scope=STOP_RUNS: flagged.update(stopped=True, scope=scope),
         snapshot=lambda: types.SimpleNamespace(phase=phase))
 
 
@@ -1836,7 +1838,7 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
         lambda **kw: calls.update(kw))
 
     res = cs.stop("camp-1")
-    assert res.ok and flagged.get("stopped") is True
+    assert res.ok and flagged.get("scope") == STOP_RUNS
     # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup).
     assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
 
@@ -1846,8 +1848,9 @@ def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
     cannot reach it and the flag is what ends it (``await_job`` polls it).
 
     The reply has to say so, because the outcome differs from stopping a run: the runs are
-    over and every result they produced is kept, so the campaign still ends as ``finished``
-    -- what the stop gives up is the derived data, and only a re-run brings it back.
+    over and every result they produced is kept -- what the stop gives up is the derived
+    data, and only a re-run brings it back. It must not name the phase the campaign ends
+    in, which depends on how its runs ended rather than on this stop.
     """
     flagged = {}
     cs._campaigns["camp-1"] = types.SimpleNamespace(
@@ -1858,11 +1861,29 @@ def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
 
     res = cs.stop("camp-1")
 
-    assert res.ok and flagged.get("stopped") is True
-    assert "postprocessing" in res.message
-    assert "finished" in res.message and "re-run postprocessing" in res.message
+    assert res.ok
+    # The analysis, not the runs: flagging the runs here is what used to discard the
+    # analysis of the batches that had already finished.
+    assert flagged.get("scope") == STOP_POSTPROCESSING
+    assert "postprocessing" in res.message and "re-run postprocessing" in res.message
+    assert "finished" not in res.message
     # Not the run-phase wording: nothing of this campaign was still executing.
     assert "in-flight jobs terminated" not in res.message
+
+
+def test_cluster_stop_on_an_ended_campaign_is_refused(cs, monkeypatch):
+    """Both lanes share one scope decision, so both refuse a campaign that is over."""
+    flagged = {}
+    cs._campaigns["camp-1"] = types.SimpleNamespace(
+        state=_stop_state(flagged, phase=Phase.FINISHED))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: None)
+
+    res = cs.stop("camp-1")
+
+    assert res.ok is False and "already over" in res.message
+    assert flagged == {}
 
 
 def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
@@ -1888,7 +1909,8 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
         "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
         lambda **kw: calls.append(kw))
     stopped = []
-    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    state = types.SimpleNamespace(
+        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
     entry = types.SimpleNamespace(campaign_id="camp-a", state=state, thread=None)
     cs._campaigns["camp-a"] = entry
     monkeypatch.setattr(type(cs), "_is_done", lambda self, e: False)
@@ -1913,7 +1935,8 @@ def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(type(impl), "_kill_scenario_container",
                         lambda self: killed.append(True))
     stopped = []
-    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    state = types.SimpleNamespace(
+        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
     impl._campaigns["camp-a"] = types.SimpleNamespace(
         campaign_id="camp-a", state=state, thread=None)
     monkeypatch.setattr(type(impl), "_is_done", lambda self, e: False)
@@ -1921,7 +1944,9 @@ def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     impl.shutdown()
 
     assert killed == [True]
-    assert stopped == [True]
+    # The run scope: what shutdown is for is ending the campaign so its container
+    # teardown runs before the process exits.
+    assert stopped == [STOP_RUNS]
 
 
 def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
