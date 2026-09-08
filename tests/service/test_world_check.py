@@ -321,3 +321,179 @@ def test_a_clean_world_says_nothing_at_all(tmp_path, monkeypatch):
                         lambda *a, **k: ({"components": [], "errors": None}, "roqsim:test"))
     assert world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
                           vast_dir=str(tmp_path), parameters=_parameters()) == []
+
+
+# -- the three answers a report may give, told apart without reading English ------
+
+
+def test_an_unchecked_world_is_marked_unchecked_not_error(tmp_path, monkeypatch):
+    """The severity, not the wording, is what a caller branches on. Until this field
+    existed the only way to tell the two apart was to search the message for a phrase."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    def _refuse(*a, **k):
+        raise config_generation.WorldQueryUnavailable("no container runner is available")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert [p["severity"] for p in problems] == ["unchecked"]
+
+
+def test_a_world_that_does_not_load_is_an_error(tmp_path, monkeypatch):
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    monkeypatch.setattr(
+        config_generation, "describe_world_payload",
+        lambda *a, **k: ({"errors": {"build": "resource not found"}}, "roqsim:test"))
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert [p["severity"] for p in problems] == ["error"]
+
+
+def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, monkeypatch):
+    """A reason with no remedy leaves a caller editing the .vast for a failure that was
+    never about the file."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    def _refuse(*a, **k):
+        raise config_generation.WorldQueryUnavailable(
+            "roqsim could not describe this world", next_step="check the lane")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert "Next: check the lane" in problems[0]["message"]
+
+
+def _two_worlds(monkeypatch):
+    """Make the campaign resolve to two distinct worlds.
+
+    Patched rather than authored: a second block only appears once the backend resolves
+    and validates the configuration's own ``sim:``, which needs the simulator package
+    installed. What is under test is what ``world_problems`` does with two blocks.
+    """
+    monkeypatch.setattr(world_query, "_distinct_blocks",
+                        lambda *a, **k: [(None, {"config": "world.yaml"}),
+                                         ("other", {"config": "other-world.yaml"})])
+
+
+def test_one_lane_failure_is_reported_once_not_once_per_world(tmp_path, monkeypatch):
+    """A lane that cannot start a container fails every block for the same reason, and
+    saying so once per block is a reply that scales with the campaign, not the problem."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    def _refuse(*a, **k):
+        raise config_generation.WorldQueryUnavailable("no container runner is available")
+
+    _two_worlds(monkeypatch)
+    monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert len(problems) == 1, "one cause, one problem"
+    assert problems[0]["config"] is None, "it is about the campaign, not one cell"
+
+
+def test_two_worlds_failing_differently_stay_two_problems(tmp_path, monkeypatch):
+    """The collapse must never hide a difference between configurations — which is the
+    whole reason the blocks are described one by one."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    def _refuse(_execution, block, *a, **k):
+        raise config_generation.WorldQueryUnavailable(
+            f"cannot describe {block.get('config')}")
+
+    _two_worlds(monkeypatch)
+    monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert len(problems) == 2
+    assert {p["config"] for p in problems} == {None, "other"}
+
+
+# -- what the report says about a check that did not run -------------------------
+
+
+class _Registry:
+    def require(self, workspace_id):
+        return {"workspace_id": workspace_id}
+
+
+class _Store:
+    registry = _Registry()
+
+
+class _Transport:
+    """Enough of ``LocalTransport`` for ``_with_world_check``, which is what is under test."""
+
+    store = _Store()
+
+    def exec_in_container(self, _request):
+        raise AssertionError("the world query is patched out in these tests")
+
+
+def _checked(monkeypatch, tmp_path, problems=None, crash=None):
+    """``_with_world_check`` over a clean cheap-check result.
+
+    The query and the file load are both stood in for: what is under test is the verdict
+    this builds from an answer, not how the answer or the file was obtained.
+    """
+    from robovast.common import common
+    from robovast.service.local_transport import LocalTransport
+
+    def _answer(*a, **k):
+        if crash is not None:
+            raise crash
+        return list(problems or [])
+
+    monkeypatch.setattr(world_query, "world_problems", _answer)
+    monkeypatch.setattr(common, "load_config", lambda *a, **k: _parameters())
+
+    class _Project:
+        config_path = str(tmp_path / "a.vast")
+
+    return LocalTransport._with_world_check(  # noqa: SLF001 - the unit under test
+        _Transport(), "ws-1", "", _Project(), {"valid": True, "problems": []})
+
+
+def test_a_checked_world_says_so_in_the_field_not_only_by_silence(tmp_path, monkeypatch):
+    result = _checked(monkeypatch, tmp_path)
+    assert result["valid"] is True
+    assert result["world_checked"] is True
+
+
+def test_an_unchecked_world_is_not_a_valid_campaign(tmp_path, monkeypatch):
+    """The defect this closes: an advisory said the world went unchecked while ``valid``
+    stayed true, so a caller that branches on the boolean — which is what a boolean is for
+    — ran a sweep whose most expensive failure had never been looked for."""
+    result = _checked(monkeypatch, tmp_path, problems=[
+        {"stage": "world", "config": None, "field": "f", "severity": "unchecked",
+         "message": "this campaign's world was NOT checked: no container runner"}])
+    assert result["valid"] is False
+    assert result["world_checked"] is False
+
+
+def test_a_check_that_crashed_is_reported_rather_than_logged_and_dropped(
+        tmp_path, monkeypatch):
+    """A caller cannot read this service's log, so a swallowed failure returned a reply
+    that had checked nothing and said so nowhere."""
+    result = _checked(monkeypatch, tmp_path, crash=RuntimeError("the store is gone"))
+    assert result["valid"] is False
+    assert result["world_checked"] is False
+    assert [p["severity"] for p in result["problems"]] == ["unchecked"]
+    assert "the store is gone" in result["problems"][0]["message"]
+
+
+def test_an_advisory_about_a_checked_world_still_passes(tmp_path, monkeypatch):
+    """``advice`` is a checked fact worth saying, not a reason to refuse a campaign. Only
+    ``error`` and ``unchecked`` may take a pass away."""
+    result = _checked(monkeypatch, tmp_path, problems=[
+        {"stage": "world", "config": None, "field": "f", "severity": "advice",
+         "message": "this world has no lighting"}])
+    assert result["valid"] is True
+    assert result["world_checked"] is True

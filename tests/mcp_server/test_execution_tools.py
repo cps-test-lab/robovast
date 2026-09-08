@@ -883,3 +883,38 @@ def test_a_progressing_campaign_still_gets_no_hint():
 
     assert _campaign_next_step({"status": "running", "postprocessed": False}) == ""
     assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""
+
+
+def test_the_local_file_lane_does_not_call_an_unchecked_world_a_pass(
+        tmp_path, monkeypatch, authoring_service):
+    """This lane has no service, so it can never run the simulator — and until the verdict
+    covered that, it answered ``valid: true`` for a world nothing had looked at."""
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory",
+                        lambda _path: [{"stage": "world", "config": None, "field": "f",
+                                        "severity": "unchecked",
+                                        "message": "was NOT checked: no service here"}])
+    report = authoring.validate_project(str(tmp_path / "x.vast"))
+    assert report["lane"] == "local file"
+    assert report["valid"] is False
+    assert report["world_checked"] is False
+    assert not authoring_service.calls
+
+
+def test_a_campaign_with_no_world_is_not_marked_unchecked(
+        tmp_path, monkeypatch, authoring_service):
+    """Nothing to check is not a check that failed: a campaign with no simulator gets a
+    plain pass, and ``world_checked`` claims no verdict either way."""
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
+    report = authoring.validate_project(str(tmp_path / "x.vast"))
+    assert report["valid"] is True
+    assert report["world_checked"] is None

@@ -176,12 +176,13 @@ def _unchecked_world_advisory(config_path: str) -> list:
             return []
     except Exception:  # noqa: BLE001 - a file the checks above already reported on
         return []
-    return [{"stage": "world", "config": None,
+    return [{"stage": "world", "config": None, "severity": "unchecked",
              "field": "execution.containers.simulation.config",
              "message": "whether this campaign's world loads and compiles was NOT checked: "
                         "that runs the simulator, and this address was read as a plain file "
                         "with no service to run one. Validate through a workspace address "
-                        "(/sources/<workspace_id>/<path>) to have it checked."}]
+                        "(/sources/<workspace_id>/<path>) to have it checked, or pass "
+                        "check_world=False for the narrower verdict this lane can give."}]
 
 
 def validate_project(address: str, check_world: bool = True) -> dict:
@@ -192,9 +193,15 @@ def validate_project(address: str, check_world: bool = True) -> dict:
     strategy) — installed entry points and local ``./path.py:Class`` refs alike — each tagged
     with its config block and field, so the file is fixed in as few iterations as it can be.
 
-    ``valid: true`` means the file is well-formed, every reference resolves, and the world
-    loads and compiles. It does **not** mean a derived image will build — that failure passes
-    validation and then costs a full apt+pip cycle, so if a container adds packages, read
+    ``valid: true`` means every check this reports on ran **and** passed: the file is
+    well-formed, every reference resolves, and the world loads and compiles. A check that
+    could not run here makes it ``false`` and arrives as a problem with
+    ``severity: "unchecked"``, so "not verified" never reads as "fine" — ``world_checked``
+    (true / false / null when not requested) says which happened to the one check that needs
+    a container. An ``unchecked`` problem is not a defect in the file: its message names what
+    would settle it, and ``advice`` problems leave ``valid`` true. It does **not** mean a
+    derived image will build — that failure passes validation and then costs a full apt+pip
+    cycle, so if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
     **The world check is the only one here that runs a container**, and the only one catching a
@@ -212,10 +219,12 @@ def validate_project(address: str, check_world: bool = True) -> dict:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
     Returns:
-        ``{valid, configs, runs_per_config, total_trials, problems, lane}``, each problem
-        ``{stage, config, field, message}``. A clean campaign returns no world entry.
+        ``{valid, world_checked, configs, runs_per_config, total_trials, problems, lane}``,
+        each problem ``{stage, config, field, message, severity}`` with ``severity`` one of
+        ``error`` / ``advice`` / ``unchecked``. A clean campaign returns no world entry.
     """
     from robovast.common.config_validation import validate_project_file
+    from robovast.service.interface import ValidationReport
     from robovast.service.project_push import _resolve_workspace_id
     try:
         target = _address_lane(address)
@@ -224,20 +233,27 @@ def validate_project(address: str, check_world: bool = True) -> dict:
             # unchecked rather than letting a clean reply read as a checked one.
             report = validate_project_file(address)
             if check_world:
+                # Same rule as the service lane, because the answer is the same one: a
+                # world nobody could look at is not a world that passed. Empty when the
+                # campaign declares no simulator -- then there is no world to check, and
+                # `world_checked` stays null rather than claiming a verdict.
+                advisory = _unchecked_world_advisory(address)
                 report = {**report,
-                          "problems": list(report.get("problems") or [])
-                          + _unchecked_world_advisory(address)}
-            return {**report, "lane": "local file"}
+                          "world_checked": False if advisory else None,
+                          "valid": bool(report.get("valid")) and not advisory,
+                          "problems": list(report.get("problems") or []) + advisory}
+            return {**ValidationReport.model_validate(report).model_dump(),
+                    "lane": "local file"}
         client = service_access.client_or_local()
         workspace_id, rel_path = target
         report = client.validate_project(
             _resolve_workspace_id(client, workspace_id), rel_path, check_world)
         return {**report.model_dump(), "lane": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"valid": False, "configs": 0, "runs_per_config": 0,
-                "total_trials": 0,
-                "problems": [{"stage": "project", "config": None,
-                              "field": None, "message": str(e)}]}
+        return {"valid": False, "world_checked": None, "configs": 0,
+                "runs_per_config": 0, "total_trials": 0,
+                "problems": [{"stage": "project", "config": None, "field": None,
+                              "severity": "error", "message": str(e)}]}
 
 
 def preview_configurations(address: str, limit: int = 0) -> dict:
