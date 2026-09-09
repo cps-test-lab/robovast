@@ -45,7 +45,6 @@ the scripts always match the driver that generated the command.
 """
 
 import datetime
-import copy
 import hashlib
 import json
 import logging
@@ -162,11 +161,93 @@ _DEFAULT_TIMEOUT = 3 * 60 * 60
 #: ceiling near the reservation would fail a large campaign that never held that much at once,
 #: while a reservation near the ceiling would price every postprocessing pod at a disk figure
 #: almost none of them reach.
-POSTPROCESS_EPHEMERAL_REQUEST = "20Gi"
-POSTPROCESS_EPHEMERAL_LIMIT = "200Gi"
+#: The smallest disk a postprocessing step asks for, and what a step asks for when its need
+#: is not known. Not "the request": the stage step derives its own from what it will fetch.
+POSTPROCESS_EPHEMERAL_FLOOR = "20Gi"
+
+#: The most disk one postprocessing pod may claim on a node it shares with trials. Caps the
+#: stage step's derived figure, and is the ceiling every step is held to.
+#:
+#: **Disk is the one resource here whose request and ceiling are deliberately not equal**,
+#: unlike cpu and memory (see :func:`step_resources`). What a step *downloads* is ours to
+#: know and is what the request describes; what it *writes* into the shared mount is the
+#: campaign's, declared in its ``.vast`` -- a conversion may emit a few CSVs or encode video
+#: of every run, and a ``command:`` step may write anything at all. Holding a pod to a
+#: reservation that cannot account for that would evict campaigns for declaring the
+#: postprocessing they are entitled to declare. Same reason ``POSTPROCESS_HOST_FLOOR`` is
+#: raised by a campaign's own figure and never lowered by it.
+POSTPROCESS_EPHEMERAL_CAP = "200Gi"
+
+#: Headroom over the bytes the stage step will fetch, for what lands in the same mount but is
+#: not an object it downloaded: the conversion's own outputs, and the filesystem's per-file
+#: overhead across a campaign's many small files.
+STAGE_EPHEMERAL_HEADROOM = 1.5
 
 
-def step_resources(cpu, memory) -> dict:
+def _stage_bytes(cluster_config, bucket: str, prefix: str, skip_bags: bool,
+                 batch_jobs: str):
+    """Bytes the stage step will fetch, or ``None`` when the store cannot be listed.
+
+    Uses the stage step's own include rule rather than the whole prefix, so the figure
+    describes what that step downloads: a campaign whose pod opens no bag does not stage
+    them, and a per-batch Job stages one batch's job artifacts.
+
+    **A per-batch Job lists only its own batch.** Its Job is created once per batch while the
+    campaign is still growing, so listing the whole prefix each time would cost a pass over
+    every earlier batch as well -- work that grows with the square of the search. ``_jobs/``
+    is where the bags are and the only part ``build_include`` narrows; what is left is a run
+    directory's verdict and parameters, kilobytes against a batch of bags, and the floor
+    already covers more than that.
+
+    One metadata-only listing, on a path that is already creating a Job. ``None`` on any
+    store failure, deliberately: a sizing hint is not worth refusing to postprocess over,
+    and the floor it falls back to is what this step asked for unconditionally before.
+    """
+    from . import in_pod_storage  # noqa: PLC0415
+    from .postprocess_stage import build_include  # noqa: PLC0415
+
+    listed = f"{prefix.rstrip('/')}/_jobs/{batch_jobs.strip('/')}" if batch_jobs else prefix
+    try:
+        storage = in_pod_storage.storage_client_for(cluster_config)
+        objects, _ = storage.list_entries(bucket, listed)
+    except Exception as e:  # noqa: BLE001 - advisory; the floor covers a store that cannot answer
+        logger.debug("could not size the staged tree of s3://%s/%s: %s", bucket, listed, e)
+        return None
+
+    clean = prefix.rstrip("/")
+    key_prefix = f"{clean}/" if clean else ""
+    include = build_include(skip_bags, batch_jobs, exclude_config=False)
+    total = 0
+    for key, size in objects:
+        rel = key[len(key_prefix):] if key_prefix else key
+        if not rel or key.endswith("/"):
+            continue
+        if not include(rel):
+            continue
+        total += int(size or 0)
+    return total
+
+
+def stage_ephemeral_request(stage_bytes) -> str:
+    """The stage step's ``ephemeral-storage`` request for a campaign of *stage_bytes*.
+
+    The scheduler places the pod on this figure and the kubelet evicts against it, so it has
+    to describe the staged tree rather than a typical one: a campaign is written to the node's
+    disk in full, and what that costs is the size of the campaign. The floor still applies --
+    it is what a small campaign asks for -- and the limit still caps it, because a request
+    above its own limit is not a pod spec Kubernetes accepts.
+
+    ``None`` means the size could not be read; the floor then stands, which is the behaviour
+    of a deployment whose store cannot be listed at submission time.
+    """
+    floor = to_bytes(POSTPROCESS_EPHEMERAL_FLOOR)
+    ceiling = to_bytes(POSTPROCESS_EPHEMERAL_CAP)
+    want = floor if not stage_bytes else int(stage_bytes * STAGE_EPHEMERAL_HEADROOM)
+    gib = 1 << 30
+    return f"{max(floor, min(want, ceiling)) // gib}Gi"
+
+
+def step_resources(cpu, memory, ephemeral: str = "") -> dict:
     """One step's ``resources``, with cpu and memory as reservation *and* ceiling.
 
     **The equality is the point, and it is about comparability rather than thrift.** This pod
@@ -178,24 +259,40 @@ def step_resources(cpu, memory) -> dict:
 
     Nothing here is under test, so the throughput given up is real and the measurement it
     protects is worth more.
+
+    **Disk is stated as a pair instead**, and the asymmetry is not an oversight: see
+    :data:`POSTPROCESS_EPHEMERAL_CAP`. A step's reservation describes what RoboVAST will
+    download, which it knows; its ceiling has to cover what the campaign's own declared
+    postprocessing writes beside it, which it does not.
     """
     quantities = {"cpu": str(cpu), "memory": str(memory)}
+    request = ephemeral or POSTPROCESS_EPHEMERAL_FLOOR
     return {
-        "requests": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_REQUEST}),
-        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_LIMIT}),
+        "requests": dict(quantities, **{"ephemeral-storage": request}),
+        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_CAP}),
     }
 
 
-#: What the stage step gets. **Fixed, and a campaign's figure does not raise it** -- unlike
-#: the host step below.
-#:
-#: Staging lists the campaign's objects a page at a time and streams one object at a time to
-#: disk, so its footprint is set by that construction and not by the size of the campaign. The
-#: small memory bound is therefore a GUARD rather than a reservation: a regression in that
-#: streaming shows up as this step failing, and a limit that grew with whatever the campaign
-#: asked for is exactly the limit that would absorb it silently. This step also runs only our
-#: own code, so there is nothing here whose appetite a ``.vast`` would know better than we do.
-POSTPROCESS_STAGE_RESOURCES = step_resources(2, "1Gi")
+def stage_resources(stage_bytes=None) -> dict:
+    """What the stage step gets for a campaign of *stage_bytes*.
+
+    **cpu and memory are fixed, and a campaign's figure does not raise them** -- unlike the
+    host step below. Staging lists the campaign's objects a page at a time and streams one
+    object at a time, so what it holds *in memory* is set by that construction and not by the
+    size of the campaign. The small memory bound is therefore a GUARD rather than a
+    reservation: a regression in that streaming shows up as this step failing, and a limit
+    that grew with whatever the campaign asked for is exactly the limit that would absorb it
+    silently. This step also runs only our own code, so there is nothing here whose appetite a
+    ``.vast`` would know better than we do.
+
+    **Disk is the opposite, because that is where the streaming ends.** Every object lands on
+    the node's filesystem and stays there for the pod's life, so the staged tree *is* the
+    campaign and ephemeral-storage is the one figure here that has to scale with it. Left
+    fixed it describes a typical campaign rather than this one, and a campaign larger than
+    the figure is scheduled onto a node that cannot hold it and evicted partway through --
+    losing the whole postprocessing, not the excess.
+    """
+    return step_resources(2, "1Gi", ephemeral=stage_ephemeral_request(stage_bytes))
 
 #: The floor under the host step, which is where **everything the campaign declared that is
 #: not a rosbag conversion runs** -- its own metric plugins, metadata, publication, the health
@@ -1537,7 +1634,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
                    tolerate_under=(), skip=None, batch_commands=None,
-                   convert_resources=None) -> dict:
+                   convert_resources=None, stage_bytes=None) -> dict:
     """Build the postprocessing Job manifest.
 
     Args:
@@ -1646,7 +1743,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                 + ([{"name": ENV_BATCH_JOBS, "value": discriminator}]
                    if batch_commands is not None and discriminator else [])),
         "volumeMounts": [campaign_mount],
-        "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
+        "resources": stage_resources(stage_bytes),
     }
     convert = {
         "name": CONVERT_CONTAINER,
@@ -2051,7 +2148,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
-        batch_commands=batch_commands, convert_resources=convert_resources)
+        batch_commands=batch_commands, convert_resources=convert_resources,
+        stage_bytes=_stage_bytes(cluster_config, bucket, campaign_prefix,
+                                 skip_bags=not rosbag_cmds,
+                                 batch_jobs=discriminator if batch_commands is not None else ""))
     name = manifest["metadata"]["name"]
 
     # Whether a Job of this name is already running is decided HERE, ahead of every write,
