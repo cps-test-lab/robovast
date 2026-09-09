@@ -256,7 +256,146 @@ def gen_msg_values(msg, prefix=""):
         yield prefix, msg
 
 
-def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *, on_conflict=None):
+# -- one run directory, several recorded attempts -----------------------------
+
+#: The bag directory name ``ros2 bag record`` picks for itself: the prefix plus the
+#: recorder's local wall clock. Fixed-width and zero-padded, so the captured text sorts
+#: chronologically as a plain string -- the only thing it is used for.
+_BAG_NAME_STAMP = re.compile(r"_(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})$")
+
+#: rosbag2 writes the bag's start time into its sidecar as epoch nanoseconds. Read with a
+#: regex and not a YAML parse, because the bag that matters here is one a restart cut off,
+#: whose sidecar can be half-written; the minimum over every match is the bag's start
+#: whatever the key order, since the per-file entries carry the same key.
+_BAG_START_NS = re.compile(r"nanoseconds_since_epoch:\s*(\d+)")
+
+#: rosbag2's sidecar. Its absence is also what makes a bag unreadable to the converter.
+BAG_METADATA = "metadata.yaml"
+
+
+class BagAttempts(NamedTuple):
+    """The recorded attempts one run directory holds, when it holds more than one."""
+
+    #: The run directory holding them.
+    run_dir: str
+    #: The attempt that is this run's data, or ``None`` when they could not be ordered.
+    converted: Optional[str]
+    #: Every other attempt, oldest first -- all of them when *converted* is ``None``.
+    superseded: List[str]
+    #: What ordered them: ``"metadata"``, ``"name"``, or ``""`` when nothing could.
+    dated_by: str
+    #: Each attempt's start time as epoch ns, ``None`` for one whose sidecar has none.
+    start_times: Dict[str, Optional[int]]
+
+
+def bag_start_ns(bag_path: str) -> Optional[int]:
+    """The bag's own start time, epoch ns, or ``None`` when its sidecar does not say."""
+    try:
+        with open(os.path.join(bag_path, BAG_METADATA), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            stamps = [int(m.group(1)) for m in _BAG_START_NS.finditer(fh.read())]
+    except OSError:
+        return None
+    return min(stamps) if stamps else None
+
+
+def resolve_bag_attempts(run_dir: str, bags: Sequence[str]) -> BagAttempts:
+    """Decide which of *run_dir*'s bags holds this run's data: the last attempt.
+
+    A recorder restarting mid-trial leaves the abandoned attempt's bag beside the new one,
+    and only the last one is the run. Everything else in the directory exists once -- one
+    run log, one verdict, one set of videos, all of them the last attempt's -- so
+    converting an earlier bag would attach some other attempt's trajectory to this run's
+    outcome, and nothing in the resulting tables would say so. One attempt is also all the
+    directory can hold: every output name is derived from the run directory, so a second
+    bag's CSVs would overwrite the first's.
+
+    Ordered by the sidecar's start time when every attempt has one, else by the recorder's
+    timestamp suffix when every attempt has one -- never by a mix: the suffix is local wall
+    clock and the sidecar is epoch, so ordering one against the other inverts two attempts
+    that are minutes apart under a nonzero UTC offset.
+
+    An attempt with neither -- a stray unstamped bag beside a timestamped one, its sidecar
+    never written -- leaves the run unordered: *converted* is ``None`` and this directory
+    contributes nothing. Picking anyway is the one outcome worth avoiding here, because a
+    wrong pick is data that looks right.
+    """
+    starts: Dict[str, Optional[int]] = {bag: bag_start_ns(bag) for bag in bags}
+    stamps: Dict[str, Optional[str]] = {}
+    for bag in bags:
+        match = _BAG_NAME_STAMP.search(os.path.basename(bag))
+        stamps[bag] = match.group(1) if match else None
+
+    if all(v is not None for v in starts.values()):
+        # Ties broken on the path so a re-run picks what the last run picked.
+        order, dated_by = sorted(bags, key=lambda b: (starts[b], b)), "metadata"
+    elif all(v is not None for v in stamps.values()):
+        order, dated_by = sorted(bags, key=lambda b: (stamps[b], b)), "name"
+    else:
+        return BagAttempts(run_dir, None, sorted(bags), "", starts)
+    return BagAttempts(run_dir, order[-1], order[:-1], dated_by, starts)
+
+
+#: One row per attempt of a run that recorded more than once, written into the run
+#: directory. A CSV, because the campaign ingest turns any CSV there into a table keyed on
+#: the run: "which runs recorded twice, and which bag are their metrics from" is then a
+#: query over the campaign, and not a grep through one step's log -- which is where that
+#: question actually gets asked, days later, of tables that look complete.
+BAG_ATTEMPTS_CSV = "rosbag_attempts.csv"
+BAG_ATTEMPTS_FIELDNAMES = ["bag", "role", "start_time_ns", "dated_by"]
+
+#: ``role`` values. ``superseded`` is an attempt a restart abandoned; ``unordered`` says no
+#: attempt was converted, because the directory holds one that cannot be dated.
+ROLE_CONVERTED = "converted"
+ROLE_SUPERSEDED = "superseded"
+ROLE_UNORDERED = "unordered"
+
+
+def write_bag_attempts(out_dir: str, attempts: BagAttempts) -> str:
+    """Record *attempts* in *out_dir*'s :data:`BAG_ATTEMPTS_CSV`; return the file's path.
+
+    Rewritten rather than appended, for the reason :func:`register_video` is: a step re-run
+    over a directory that already has results would otherwise double every row.
+    """
+    rows = []
+    if attempts.converted:
+        rows.append((attempts.converted, ROLE_CONVERTED))
+    rows.extend((bag, ROLE_SUPERSEDED if attempts.converted else ROLE_UNORDERED)
+                for bag in attempts.superseded)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, BAG_ATTEMPTS_CSV)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=BAG_ATTEMPTS_FIELDNAMES)
+        writer.writeheader()
+        for bag, role in rows:
+            start = attempts.start_times.get(bag)
+            writer.writerow({"bag": os.path.basename(bag), "role": role,
+                             "start_time_ns": "" if start is None else start,
+                             "dated_by": attempts.dated_by})
+    return path
+
+
+def bag_attempts_note(attempts: BagAttempts, input_root: str) -> str:
+    """One line saying what this run recorded and what was done with it.
+
+    Here rather than at the print site so that what the step tells an operator is asserted
+    by a test on the host -- the module printing it cannot be imported there.
+    """
+    run_rel = os.path.relpath(attempts.run_dir, input_root)
+    names = ", ".join(sorted(os.path.basename(b) for b in attempts.superseded))
+    if not attempts.converted:
+        return (f"{run_rel}: {len(attempts.superseded)} bags ({names}) and no way to tell "
+                f"which is the run's -- one of them carries neither a start time nor a "
+                f"recorded timestamp. Nothing converted from this run; remove the stray "
+                f"bag to convert it.")
+    return (f"{run_rel}: recorded {len(attempts.superseded) + 1} times, converting "
+            f"{os.path.basename(attempts.converted)} (the last attempt, by "
+            f"{attempts.dated_by}). Superseded, not converted: {names}. "
+            f"Recorded in {BAG_ATTEMPTS_CSV}.")
+
+
+def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *,
+                 on_multiple_attempts=None):
     """Find all rosbag directories using parallel directory scanning (IO-bound).
 
     Uses a BFS with a ThreadPoolExecutor so that large result trees (e.g. 50k
@@ -280,24 +419,15 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *, on_conflic
                     was ever going to read. Passed in rather than hardcoded: this module is
                     copied into the container standalone and can import no definition of
                     what "reserved" means.
+        on_multiple_attempts: called once with the list of :class:`BagAttempts` for every
+            run directory that holds more than one bag, after the walk. Each says which
+            attempt the result contains and which were left out of it, so the caller can
+            record the choice where a reader of the data will meet it.
 
     Returns:
-        Sorted list of found rosbag directory paths.
-
-    Args (continued):
-        on_conflict: called once with ``{parent: [bag names]}`` when any directory holds
-            more than one matching bag. Those bags are left OUT of the result -- handlers
-            derive their output path from the bag's parent, so two bags there would write
-            the same CSV, and which one survived would be decided by a worker pool.
-            Ambiguity stays the user's to resolve; what changed is that it is now one
-            run's problem. With no handler this raises instead, which is the older
-            behaviour and still the right default for a caller that has nowhere to report:
-            a scan that quietly returned fewer bags than the tree holds would be a silent
-            loss of data.
-
-    Raises:
-        ValueError: if a directory holds more than one matching bag and no *on_conflict*
-            was given.
+        Sorted list of found rosbag directory paths -- one per run directory, even where
+        the recorder left several attempts there. Which one, and why the others are not
+        the run's data, is :func:`resolve_bag_attempts`.
     """
     parts = bag_dir_name.split("/")
     prune_top = parts[0]
@@ -335,23 +465,22 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *, on_conflic
                         subdirs.append(entry.path)
         except OSError:
             pass
-        # Two bags sharing a parent directory would share an output CSV. Reported rather
-        # than raised: this runs inside a worker pool, so raising here propagates out of
-        # `fut.result()` and ends the WHOLE walk -- one run left with a second bag by a
-        # restart mid-record then skipped extraction for every other run in the campaign.
-        # The conflicting parent's bags are dropped from the result and named to the
-        # caller; every unambiguous run still converts.
+        # A recorder restarted mid-trial leaves its attempts side by side here, and only
+        # one of them is this run's data (see resolve_bag_attempts). Which one is decided
+        # after the walk, not here: this runs inside a worker pool, so anything raised here
+        # arrives at `fut.result()` and ends the WHOLE walk -- one run's ambiguity costing
+        # every other run in the campaign its conversion.
         by_parent: Dict[str, List[str]] = {}
         for bag in bags:
             by_parent.setdefault(os.path.dirname(bag), []).append(bag)
-        conflicts: Dict[str, List[str]] = {}
+        repeats: Dict[str, List[str]] = {}
         keep: List[str] = []
         for parent, siblings in by_parent.items():
             if len(siblings) > 1:
-                conflicts[parent] = sorted(os.path.basename(b) for b in siblings)
+                repeats[parent] = sorted(siblings)
             else:
                 keep.extend(siblings)
-        return keep, subdirs, conflicts
+        return keep, subdirs, repeats
 
     # Threads, not processes, and the work is a directory walk -- so this is deliberately a
     # multiple of the CPU budget rather than equal to it: a scan blocks on the store far more
@@ -359,30 +488,24 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *, on_conflic
     # reads than a store answers well.
     n_workers = min(32, available_cpus() * 4)
     pending = [directory]
-    conflicts: Dict[str, List[str]] = {}
+    repeats: Dict[str, List[str]] = {}
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         while pending:
             futures = {executor.submit(_scan, p): p for p in pending}
             pending = []
             for fut in as_completed(futures):
-                bags, subdirs, found_conflicts = fut.result()
+                bags, subdirs, found_repeats = fut.result()
                 found.extend(bags)
-                conflicts.update(found_conflicts)
+                repeats.update(found_repeats)
                 pending.extend(subdirs)
 
-    if conflicts:
-        if on_conflict is None:
-            first = sorted(conflicts)[0]
-            raise ValueError(
-                f"Ambiguous rosbag layout: {first} holds {len(conflicts[first])} "
-                f"'{bag_dir_name}' bags ({', '.join(conflicts[first])})"
-                + (f", and {len(conflicts) - 1} other directory/-ies do too"
-                   if len(conflicts) > 1 else "")
-                + ". Postprocessing writes one CSV per bag parent, so these would "
-                "overwrite each other. Keep one bag per run directory, or point "
-                "--bag-dir at the one you want."
-            )
-        on_conflict(conflicts)
+    # Serial, and after the walk: resolving reads a bag's metadata, and a run recording
+    # more than once is the exception -- a campaign where it is the rule has a recorder
+    # problem to fix, not a scan to speed up.
+    attempts = [resolve_bag_attempts(run_dir, bags) for run_dir, bags in sorted(repeats.items())]
+    found.extend(a.converted for a in attempts if a.converted)
+    if attempts and on_multiple_attempts is not None:
+        on_multiple_attempts(attempts)
 
     return sorted(found)
 #: The manifest every video producer writes beside its file, one row per video. Read by the
