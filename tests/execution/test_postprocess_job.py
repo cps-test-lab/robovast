@@ -697,10 +697,10 @@ def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
 
     convert = pj.step_resources(**{k: POSTPROCESS_CONVERT_DEFAULTS[k]
                                    for k in ("cpu", "memory")})
-    assert _mem_mib(pj.POSTPROCESS_STAGE_RESOURCES) < _mem_mib(convert)
+    assert _mem_mib(pj.stage_resources()) < _mem_mib(convert)
     # The disk request, by contrast, is the campaign's and stays: it is what reserves the
     # shared emptyDir the campaign lands in.
-    assert pj.POSTPROCESS_STAGE_RESOURCES["requests"]["ephemeral-storage"]
+    assert pj.stage_resources()["requests"]["ephemeral-storage"]
 
 
 def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, monkeypatch):
@@ -1094,7 +1094,7 @@ def test_staging_is_never_raised_by_what_a_campaign_asks_for():
     """
     containers = _containers(_manifest(convert_resources={"cpu": 6, "memory": "12Gi"}))
     assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
-    assert containers["stage"]["resources"] == pj.POSTPROCESS_STAGE_RESOURCES
+    assert containers["stage"]["resources"] == pj.stage_resources()
 
 
 def test_one_step_cannot_edit_another_steps_resources():
@@ -1656,3 +1656,36 @@ def test_the_predicate_reaches_the_waiter_and_the_record(monkeypatch, tmp_path):
 
     assert seen["waiter"] is predicate
     assert seen["record"] is predicate
+
+
+def test_stage_ephemeral_request_scales_with_the_campaign():
+    """The staged tree is the campaign, so the disk request has to describe this one.
+
+    Left at the floor it describes a typical campaign, and a larger one is scheduled onto a
+    node that cannot hold it and evicted partway through -- which loses the whole
+    postprocessing rather than the excess.
+    """
+    gib = 1 << 30
+    floor = to_bytes(pj.POSTPROCESS_EPHEMERAL_REQUEST)
+    ceiling = to_bytes(pj.POSTPROCESS_EPHEMERAL_LIMIT)
+
+    # A campaign smaller than the floor still asks for the floor.
+    assert to_bytes(pj.stage_ephemeral_request(1 * gib)) == floor
+    # One larger than it asks for its own size, with headroom for what the conversion
+    # writes into the same mount.
+    assert to_bytes(pj.stage_ephemeral_request(100 * gib)) > 100 * gib
+    # Never above its own limit: a request over its limit is not a pod spec.
+    assert to_bytes(pj.stage_ephemeral_request(10_000 * gib)) == ceiling
+    # A store that cannot be listed leaves the floor standing.
+    assert to_bytes(pj.stage_ephemeral_request(None)) == floor
+
+
+def test_stage_container_carries_the_campaigns_own_disk_request():
+    """The figure has to reach the pod spec, which is the only thing the scheduler reads."""
+    gib = 1 << 30
+    containers = _containers(_manifest(stage_bytes=100 * gib))
+    asked = containers["stage"]["resources"]["requests"]["ephemeral-storage"]
+
+    assert to_bytes(asked) > 100 * gib
+    # and the guard on what staging may hold in memory is unchanged by it
+    assert containers["stage"]["resources"]["requests"]["memory"] == "1Gi"
