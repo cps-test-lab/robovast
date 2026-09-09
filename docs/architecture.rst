@@ -262,7 +262,7 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   is warned about by name.
 * **The lane is not implied.** The query runs a container, so a service offering both lanes
   routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
-  a campaign's composition (a per-campaign aux pod), so the cluster lane refuses this query with
+  a composition, which creates the aux pod it asks for, so the cluster lane refuses this query with
   that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
   one-shot queries is the follow-up that would lift it.
 
@@ -463,7 +463,7 @@ the identity changes, so ``/config`` never needs refreshing under a live pod. A 
 is torn down with its pod; a tree left by a dead service process is reaped at the next
 stop, since nothing else would.
 
-**The per-campaign aux pod stages the same way**, so there is one in-cluster transport
+**A composition's aux pod stages the same way**, so there is one in-cluster transport
 rather than three. Its contract is harder than the exec lane's — a *bidirectional* mirror
 around every ``run()`` on a kept-alive pod, which an init container running once before
 the pod starts cannot serve — so the init container injects ``mc`` into an ``emptyDir``

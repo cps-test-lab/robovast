@@ -409,8 +409,8 @@ them rather than invent its own habits:
    differ on, and it is a decision to make rather than a default to inherit:
 
    * the missing answer changes **what runs** -> let it propagate. ``get_required_container``
-     does: without an answer we cannot know whether the campaign needs a helper image, so the
-     campaign must fail rather than launch with no aux pod.
+     does: without an answer we cannot know whether the variation needs a helper image, so
+     composition fails rather than running it without one it may have declared.
    * it changes **what a record claims** -> record the gap *in the record*.
      ``collect_prov_metadata`` does: the graph gains a ``ProvenanceGap`` entity naming the
      contribution that raised, because a published provenance record whose incompleteness is

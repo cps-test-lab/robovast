@@ -26,6 +26,7 @@ from robovast.common.variation.container_runner import ContainerSpec
 from robovast.execution.cluster_execution.container_runner import (AuxPodSession,
                                                                    ClusterContainerRunner,
                                                                    aux_owner_prefix,
+                                                                   aux_pod_name,
                                                                    build_aux_pod_manifest,
                                                                    mc_host_env)
 
@@ -254,9 +255,11 @@ def test_a_failing_delete_does_not_fail_the_variation():
 def test_the_session_sweeps_what_a_crashed_runner_left(monkeypatch):
     """``close`` runs in a ``finally``, but not if the process died between them."""
     store = _FakeStore()
-    session = AuxPodSession("c-2026-08-06-000000", [], "ns", core_v1=object(),
+    session = AuxPodSession("c-2026-08-06-000000", "ns", core_v1=object(),
                             storage=store, bucket="b", s3=_S3)
-    session._created = True
+    pod = aux_pod_name("c-2026-08-06-000000", "aux-img")
+    session._created = {pod}
+    session._pods = {"aux-img": pod}
     monkeypatch.setattr(session, "_client",
                         lambda: type("C", (), {
                             "delete_namespaced_pod": lambda *a, **k: None})())
@@ -268,7 +271,7 @@ def test_partial_store_wiring_is_refused_at_construction():
     """A pod with mc but no client (or the reverse) fails at the first run(), deep inside
     a plugin, instead of here where the cause is legible."""
     with pytest.raises(ValueError, match="together"):
-        AuxPodSession("c-1", [], "ns", storage=_FakeStore(), bucket="b")
+        AuxPodSession("c-1", "ns", storage=_FakeStore(), bucket="b")
 
 
 # -- the pod manifest ---------------------------------------------------------
@@ -404,10 +407,9 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
         "service_pod_owner_reference", lambda *a, **k: None)
 
     spec = ContainerSpec(image="example/img:1")
-    session = AuxPodSession("c-1", [spec], "ns", core_v1=_Core())
-# entering without exiting is what this measures
-    # pylint: disable-next=unnecessary-dunder-call
-    session.__enter__()
+    session = AuxPodSession("c-1", "ns", core_v1=_Core())
+    # provision, not enter: the pod is made when something asks for the container
+    session.provision(spec)
 
     assert events == ["create", "delete", "wait_gone", "create", "wait_ready"]
 
@@ -427,7 +429,7 @@ def test_the_session_honours_the_service_context(monkeypatch):
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         lambda context=None: seen.update(context=context))
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
-    AuxPodSession("c-1", [], "ns", kube_context="local")._client()
+    AuxPodSession("c-1", "ns", kube_context="local")._client()
     assert seen["context"] == "local"
 
 
@@ -444,7 +446,10 @@ def test_the_runner_honours_the_service_context(monkeypatch):
 def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
     """The factory is where the two are joined; a runner that built its own client from
     the default context would reintroduce the bug one layer down."""
-    session = AuxPodSession("c-1", [], "ns", core_v1=object(), kube_context="local")
+    session = AuxPodSession("c-1", "ns", core_v1=object(), kube_context="local")
+    # The factory creates the spec's pod on the way to the runner, so the pod is already
+    # accounted for here; what this measures is the runner it hands back.
+    monkeypatch.setattr(session, "_pod_for", lambda spec: "pod-x")
     runner = session.runner_factory()(ContainerSpec(image="example/img:1"))
     assert runner._kube_context == "local"
 
