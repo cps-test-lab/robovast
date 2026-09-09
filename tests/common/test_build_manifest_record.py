@@ -64,7 +64,7 @@ def test_the_preflight_reads_the_lock_after_the_image_is_gone(tmp_path):
     campaign = tmp_path / "c-2026-01-01-000000"
     (campaign / "_config").mkdir(parents=True)
     (campaign / "_config" / "campaign.vast").write_text(yaml.safe_dump({
-        "version": 3, "metadata": {"name": "p"},
+        "version": 4, "metadata": {"name": "p"},
         "execution": {"containers": {"sut": {"image": "family:robovast"}},
                       "scenario_file": "s.osc", "runs": 1}}), encoding="utf-8")
     (campaign / "_execution").mkdir()

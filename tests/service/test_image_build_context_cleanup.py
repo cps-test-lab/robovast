@@ -249,7 +249,12 @@ def _submit_stubs(cs, monkeypatch, storage):
             # spec would install with. None here -- but the stub has to answer, or the
             # submit dies on an AttributeError well before the context handling these
             # tests are about.
-            git_secret_name=lambda: ""),
+            git_secret_name=lambda: "",
+            # A submit asks the store whether the registry would refuse the credential
+            # it is about to push with, before it stages anything. False here: these tests
+            # are about what a submit does once it has decided to build, and a stub that
+            # said otherwise would refuse before reaching any of it.
+            push_refused=lambda image_ref: False),
         raising=False)
     # A ready build daemon: these tests are about what a submit does, and without one the
     # submit correctly refuses before it does any of it.
@@ -311,6 +316,80 @@ def test_a_build_is_in_flight_before_its_context_is_staged(cs, monkeypatch):
 
     ref = cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
     assert seen == {"in_flight": True, "prefix": context_prefix("imgbuild-foo-h")}
+    assert cs.get_image_build_status(ref.build_id).phase == "building"
+
+
+def test_a_refused_push_credential_stops_the_submit_before_it_stages_anything(
+        cs, monkeypatch):
+    """The failure this check exists to move earlier.
+
+    A build whose push will be rejected used to be discovered by doing it: every layer
+    built, every package installed, and a 401 at the final step. Nothing upstream had said
+    so -- the capability flag a client reads reports that a registry is *configured*, and
+    the cache probe just above is a manifest read, which a registry may serve while
+    refusing to receive one.
+
+    Asserted on what did *not* happen: no context copied, no upload, no Job. Those are
+    what the check is for -- a message alone would pass while the compute was still spent.
+    """
+    from robovast.execution.cluster_execution import cluster_image_build
+    from robovast.common.errors import ImageBuildFailed
+
+    storage = _FakeStorage()
+    cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
+    monkeypatch.setattr(cs._image_store, "push_refused", lambda image_ref: True,
+                        raising=False)
+
+    def refuse_to_stage(*_a, **_kw):
+        raise AssertionError("the context was staged for a build that cannot be pushed")
+    monkeypatch.setattr(cluster_image_build, "stage_context_to_s3", refuse_to_stage)
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector=None):
+            return types.SimpleNamespace(items=[])
+
+        def create_namespaced_job(self, namespace, manifest):
+            raise AssertionError("a Job was created for a build that cannot be pushed")
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+
+    with pytest.raises(ImageBuildFailed) as excinfo:
+        cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
+
+    message = str(excinfo.value)
+    assert "registry" in message
+    # It has to send the reader to the credential and away from `build:`, which is where
+    # the first diagnosis of this went.
+    assert "build:" in message and "setup" in message
+    assert storage.keys == [], "something was uploaded for a build that cannot be pushed"
+
+
+def test_a_registry_that_did_not_answer_does_not_stop_a_submit(cs, monkeypatch):
+    """The asymmetry. Only a registry that answered *and* refused blocks a build.
+
+    Turning "could not ask" into a refusal would trade a late failure for an early one
+    that is sometimes wrong, and the lane already survives an unreachable registry.
+    """
+    from robovast.execution.cluster_execution import cluster_image_build
+
+    storage = _FakeStorage()
+    cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
+    # `push_refused` collapses an unknown to False, which is what this asserts through.
+    monkeypatch.setattr(cs._image_store, "push_refused", lambda image_ref: False,
+                        raising=False)
+    monkeypatch.setattr(cluster_image_build, "stage_context_to_s3",
+                        lambda *a, **kw: 1234)
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector=None):
+            return types.SimpleNamespace(items=[])
+
+        def create_namespaced_job(self, namespace, manifest):
+            return None
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+
+    ref = cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
     assert cs.get_image_build_status(ref.build_id).phase == "building"
 
 

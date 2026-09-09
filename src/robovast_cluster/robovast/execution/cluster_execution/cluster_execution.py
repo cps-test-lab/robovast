@@ -30,6 +30,7 @@ import signal as _signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple
 
 from kubernetes import client
 
@@ -112,6 +113,19 @@ POD_BLOCKED_REASONS = frozenset({
 #: A name that cannot be parsed, an image the node may not pull, a container config the
 #: kubelet rejects: none of those involve a registry, and none can be transient.
 POD_PULL_REASONS = frozenset({"ImagePullBackOff", "ErrImagePull"})
+
+
+#: Why a pod the scheduler DID place still has no container: the kubelet cannot set up one
+#: of its volumes -- a ConfigMap or Secret that is not there, a volume that will not attach.
+#:
+#: The third shape of "Pending forever", and the one that hides best. The other two are
+#: legible in the pod's own status; this one leaves every container reporting
+#: ``PodInitializing``, which is exactly what a pod that started a second ago reports, so
+#: the only record of it is an Event. Unreported, the Job stays ``active`` with nothing
+#: said, and the wait can only time out and call the outcome unknown -- days later, in a
+#: log that ends mid-step. Kubernetes' own message names the missing object, which is the
+#: whole diagnosis.
+POD_VOLUME_REASONS = frozenset({"FailedMount", "FailedAttachVolume"})
 
 
 #: Why the scheduler refused to place a pod. Unlike :data:`POD_BLOCKED_REASONS` this is a
@@ -203,10 +217,12 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
 def pod_block_reason(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if *pod* cannot start on its own, else ``None``.
 
-    Two distinct shapes, both of which leave the pod ``Pending`` and its Job
-    ``active`` indefinitely: a container stuck in an unrecoverable ``waiting`` state
-    (see :data:`POD_BLOCKED_REASONS`), or a pod the scheduler cannot place (see
-    :data:`POD_UNSCHEDULABLE_REASONS`).
+    Two of the three shapes that leave a pod ``Pending`` and its Job ``active``
+    indefinitely: a container stuck in an unrecoverable ``waiting`` state (see
+    :data:`POD_BLOCKED_REASONS`), or a pod the scheduler cannot place (see
+    :data:`POD_UNSCHEDULABLE_REASONS`). The third is a volume the kubelet cannot set up,
+    which is invisible here because it is recorded in Events rather than in the pod --
+    see :func:`pod_awaiting_setup` and :data:`POD_VOLUME_REASONS`.
 
     Checks init *and* regular containers; ``message`` is Kubernetes' own text -- the
     failed image ref and registry error, or the scheduler's per-node accounting --
@@ -230,6 +246,76 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
                 and getattr(cond, "reason", None) in POD_UNSCHEDULABLE_REASONS):
             return cond.reason, (getattr(cond, "message", None) or "").strip()
     return None
+
+
+def pod_awaiting_setup(pod, grace: float = BLOCKED_GRACE_SECONDS) -> bool:
+    """Has *pod* been placed on a node yet started nothing, for longer than *grace*?
+
+    The candidate shape for :data:`POD_VOLUME_REASONS`, and the reason that verdict costs
+    an Event read: a pod in this state is either seconds from running or never going to
+    run, and its status says the same thing in both cases (every container ``waiting``
+    with reason ``PodInitializing``). *grace* is what separates them, so it is applied
+    here rather than left to the caller -- :func:`pod_block_reason`'s answers are acted on
+    the moment they appear, and a reason that is true of a healthy pod at t=0 would fail a
+    postprocess that was about to succeed.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    status = getattr(pod, "status", None)
+    if status is None or status.phase != "Pending":
+        return False
+    if not getattr(getattr(pod, "spec", None), "node_name", None):
+        return False  # not placed: that is Unschedulable's shape, not this one
+    for cs in (list(getattr(status, "init_container_statuses", None) or [])
+               + list(getattr(status, "container_statuses", None) or [])):
+        state = getattr(cs, "state", None)
+        if getattr(state, "running", None) or getattr(state, "terminated", None):
+            return False  # something ran, so the volumes were set up
+    started = getattr(status, "start_time", None)
+    if started is None:
+        return False
+    return (datetime.now(timezone.utc) - started).total_seconds() > grace
+
+
+def pod_volume_reason(pod, events) -> "tuple[str, str] | None":
+    """``(reason, message)`` from *events* if the kubelet cannot mount a volume of *pod*.
+
+    *events* is this namespace's mount-failure Events indexed by pod name (see
+    :func:`_pod_signals`, which reads them only once a pod looks like a candidate). The
+    event is the evidence, and there is no substitute for it: nothing in a pod's status
+    distinguishes a volume that will never mount from one that mounted a moment ago.
+    """
+    for event in events.get(getattr(getattr(pod, "metadata", None), "name", ""), []):
+        reason = getattr(event, "reason", None)
+        if reason in POD_VOLUME_REASONS:
+            return reason, (getattr(event, "message", None) or "").strip()
+    return None
+
+
+def mount_failure_events(k8s_core, namespace) -> dict:
+    """Pod name → its mount-failure Events, or ``{}`` if they cannot be read.
+
+    Advisory like every other refinement here: an Event list that fails must not turn a pod
+    that is merely starting into a reported fault, so the caller simply learns nothing.
+
+    Selected by reason server-side, one call each, rather than by pod: a namespace holds one
+    Event per *failure*, so this list is short and usually empty, while a cold-starting batch
+    can have dozens of pods legitimately sitting in the candidate shape through a multi-GiB
+    pull -- and one call per candidate would be a request per pod per poll.
+    """
+    events = {}
+    for reason in sorted(POD_VOLUME_REASONS):
+        try:
+            listed = k8s_core.list_namespaced_event(
+                namespace, field_selector=f"reason={reason}").items
+        except Exception as exc:  # noqa: BLE001 - advisory only
+            logger.warning("Could not list %s events: %s", reason, exc)
+            continue
+        for event in listed:
+            pod_name = getattr(getattr(event, "involved_object", None), "name", None)
+            if pod_name:
+                events.setdefault(pod_name, []).append(event)
+    return events
 
 
 # Pod-level termination reasons that a user would otherwise dig out of ``kubectl
@@ -763,15 +849,15 @@ def pod_fits_any_node(pod, nodes) -> bool:
 
 
 def _pod_signals(k8s_core, namespace,
-                 label_selector) -> "tuple[dict, dict, dict, dict, dict]":
-    """One pod list → ``(pod_phases, blocked, terminated, restarted, contended)``.
+                 label_selector) -> "tuple[dict, dict, dict, dict, dict, dict]":
+    """One pod list → ``(pod_phases, blocked, terminated, restarted, contended, placed_on)``.
 
     ``pod_phases``: Job name → its pod's phase — the truth a Job's ``status`` can't
     give, in both directions. ``status.active`` counts Pending pods as active, and it
     keeps counting a pod that has already terminated until the job controller catches
     up (see :func:`job_phase`). ``blocked_job_reasons``: Job name →
     ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
-    errors). ``terminated_reasons``: Job name → reason string for a pod that ended
+    errors, a pod the scheduler will not place, a volume that will not mount). ``terminated_reasons``: Job name → reason string for a pod that ended
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
     a *failed* job can explain itself. ``restarted``: Job name → ``{"detail", "containers"}`` for a
     pod whose container the kubelet restarted after a CRASH (see
@@ -784,6 +870,10 @@ def _pod_signals(k8s_core, namespace,
     :func:`pod_fits_any_node`) or for the pull it asked for
     (:func:`image_pull_is_throttled`). The caller needs the distinction because it is the
     difference between a campaign that is slow and one that is broken.
+
+    ``placed_on``: Job name → the node its pod was placed on, absent while the scheduler has
+    not placed it. Free here and nowhere else: the pod is the only object that knows, and
+    this is the one place that already has every pod in hand.
 
     A node list that cannot be read leaves the *scheduling* half of ``contended`` empty,
     so an unreadable cluster yields the stricter answer there: a pod refused for capacity
@@ -799,11 +889,16 @@ def _pod_signals(k8s_core, namespace,
     """
     pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
     phases, blocked, terminated, restarted, contended = {}, {}, {}, {}, {}
+    placed_on = {}  # job -> the node its pod landed on; distinct from `nodes` below
     nodes = None  # listed lazily: only an unschedulable pod needs to know node sizes
+    mount_events = None  # listed lazily: only a pod stuck before its first container
     for pod in pods:
         name = _pod_job_name(pod)
         if not name:
             continue
+        placed = getattr(getattr(pod, "spec", None), "node_name", None)
+        if placed:
+            placed_on[name] = placed
         phase = pod.status.phase if pod.status else None
         if phase is not None:
             known = phases.get(name)
@@ -811,6 +906,13 @@ def _pod_signals(k8s_core, namespace,
                     known, -1):
                 phases[name] = phase
         reason = pod_block_reason(pod)
+        if reason is None and pod_awaiting_setup(pod):
+            # Placed, past the grace, and nothing has started. Either a long pull or a
+            # volume that will never mount, and only the Events tell those apart -- so they
+            # are read here, once, and only because a pod in this shape was seen.
+            if mount_events is None:
+                mount_events = mount_failure_events(k8s_core, namespace)
+            reason = pod_volume_reason(pod, mount_events)
         if reason:
             r, msg = reason
             blocked[name] = f"{r}: {msg}" if msg else r
@@ -838,7 +940,7 @@ def _pod_signals(k8s_core, namespace,
             r, msg = formatted
             restarted[name] = {"detail": f"{r}: {msg}" if msg else r,
                                "containers": invalidating}
-    return phases, blocked, terminated, restarted, contended
+    return phases, blocked, terminated, restarted, contended, placed_on
 
 
 def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
@@ -850,8 +952,8 @@ def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
     """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start **right
-    now** -- an image pull / container-config error, or a pod the scheduler cannot
-    place; see :func:`_pod_signals`.
+    now** -- an image pull / container-config error, a pod the scheduler cannot place, or
+    a volume the kubelet cannot mount; see :func:`_pod_signals`.
 
     A truthy result means "these jobs are not starting", NOT "these jobs will never
     start": the mapping includes the ones merely waiting their turn for a busy node or
@@ -870,7 +972,7 @@ def blocked_and_contended_reasons(k8s_core, namespace,
     not recover on its own. One call because the escalation loop needs both every couple
     of seconds and two calls would double the pod listing.
     """
-    _, blocked, _, _, contended = _pod_signals(k8s_core, namespace, label_selector)
+    _, blocked, _, _, contended, _ = _pod_signals(k8s_core, namespace, label_selector)
     return blocked, contended
 
 
@@ -904,6 +1006,19 @@ def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -
     return {name: entry["detail"] for name, entry
             in restarted_job_forensics(k8s_core, namespace, label_selector,
                                        job_names).items()}
+
+
+class ListedJob(NamedTuple):
+    """One Job as :func:`list_jobs_with_phase` classified it."""
+
+    #: The Kubernetes Job object, as the API returned it.
+    job: object
+    #: ``running | pending | completed | failed | blocked`` -- see :func:`list_jobs_with_phase`.
+    phase: str
+    #: Why, when there is something to say. ``None`` for a job with nothing wrong.
+    detail: "str | None"
+    #: The node its pod runs on, or ``None`` before the scheduler has placed it.
+    node: "str | None"
 
 
 def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
@@ -943,15 +1058,21 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     marked failed — it simply cannot make progress. The campaign-level escalation
     (fail the batch after a grace window) lives in the run loop, not here.
 
-    Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
-    the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
-    error), pending for a stated reason (contended: unschedulable or a throttled pull),
-    or failed for an infrastructure reason (OOMKilled / evicted / deadline), in which
-    case it carries Kubernetes' own explanation.
+    Returns a list of :class:`ListedJob` in the order the API returned the Jobs.
+    ``detail`` is ``None`` unless the Job is blocked (image pull / config error), pending
+    for a stated reason (contended: unschedulable or a throttled pull), or failed for an
+    infrastructure reason (OOMKilled / evicted / deadline), in which case it carries
+    Kubernetes\' own explanation. ``node`` is where the pod was placed, ``None`` while the
+    scheduler has not placed it.
+
+    A record rather than a tuple, and that is not cosmetic: this grew a field, and the last
+    time it did, a caller unpacking a fixed width kept working against the wrong arity. A
+    field read by name cannot be read as its neighbour, and a caller that has not been
+    updated fails at the unpack instead of silently transposing two values.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
-        phases, blocked, terminated, restarted, contended = _pod_signals(
+        phases, blocked, terminated, restarted, contended, placed_on = _pod_signals(
             k8s_core, namespace, label_selector)
     except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
         # A transient pod-list hiccup: report Job-level phases for this listing only
@@ -965,7 +1086,8 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # documented "no pod truth" signal that actually falls back to Job level.
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
-        phases, blocked, terminated, restarted, contended = None, {}, {}, {}, {}
+        phases, blocked, terminated, restarted, contended, placed_on = (
+            None, {}, {}, {}, {}, {})
     out = []
     for job in job_list.items:
         name = job.metadata.name
@@ -985,7 +1107,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # result its simulator can no longer justify.
         if not detail:
             detail = (restarted.get(name) or {}).get("detail")
-        out.append((job, phase, detail))
+        out.append(ListedJob(job=job, phase=phase, detail=detail, node=placed_on.get(name)))
     return out
 
 
@@ -1202,10 +1324,10 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
 
     per_run = {}
 
-    # ``detail`` (the third element) is per-job prose -- why a job is blocked, or what it
-    # is waiting for -- which a per-campaign count has nowhere to put. Unpacking two from
-    # a three-tuple is what raised ValueError on every call.
-    for job, phase, _detail in jobs:
+    # Only the phase and the owning campaign are read here. A listed job's ``detail`` and
+    # ``node`` are per-job facts, which a per-campaign count has nowhere to put.
+    for listed in jobs:
+        job, phase = listed.job, listed.phase
         campaign = "<legacy>"
         if job.metadata.labels and "campaign-id" in job.metadata.labels:
             campaign = job.metadata.labels["campaign-id"]

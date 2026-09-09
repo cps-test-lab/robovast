@@ -13,7 +13,9 @@ properties that keep it one:
   and a chain of re-runs keeps naming the workspace at its root;
 * a campaign that predates the record has **no** origin, rather than one reconstructed
   from its frozen ``_config/`` — which holds a ``.vast`` basename and says nothing about
-  which workspace.
+  which workspace;
+* a re-run says which config version it read, because a re-run whose staged config was
+  migrated is not repeating the experiment its parent ran.
 """
 
 import sqlite3
@@ -28,6 +30,12 @@ from robovast.service.interface import CampaignOrigin, OriginKind
 @pytest.fixture(name="store_path")
 def _store_path(tmp_path):
     return tmp_path / STORE_FILENAME
+
+
+#: What ``retrigger.prepare`` reports for a config that needed nothing done to it, and for
+#: one the ladder carried forward. The transport copies the record; it does not compute it.
+_NATIVE = {"from": 4, "to": 4, "steps": []}
+_MIGRATED = {"from": 1, "to": 4, "steps": ["1_to_2", "2_to_3", "3_to_4"]}
 
 
 def _origin(**kw):
@@ -79,6 +87,56 @@ def test_kind_is_the_authority_not_whether_from_campaign_is_set(store_path):
     got = read_campaign_origin(store_path.parent)
     assert got.kind == "scheduled"          # unknown vocabulary survives the round trip
     assert got.from_campaign == ""
+
+
+def test_a_rerun_records_the_config_version_it_read_and_the_steps_that_got_it_there(
+        store_path):
+    """A migrated re-run reads a different config than its parent ran, so it must say so."""
+    rerun = _origin(kind=OriginKind.RETRIGGER, from_campaign="basic-nav-20260814-101233",
+                    config_version_from=1,
+                    config_migration_steps=["1_to_2", "2_to_3", "3_to_4"])
+    CampaignStore(store_path).create_campaign("camp", {}, origin=rerun)
+
+    got = read_campaign_origin(store_path.parent)
+    assert got.config_version_from == 1
+    assert got.config_migration_steps == ["1_to_2", "2_to_3", "3_to_4"]
+
+
+def test_a_rerun_that_migrated_nothing_says_so_rather_than_saying_nothing(store_path):
+    """"Read exactly as written" is an answer; only an unrecorded version is a silence."""
+    rerun = _origin(kind=OriginKind.RETRIGGER, from_campaign="basic-nav-20260814-101233",
+                    config_version_from=4)
+    CampaignStore(store_path).create_campaign("camp", {}, origin=rerun)
+
+    got = read_campaign_origin(store_path.parent)
+    assert got.config_version_from == 4
+    assert got.config_migration_steps == []
+    # And a campaign nobody recorded a version for is the other answer, not the same one.
+    assert _origin().config_version_from is None
+
+
+def test_a_store_from_before_the_config_version_columns_keeps_the_origin_it_has(tmp_path):
+    """A column added later must not cost an older campaign the origin it did record.
+
+    Listing reads these stores without migrating them, so every origin column a store has
+    predates one it does not -- and selecting all of them would answer "no origin" for a
+    campaign that knows perfectly well which workspace it came from.
+    """
+    from robovast.common.store import _MIGRATIONS
+    path = tmp_path / STORE_FILENAME
+    conn = sqlite3.connect(path)
+    for migration in _MIGRATIONS[:12]:
+        conn.executescript(migration)
+    conn.execute("INSERT INTO campaign (name, origin_kind, origin_workspace_name) "
+                 "VALUES ('camp', 'retrigger', 'ros2demo')")
+    conn.execute("PRAGMA user_version = 12")
+    conn.commit()
+    conn.close()
+
+    got = read_campaign_origin(tmp_path)
+    assert got.workspace_name == "ros2demo"
+    # The one thing it genuinely cannot know, and it says so rather than reporting "native".
+    assert got.config_version_from is None
 
 
 def test_a_store_from_before_the_columns_migrates_forward(tmp_path):
@@ -169,7 +227,7 @@ def test_a_rerun_copies_the_parents_workspace_forward(client, tmp_path):
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
     client._record_dir = lambda cid: parent_dir
 
-    got = client._retrigger_origin("basic-nav-20260814-101233")
+    got = client._retrigger_origin("basic-nav-20260814-101233", _NATIVE)
     assert got.kind == "retrigger"
     assert got.from_campaign == "basic-nav-20260814-101233"
     assert (got.workspace_name, got.config_path) == ("ros2demo", "nav/basic_nav.vast")
@@ -183,7 +241,7 @@ def test_a_rerun_of_a_rerun_still_names_the_root_workspace(client, tmp_path):
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=first_rerun)
     client._record_dir = lambda cid: parent_dir
 
-    got = client._retrigger_origin("rerun-1")
+    got = client._retrigger_origin("rerun-1", _NATIVE)
     assert got.from_campaign == "rerun-1"          # the IMMEDIATE parent
     assert got.workspace_name == "ros2demo"        # ...and still the root workspace
 
@@ -195,9 +253,34 @@ def test_a_rerun_of_a_campaign_with_no_origin_still_records_its_lineage(client, 
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {})
     client._record_dir = lambda cid: parent_dir
 
-    got = client._retrigger_origin("old-campaign")
+    got = client._retrigger_origin("old-campaign", _NATIVE)
     assert got.from_campaign == "old-campaign"
     assert got.workspace_id == "" and got.workspace_name == ""
+
+
+def test_a_rerun_of_an_old_campaign_records_where_its_config_was_migrated_from(
+        client, tmp_path):
+    """The re-run is the only run that can say it read a version its parent never ran."""
+    parent_dir = tmp_path / "results" / "v1-campaign"
+    parent_dir.mkdir(parents=True)
+    CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
+    client._record_dir = lambda cid: parent_dir
+
+    got = client._retrigger_origin("v1-campaign", _MIGRATED)
+    assert got.config_version_from == 1
+    assert got.config_migration_steps == ["1_to_2", "2_to_3", "3_to_4"]
+
+
+def test_a_rerun_of_a_current_campaign_claims_no_migration(client, tmp_path):
+    """It read the config as written, which must not read as "migrated from somewhere"."""
+    parent_dir = tmp_path / "results" / "current-campaign"
+    parent_dir.mkdir(parents=True)
+    CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
+    client._record_dir = lambda cid: parent_dir
+
+    got = client._retrigger_origin("current-campaign", _NATIVE)
+    assert got.config_version_from == 4
+    assert got.config_migration_steps == []
 
 
 def test_deleting_the_workspace_leaves_the_record_intact(client, tmp_path):

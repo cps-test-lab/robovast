@@ -33,6 +33,7 @@ since per-batch search runs target different prefixes within a campaign.
 """
 
 import contextlib
+import hashlib
 import logging
 import os
 import tempfile
@@ -875,6 +876,33 @@ class _GcsStorageClient(StorageClient):
         return len(blobs)
 
 
+#: S3-compatible bucket names are capped at 63 characters (GCS agrees for a
+#: DNS-compliant one). Only the embedded, per-campaign-bucket path is bound by this --
+#: on the shared-bucket path the sanitised id is a key *prefix*, which has no such limit.
+_MAX_BUCKET_NAME = 63
+
+#: How many hex characters of the id's hash to keep when a bucket name is truncated.
+#: Short enough to leave most of the length budget to the readable head, long enough
+#: that two truncated ids colliding by chance is not a realistic concern.
+_BUCKET_HASH_LEN = 8
+
+
+def _bounded_bucket_name(sanitised_id: str) -> str:
+    """*sanitised_id*, truncated to fit a bucket name, with collisions ruled out.
+
+    Truncating alone is not safe: a campaign id is the experiment's slug plus a date and
+    a counter, so two campaigns of the same experiment on the same day share every
+    character up to the counter -- exactly the ones a naive truncation would cut. Hashing
+    the FULL id (not the truncated head) and appending it is what keeps them apart; the
+    head is kept only for a human skimming a bucket list, not for uniqueness.
+    """
+    if len(sanitised_id) <= _MAX_BUCKET_NAME:
+        return sanitised_id
+    digest = hashlib.sha256(sanitised_id.encode()).hexdigest()[:_BUCKET_HASH_LEN]
+    head = sanitised_id[: _MAX_BUCKET_NAME - 1 - _BUCKET_HASH_LEN].rstrip("-")
+    return f"{head}-{digest}"
+
+
 def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, str]:
     """Return ``(bucket, campaign_prefix)`` for a campaign's storage location.
 
@@ -884,12 +912,17 @@ def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, st
     ``campaign_prefix`` has a trailing slash (or is empty). There is no per-batch
     component: batches of one campaign share this flat prefix and are kept apart by
     batch-namespaced job tags, so the layout matches a local campaign.
+
+    The embedded-bucket path bounds the name to what a bucket can actually be called
+    (see :func:`_bounded_bucket_name`); ``campaign_id_for`` already refuses an id long
+    enough to need this at launch time, so this is the defence for an id minted before
+    that check existed, or reached by a caller that bypasses it.
     """
     shared = cluster_config.get_s3_bucket()
     campaign_bucket = campaign_id.lower().replace("_", "-")
     if shared:
         return shared, f"{campaign_bucket}/"
-    return campaign_bucket, ""
+    return _bounded_bucket_name(campaign_bucket), ""
 
 
 def publish_execution_file(storage, bucket: str, prefix: str, campaign_root,

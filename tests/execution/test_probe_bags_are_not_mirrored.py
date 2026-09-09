@@ -115,3 +115,55 @@ def test_the_finished_log_sections_are_not_staged_either():
     assert not include(f"{not_staged_sections()}0001-postprocessing.log")
     assert not include(f"{not_staged_sections()}0002-share.log")
     assert include("_execution/execution.yaml")
+
+
+# -- one batch's jobs, for a per-batch pod ------------------------------------
+
+
+def test_only_the_named_batchs_jobs_are_staged():
+    """Every batch's bags sit under the same campaign prefix, and bags are the bulk.
+
+    A search converts once per batch, so without this batch N pays to download batches
+    0..N-1 as well -- the transfer grows with the campaign while the work per batch does
+    not.
+    """
+    include = build_include(skip_bags=False, batch_jobs="batch-3")
+
+    assert include("_jobs/batch-3/job-1/rosbag2/rosbag2_0.mcap")
+    assert not include("_jobs/batch-0/job-1/rosbag2/rosbag2_0.mcap")
+    assert not include("_jobs/batch-2/job-7/logs/rosout_bag/rosout_bag_0.mcap")
+
+
+def test_a_repetitions_group_keeps_the_batch_its_runs_link_to():
+    """A run's ``job`` symlink points at ``_jobs/<batch>/reps-<n>/job-<m>`` exactly.
+
+    Matching on the first segment alone would stage the whole of ``batch-3`` -- every
+    repetitions group of it -- which is the transfer this exists to avoid. Matching too
+    narrowly would leave a staged run's link dangling, which reads downstream as a run
+    whose artifacts were lost rather than one this pod was never given.
+    """
+    include = build_include(skip_bags=False, batch_jobs="batch-3/reps-5")
+
+    assert include("_jobs/batch-3/reps-5/job-0/rosbag2/rosbag2_0.mcap")
+    assert not include("_jobs/batch-3/reps-4/job-0/rosbag2/rosbag2_0.mcap")
+
+
+def test_everything_outside_the_jobs_tree_is_untouched_by_the_narrowing():
+    """Only ``_jobs/`` is narrowed. A run directory holds its verdict, its parameters and
+    the symlink -- kilobytes -- and the pod's own derivation reads them for every run it
+    scores, so narrowing them too would cost correctness for nothing."""
+    include = build_include(skip_bags=False, batch_jobs="batch-3")
+
+    assert include("cfg-a/0/test.xml")
+    assert include("cfg-a/0/nav_metrics.csv")
+    assert include("_config/campaign.vast")
+    assert include("_execution/execution.yaml")
+    assert include("campaign.db")
+
+
+def test_no_batch_named_stages_every_batch():
+    """The campaign-level pass derives the whole campaign, so narrowing would hide it."""
+    include = build_include(skip_bags=False)
+
+    assert include("_jobs/batch-0/job-1/rosbag2/rosbag2_0.mcap")
+    assert include("_jobs/batch-9/job-1/rosbag2/rosbag2_0.mcap")

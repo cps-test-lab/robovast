@@ -1,4 +1,4 @@
-version: 3
+version: 4
 metadata:
   name: camera_smoke
   title: Does offscreen rendering work on the node this job landed on?
@@ -36,6 +36,7 @@ execution:
     scenario:
       resources:
         cpu: 2
+        memory: 2Gi
   scenario_file: scenario.osc
   runs: 1
   # Software rendering through llvmpipe is slow, and the first render also compiles the world.

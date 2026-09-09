@@ -182,13 +182,11 @@ go through the batch-mode file.
   surfaces and they are not interchangeable: `sim:` writes into the compiled world (every
   campaign here), `sut:` rewrites the system under test's own config files, and `scenario:`
   sets scenario parameters. `nav_search_minimax.vast` is the one that uses all three.
-- **A `sut:` source needs a scenario parameter to land on.** Staging gives each configuration
-  its own rewritten copy at `/config/<config-name>/<path>` and drops the original from
-  `run_files`, so exactly one copy exists; the trial finds it because RoboVAST rewrites *a
-  scenario parameter whose value is the source's declared path*. A parameter left at its
-  `.osc` default is not one the campaign set, so nothing is rewritten and the trial launches
-  a path that is no longer there. Declare it on the `scenario:` channel, as
-  `nav_search_minimax.vast` does with `params_file`.
+- **A `sut:` source needs nothing in the `.vast` to reach the trial.** Staging gives each
+  configuration its own rewritten copy at `/config/<path>` — the declared path, where the
+  campaign's copy would have been — and drops the original from `run_files`, so exactly one
+  copy exists and it is the running cell's. The trial finds it by writing the ordinary path
+  relative to its own directory, which is that mount.
 - **`rosbags_to_csv` writes `rosbag2_<topic>.csv`**, not `<topic>.csv`.
 - **The ground-truth arrival radius is not nav2's `xy_goal_tolerance`.** nav2 declares
   success against its estimated pose at the instant it stops; the metric measures ground

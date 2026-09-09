@@ -243,6 +243,15 @@ metrics-server, keeps reporting capacity, reservations, disk and job counts, and
 which of the two is missing instead of a 403 or a zero. So this one is a *reconcile when
 convenient*: run ``vast service upgrade`` and the fill appears.
 
+The **per-job** cpu/memory on a campaign's Jobs tab (and ``usage`` on ``list_campaign_jobs``)
+needs the sibling grant, ``metrics.k8s.io/pods``, and the same metrics-server. It is a
+separate rule because the two are granted independently, and it fails soft the same way and
+on its own: a deployment carrying only the older ``nodes`` grant keeps its Admin chart and
+simply shows no per-job meters, with ``metrics_unavailable`` naming ``pods`` and the command
+that reconciles it. Also *reconcile when convenient*. ``get`` and ``list`` are the whole of
+what ``metrics.k8s.io`` serves — it has no watch — so the numbers are polled, once per sample
+window for the whole service rather than per campaign or per job.
+
 Before rolling, it asks the service which live campaigns the replacement could **not**
 pick up again, and names each with its reason. A live campaign is no longer reason enough
 on its own: its Jobs are not children of the pod being replaced, and the new pod

@@ -34,6 +34,11 @@ The two rules differ, and the difference is not cosmetic:
 * **Memory is sized on the PEAK** plus headroom. Exceeding a memory limit is an OOM kill:
   the run dies and the campaign loses a cell. Sizing memory on a percentile would be
   choosing how often a run survives.
+* **Of the peak, only the part the kernel cannot reclaim.** A cgroup's peak includes page
+  cache, which is evicted under pressure rather than killing anything, so reserving for it
+  reserves for the kernel's caching policy instead of for the container. Where the campaign
+  recorded the split, the basis is ``anon`` + ``shmem`` + ``slab``; where it did not, the
+  whole peak is used and the advice says so, because that error is in the safe direction.
 """
 
 from __future__ import annotations
@@ -188,14 +193,70 @@ SHM_SQL = """
 #: Sizing from that would have told its author to reserve 2.3x what the run needed, on every
 #: job of every sweep.
 #:
-#: Absent for a campaign recorded before the probe existed, and on any runtime without cgroup
-#: v2 -- hence a missing table or an empty result, both of which the caller falls back from
-#: rather than treating as zero.
+#: Absent for a campaign recorded before the probe existed -- a missing table or an empty
+#: result, both of which the caller falls back from rather than treating as zero.
+#:
+#: **Two figures, because the peak alone cannot be sized from.** ``memory.peak`` counts page
+#: cache, and a container that reads or writes a lot of data accumulates cache the kernel had
+#: no reason to reclaim. A process that streams a file to disk in a bounded buffer holds a few
+#: MiB and can still report a peak equal to its whole limit, every byte of it the cache of what
+#: it just wrote. Reserving for that reserves for the kernel's caching policy, not for the
+#: container. ``mem_unreclaimable`` is the part that survives
+#: pressure (``anon`` + ``shmem`` + ``slab``) and so is what a limit has to cover.
+#:
+#: The sum is taken INSIDE the row and the max over rows, never the other way round: the three
+#: are independent gauges, so summing their separate maxima adds peaks that never coexisted.
+#:
+#: ``samples`` and ``samples_with_split`` are what decide whether the second figure may be used
+#: at all. The split is unavailable on some kernels, so a container whose runs landed partly on
+#: such a node would have its "peak" taken over the covered samples only -- a number that looks
+#: like a peak and is a peak of a subset, biased downwards, on the one measurement whose
+#: under-estimate is an OOM kill. Full coverage or the plain peak; nothing in between.
 SYSTEM_MEM_SQL = """
-    SELECT container, MAX(memory_peak) AS mem_peak
+    SELECT container,
+           MAX(memory_peak) AS mem_peak,
+           MAX(COALESCE(memory_anon, 0) + COALESCE(memory_shmem, 0)
+               + COALESCE(memory_slab, 0)) AS mem_unreclaimable,
+           COUNT(*) AS samples,
+           COUNT(memory_anon) AS samples_with_split
     FROM system_usage WHERE in_window = 1 AND memory_peak IS NOT NULL
     GROUP BY container
 """
+
+#: How a container's memory figure was arrived at, keyed by what :func:`_cgroup_memory` chose.
+#: Stated in the advice rather than assumed, because the three differ by more than a rounding
+#: and a reader deciding whether to trust a number needs to know which one they were handed.
+MEM_SOURCES = {
+    "unreclaimable": (
+        "the kernel's own accounting for the container, counting only what it cannot reclaim "
+        "under pressure (anon + shmem + slab) -- its peak also includes page cache, which a "
+        "reservation does not have to cover"),
+    "peak": (
+        "the kernel's own accounting for the container, INCLUDING page cache -- no anon/file "
+        "split was recorded for it, so the reclaimable part cannot be subtracted and this "
+        "figure is an over-estimate by however much the container cached"),
+    "rss": (
+        "the sum of its processes' RSS, which over-reports shared pages -- no cgroup "
+        "memory figures were recorded for this campaign"),
+}
+
+
+def _cgroup_memory(row: dict) -> tuple:
+    """``(bytes, basis)`` for one :data:`SYSTEM_MEM_SQL` row, or ``(None, "")``.
+
+    Prefers the unreclaimable figure and falls back to the peak, which is the conservative
+    direction: the peak is the larger number, so a container whose split was not recorded is
+    over-reserved rather than sized from a measurement that does not cover it.
+    """
+    peak = row.get("mem_peak")
+    if peak is None:
+        return None, ""
+    samples = int(row.get("samples") or 0)
+    unreclaimable = row.get("mem_unreclaimable")
+    if (samples and int(row.get("samples_with_split") or 0) == samples
+            and unreclaimable):
+        return float(unreclaimable), "unreclaimable"
+    return float(peak), "peak"
 
 #: How much of each container's CPU budget the kernel actually withheld, per run.
 #:
@@ -390,21 +451,22 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
         usage_rows: rows of :data:`USAGE_SQL`.
         declared_rows: rows of :data:`DECLARED_SQL`.
         system_mem_rows: rows of :data:`SYSTEM_MEM_SQL`, when the campaign recorded them.
-            Where a container appears here its kernel-accounted peak REPLACES the summed-RSS
-            figure, which over-reports (see :data:`SYSTEM_MEM_SQL`). Falling back rather than
-            refusing keeps this useful on campaigns recorded before the probe existed, but the
-            two are not interchangeable and the advice says which one it used.
+            Where a container appears here its kernel-accounted figure REPLACES the summed-RSS
+            one, which over-reports (see :data:`SYSTEM_MEM_SQL`); :func:`_cgroup_memory` picks
+            which of the two kernel figures that is. Falling back rather than refusing keeps
+            this useful on campaigns recorded before the probes existed, but none of the three
+            are interchangeable and the advice says which one it used.
     """
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
         return []
     names, declared_cpu, declared_mem, declared_shm = _declared(declared_rows)
     resolved = _resolve_names([r["container"] for r in usable], names)
-    system_mem = {r["container"]: r["mem_peak"]
-                  for r in (system_mem_rows or []) if r.get("mem_peak") is not None}
-    mem_source = "the kernel's own accounting for the container" if system_mem else (
-        "the sum of its processes' RSS, which over-reports shared pages -- no cgroup "
-        "memory figures were recorded for this campaign")
+    system_mem = {}
+    for row in (system_mem_rows or []):
+        value, basis = _cgroup_memory(row)
+        if value is not None:
+            system_mem[row["container"]] = (value, basis)
 
     containers, thin = [], []
     for row in usable:
@@ -414,11 +476,12 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             thin.append(label)
             continue
         cpu_p95 = float(row.get("cpu_p95") or 0.0)
-        cgroup_peak = system_mem.get(row["container"])
+        cgroup_peak, mem_basis = system_mem.get(row["container"], (None, "rss"))
         mem_peak = float(cgroup_peak if cgroup_peak is not None
                          else (row.get("mem_peak") or 0.0))
         containers.append({
             "container": label,
+            "mem_basis": mem_basis,
             "cpu_p95": cpu_p95,
             "cpu_peak": float(row.get("cpu_peak") or 0.0),
             "cpu_suggested": ceil_to(cpu_p95 * CPU_HEADROOM, CPU_GRANULARITY),
@@ -429,6 +492,11 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             "core_seconds": float(row.get("core_seconds") or 0.0),
             "ticks": ticks,
         })
+
+    # After the loop, not before it: which measurement was used is decided per container, and
+    # a campaign can legitimately mix them -- the split is a property of the node a run landed
+    # on, not of the campaign. Naming only one of them would attribute every figure to it.
+    mem_source = _mem_source(c["mem_basis"] for c in containers)
 
     advice: list[dict] = []
     if thin and not containers:
@@ -540,14 +608,33 @@ _UNDER_DETAIL = {
 }
 
 
+def _mem_source(bases) -> str:
+    """The phrase naming which measurement the memory figures came from, or ``""``.
+
+    The mixed case is named as such rather than resolved to whichever is commonest. Which
+    measurement a container got depends on the node its runs landed on, so a campaign on a
+    mixed cluster legitimately carries both -- and reporting one of them for all of it would
+    tell the reader that figures which are over-estimates are not.
+    """
+    used = sorted({b for b in bases if b in MEM_SOURCES})
+    if not used:
+        return ""
+    if len(used) == 1:
+        return MEM_SOURCES[used[0]]
+    return ("more than one measurement across these containers -- "
+            + "; ".join(MEM_SOURCES[b] for b in used))
+
+
 def _basis(what: str, mem_source: str = "") -> str:
     """The one sentence saying how a suggestion was arrived at.
 
-    *mem_source* names WHICH measurement the memory peak came from. It is stated rather than
-    assumed because the two available answers differ by more than a rounding: the kernel's own
-    accounting is what the limit is enforced against, while a sum of per-process RSS counts
-    shared pages once per process and can over-report several-fold on a stack of many nodes.
-    A reader deciding whether to trust a number needs to know which one they were handed.
+    *mem_source* names WHICH measurement the memory figure came from (see :data:`MEM_SOURCES`).
+    It is stated rather than assumed because the available answers differ by more than a
+    rounding, and in the same direction: a sum of per-process RSS counts shared pages once per
+    process and can over-report several-fold on a stack of many nodes, and a cgroup peak counts
+    page cache the container never needed to hold. Only the unreclaimable figure is the size a
+    limit actually has to be. A reader deciding whether to trust a number needs to know which
+    one they were handed.
     """
     if what == "cpu":
         return (f"Sized on sustained use (p95) plus {round((CPU_HEADROOM - 1) * 100)}% "

@@ -22,7 +22,7 @@ sim:
 
 components:
   # Start pose. Must match scenario_roqsim.osc's start_pose, which is what seeds AMCL.
-  - spawn_robot: {model: turtlebot4, pos: [-2.5, 0.0], yaw: 0.0}
+  - spawn_robot: {model: turtlebot4, pose: {position: {x: -2.5, y: 0.0}, orientation: {yaw: 0.0}}}
     name: robot
     components:
       # The lidar the manifest already supplies, named here only to carry the noise. Nothing else

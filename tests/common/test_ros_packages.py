@@ -27,12 +27,12 @@ PX4_MSGS = {"git": "https://github.com/PX4/px4_msgs.git",
 
 
 def _cfg(**containers):
-    return {"version": 3, "execution": {"containers": containers, "runs": 1}}
+    return {"version": 4, "execution": {"containers": containers, "runs": 1}}
 
 
 def _vast(tmp_path, containers, name="c.vast"):
     path = os.path.join(tmp_path, name)
-    doc = {"version": 3, "scenario": "s.osc",
+    doc = {"version": 4, "scenario": "s.osc",
            "execution": {"containers": containers, "runs": 1}}
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(doc, f)

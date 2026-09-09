@@ -179,13 +179,21 @@ def campaign_view_sql(conn) -> dict:
         else:
             batch = "NULL AS batch"
             bjoin = ""
+        # Selected as NULL when no campaign in the index has it, for the reason `_columns_in`
+        # exists: the index holds campaigns recorded before the sim/sut channels were kept,
+        # and a view naming a column those rows lack takes down every column it could have
+        # answered.
+        channels = ("u.channels_json"
+                    if "channels_json" in _columns_in(conn, index_schema.CAMPAIGN_SCHEMA,
+                                                      "unit")
+                    else "NULL AS channels_json")
         # A composition-failed unit has no run rows, so the join alone drops it -- and with
         # it the only record that the draw was attempted. Added back as one run-less row,
         # or a search campaign silently reports only the draws that happened to work.
         views["run_view"] = f"""
             SELECT r.campaign_id, u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,
-                   u.params_json, u.objective, u.paramset_id, {batch}, {host}
+                   u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {host}
             FROM {_c('run')} r
             JOIN {_c('unit')} u ON r.unit_id = u.id AND u.campaign_id = r.campaign_id
             {bjoin}
@@ -196,7 +204,7 @@ def campaign_view_sql(conn) -> dict:
                    NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s,
                    NULL AS errors, NULL AS failures, NULL AS tests,
                    NULL AS start_time, NULL AS failure_message,
-                   u.params_json, u.objective, u.paramset_id, {batch},
+                   u.params_json, {channels}, u.objective, u.paramset_id, {batch},
                    NULL AS job_dir, NULL AS sysinfo_json
             FROM {_c('unit')} u
             {bjoin}

@@ -18,7 +18,8 @@
 
 import types
 
-from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
+from robovast.execution.cluster_execution.cluster_execution import (blocked_and_contended_reasons,
+                                                                    blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,
                                                                     pod_container_failures,
                                                                     pod_invalidating_restart,
@@ -36,7 +37,7 @@ def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
 
 
 def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason=None,
-         unschedulable=None, restarts=None, sidecar=True, limits=None):
+         unschedulable=None, restarts=None, sidecar=True, limits=None, node="a-node"):
     """A pod for *job_name*.
 
     ``waiting=(reason, message)`` puts its container in that ``waiting`` state (as
@@ -108,7 +109,7 @@ def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod", labels={"batch.kubernetes.io/job-name": job_name}),
         spec=types.SimpleNamespace(
-            node_name="a-node",
+            node_name=node,
             containers=[_container("robovast", limits={"cpu": "1.25"})],
             init_containers=[_container("s3-init")] + extra_init),
         status=types.SimpleNamespace(
@@ -199,8 +200,8 @@ def test_list_jobs_with_phase_degrades_explicitly_on_pod_error():
 
     # Does not raise; still lists the job (Job-level phase, no pod-derived detail).
     out = list_jobs_with_phase(_Batch(), _BoomCore(), "ns", "sel")
-    assert [(j.metadata.name, p) for j, p, _d in out] == [("a", "running")]
-    assert all(detail is None for _j, _p, detail in out)
+    assert [(x.job.metadata.name, x.phase) for x in out] == [("a", "running")]
+    assert all(x.detail is None for x in out)
 
 
 def test_list_jobs_with_phase_uses_pod_truth():
@@ -211,7 +212,8 @@ def test_list_jobs_with_phase_uses_pod_truth():
     core = _Core([_pod("running-job", "Running"), _pod("pending-job", "Pending")])
 
     phases = dict((j.metadata.name, p)
-                  for j, p, _ in list_jobs_with_phase(batch, core, "ns", "sel"))
+                  for j, p in ((x.job, x.phase)
+                               for x in list_jobs_with_phase(batch, core, "ns", "sel")))
     assert phases == {"running-job": "running", "pending-job": "pending",
                       "done-job": "completed"}
 
@@ -222,7 +224,8 @@ def test_list_jobs_with_phase_reports_finished_pod_of_still_active_job():
     jobs = [_job("just-finished", active=1), _job("just-failed", active=1)]
     core = _Core([_pod("just-finished", "Succeeded"), _pod("just-failed", "Failed")])
     result = {j.metadata.name: p
-              for j, p, _ in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
+              for j, p in ((x.job, x.phase)
+                           for x in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel"))}
     assert result == {"just-finished": "completed", "just-failed": "failed"}
 
 
@@ -249,7 +252,8 @@ def test_list_jobs_with_phase_marks_stuck_job_blocked_with_detail():
         _pod("stuck-job", waiting=("ErrImagePull", "not found")),
     ])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["running-job"] == ("running", None)
     assert result["stuck-job"] == ("blocked", "ErrImagePull: not found")
 
@@ -273,7 +277,8 @@ def test_list_jobs_with_phase_explains_oom_killed_failure():
     batch = _Batch(jobs)
     core = _Core([_pod("oom-job", terminated=("robovast", "OOMKilled"))])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["oom-job"] == (
         "failed", "OOMKilled: container robovast exceeded its memory limit")
 
@@ -301,8 +306,103 @@ def test_unschedulable_without_node_sizes_shows_as_blocked_in_the_listing():
     batch = _Batch([_job("gpu-job", active=1)])
     core = _Core([_pod("gpu-job", unschedulable=("Unschedulable", "Insufficient cpu."))])
     result = {j.metadata.name: (p, d)
-              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for j, p, d in ((x.job, x.phase, x.detail)
+                            for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     assert result["gpu-job"] == ("blocked", "Unschedulable: Insufficient cpu.")
+
+
+def _setup_stuck_pod(job="conv-job", age_s=600.0):
+    """A pod the scheduler DID place whose containers have never started.
+
+    The shape a missing ConfigMap produces, and the point of the test: it is character for
+    character the shape of a pod that is three seconds into a large image pull. Every
+    container reports ``PodInitializing`` and nothing else, so the pod carries no evidence
+    at all -- which is why the verdict needs an Event and a grace.
+    """
+    import datetime as _dt
+
+    initializing = types.SimpleNamespace(state=types.SimpleNamespace(
+        waiting=types.SimpleNamespace(reason="PodInitializing", message=None),
+        running=None, terminated=None))
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=f"{job}-pod", labels={"job-name": job}),
+        spec=types.SimpleNamespace(node_name="a-node"),
+        status=types.SimpleNamespace(
+            phase="Pending", reason=None, conditions=[types.SimpleNamespace(
+                type="PodScheduled", status="True", reason=None, message=None)],
+            init_container_statuses=[initializing], container_statuses=[initializing],
+            start_time=_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=age_s)))
+
+
+class _EventCore(_Core):
+    """A `_Core` that also serves Events, and counts how often it was asked for them."""
+
+    def __init__(self, pods, events=()):
+        super().__init__(pods)
+        self._events = list(events)
+        self.event_reads = 0
+
+    def list_namespaced_event(self, namespace, field_selector=None):
+        self.event_reads += 1
+        reason = (field_selector or "").split("=")[-1]
+        return types.SimpleNamespace(
+            items=[e for e in self._events if e.reason == reason])
+
+
+def _mount_failure(pod_name, message):
+    return types.SimpleNamespace(
+        reason="FailedMount", message=message,
+        involved_object=types.SimpleNamespace(name=pod_name))
+
+
+def test_a_pod_that_cannot_mount_its_volumes_is_blocked_with_the_kubelets_message():
+    """The third shape of "Pending forever", and the one with no trace in the pod itself.
+
+    A Job whose pod cannot mount a volume stays ``active`` indefinitely, so a wait on it
+    can only time out and call the outcome unknown -- days later, in a log that ends
+    mid-step with nothing said. The kubelet's Event names the object that is missing,
+    which is the whole diagnosis, so it is carried through verbatim.
+    """
+    msg = ('MountVolume.SetUp failed for volume "scripts" : '
+           'configmap "robovast-postproc-scripts-x" not found')
+    core = _EventCore([_setup_stuck_pod()], [_mount_failure("conv-job-pod", msg)])
+
+    assert blocked_job_reasons(core, "ns", "sel") == {"conv-job": f"FailedMount: {msg}"}
+
+
+def test_a_mount_failure_is_not_recoverable_contention():
+    """`blocked - contended` is what will not recover on its own, and a ConfigMap that is
+    not there never arrives -- unlike a throttled pull or a busy node."""
+    core = _EventCore([_setup_stuck_pod()],
+                      [_mount_failure("conv-job-pod", "configmap not found")])
+    blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert "conv-job" in blocked and contended == {}
+
+
+def test_a_pod_still_within_the_grace_is_not_reported_blocked():
+    """A pod seconds old looks exactly like the wedged one, so the verdict waits. It has
+    to: the postprocess wait acts on a blocked reason the moment it appears, and a reason
+    that is true of a healthy pod at t=0 would fail a conversion about to succeed.
+    """
+    core = _EventCore([_setup_stuck_pod(age_s=1.0)],
+                      [_mount_failure("conv-job-pod", "configmap not found")])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
+
+
+def test_a_pod_getting_on_with_it_costs_no_event_read():
+    """Events are read only once a pod has sat in the candidate shape past the grace --
+    the same laziness the node list gets, and for the same reason: this runs on every poll
+    of every batch."""
+    core = _EventCore([_pod("j", "Running")])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
+    assert core.event_reads == 0
+
+
+def test_a_stuck_looking_pod_with_no_mount_failure_is_left_alone():
+    """The long pull this shape is otherwise indistinguishable from: no Event, no verdict.
+    Reporting on the shape alone would call every cold start a fault."""
+    core = _EventCore([_setup_stuck_pod()])
+    assert blocked_job_reasons(core, "ns", "sel") == {}
 
 
 def test_a_schedulable_pod_is_not_reported_blocked():
@@ -436,7 +536,42 @@ def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
     batch = _Batch([_job("j", active=1)])
     core = _Core([_pod("j", restarts=("simulation", 2, "OOMKilled", 137))])
     result = {jb.metadata.name: (p, d)
-              for jb, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+              for jb, p, d in ((x.job, x.phase, x.detail)
+                             for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
     phase, detail = result["j"]
     assert phase == "running"
     assert "restarted 2x after OOMKilled" in detail
+
+
+def test_a_listed_job_says_which_node_its_pod_landed_on():
+    """Where a job runs is on the pod and nowhere else.
+
+    The pod list this classifier already makes is the only place that knows, so the answer
+    rides along with the phase rather than costing a second read.
+    """
+    core = _Core([_pod("placed", node="worker-a")])
+
+    listed = list_jobs_with_phase(_Batch([_job("placed", active=1)]), core, "ns", "sel")
+
+    assert listed[0].node == "worker-a"
+
+
+def test_a_job_the_scheduler_has_not_placed_yet_reports_no_node():
+    """``None``, and that is the normal state of a pending job rather than a gap.
+
+    An unschedulable pod has no node at all -- there is nothing to create its containers on
+    -- so a caller must render its absence as "not placed", never as a blank name.
+    """
+    core = _Core([_pod("waiting", unschedulable=("Unschedulable", "0/4 nodes"), node=None)])
+
+    listed = list_jobs_with_phase(_Batch([_job("waiting", active=1)]), core, "ns", "sel")
+
+    assert listed[0].node is None
+
+
+def test_a_failed_pod_list_leaves_the_node_unknown_rather_than_wrong():
+    """The degradation path already reports Job-level phases; the node has no Job-level
+    equivalent, so it is absent for that listing and returns on the next poll."""
+    out = list_jobs_with_phase(_Batch([_job("a", active=1)]), _BoomCore(), "ns", "sel")
+
+    assert all(x.node is None for x in out)

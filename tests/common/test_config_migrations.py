@@ -6,15 +6,18 @@ are reproduced in ``migrations/fixtures/v1.vast`` instead.
 """
 
 import ast
+import logging
 import pathlib
 
 import pytest
 import yaml
 
 from robovast.common.config import validate_config
-from robovast.common.migrations import (BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION,
-                                        ConfigTooNew, ConfigTooOld, ConfigVersionError,
-                                        needs_upgrade, upgrade_config, upgrade_config_file)
+from robovast.common.migrations import (BASELINE_CONFIG_VERSION, CONFIG_CURRENT, CONFIG_NEWER,
+                                        CONFIG_TOO_OLD, CONFIG_UNVERSIONED, CONFIG_UPGRADABLE,
+                                        SUPPORTED_CONFIG_VERSION, ConfigTooNew, ConfigTooOld,
+                                        ConfigVersionError, classify_config, needs_upgrade,
+                                        upgrade_config, upgrade_config_file)
 from robovast.common.migrations import config as ladder
 from robovast.common.migrations.config import v2_to_v3
 
@@ -106,6 +109,26 @@ def test_baseline_reaches_supported_and_validates():
     validate_config(upgraded)
 
 
+def test_every_shipped_example_declares_the_supported_version():
+    """The examples are what a reader copies, and strict authoring accepts one version only.
+
+    Nothing else reaches them: the ladder's own assert sees the steps, the golden fixtures
+    see each step's transform, and neither looks at a file shipped beside them. An example
+    left on an older version hands the reader a starting point ``vast`` refuses.
+    """
+    examples = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples"
+    shipped = sorted(examples.rglob("*.vast"))
+    assert shipped, f"no examples under {examples}; the glob or the layout changed"
+    stale = {}
+    for path in shipped:
+        declared = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("version")
+        if declared != SUPPORTED_CONFIG_VERSION:
+            stale[str(path.relative_to(examples))] = declared
+    assert not stale, (
+        f"examples declaring a version other than {SUPPORTED_CONFIG_VERSION}: {stale} — "
+        f"upgrade each with 'vast configuration upgrade'")
+
+
 def test_upgrade_does_not_mutate_its_input():
     """Callers hand us a config they still hold -- reading must not rewrite it."""
     raw = _load(_FIXTURES / f"v{BASELINE_CONFIG_VERSION}.vast")
@@ -138,6 +161,38 @@ def test_version_below_baseline_is_refused():
 def test_unusable_version_is_refused(raw):
     with pytest.raises(ConfigVersionError):
         upgrade_config(raw)
+
+
+@pytest.mark.parametrize("raw,state", [
+    ({"version": SUPPORTED_CONFIG_VERSION, "execution": {}}, CONFIG_CURRENT),
+    ({"version": BASELINE_CONFIG_VERSION, "execution": {"image": "img:1"}}, CONFIG_UPGRADABLE),
+    ({"version": SUPPORTED_CONFIG_VERSION + 1}, CONFIG_NEWER),
+    ({"version": BASELINE_CONFIG_VERSION - 1}, CONFIG_TOO_OLD),
+    ({}, CONFIG_UNVERSIONED),
+    ({"version": None}, CONFIG_UNVERSIONED),
+    ({"version": "2"}, CONFIG_UNVERSIONED),
+])
+def test_classification_follows_the_ladder_rather_than_the_version_field(raw, state):
+    """Every reading path asks this one question, so it must answer from what the ladder does.
+
+    A version that is absent or not an integer is *unversioned*: there is nothing to start the
+    ladder from. Reading the field first and comparing it against the supported version puts
+    those configs on whichever side of the comparison the field happens to fall, which is a
+    verdict about an ordering that does not exist.
+    """
+    found = classify_config(raw)
+    assert found.state == state
+    assert bool(found.message) is (state not in (CONFIG_CURRENT, CONFIG_UPGRADABLE)), \
+        "a refusal carries the ladder's own message; a usable config has none to carry"
+
+
+def test_classification_names_the_steps_a_migration_would_apply():
+    """The steps are what a caller records as *how* a campaign was brought forward, so they
+    are part of the classification rather than something a caller re-derives."""
+    found = classify_config(_load(_FIXTURES / f"v{BASELINE_CONFIG_VERSION}.vast"))
+    assert found.state == CONFIG_UPGRADABLE
+    assert found.version == BASELINE_CONFIG_VERSION
+    assert found.steps == [f"{a}_to_{b}" for a, b in _step_versions()]
 
 
 def test_secondary_containers_both_authored_shapes():
@@ -290,3 +345,182 @@ def test_upgrade_config_file_without_write_leaves_the_file_alone(tmp_path):
     upgraded, applied = upgrade_config_file(target)
     assert applied and upgraded["version"] == SUPPORTED_CONFIG_VERSION
     assert target.read_text(encoding="utf-8") == original
+
+
+# -- v3 -> v4: fixed values move under `parameters:`, grouped by channel -------------
+
+def test_v3_to_v4_folds_the_parameters_list_and_moves_the_sibling_channels():
+    """The step the golden fixture cannot exercise: it predates any `configuration:` block."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "configuration": [{
+        "name": "a",
+        "parameters": [{"map_file": "m.yaml"}, {"goal": 1}],
+        "sim": {"overrides": {"x": 1}},
+        "sut": {"nav2.a": 2},
+        "variations": [{"V": {}}]}]})
+
+    entry = out["configuration"][0]
+    assert out["version"] == 4
+    assert entry["parameters"] == {"scenario": {"map_file": "m.yaml", "goal": 1},
+                                   "sim": {"overrides": {"x": 1}},
+                                   "sut": {"nav2.a": 2}}
+    assert "sim" not in entry and "sut" not in entry
+    assert entry["variations"] == [{"V": {}}], "variations say how a value is produced, not where"
+
+
+def test_v3_to_v4_folds_a_repeated_parameter_the_way_v3_already_read_it():
+    """v3 collapsed the list with ``dict.update`` before anything read it, so the last
+    entry already won. Writing it as a mapping states what the file always meant."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "configuration": [
+        {"name": "a", "parameters": [{"goal": 1}, {"goal": 2}]}]})
+    assert out["configuration"][0]["parameters"]["scenario"] == {"goal": 2}
+
+
+def test_v3_to_v4_leaves_a_configuration_with_nothing_fixed_alone():
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    entry = migrate({"version": 3, "configuration": [{"name": "a"}]})["configuration"][0]
+    assert entry == {"name": "a"}
+
+
+def test_v3_to_v4_migrates_the_search_template_the_same_way():
+    """``search.parameters`` is a configuration block without its wrapper."""
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    out = migrate({"version": 3, "search": {"parameters": [{"k": "v"}]}})
+    assert out["search"]["parameters"] == {"scenario": {"k": "v"}}
+
+
+def test_v3_to_v4_is_idempotent_on_an_already_migrated_block():
+    from robovast.common.migrations.config.v3_to_v4 import migrate
+
+    v4 = {"version": 4, "configuration": [
+        {"name": "a", "parameters": {"scenario": {"goal": 1}}}]}
+    assert migrate(v4)["configuration"][0]["parameters"] == {"scenario": {"goal": 1}}
+
+
+def test_a_migrated_search_template_validates_against_the_schema():
+    """The step and the model have to agree about the shape, not just each be reasonable.
+
+    Testing the transform alone let them disagree: the ladder rewrote ``search.parameters``
+    into channels while the field was still annotated as a list, so every search campaign
+    migrated cleanly and then failed to load.
+    """
+
+
+    v3 = {"version": 3,
+          "execution": {"containers": {"scenario": {"image": "a"}}, "runs": 1},
+          "search": {"strategy": "random",
+                     "search_space": {"gap": {"type": "float", "low": 0.0, "high": 1.0}},
+                     "extract": {"plugin": "p"},
+                     "objectives": [{"name": "o"}],
+                     "per_batch": 2,
+                     "budget": [{"batches": 2}],
+                     "parameters": [{"map_file": "m.yaml"}, {"goal": "$gap"}]}}
+    upgraded, _applied = upgrade_config(v3)
+    config = validate_config(upgraded)
+    assert config.search.parameters == {"scenario": {"map_file": "m.yaml", "goal": "$gap"}}
+
+
+def test_folding_the_parameters_list_keeps_the_notes_written_against_it(tmp_path):
+    """A campaign documents its parameters one note per line, and those notes are often the
+    only record of why a value is what it is. Restructuring must not spend them."""
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  # why the map is this one
+  - map_file: m.yaml
+  # why the goal is there
+  # and a second line about it
+  - goal: 3   # and a trailing note
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    text = path.read_text(encoding="utf-8")
+
+    assert "# why the map is this one" in text
+    assert "# why the goal is there" in text
+    assert "# and a second line about it" in text
+    assert "# and a trailing note" in text
+    # and it is still the document the step meant to produce
+    assert yaml.safe_load(text)["configuration"][0]["parameters"]["scenario"] == {
+        "map_file": "m.yaml", "goal": 3}
+
+
+def test_a_note_after_a_flow_list_survives_the_fold(tmp_path):
+    """The attachment point that is easy to miss.
+
+    ruamel files a note between two items against the PREVIOUS item's key -- unless that
+    item's value was a flow collection, which ends the line the note would have attached to.
+    Then it lands on the sequence, against the NEXT item's index. A fold that only reads the
+    first place deletes every note written after a list, silently.
+    """
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  - topics: ['/a',
+             '/b']
+  # SIXTY SECONDS -- the recorded value, and the reason it is not five
+  # second line of that reason
+  - wait: '60'
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    text = path.read_text(encoding="utf-8")
+
+    assert "# SIXTY SECONDS -- the recorded value, and the reason it is not five" in text
+    assert "# second line of that reason" in text
+    assert yaml.safe_load(text)["configuration"][0]["parameters"]["scenario"]["wait"] == "60"
+
+
+def test_the_note_before_the_first_item_is_not_printed_twice(tmp_path):
+    """It sits against the ``parameters:`` key, which does not move. Carrying it onto the
+    mapping as well emits it a second time -- and these blocks run to dozens of lines."""
+    path = tmp_path / "campaign.vast"
+    path.write_text("""\
+version: 3
+execution:
+  containers: {scenario: {image: a}}
+  runs: 1
+configuration:
+- name: documented
+  parameters:
+  # the reason for the map, at length
+  - map_file: m.yaml
+""", encoding="utf-8")
+
+    upgrade_config_file(str(path), write=True)
+    assert path.read_text(encoding="utf-8").count("# the reason for the map, at length") == 1
+
+
+def test_a_rewrite_that_loses_a_comment_says_so(caplog):
+    """The guard that would have caught both of the above without anyone reading a diff."""
+    from robovast.common.migrations import _warn_about_lost_comments
+
+    with caplog.at_level(logging.WARNING):
+        _warn_about_lost_comments("c.vast", "a: 1  # kept\nb: 2  # why b is two\n",
+                                  "a: 1  # kept\n")
+    assert "why b is two" in caplog.text
+
+
+def test_a_faithful_rewrite_says_nothing(caplog):
+    from robovast.common.migrations import _warn_about_lost_comments
+
+    with caplog.at_level(logging.WARNING):
+        _warn_about_lost_comments("c.vast", "a: 1  # kept\n", "a: 1  # kept\n")
+    assert caplog.text == ""

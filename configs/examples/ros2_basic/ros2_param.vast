@@ -1,10 +1,11 @@
-version: 3
+version: 4
 metadata:
   name: ros2_param
 configuration:
 - name: test-parameter
   parameters:
-  - test_parameter_value: "YES"
+    scenario:
+      test_parameter_value: "YES"
 execution:
   containers:
     scenario:

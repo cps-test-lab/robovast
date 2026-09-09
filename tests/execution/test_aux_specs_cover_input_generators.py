@@ -69,7 +69,7 @@ def _vast(tmp_path, body: str):
 def test_a_generator_declaring_an_image_requires_an_aux_container(tmp_path):
     """THE regression: this returned [] and the campaign died while composing."""
     config = _vast(tmp_path, """
-        version: 3
+        version: 4
         metadata:
           name: gen-needs-image
         configuration:
@@ -92,7 +92,7 @@ def test_a_generator_declaring_an_image_requires_an_aux_container(tmp_path):
 def test_a_generator_without_an_image_requires_nothing(tmp_path):
     """The common case must not conjure a pod: a generator whose tool is beside the composer."""
     config = _vast(tmp_path, """
-        version: 3
+        version: 4
         metadata:
           name: gen-no-image
         configuration:
@@ -109,7 +109,7 @@ def test_a_generator_without_an_image_requires_nothing(tmp_path):
 
 def test_a_campaign_with_neither_requires_nothing(tmp_path):
     config = _vast(tmp_path, """
-        version: 3
+        version: 4
         metadata:
           name: plain
         configuration:
@@ -127,7 +127,7 @@ def test_a_campaign_with_neither_requires_nothing(tmp_path):
 def test_a_variation_and_a_generator_sharing_an_image_are_deduplicated(tmp_path):
     """One pod per distinct container, whichever kind of declaration asked for it."""
     config = _vast(tmp_path, """
-        version: 3
+        version: 4
         metadata:
           name: both
         configuration:
@@ -159,7 +159,7 @@ def test_an_unknown_generator_is_not_silently_treated_as_needing_nothing(tmp_pat
     with no aux pod and fail later, in a phase that does not name the generator.
     """
     config = _vast(tmp_path, """
-        version: 3
+        version: 4
         metadata:
           name: bogus
         configuration:

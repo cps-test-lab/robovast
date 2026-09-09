@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS campaign (
     -- on this deployment. Typed columns rather than a JSON blob by the same rule as the
     -- execution provenance above: each is compared ACROSS campaigns ("what else came from
     -- this workspace / ran this .vast / descends from this campaign"). Unlike execution_json
-    -- there is no larger document behind them -- these five ARE the record -- so a blob
+    -- there is no larger document behind them -- these columns ARE the record -- so a blob
     -- beside them would be a second source of truth rather than a home for the remainder.
     -- For a re-run the workspace columns name the ROOT of the chain, copied from the parent
     -- at launch, so lineage survives the parent's deletion and needs no walking.
@@ -133,7 +133,15 @@ CREATE TABLE IF NOT EXISTS campaign (
     origin_workspace_id   TEXT,
     origin_workspace_name TEXT,
     origin_config_path    TEXT,   -- workspace-relative; _config/ keeps only the basename
-    origin_from_campaign  TEXT    -- the immediate parent, for origin_kind='retrigger'
+    origin_from_campaign  TEXT,   -- the immediate parent, for origin_kind='retrigger'
+    -- Which config version a re-run read, and what the migration ladder did to get there. A
+    -- re-run stages a copy of the parent's frozen .vast and migrates that copy, so two runs
+    -- of "the same campaign" can read different config versions -- a difference a reader
+    -- comparing their results has to see. origin_config_version_from is written on every
+    -- re-run, so an empty step list means "read a current config" rather than "nobody
+    -- looked"; NULL means the run recorded nothing about it.
+    origin_config_version_from    INTEGER,
+    origin_config_migration_steps TEXT   -- JSON ["1_to_2", ...]; NULL when none were applied
 );
 CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
@@ -156,7 +164,8 @@ CREATE TABLE IF NOT EXISTS unit (
     status        TEXT,
     result_dir    TEXT,
     created_at    REAL,
-    n_reps        INTEGER          -- repetitions ALLOCATED to this cell; n_samples is what came back
+    n_reps        INTEGER,         -- repetitions ALLOCATED to this cell; n_samples is what came back
+    channels_json TEXT             -- {scenario, sim, sut}: what each variation channel resolved to
 );
 CREATE TABLE IF NOT EXISTS job (
     id           INTEGER PRIMARY KEY,
@@ -476,8 +485,37 @@ _MIGRATION_ADD_UNIT_N_REPS = """
 ALTER TABLE unit ADD COLUMN n_reps INTEGER;
 """
 
+# 11 -> 12: what each variation channel resolved to, for every cell.
+#
+# `params_json` is the SCENARIO channel only: on a grid campaign it is the configuration's
+# `config` block, and on a search campaign it is the parameter set the strategy proposed --
+# which the replay feeds back to the strategy, so it cannot carry anything else. A factor
+# written on the `sim:` or `sut:` channel therefore reached the results tree as a file and
+# the index not at all, and two factors on adjacent lines of one .vast were not equally
+# analysable.
+#
+# Kept beside `params_json` rather than merged into it for that reason: the two answer
+# different questions, and a search resume must keep seeing only what it proposed.
+#
+# NULL on a store written before this. The blocks are recorded per configuration on disk,
+# so `campaign_index.rebuild` fills it in for a campaign whose store is reconstructed.
+_MIGRATION_ADD_UNIT_CHANNELS = """
+ALTER TABLE unit ADD COLUMN channels_json TEXT;
+"""
+
+# 12 -> 13: which config version a re-run read, and how it was brought forward.
+#
+# Nullable and never backfilled, like the origin columns themselves: a re-run recorded before
+# this existed did not keep which version it read, and its parent's frozen config no longer
+# answers it -- the parent may have been re-run again since, and the version the ladder would
+# produce today is not the one that ran.
+_MIGRATION_ADD_ORIGIN_CONFIG_VERSION = """
+ALTER TABLE campaign ADD COLUMN origin_config_version_from    INTEGER;
+ALTER TABLE campaign ADD COLUMN origin_config_migration_steps TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -498,15 +536,27 @@ _MIGRATIONS = [
     _MIGRATION_ADD_NODE,
     _MIGRATION_ADD_BATCH_ASKED,
     _MIGRATION_ADD_UNIT_N_REPS,
+    _MIGRATION_ADD_UNIT_CHANNELS,
+    _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
 
-#: The origin columns, in the order :func:`read_campaign_origin` maps them onto
-#: ``CampaignOrigin``'s fields and :meth:`CampaignStore.create_campaign` binds them. One
-#: list so the INSERT, the SELECT and the mapping cannot drift apart.
-_ORIGIN_COLUMNS = ("origin_kind", "origin_workspace_id", "origin_workspace_name",
-                   "origin_config_path", "origin_from_campaign")
+#: Each origin column and the ``CampaignOrigin`` field it carries, in the order
+#: :meth:`CampaignStore.create_campaign` binds them and :func:`read_campaign_origin` reads
+#: them back. One mapping so the INSERT, the SELECT and the round trip cannot drift apart.
+_ORIGIN_COLUMNS = {
+    "origin_kind": "kind",
+    "origin_workspace_id": "workspace_id",
+    "origin_workspace_name": "workspace_name",
+    "origin_config_path": "config_path",
+    "origin_from_campaign": "from_campaign",
+    "origin_config_version_from": "config_version_from",
+    "origin_config_migration_steps": "config_migration_steps",
+}
+
+#: Origin fields stored as a JSON document rather than a scalar, decoded on the way back.
+_ORIGIN_JSON_FIELDS = ("config_migration_steps",)
 
 
 def _json_or_none(value) -> Optional[str]:
@@ -519,6 +569,21 @@ def _json_or_none(value) -> Optional[str]:
     if not value:
         return None
     return json.dumps(value, default=str, sort_keys=True)
+
+
+def _origin_row(origin) -> tuple:
+    """The :data:`_ORIGIN_COLUMNS` values for *origin*, all NULL when there is none.
+
+    Empty is stored as NULL, by the same rule as ``created_by``: "not recorded" and "recorded
+    as empty" are different facts. ``config_version_from`` is an integer and is written as it
+    stands -- emptiness is not a thing a version has, and ``or None`` would turn a version 0
+    into "nobody looked".
+    """
+    if origin is None:
+        return (None,) * len(_ORIGIN_COLUMNS)
+    return (origin.kind or None, origin.workspace_id or None, origin.workspace_name or None,
+            origin.config_path or None, origin.from_campaign or None,
+            origin.config_version_from, _json_or_none(origin.config_migration_steps))
 
 
 class CampaignStore:
@@ -635,10 +700,7 @@ class CampaignStore:
             "SELECT id FROM campaign WHERE name = ?", (name,)).fetchone()
         if existing is not None:
             return existing[0]
-        origin_values = (
-            (origin.kind or None, origin.workspace_id or None, origin.workspace_name or None,
-             origin.config_path or None, origin.from_campaign or None)
-            if origin is not None else (None,) * len(_ORIGIN_COLUMNS))
+        origin_values = _origin_row(origin)
         cur = self._conn.execute(
             "INSERT INTO campaign (name, mode, config_dir, config_json, created_at, "
             f"description, created_by, {', '.join(_ORIGIN_COLUMNS)}) "
@@ -679,6 +741,7 @@ class CampaignStore:
         result_dir: str,
         n_samples: Optional[int] = None,
         n_reps: Optional[int] = None,
+        channels: Optional[dict] = None,
     ) -> int:
         """Record one parameter set's outcome.
 
@@ -686,6 +749,11 @@ class CampaignStore:
         ``n_reps`` is what the cell was ALLOCATED, which under ``search.repetitions``
         differs per cell and is what a ``runs`` budget counts. ``None`` means the
         campaign's ``execution.runs``.
+
+        ``channels`` is what each variation channel resolved to for this cell
+        (``{"scenario": ..., "sim": ..., "sut": ...}``), kept beside ``params`` and never
+        merged into it: ``params`` is what a search proposed and is replayed back to the
+        strategy, while ``channels`` is what the cell was actually configured with.
         """
         # Surface the sole objective as a queryable REAL column for the common
         # single-objective case; keep the full dict in JSON regardless.
@@ -693,8 +761,8 @@ class CampaignStore:
         cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, "
-            "created_at, n_reps) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, n_reps, channels_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 batch_id, paramset_id, config_name,
                 json.dumps(params, default=str),
@@ -704,6 +772,7 @@ class CampaignStore:
                 n_samples,
                 status, result_dir, time.time(),
                 n_reps,
+                json.dumps(channels, default=str) if channels else None,
             ),
         )
         self._conn.commit()
@@ -1122,6 +1191,11 @@ def read_campaign_origin(campaign_dir: str | Path):
     empty -- which is deliberately the same answer either way: neither knows where the
     campaign came from, and there is nothing to show for it.
 
+    Only the columns the store actually has are selected, so a store written before a later
+    origin column existed still reports everything it does know, and the field that column
+    carries keeps its "not recorded" default. Selecting all of them would cost such a store
+    its whole origin over one column nobody could have written.
+
     Read-only, like its neighbours, so listing never migrates or locks a store a running
     campaign is still writing. That is also why a pre-7 store must not raise here: the
     ``sqlite3.Error`` for the unknown column is the expected path for an old campaign, not a
@@ -1133,17 +1207,23 @@ def read_campaign_origin(campaign_dir: str | Path):
         return None
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            present = {r[1] for r in conn.execute("PRAGMA table_info(campaign)")}
+            columns = [c for c in _ORIGIN_COLUMNS if c in present]
+            if not columns:
+                return None
             row = conn.execute(
-                f"SELECT {', '.join(_ORIGIN_COLUMNS)} FROM campaign LIMIT 1").fetchone()
+                f"SELECT {', '.join(columns)} FROM campaign LIMIT 1").fetchone()
     except sqlite3.Error:
         return None
     if not row or not any(row):
         return None
-    kind, workspace_id, workspace_name, config_path, from_campaign = row
-    return CampaignOrigin(
-        kind=kind or "", workspace_id=workspace_id or "",
-        workspace_name=workspace_name or "", config_path=config_path or "",
-        from_campaign=from_campaign or "")
+    recorded = {}
+    for column, value in zip(columns, row):
+        if value is None:
+            continue
+        field = _ORIGIN_COLUMNS[column]
+        recorded[field] = json.loads(value) if field in _ORIGIN_JSON_FIELDS else value
+    return CampaignOrigin(**recorded)
 
 
 def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:

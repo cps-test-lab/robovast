@@ -387,6 +387,14 @@ class CampaignOrigin(BaseModel):
     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
     have to be revisited the first time an origin appears that is neither -- so switch on
     ``kind`` and never on whether ``from_campaign`` is empty.
+
+    **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+    migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+    read different config versions -- which makes them different experiments, and a reader
+    comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+    on every re-run, so "read a current config" is a fact rather than a silence:
+    :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+    :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
     """
 
     #: One of :class:`OriginKind`, as a plain string. Open vocabulary.
@@ -404,6 +412,17 @@ class CampaignOrigin(BaseModel):
     #: The campaign this one was re-run from -- the *immediate* parent, not the root of the
     #: chain. Only meaningful for ``kind == "retrigger"``.
     from_campaign: str = ""
+    #: The config version the source campaign's frozen ``.vast`` declared, which is the
+    #: version this run read it at before any migration. ``None`` means it was not recorded:
+    #: a launch that is not a re-run, or a re-run recorded before this was kept. Only
+    #: meaningful for ``kind == "retrigger"``.
+    config_version_from: Optional[int] = None
+    #: The migration ladder steps applied to reach the version this run actually ran, e.g.
+    #: ``["1_to_2", "2_to_3"]``; empty when the source config was already current. Kept
+    #: rather than derived from the two versions: once the baseline rises past
+    #: :attr:`config_version_from`, the ladder can no longer be replayed to say which steps
+    #: ran, and the last step is what names the version this run reached.
+    config_migration_steps: list[str] = Field(default_factory=list)
 
 
 class CampaignSummary(BaseModel):
@@ -572,6 +591,32 @@ class JobKind(StrEnum):
     POSTPROCESSING = "postprocessing"
 
 
+class JobUsage(BaseModel):
+    """What one running job is consuming, against what it was given.
+
+    Both denominators, because they answer different questions and routinely differ. The
+    **request** is what the scheduler set aside, so measured-against-request answers "did we
+    reserve the right amount?" -- the sizing question, and the one the capacity meter and node
+    calibration are both about. The **limit** is the ceiling the kernel enforces, so
+    measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
+    may legitimately sit anywhere between the two.
+
+    Every field is optional, and absent means *not known* -- never zero. A lane that sets no
+    container limits has no ceiling to state; a container whose cpu limit was left open may use
+    the whole node, so no finite number is the truth; a cluster with no metrics API measures
+    nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
+    numbers are missing, when there is a reason worth reporting, is on
+    :attr:`ListJobsResponse.metrics_unavailable`.
+    """
+
+    cpu_cores: Optional[float] = None
+    cpu_request: Optional[float] = None
+    cpu_limit: Optional[float] = None
+    memory_bytes: Optional[int] = None
+    memory_request_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
+
+
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
@@ -605,6 +650,24 @@ class JobSummary(BaseModel):
     # reason worth reading. So a detail here is not by itself a sign of trouble —
     # ``status`` is what says whether anyone needs to act.
     detail: Optional[str] = None
+    #: What this job is consuming right now, where the lane can measure it -- see
+    #: :class:`JobUsage`. ``None`` on a job that is not running (a sample outlives the pod it
+    #: came from, and a finished job carrying one reads as still burning cores) and on any lane
+    #: with nothing to measure. Never a zeroed record: absent is the honest answer.
+    usage: Optional[JobUsage] = None
+    #: The node this job's pod is running on, or ``None`` where the lane has no nodes (local)
+    #: or the scheduler has not placed it yet. A pending job without one is the normal case,
+    #: not a gap: it is what "not placed yet" looks like.
+    node: Optional[str] = None
+    #: When this job started, epoch seconds, or ``None`` where the lane cannot say.
+    #:
+    #: The *job's* start, not its containers': it is stamped before the pod is scheduled and
+    #: before the inputs are staged, so it answers "how long has this trial been going" rather
+    #: than "how long has it been executing", and it is defined for a job still pending or
+    #: blocked -- which is exactly where the question is worth asking. A timestamp rather than
+    #: an age, so a client subtracts against its own clock; an age is stale the moment it is
+    #: serialised.
+    started_at: Optional[float] = None
 
 
 class JobCounts(BaseModel):
@@ -665,6 +728,15 @@ class ListJobsResponse(BaseModel):
 
     jobs: list[JobSummary] = Field(default_factory=list)
     counts: JobCounts = Field(default_factory=JobCounts)
+    #: Why no job here carries :attr:`JobSummary.usage`, when the absence has a cause worth
+    #: reporting -- no metrics API on the cluster, or a service role that predates the grant it
+    #: needs. ``None`` when usage is available, and when its absence needs no explaining (a lane
+    #: that measures nothing by design says so once, in its documentation, not on every read).
+    #:
+    #: One reason for the response rather than one per job, because the cause is always the
+    #: whole read failing and never a single job's. Without it, a listing whose rows simply
+    #: carry no numbers cannot be told from a cluster sitting idle.
+    metrics_unavailable: Optional[str] = None
 
 
 class BatchObjective(BaseModel):
@@ -870,6 +942,14 @@ class VersionInfo(BaseModel):
     # Docker is running right now is a different question, answered by `resource_usage`
     # and by the run preflight; probing it here would make the cheapest call in the
     # interface the slowest.
+    #
+    # So `True` is not a promise that a build will be *published*. On the cluster lane it
+    # means a registry is configured; whether the credential it would push with is still
+    # accepted is asked once per build, at submit time and before any layer is built (see
+    # `RegistryImageStore.push_refused`), because that answer costs a round trip to the
+    # registry and cannot be cached across the calls every client makes. A consumer must
+    # not read `True` as "this build will succeed" -- it rules out the deployment having
+    # nowhere to push, and nothing else.
     #: True when this deployment can build an experiment image; ``None`` when the service
     #: did not say. **A consumer must treat ``None`` as "no verdict" and print nothing**:
     #: a service older than this field leaves it absent, and reading that as ``False``
@@ -1549,18 +1629,41 @@ class ValidationProblem(BaseModel):
 
     ``stage`` is the check that failed (``file``/``parse``/``schema``/
     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
+
+    ``severity`` states which of three answers this is, because a caller acts on them
+    differently and the text alone cannot be branched on:
+
+    - ``error`` — the campaign is wrong. It makes ``valid`` false.
+    - ``advice`` — a checked fact worth saying (a large build context, a container with
+      no memory limit). ``valid`` stays true; the campaign runs.
+    - ``unchecked`` — a check this report covers could not run here, so *nothing* was
+      learned about it either way. It makes ``valid`` false without being a defect in
+      the file, and its message names what would settle it.
     """
 
     stage: str = ""
     config: Optional[str] = None
     field: Optional[str] = None
     message: str = ""
+    severity: str = "error"
 
 
 class ValidationReport(BaseModel):
-    """Collect-all validation result (mirrors ``validate_project_file``)."""
+    """Collect-all validation result (mirrors ``validate_project_file``).
+
+    ``valid`` means every check this report covers ran **and** passed, so a caller may
+    act on that one boolean — which is the only thing a boolean is good for. A check
+    that could not run makes it false and appears as an ``unchecked`` problem: "I could
+    not look" and "it is fine" are different answers, and a caller that reads only
+    ``valid`` must not be handed the second when the first is true.
+
+    ``world_checked`` is the three-state answer for the one check that needs a
+    container: ``True`` it ran and the world loads and compiles, ``False`` it was asked
+    for and could not run, ``None`` it was not asked for (``check_world=False``).
+    """
 
     valid: bool = False
+    world_checked: Optional[bool] = None
     problems: list[ValidationProblem] = Field(default_factory=list)
     configs: int = 0
     runs_per_config: int = 0
@@ -2539,7 +2642,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a **new** campaign from what an existing one recorded; return its id.
 
         Reads the source campaign's frozen ``_config/`` and its ``_execution/`` records
@@ -2559,6 +2662,13 @@ class RobovastInterface(ABC):
         Everything downstream of the configuration is **re-expanded**: ``execution.generate``
         generators re-run (their cache is not archived), so a stochastic generator draws new
         samples. This is a re-run, not a replay of the same trials.
+
+        **The pre-flight is the gate, and it is here.** :meth:`check_retrigger` runs
+        service-side before anything is staged, and a blocking axis refuses the launch — so a
+        campaign whose recorded image no host can drive is answered in the call that would
+        have launched it, whichever client asked. ``force`` launches anyway, for an axis the
+        caller has decided they understand; it is the only way past, and the refusal names
+        every blocking axis with what to do about it.
 
         Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
         """
@@ -2581,10 +2691,13 @@ class RobovastInterface(ABC):
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         """Whether *campaign_id* can be re-run, and what is missing if not.
 
-        Answers without staging anything, starting a container or spending compute, so it is
-        the cheap thing to call before :meth:`retrigger_campaign` rather than launching to find
-        out. Reports every axis at once -- config version, host/container protocol, images,
-        third-party plugins, asset providers -- because they fail independently.
+        Answers without staging anything, starting a container or spending compute. Reports
+        every axis at once -- config version, host/container protocol, images, third-party
+        plugins, asset providers -- because they fail independently.
+
+        The same report :meth:`retrigger_campaign` refuses on, read without launching: this is
+        how a client explains a refusal before or instead of provoking it, not how the refusal
+        is decided.
 
         Computed service-side, like :meth:`validate_project`: a client-only install has no
         access to the service's results directory, so a client that tried to work this out for

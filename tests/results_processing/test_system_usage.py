@@ -404,13 +404,13 @@ def test_the_breakdown_separates_reserved_memory_from_reclaimable(tmp_path, monk
     for the simulator, which is the container most worth shrinking. ``anon`` + ``shmem`` +
     ``slab`` is what survives reclaim; ``file`` is recorded beside them so the difference is
     visible rather than assumed."""
-    f = tmp_path / "memory.stat"
-    f.write_text("anon 100\nfile 900\nkernel_stack 8\nslab 30\nshmem 40\nsock 1\n",
-                 encoding="utf-8")
-    monkeypatch.setattr(mon, "MEMORY_PATH", str(tmp_path))
+    _memory_dirs(tmp_path, monkeypatch, v2={
+        "memory.stat": "anon 100\nfile 900\nkernel_stack 8\nslab 30\nshmem 40\nsock 1\n"})
     assert mon.memory_stat_probe() == {"memory_anon": 100, "memory_file": 900,
                                        "memory_shmem": 40, "memory_slab": 30}
-    monkeypatch.setattr(mon, "MEMORY_PATH", str(tmp_path / "missing"))
+    # Both layouts absent, not just v2: with only v2 pointed away this would fall through to
+    # whatever the machine running the tests has under the v1 path, and pass or fail by kernel.
+    _memory_dirs(tmp_path, monkeypatch)
     assert mon.memory_stat_probe() == {}
 
 
@@ -589,3 +589,51 @@ def test_the_oom_counter_absent_on_both_stays_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(mon, "MEMORY_FAILCNT_PATH_V1", str(tmp_path / "missing.failcnt"))
     monkeypatch.setattr(mon, "MEMORY_OOM_CONTROL_PATH_V1", str(tmp_path / "missing.oom"))
     assert mon.memory_events_probe() == {}
+
+
+def test_the_breakdown_is_read_on_v1_too(tmp_path, monkeypatch):
+    """The one memory probe left without a v1 fallback, which made it the worst of the three
+    to lose: every other memory column still lands there, so the peak reads as a hard number
+    while the only field saying how much of it is page cache is silently absent -- and that
+    absence is indistinguishable from a kernel that cannot report it. A mixed cluster then
+    reports the peak for every sample and the breakdown for only some, which is the shape that
+    makes a per-container maximum over the breakdown a maximum over a subset.
+    """
+    _memory_dirs(tmp_path, monkeypatch, v1={"memory.stat": (
+        "cache 900\nrss 100\nshmem 40\nmapped_file 12\n"
+        "total_cache 940\ntotal_rss 100\ntotal_shmem 40\n")})
+    # ``file`` is v1's ``cache`` minus its ``shmem``: v1 counts the tmpfs pages inside cache
+    # that v2 keeps out of ``file`` and reports only under ``shmem``. Unsubtracted, the two
+    # versions would disagree about which group a DDS segment falls in -- and it is the group
+    # that decides a reservation.
+    assert mon.memory_stat_probe() == {"memory_anon": 100, "memory_file": 900,
+                                       "memory_shmem": 40}
+
+
+def test_the_v1_breakdown_reads_the_hierarchy_totals(tmp_path, monkeypatch):
+    """v1's bare ``rss``/``cache`` count this cgroup ALONE while v2's ``memory.stat`` is
+    recursive. A container whose processes sit in a child cgroup would read as near-empty --
+    not a different spelling of the same number, a different number that looks plausible."""
+    _memory_dirs(tmp_path, monkeypatch, v1={"memory.stat": (
+        "cache 0\nrss 0\nshmem 0\n"
+        "total_cache 940\ntotal_rss 100\ntotal_shmem 40\n")})
+    assert mon.memory_stat_probe()["memory_anon"] == 100
+
+
+def test_v2_wins_where_both_layouts_are_present(tmp_path, monkeypatch):
+    """Same precedence as :func:`memory_probe`, so a host exposing both cannot have one
+    memory column answered from v2 and its neighbour from v1."""
+    _memory_dirs(tmp_path, monkeypatch,
+                 v2={"memory.stat": "anon 100\nfile 900\nshmem 40\nslab 30\n"},
+                 v1={"memory.stat": "total_rss 7\ntotal_cache 7\ntotal_shmem 7\n"})
+    assert mon.memory_stat_probe()["memory_anon"] == 100
+
+
+def test_a_v1_breakdown_without_shmem_reports_only_what_it_can_stand_behind(
+        tmp_path, monkeypatch):
+    """Without ``shmem`` neither derived group can be stated: ``file`` would carry the tmpfs
+    and ``shmem`` would be missing from the unreclaimable sum, so a limit sized from it would
+    come out UNDER what the container holds. ``anon`` alone is still true and still lands."""
+    _memory_dirs(tmp_path, monkeypatch,
+                 v1={"memory.stat": "total_cache 940\ntotal_rss 100\n"})
+    assert mon.memory_stat_probe() == {"memory_anon": 100}

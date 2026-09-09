@@ -52,6 +52,7 @@ import functools
 import json
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -280,12 +281,21 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
     """
     import time
 
+    from kubernetes.client.rest import ApiException
     from kubernetes.stream import stream
 
-    resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
-                  container=container, command=list(command),
-                  stderr=True, stdin=stdin_data is not None, stdout=True,
-                  tty=False, _preload_content=False)
+    try:
+        resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
+                      container=container, command=list(command),
+                      stderr=True, stdin=stdin_data is not None, stdout=True,
+                      tty=False, _preload_content=False)
+    except ApiException as exc:
+        # Named here because this is the call that failed. The handshake is the one part of
+        # an exec that fails before the command exists, and unlabelled it was reported by
+        # whichever wrapper happened to enclose the call -- pointing a caller at an
+        # operation that had in fact succeeded.
+        raise RuntimeError(f"could not open an exec stream into {pod}/{container}: "
+                           f"{api_error_reason(exc)}") from exc
     out, err = [], []
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
@@ -438,6 +448,74 @@ def api_transport_errors(what: str):
                 "context, 'kubectl cluster-info')."
             ) from exc
 
+#: A websocket handshake the peer answered with an ordinary HTTP response. ``websocket``
+#: puts the code in its message and appends the response headers; only the code is a fact
+#: about the failure.
+_HANDSHAKE_STATUS = re.compile(r"Handshake status (\d{3})")
+
+
+def _status_message(body) -> str:
+    """The ``message`` of a Kubernetes ``Status`` object, or ``""`` if the body is not one."""
+    if not body:
+        return ""
+    try:
+        parsed = json.loads(body if isinstance(body, (str, bytes, bytearray)) else str(body))
+    except (TypeError, ValueError):
+        return ""
+    message = parsed.get("message") if isinstance(parsed, dict) else None
+    return str(message).strip()[:400] if message else ""
+
+
+def _handshake_failure(reason: str) -> str:
+    """A websocket upgrade answered with an ordinary HTTP response, stated as that.
+
+    The API server serves exec as a stream, so an answer that is not a protocol switch
+    means the request never arrived at the exec subresource as one. ``200`` is both the
+    common case and the confusing one: read raw, the failure says "OK".
+    """
+    found = _HANDSHAKE_STATUS.search(reason or "")
+    if not found:
+        return ""
+    return ("the connection was never upgraded to a websocket -- the request for the "
+            f"stream was answered with an ordinary HTTP {found.group(1)} response, so "
+            "either something between this client and the API server answered it, or the "
+            "API server does not serve that subresource as a stream")
+
+
+def _first_segment(reason: str) -> str:
+    """The head of a reason string: its first line, up to the client's own separator.
+
+    Built by keeping the part that describes the failure rather than by naming the parts
+    to remove, so a reason shape this has never seen still comes through short.
+    """
+    head = (reason or "").split(" -+-+- ")[0].strip()
+    return head.splitlines()[0].strip()[:400] if head else ""
+
+
+def api_error_reason(exc) -> str:
+    """What an ``ApiException`` says, in one line a caller can act on.
+
+    ``ApiException.reason`` is not an HTTP reason phrase, and must not be reported as
+    though it were. The generated client's stream helper turns *any* exception into
+    ``ApiException(status=0, reason=str(e))``, so a failed websocket handshake arrives as
+    that exception's whole repr -- response headers, an audit id and a ``None`` body,
+    joined by the websocket library's separators. Forwarded verbatim it hands a caller
+    several hundred characters that name nothing to fix, and buries the one fact that
+    matters.
+
+    So the fields are read in the order they carry meaning: the API server's own message
+    when the body holds a ``Status``, a handshake failure said plainly, else the head of
+    the reason.
+    """
+    status = getattr(exc, "status", 0) or 0
+    reason = str(getattr(exc, "reason", "") or "")
+    detail = (_status_message(getattr(exc, "body", None))
+              or _handshake_failure(reason)
+              or _first_segment(reason)
+              or exc.__class__.__name__)
+    return f"HTTP {status}: {detail}" if status else detail
+
+
 def parse_resource(val):
     """A Kubernetes resource quantity as a number; ``0`` for missing or unparseable.
 
@@ -456,3 +534,100 @@ def parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
+
+
+#: Unit table for :func:`parse_duration`, longest suffix first so ``ms`` is not read as ``m``.
+_DURATION_UNITS = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3,
+                   "s": 1.0, "m": 60.0, "h": 3600.0}
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)")
+
+
+def parse_duration(val, default=None):
+    """A Go duration string (``"10.549007488s"``, ``"1m30s"``) as seconds, else *default*.
+
+    Kubernetes states some durations as text rather than as a number -- a ``PodMetrics``
+    sample says which ``window`` it covers this way -- and the fractional part is real, so
+    this cannot round to whole units.
+
+    Deliberately not folded into :func:`parse_resource`: a quantity and a duration share no
+    syntax, and ``m`` means the opposite thing in each (milli against minutes). One function
+    answering both would read ``"5m"`` as five thousandths of a second or five minutes
+    depending on who called it.
+
+    Anything that is not a complete duration yields *default* rather than a partial sum: a
+    string this cannot read is one whose meaning is unknown, and guessing at it would put a
+    made-up number where a caller asked for a measured one.
+    """
+    if not isinstance(val, str):
+        return default
+    text = val.strip()
+    total, pos = 0.0, 0
+    for match in _DURATION_RE.finditer(text):
+        if match.start() != pos:  # a gap means the rest is not a duration
+            return default
+        total += float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+        pos = match.end()
+    if pos == 0 or pos != len(text):
+        return default
+    return total
+
+
+def _stated(resources, field):
+    """One container's ``requests`` or ``limits`` mapping, however *resources* is shaped.
+
+    The generated client gives an object; a manifest read straight from YAML gives a dict.
+    Both reach the resource arithmetic below -- a Job template built in-process is the
+    second -- so both are read here rather than at each call site.
+    """
+    if resources is None:
+        return {}
+    if isinstance(resources, dict):
+        return resources.get(field) or {}
+    return getattr(resources, field, None) or {}
+
+
+def workload_resources(spec_owner, container_names=None) -> dict:
+    """Summed cpu/memory ``requests`` and ``limits`` over *spec_owner*'s workload containers.
+
+    Returns ``{"cpu_request", "cpu_limit", "memory_request", "memory_limit"}``, each a number
+    or ``None``; memory in bytes, cpu in cores. Takes anything carrying a ``.spec`` -- a pod,
+    or a Job's ``spec.template``, which is the same shape before any pod exists.
+
+    **Each of the four is all-or-nothing.** A workload container stating no cpu limit may use
+    the whole node, so there is no ceiling to add up: the answer is ``None``, not the total of
+    the containers that did state one, which would claim a ceiling below the truth and read as
+    a job much closer to being throttled than it is. The four are decided independently, so a
+    missing cpu limit does not also hide a memory ceiling that is known.
+
+    *container_names* restricts the sum to those containers. Pass it whenever the figure will
+    be shown against a measurement covering only some of them, so that numerator and
+    denominator describe the same set -- a total over three containers under a reading from one
+    is a ratio between two different things.
+
+    Sums over :func:`pod_workload_containers`, so native sidecars count. See there for why
+    ``spec.containers`` alone is the wrong set, and what reading it cost.
+    """
+    wanted = None if container_names is None else set(container_names)
+    keys = ("cpu_request", "cpu_limit", "memory_request", "memory_limit")
+    totals = dict.fromkeys(keys, 0.0)
+    incomplete = dict.fromkeys(keys, False)
+    counted = False
+    for container in pod_workload_containers(spec_owner):
+        if wanted is not None and getattr(container, "name", None) not in wanted:
+            continue
+        counted = True
+        resources = getattr(container, "resources", None)
+        for kind, field in (("request", "requests"), ("limit", "limits")):
+            stated = _stated(resources, field)
+            for resource in ("cpu", "memory"):
+                key = f"{resource}_{kind}"
+                value = stated.get(resource)
+                if value is None:
+                    incomplete[key] = True
+                else:
+                    totals[key] += parse_resource(value)
+    if not counted:
+        return dict.fromkeys(keys)
+    return {key: None if incomplete[key]
+            else (int(totals[key]) if key.startswith("memory") else totals[key])
+            for key in keys}

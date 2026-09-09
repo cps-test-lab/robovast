@@ -219,6 +219,19 @@ class Notifier:
         self._announce("campaign.upload_failed", f"Upload to share FAILED: {reason}",
                        severity="warning", priority=4, tags="warning")
 
+    def upload_cancelled(self, reason: str) -> None:
+        """An upload to share was cancelled by a stop.
+
+        Its own event rather than :meth:`upload_failed`, for the same reason
+        :meth:`postprocessing_cancelled` is not a failure: the operator asked for this,
+        and filing a deliberate act under faults sends whoever reads it looking for a
+        fault that is not there. Not terminal — the campaign and its results are
+        untouched and the upload can be asked for again.
+        """
+        self._announce("campaign.upload_cancelled",
+                       f"Upload to share CANCELLED: {reason}",
+                       severity="warning", priority=3, tags="octagonal_sign")
+
     def postprocessed(self) -> None:
         """A re-run of postprocessing produced its derived data."""
         self._announce("campaign.postprocessed", "Postprocessing complete.",
@@ -233,6 +246,19 @@ class Notifier:
         self._announce("campaign.postprocessing_failed",
                        f"Postprocessing FAILED: {reason}",
                        severity="warning", priority=4, tags="warning")
+
+    def postprocessing_cancelled(self, reason: str) -> None:
+        """A re-run of postprocessing was cancelled by a stop.
+
+        Its own event rather than :meth:`postprocessing_failed`, for the same reason a
+        stopped campaign is not a failed one: the operator asked for this, and announcing
+        it as a failure files a deliberate act under faults and sends whoever reads it
+        looking for a fault that is not there. Not terminal — the campaign's trials are
+        untouched and the step can be asked for again.
+        """
+        self._announce("campaign.postprocessing_cancelled",
+                       f"Postprocessing CANCELLED: {reason}",
+                       severity="warning", priority=3, tags="octagonal_sign")
 
     def failed(self, reason: str) -> None:
         self._announce_terminal("campaign.failed", f"Campaign FAILED: {reason}",

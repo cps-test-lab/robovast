@@ -171,6 +171,13 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         # trial look clean. See RunProgress.
         "batch_runs_no_result": st.runs.no_result if st.runs else 0,
         "batch_runs_failed": st.runs.failed if st.runs else 0,
+        # Whether the two counts above are final for this batch, because 0 alone cannot
+        # say. They are written once, when the batch's verdicts are tallied, so a poll
+        # partway through a batch that had already lost runs reads 0 -- which is also what
+        # a batch that lost nothing reads. Reported beside them rather than left to the
+        # docstring: a caller that has not read the docstring is exactly the caller that
+        # misreads the number.
+        "batch_outcomes_counted": bool(st.runs.outcomes_counted) if st.runs else False,
         "progress": _progress_from_status(st),
     }
     # How long the campaign has held this phase. A phase alone cannot separate slow
@@ -266,7 +273,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    show_gui: bool = False, description: str = "",
-                   from_campaign: str = "") -> dict:
+                   from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     The only way an experiment is executed: a ``docker compose`` produces no pinned image,
@@ -282,10 +289,14 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         workspace_id: **Required unless ``from_campaign``** — the workspace holding the
             project. There is no server-side "current project".
         from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
-            untouched, **taking no other argument** — the record supplies them, so a pilot
-            stays a pilot. Re-expands, so stochastic generators redraw. Can be refused; read
-            ``get_campaign_summary``'s ``retrigger`` key first, which says why and costs
-            nothing.
+            untouched, **taking no other argument but ``force``** — the record supplies them,
+            so a pilot stays a pilot. Re-expands, so stochastic generators redraw. Refused
+            when its pre-flight blocks (an image no host here can drive, a config no ladder
+            carries); ``get_campaign_summary``'s ``retrigger`` key says so beforehand and
+            costs nothing.
+        force: Re-run despite a blocking pre-flight axis, for one you have decided you
+            understand. With ``from_campaign`` only — a workspace launch has no pre-flight
+            to override.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -323,6 +334,12 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         if len(description) > DESCRIPTION_MAX_LEN:
             return {"error": f"description is {len(description)} characters; the limit "
                              f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
+        if force and not from_campaign:
+            # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
+            # workspace launch it would name a policy this call never consults.
+            return {"error": "force overrides the re-run pre-flight, which only a "
+                             "from_campaign launch has — drop it, or name the campaign to "
+                             "re-run."}
         if from_campaign:
             # Named rather than dropped: a retrigger takes these from what the source
             # campaign recorded, so accepting them here would answer a different question
@@ -338,7 +355,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                         f"recorded, so {', '.join(supplied)} cannot be set at the same time "
                         f"— drop them, or start from a workspace instead. The retriggered "
                         f"campaign's description is derived from the source's."}
-            ref = client.retrigger_campaign(from_campaign)
+            ref = client.retrigger_campaign(from_campaign, force)
             out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
                    "next_step": _wait_next_step(ref.campaign_id)}
             if ref.note:
@@ -456,7 +473,8 @@ def get_campaign_status(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
-        batch_runs_failed, batch_runs_no_result}``, plus, on a search,
+        batch_runs_failed, batch_runs_no_result, batch_outcomes_counted}``, plus, on a
+        search,
         ``objective_name``/``objective_direction``/``batches_since_improvement``/
         ``objective_history`` (and ``objective_history_omitted`` when older batches were
         dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
@@ -469,6 +487,15 @@ def get_campaign_status(campaign_id: str) -> dict:
         Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
         completion cannot honestly be known). ``phase_age_s`` is the only signal for a
         phase with no run counter — ``initializing``, ``building``.
+
+        **Read ``batch_outcomes_counted`` before ``batch_runs_failed``.** The failure
+        counts are written once, when the current batch's per-run verdicts are tallied, so
+        until then they read 0 — and 0 is also what a batch that lost nothing reads. While
+        it is ``false``, ``batch_runs_failed: 0`` means "not counted yet" and is not
+        evidence of a healthy sweep; a poll mid-batch has read exactly that and concluded
+        the opposite. Whatever it says, a run's own JUnit verdict
+        (``run_view.status``/``passed``) remains the authority on that run; this aggregate
+        is a convenience, and this flag says when it is one worth having.
     """
     try:
         client = service_access.service_client()
@@ -675,7 +702,7 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
     Returns:
         ``{jobs, counts}`` where each job is ``{job_name, kind, status, display_name,
-        detail}`` and counts tallies
+        detail, node, started_at, usage}`` and counts tallies
         ``running/pending/waiting/completed/failed/blocked/total`` over the campaign's own
         runs, plus ``calibration`` and ``postprocessing`` beside them. Or ``{error}``.
 
@@ -686,6 +713,29 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         reads the conversion live. Both are listed because they hold real capacity, and
         both are counted apart because neither is one of the campaign's runs; neither can
         be stopped individually.
+
+        ``node`` is the machine the job's pod was placed on -- absent on the local lane, and on
+        a job the scheduler has not placed yet. Reading it across a listing says whether a
+        batch is spread over the cluster or piled onto one machine.
+
+        ``started_at`` is epoch seconds -- subtract from now for the age; it is the JOB's
+        start, stamped before the pod was scheduled and before its inputs were staged, so it
+        answers how long the trial has been going and is present on a job that has not begun
+        executing yet.
+
+        ``usage`` is what a RUNNING job is consuming, against both of the figures it was
+        given: ``{cpu_cores, cpu_request, cpu_limit, memory_bytes, memory_request_bytes,
+        memory_limit_bytes}``. Measured against the *request* says whether the reservation was
+        the right size; against the *limit*, whether the job is near being throttled or
+        OOM-killed. Reading it beats ``exec_in_job`` for the same question, at no cost to the
+        run.
+
+        An absent ``usage`` -- or an absent field within it -- means **not measured**, never
+        zero: the job is not running, the lane sets no container limits, or the container left
+        a limit open (which means the whole node, so no ceiling is true). When the cause is
+        worth acting on, the response carries ``metrics_unavailable`` saying so; without that
+        key, missing numbers are simply numbers this lane does not produce. Do not read a
+        listing with no usage anywhere as an idle cluster.
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
         say) — ``detail`` carries the reason, and a non-zero count is the one here that
@@ -809,14 +859,13 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
                 hide_shutdown: bool = True) -> dict:
-    """What is one **running** job doing? Its containers' live stdout/stderr.
+    """What is one job doing, or what did it do? Its containers' stdout/stderr.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    Live source only — a finished job whose pod was garbage-collected has none; read the
-    campaign log instead. Every container the job runs is merged into one stream, each
-    line tagged ``[<container>]`` when there is more than one.
+    A **finished** job is served as readily as a running one -- its output is durable
+    either way. Every container is merged into one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -855,8 +904,12 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign. The service owns the teardown (containers, cluster Jobs).
 
-    On a campaign still waiting for an image this detaches it rather than cancelling a
-    build a sibling campaign may also be waiting on.
+    A stop lands on whatever is *running*, and ``note`` says which. **Runs**: they end, but
+    the batches that finished are still postprocessed, so ``query_campaign_data_sql`` keeps
+    answering for them — stopping a search part-way is a normal way to end one.
+    **Postprocessing**: cancelled, leaving results but no derived data
+    (``run_postprocessing`` gets it back). **Sharing**: cancelled, partial object removed
+    or named. One waiting for an image detaches; one already over is refused.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -915,7 +968,7 @@ def get_resource_usage() -> dict:
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
     reservations, and ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
-        Returns:
+    Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
         jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and

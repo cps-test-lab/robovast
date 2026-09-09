@@ -205,6 +205,19 @@ cluster that refuses the DaemonSet is then an error instead of a warning, becaus
 asked for a fixed clock and silently did not get one would go on to trust measurements taken
 on a scaling one.
 
+**A provider whose nodes are virtual machines moves the default rather than the flag.** ``gcp``
+and ``azure`` schedule campaigns on cloud VMs, whose guest kernels expose no cpufreq policy at
+all — the hypervisor owns the clock — so setup states that once and does not attempt it, rather
+than spending a readiness wait every run to rediscover the same answer. Naming
+``--performance-governor`` is still obeyed there and still fails loudly: provider policy decides
+what happens when nobody said, never what happens when somebody did.
+
+What the governor buys does not go away with the knob. Comparability between runs is still worth
+having on a cloud pool, and the levers there belong to the node pool rather than to a DaemonSet:
+a machine type with a predictable clock, no shared-core and no preemptible instances in the
+campaign pool, and node upgrades held for the duration of a campaign. The
+``cpu_governor_scaling`` warning per campaign is what keeps the remaining gap in the results.
+
 It installs a privileged DaemonSet with the host's ``/sys`` mounted writable, confined to
 the job node pool when one is configured. Leaving it off is supported: RoboVAST reports a
 ``cpu_governor_scaling`` warning per campaign, so the effect shows up in the results rather
@@ -219,15 +232,16 @@ cleanup prints it rather than reporting a clean teardown.
 
 .. warning::
 
-   **On a cloud VM this usually cannot work, and the failure is not the one setup detects.**
-   Setup recognises a cluster that *refuses* the privileged pod — GKE Autopilot does — and
-   warns. GKE Standard and EKS generally **accept** it, and the DaemonSet then fails at
-   runtime: a GCE or EC2 guest has no writable ``/sys/devices/system/cpu/*/cpufreq``, because
-   the hypervisor owns the clock. The pod exits non-zero and ``CrashLoopBackOff``\ s on every
-   node while setup reports the DaemonSet as applied. Node auto-repair would undo the setting
-   anyway. On managed Kubernetes, pass ``--no-performance-governor`` and set the governor
-   through the node image instead — and read the ``cpu_governor_scaling`` advice, which is
-   what tells you whether it took effect.
+   **On a cloud VM this cannot work**, which is why ``gcp`` and ``azure`` do not attempt it.
+   Where it *is* attempted — an unlisted provider, or ``--performance-governor`` naming it —
+   the two ways it fails are different. A cluster that *refuses* the privileged pod, as GKE
+   Autopilot does, says so at create time. GKE Standard and EKS generally **accept** it, and
+   the DaemonSet then fails at runtime: a GCE or EC2 guest has no writable
+   ``/sys/devices/system/cpu/*/cpufreq``, so the pod exits non-zero and
+   ``CrashLoopBackOff``\ s on every node. Setup waits for a Ready pod and reports both cases
+   rather than either as applied. Node auto-repair would undo the setting anyway. Set the
+   governor through the node image where the node image is yours — and read the
+   ``cpu_governor_scaling`` advice, which is what tells you whether it took effect.
 
 .. _cluster-node-local-storage:
 
@@ -346,6 +360,8 @@ Flag                          Environment                     Default
 ``--store-path``              ``ROBOVAST_STORE_PATH``         ``/var/lib/robovast-store``
 ``--store-class``             ``ROBOVAST_STORE_CLASS``        *(unset — a hostPath)*
 ``--store-size``              ``ROBOVAST_STORE_SIZE``         ``500Gi`` (needs a class)
+``--index-class``             ``ROBOVAST_INDEX_CLASS``        *(unset — a hostPath)*
+``--index-size``              ``ROBOVAST_INDEX_SIZE``         ``20Gi`` (needs a class)
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
@@ -359,13 +375,20 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**Two tenants take no flag**, and for the same reason: one pod holds each pair, and derived
-data must not be separated from its source. The campaign results sit beside the workspaces and
-share their backing, because the service pod mirrors a campaign between them. The campaign
-index sits beside the object store and shares *its* backing, because every row in the index was
-ingested from a campaign in the store -- an index that outlived its sources would answer
-questions about campaigns nobody can reproduce or check, confidently. A flag able to separate
-either pair could only ever be ignored or refused.
+**Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
+derived data must not be separated from its source. The campaign results sit beside the
+workspaces and share their backing, because the service pod mirrors a campaign between them.
+The campaign index sits beside the object store and shares *its* backing, because every row in
+the index was ingested from a campaign in the store -- an index that outlived its sources would
+answer questions about campaigns nobody can reproduce or check, confidently. A flag able to
+separate either pair could only ever be ignored or refused.
+
+``--index-class`` is the exception the rule creates rather than a hole in it. Where campaigns
+live in a **bucket** there is no store volume for the index to share, so ``--store-class`` is
+refused and the index would have nowhere but a directory on a node to go — the one piece of
+this deployment's durable state that a replaced machine takes with it while every campaign it
+indexed survives. There the class is its own argument. On a provider that places the store as a
+volume the flag is refused, naming ``--store-class``, because that is what already backs both.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -720,17 +743,56 @@ fails for the pull, and a plain-HTTP registry needs ``registries.yaml`` plus a r
 restart on **every** node. The service's own published hostname already has real DNS and
 a real certificate, so both halves work with no node configuration at all.
 
-The same URL works from a workstation: ``docker pull robovast.example.org/<tag>:<hash>``
-needs no login and no CA import, which is how you reproduce a campaign's exact image
-locally.
+The same URL works from a workstation: ``docker login robovast.example.org`` and then
+``docker pull robovast.example.org/<tag>:<hash>`` needs no CA import, which is how you
+reproduce a campaign's exact image locally.
+
+**A published registry authenticates**, and does so in the registry rather than at the
+Ingress. The credential is minted at ``setup``, kept in the cluster, and never rotated by a
+re-run — the deployment's own push, the nodes' pulls and the service's "already pushed?"
+probe all read it from one ``dockerconfigjson`` Secret, so nothing has to be configured for
+builds to keep working. ``vast service token`` does not print it: it is not a user
+credential, and no client needs it.
+
+Ask the cluster when you want it for a ``docker login`` from a workstation:
+
+.. code-block:: bash
+
+   kubectl get secret robovast-registry-push \
+     -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
+
+It is enforced by the registry and not by an Ingress annotation deliberately. The only
+annotations for this are ingress-nginx's, and a cluster whose controller is something else —
+GKE's ``gce``, for one — accepts them, ignores them, and serves an open registry while
+reporting success. What the registry enforces itself holds on every controller, and on the
+cluster-internal route as well.
+
+.. note::
+
+   **An unpublished deployment leaves it open**, because there is then no route to it: the
+   prefix campaigns build into is derived from the Ingress host, so a deployment with no
+   Ingress cannot build at all. Publishing is the moment it becomes reachable, so publishing
+   is what turns auth on — the same rule that already refuses an Ingress without an access
+   token.
 
 .. warning::
 
-   The registry is **unauthenticated**. It shares a hostname with the UI, which *is*
-   token-gated, so it is the more reachable half of that host: anyone who can reach the
-   service can push an image that campaigns then run. That is acceptable while RoboVAST
-   is on a private network and is the first thing to revisit before exposing it to the
-   internet. Adding auth is an htpasswd Secret plus an Ingress annotation.
+   **A published deployment that predates this gains auth on its next** ``setup``, and a
+   campaign already running across that moment is the one case to plan for. Job pods created
+   before it carry no ``imagePullSecrets``; while their pods keep running this costs nothing,
+   but one that restarts afterwards re-pulls without a credential and fails with a 401 that
+   reads as a missing image rather than a missing login.
+
+   Let running campaigns finish before re-running ``setup``, or expect to re-launch them.
+   Nothing already in the object store is affected, and campaigns launched after the change
+   get the credential like any other.
+
+   **The registry keeps serving anonymously until the store pod is recreated.** Setup keeps
+   an existing store pod as it is — recreating it on every run would be a far worse default
+   — so a changed container spec does not reach it, and the credential alone changes
+   nothing. Setup says so rather than reporting the hole closed: ``vast cluster cleanup``
+   then ``vast cluster setup`` is what applies it, built images are rebuilt on demand, and
+   the clients already hold the credential and start using it the moment the registry asks.
 
 **A service without a registry prefix cannot build.** The prefix is the service's own
 published host — with no Ingress there is no address a node could pull a built image back
@@ -780,8 +842,9 @@ Only two things remain configurable, both about *other people's* registries:
 .. code-block:: bash
 
    # Credentials for a private registry a .vast names in its `image:` field. Purely a
-   # PULL credential -- the build registry is in-pod and open, so nothing needs a push
-   # credential. Applied to campaign pods, aux/exec pods and the service's own image.
+   # PULL credential for THAT registry -- the build registry's own push credential is
+   # minted automatically at `setup` (see above) and is never configured here. Applied
+   # to campaign pods, aux/exec pods and the service's own image.
    ROBOVAST_REGISTRY_SERVER=harbor.example.org
    ROBOVAST_REGISTRY_USERNAME=<user>
    ROBOVAST_REGISTRY_PASSWORD=<token>
@@ -1098,9 +1161,9 @@ Three consequences worth knowing before they surprise you:
   with neither mTLS nor a NetworkPolicy. It is a ClusterIP with no Ingress, but that is not a
   boundary: campaign pods run images a ``.vast`` chose and can reach it. The pip download cache
   is shared across every build and now *persists*, so anything that can dial the daemon can
-  leave something in it for the next build to install. The registry's "deliberately
-  unauthenticated" note does not transfer — that one is excused by sharing a token-gated
-  hostname, and this has no hostname at all.
+  leave something in it for the next build to install. The registry no longer shares this
+  weakness — it authenticates wherever it is published — so this is now the one
+  unauthenticated endpoint the deployment runs, excused only by having no hostname at all.
 * **A wedged cache has no remote remedy.** Changing a cache scope fixes a bad *registry* cache;
   a bad local store needs the daemon restarted or its volume cleared, on the node that holds
   it.
@@ -1587,6 +1650,17 @@ sizing rather than being sized from a limit: throttled past what its own statist
 or OOM-killed at all — a memory ceiling that binds kills rather than slows, so one is enough.
 Both counters come from the same file the sizing is read from.
 
+**A probe that loses a workload container stops the campaign, naming that container.** Those
+containers are native sidecars, so one that dies is *restarted* rather than ending the job:
+the probe goes on sampling a stack that keeps dying, holds its node while it does, and what
+is read out of it at the end measures the restart loop rather than a trial — surfacing as
+whichever statistic that fragment fails, with the container's own error nowhere in it. A
+probe runs one of the campaign's own configurations, so this is not a flaky trial to
+re-sample: every run would meet the same fault. The campaign therefore ends on the crash
+itself, and what the container printed before it died is captured in
+``_execution/container_failures.json``, beside the probe's own output under
+``_calibration/<node-id>/``.
+
 How much throttling a container may survive depends on **which statistic its figure comes
 from**, because clipping removes the top of the distribution. A container sized on its peak is
 spoiled by the first clipped tick, so it keeps a strict allowance covering bring-up only. One
@@ -1807,19 +1881,26 @@ headroom, per node, measured every cycle. What is built around it was designed a
 static bare-metal cluster, and these follow from that. None of them is a crash; each is
 a silent degradation, which is why they are written down.
 
-**A cluster whose configuration cannot report an autoscaler maximum is held at its current
-size.** Admission never creates a job that no current node can hold, which is correct on a
-static cluster and self-defeating on an elastic one — a pod the scheduler cannot place is
-exactly what makes an autoscaler add a node. ``get_cluster_allocatable_resources`` is where a
-configuration reports that maximum; admission then creates work unpinned and lets the
-autoscaler respond. A configuration that does not implement it, including the generic base
-one an unlisted provider falls back to, gets the static behaviour.
+**A cluster whose growth ceiling nothing states is held at its current size.** Admission
+never creates a job that no current node can hold, which is correct on a static cluster and
+self-defeating on an elastic one — a pod the scheduler cannot place is exactly what makes an
+autoscaler add a node. Given a ceiling, admission creates such work unpinned and lets the
+autoscaler respond, and a pool scaled to zero is a batch that waits rather than one that is
+refused. A cluster that *has* nodes is still sized against them: an autoscaler adds machines
+of its pool's shape, so "no node is that large" stays a permanent refusal however many arrive.
 
-**The GKE implementation reports it by shelling out to** ``gcloud``, **which the service pod
-does not have.** Admission runs inside that pod, whose image ships neither ``gcloud`` nor
-``kubectl``; the call fails, the failure is a debug line, and the cluster is treated as
-static. ``setup``'s ``gcloud`` prerequisites are for the workstation ``setup`` runs on, which
-is not where admission runs.
+The ceiling is **recorded, not queried**: ``setup`` and ``upgrade`` ask the provider — on
+GKE that is ``gcloud``, summing each node pool's autoscaler maximum — and write the answer
+into the service's environment as ``ROBOVAST_CLUSTER_MAX_CPU`` / ``ROBOVAST_CLUSTER_MAX_MEMORY``.
+That is where admission reads it, because admission runs in the service pod, whose image
+ships no cloud CLI. Setting those two variables before ``setup`` states the ceiling directly,
+which is what a provider with no query of its own — an unlisted one, or one whose CLI is not
+installed here — needs.
+
+Recorded rather than live means the figure **ages**: resizing a node pool does not reach a
+running deployment. Re-run ``vast cluster upgrade`` after such a change — the same lifecycle
+the node identity labels below already have. With neither a provider answer nor the two
+variables, the cluster is treated as static, exactly as before.
 
 **Node identity labels are applied at ``setup``, not continuously.** ``robovast.io/node-id``
 is what pins a job to the node its capacity was reserved on, and what a calibration probe
@@ -1830,8 +1911,10 @@ cannot be probed, so its jobs run at the declared sizing beside calibrated ones.
 ``vast exec cluster setup`` after the pool changes to bring new nodes back under
 :ref:`cluster-node-calibration`.
 
-**The CPU governor DaemonSet usually cannot work on a cloud VM** — and the way it fails is not
-the way setup detects. See the warning under :ref:`cluster-cpu-governor`.
+**The CPU governor cannot be set on a cloud VM**, so the cloud providers do not attempt one and
+say so instead. The comparability it buys is then the node pool's to provide — machine type,
+no shared-core or preemptible instances, upgrades held for a campaign — rather than a
+DaemonSet's. See :ref:`cluster-cpu-governor`.
 
 .. _cluster-config-gcp:
 
@@ -1870,6 +1953,13 @@ loudly rather than inventing one.
 
 5. **Create the bucket yourself** and give the credential below read/write on it.
 
+   Pass ``--ingress-class gce`` when publishing with ``--ingress-host`` on GKE's built-in
+   controller. Unlike ingress-nginx it cannot route to a plain ClusterIP, so both Services
+   the Ingress fronts — the UI on ``/`` and the registry on ``/v2`` — are annotated for
+   container-native load balancing only when the class is named. A backend without it never
+   becomes healthy, and the reason is visible in the load balancer rather than in anything
+   RoboVAST prints.
+
 6. Generate the credential — either HMAC keys for the bucket, or a service-account
    JSON key.
 
@@ -1884,6 +1974,21 @@ loudly rather than inventing one.
    # or with a service-account key file instead of HMAC keys:
    vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
+
+The campaigns are in the bucket, but this deployment's **own** state is not, and a GKE node
+pool replaces machines constantly — autoscaling, auto-upgrade, auto-repair, spot reclaim. Back
+it with the cluster's StorageClass rather than the node's disk:
+
+.. code-block:: bash
+
+   vast cluster setup gcp -o gcs_bucket=my-robovast-results \
+     --index-class standard-rwo --registry-class standard-rwo \
+     --workspaces-class standard-rwo --buildkit-class premium-rwo --buildkit-size 200Gi
+
+Left on hostPaths, a replaced node takes the campaign index, the built images and the
+workspaces with it while every campaign in the bucket survives — and setup reports success on
+the empty replacement. These are zonal disks, so the pods that mount them are bound to one
+zone; that is the cost, and it is the intended one.
 
 Available options:
 
@@ -1916,6 +2021,70 @@ so they can live in ``.env`` rather than on the command line. See ``.env.example
    ``ROBOVAST_CLUSTER_CONFIG_KWARGS`` environment variable, so anyone who can
    ``kubectl get deploy -o yaml`` in the namespace can read them. Scope the HMAC key
    or service account to that one bucket.
+
+.. _cluster-tailnet:
+
+Reaching it over a tailnet instead of publishing it
+----------------------------------------------------
+
+An Ingress asks for a public DNS record, a certificate for it, and an address that survives
+the cluster being rebuilt. A deployment that has none of those, or wants nothing listening
+on the internet at all, can be reached over a WireGuard tailnet instead: a Tailscale node
+runs beside the service, **dials out** to a coordination server, and answers on the tailnet
+under a stable name. No firewall rule is opened and no address changes when the cluster does.
+
+Coordination is whatever you point it at — Tailscale's own service, or a self-hosted
+`Headscale <https://headscale.net>`_ so that no third party is trusted with the tailnet.
+RoboVAST passes ``--login-server`` through and lets the node register.
+
+**Off by default, and asked for per cluster.** The credential lives in the environment, so
+a pre-auth key does not land in shell history; *which* cluster is on a tailnet is decided on
+the setup command, because one ``.env`` and two contexts would otherwise publish whichever
+happened to be current — a deployment nobody meant to expose.
+
+.. code-block:: bash
+
+   # .env — the credential
+   ROBOVAST_TAILNET_LOGIN_SERVER=https://headscale.example.org
+   ROBOVAST_TAILNET_AUTHKEY=<a pre-auth key from that server>
+   ROBOVAST_TAILNET_HOSTNAME=robovast        # optional; the name users type
+
+.. code-block:: bash
+
+   # the decision — this cluster, and no other
+   vast cluster setup <flavor> --tailnet
+
+Users then reach the web UI at ``http://robovast`` on the tailnet with the access token from
+``vast service token``. Nothing but a Tailscale client is needed — no kubeconfig, no
+``kubectl``, no port-forward.
+
+Written on **every** setup: omitting ``--tailnet`` removes a node a previous setup deployed,
+rather than leaving one nobody remembers configuring still answering. ``--tailnet`` with no
+credential in the environment is an argument error, since it would deploy a node that can
+never register.
+
+``vast cluster upgrade`` reconciles a node that **already exists**, so a rotated key reaches
+a running deployment without a re-setup — and creates none, so upgrading two clusters from
+one shell cannot publish the second by accident. It sits beside the RBAC and the registry
+route, so ``--no-restart`` picks it up without rolling the service pod.
+
+.. note::
+
+   **Plain HTTP on the tailnet, deliberately.** The transport is already WireGuard, so a
+   certificate would encrypt what is encrypted. It works because the session cookie's
+   ``Secure`` flag follows the request scheme — the reason an Ingress refuses plain HTTP is
+   that the token would cross an untrusted network, which is exactly what a tailnet is not.
+
+.. warning::
+
+   **This does not make in-cluster builds possible.** The prefix campaigns push to has to be
+   pullable by the *kubelet*, and nodes are not on the tailnet — they resolve no tailnet name
+   and hold no key. So this publishes the service to people, never to the cluster's own
+   container runtime, and ``can_build_images`` stays false. An Ingress, or an external
+   registry, is what changes that.
+
+   The node itself is unprivileged (userspace networking), so it deploys on a managed
+   cluster where the alternative — ``NET_ADMIN`` plus ``/dev/net/tun`` — is refused.
 
 .. _cluster-config-rke2:
 

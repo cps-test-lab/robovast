@@ -45,9 +45,12 @@ with no workspace involved at all. Campaigns are workspace-independent, and the 
 one came from may be gone — its own ``_config/`` is the durable source of truth. It
 produces a new campaign and leaves the source untouched, so it works whatever state that
 campaign ended in, and it replays the recorded launch, so re-running a one-config pilot
-stays a one-config pilot. It takes no other argument (passing one is an error rather than
-being ignored), and it is refused when the campaign recorded no usable image: a campaign's
-build context is not archived in its results, so launch it from its workspace instead.
+stays a one-config pilot. It takes no other argument but ``force`` (passing one is an error
+rather than being ignored), and the service refuses it when the pre-flight blocks — a campaign
+that recorded no usable image, whose build context is not archived either, has to be launched
+from its workspace instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
+verdict without launching, and ``force`` re-runs despite it
+(:ref:`results-retrigger-preflight`).
 
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 **config** is one scenario parameter set within a campaign.
@@ -190,6 +193,15 @@ variation's auxiliary one. That is why it can be the cheap tier and still settle
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
 
+**A check that did not run is not a pass.** ``valid`` covers every check the reply reports on,
+so a world nobody could look at makes it ``false``; ``world_checked`` says which of the three
+happened (it ran, it could not, it was not asked for); and the problem carries
+``severity: "unchecked"``. A caller branching on the boolean — which is what a boolean is for
+— is therefore never told a campaign is good to run because the most expensive thing about it
+was skipped, and it can still tell "could not check" from "is wrong" without matching on
+English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
+and ``valid`` stays true.
+
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
 remember and map onto their situation:
@@ -245,8 +257,8 @@ must call the lister to learn the name the getter needs. So an **empty argument 
 
    * - Call
      - Answers
-   * - ``get_cli_help()`` / ``get_cli_help("workspace run")``
-     - the command tree / one command's ``--help``
+   * - ``get_cli_help()`` / ``("workspace run")`` / ``(search=…)``
+     - the command groups / one command's ``--help`` / a keyword search of the tree
    * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
      - the page list / matching excerpts / one page in full
    * - ``get_example()`` / ``get_example("basic_nav")``
@@ -583,8 +595,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
-   service considers live (all lanes).
+   scenario Jobs). It lands on whatever is *running*, and the reply says which: the
+   **runs** (the batches that finished are still postprocessed and indexed, so the
+   campaign stays queryable), **postprocessing** (results kept, derived data not
+   computed — re-run it), or the **share upload** (cancelled, partial archive removed).
+   A campaign that is already over is refused rather than silently accepted.
+   ``list_campaigns(running_only=True)`` reports the campaigns the service considers
+   live (all lanes).
 
    ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
    the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a
@@ -598,12 +615,26 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
 .. note::
 
-   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same **live
-   per-job** view the web UI Monitor shows: the current batch's jobs with their
+   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
+   **per-job** view the web UI Monitor shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
-   live log of a single **running** job (its scenario container's output — the
-   running pod's log on the cluster, the live ``system.log`` file locally). A
-   finished job whose pod has been garbage-collected has no live log.
+   log of a single job. A **finished** job is served as readily as a running one:
+   locally the containers write their files in place, and on the cluster a pod that
+   has gone is read from the campaign's objects instead.
+
+   Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
+   on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
+   has not begun executing has one too) and, while it runs on a cluster, ``usage``: what it
+   is consuming against **both** figures it was given. Measured against the request says
+   whether the reservation was the right size; against the limit, whether the job is near
+   being throttled or OOM-killed. Reading it answers those without an ``exec_in_job``, and
+   without costing the run anything.
+
+   An absent ``usage``, or an absent field inside it, means **not measured** — never zero.
+   The job is not running, the lane sets no container limits, or a container left a limit
+   open (which means the whole node, so no ceiling is true). When the cause is worth acting
+   on, the response carries ``metrics_unavailable`` saying so. Do not read a listing with no
+   usage anywhere as an idle cluster: check that field first.
 
 .. note::
 

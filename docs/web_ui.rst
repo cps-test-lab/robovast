@@ -133,6 +133,29 @@ It provides four views:
   and colored per container when the job has more than one. That matters in the ROS
   shape, where the simulator and the system under test have their own containers and a
   failure is only legible when their output is read against the scenario's.
+  On the cluster, every placed row also names **the node its pod landed on**, as a coloured
+  chip. The name is the information and the colour only a scanning aid -- one machine is one
+  colour down the whole list, so a batch that has piled onto a single node is visible without
+  reading twenty rows. Colours are derived from the name, so they are the same for every
+  viewer with nothing stored, and a set of them on screen is kept collision-free: two nodes are
+  never the same colour, because two chips painted alike would read as one machine. A job the
+  scheduler has not placed has no chip -- that is what "not placed yet" looks like.
+  Every row carries **how long that job has been going**, on the right, and that clock starts
+  when the *job* does -- before its pod is scheduled and before its inputs are staged -- so a
+  row that is still ``pending`` or ``blocked`` has one too, which is where "how long has this
+  been stuck?" is the question worth asking.
+  Beside it, a **running** job on the cluster carries two small meters, cpu and memory. The
+  track is the container's **limit**, the fill is what it is **using**, and the hairline is
+  what it **reserved**: so the fill against the hairline says whether the reservation was the
+  right size, and the fill against the track's end says whether the job is near being throttled
+  or OOM-killed -- which is also when the meter turns amber and then red. The exact figures are
+  on the hover. Where a container states no cpu limit it may use the whole node, so there is no
+  ceiling to draw and the bar is scaled to the reservation instead, which the hover says.
+  A job that is **not measured** shows no meter at all rather than an empty one: an empty track
+  reads as an idle job, which is a stronger claim than "not measured". That is the case for the
+  whole local Docker lane, which sets no container limits and measures nothing per container,
+  and on a cluster with no metrics-server or a service whose RBAC predates the
+  ``metrics.k8s.io/pods`` grant -- see :doc:`deployment`, and the Jobs tab says which.
   A **running** job's row also carries a red **Stop** button, which kills *that job alone*
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has
@@ -147,7 +170,7 @@ It provides four views:
   open: its work runs in init containers, which a pod log does not carry, and its output is
   published to the campaign log's ``POSTPROCESSING`` section every few seconds while it runs
   — where it stays once the cluster has removed the job, which is when a failed postprocess is
-  usually read. The row says so, and the Log tab beside it is where to look. Both rows are the campaign's
+  usually read. The Log tab beside it is where to look, and the chip's tooltip says so. Both rows are the campaign's
   *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
   and out of the ETA — and neither can be stopped one at a time, because there is no run to
   record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing
@@ -194,6 +217,14 @@ It provides four views:
   resolved again at launch, exactly as a fresh launch from the workspace would, and the
   new campaign says which containers that applied to, because it will not be running
   the same bytes.
+  Every re-run goes through the **pre-flight** (:ref:`the same five axes
+  <results-retrigger-preflight>` the CLI's ``vast campaign rerun --check`` prints), and
+  the service refuses on a blocking one — a config no migration step carries forward, an
+  image outside this host's container-protocol window — so a re-run that could only fail
+  in the backend is answered before it launches. The browser reads that report first and
+  says which axis blocks, in a dialog whose **Re-run anyway** starts the campaign
+  regardless: the override belongs to whoever has decided they understand the axis. A
+  refusal that arrives anyway is the service's own sentence, in a sticky error notice.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
@@ -680,6 +711,13 @@ configuration originally came from — copied forward at launch rather than look
 survives the parent campaign being deleted and a re-run of a re-run still names the root. The
 campaign listing is paged, so a hover that had to find its parent in the list would answer
 differently depending on where you had scrolled.
+
+A re-run also gets a ``Config`` row saying which config version it read: ``v1 → v4,
+migrated`` when the ladder had to carry the parent's frozen ``.vast`` forward, and ``v4, as
+written`` when it did not. Both are worth a row, because a re-run that read a different
+config version than the campaign it reproduces is not repeating the same experiment — and
+without the second wording, "nothing was migrated" would look exactly like "nobody recorded
+it", which is what a re-run from before this was kept shows: no row.
 
 A campaign that ran **before this was recorded** has no hover at all. Its ``.vast`` basename
 could be read out of its snapshot, but that says nothing about which workspace, and filling in
@@ -1249,9 +1287,18 @@ Reading the configuration a campaign ran
 
 **Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
 frozen ``_config/`` — the configuration it was actually staged with — at
-``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
-(after variation expansion) and stays for the rest of its life, so the configuration of a
-campaign that is still running can be read while it runs.
+``#/config/campaign/<campaign_id>``. It appears once the campaign can have that snapshot at
+all and stays for the rest of its life, so the configuration of a campaign that is still
+running can be read while it runs.
+
+Two phases are before that point and the entry is hidden through both. A run stages
+``_config/`` when its **first batch is prepared**; a campaign taken in from an archive has it
+once the bytes land, and is listed at ``importing`` from before the first of them arrives —
+its campaign directory does not exist yet. The run's gate is one-way: the controller advances
+to ``running`` before that first batch is staged, so the entry can still be offered a little
+early. The Config view reports that as what it is — the configuration is not staged yet, with
+a **Retry** — rather than as a campaign that never froze one. The two absences look identical
+from a listing, and only the campaign's phase separates them.
 
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
@@ -1311,7 +1358,7 @@ implying a position it does not have.
 
 **Data browser.** The left panel lists the campaign's tables in the results
 index — one per metric CSV, plus the ``runs`` **dimension table**
-(per-run ``status``/``duration_s`` and each scenario parameter as a ``param_*``
+(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*``
 column), with ``campaign.db`` attached as schema ``campaign``. Write **read-only SQL**
 in the editor and **Run** it; the result shows as a table and, via the chart builder,
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric

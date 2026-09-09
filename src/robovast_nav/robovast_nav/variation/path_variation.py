@@ -23,8 +23,10 @@ from pydantic import BaseModel, ConfigDict
 from rdflib import Namespace
 
 from robovast.common import FileCache
-from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
-                                                      ProvContribution)
+from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
+                                                      DestinationConfig,
+                                                      ProvContribution,
+                                                      VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
 from ..path_generator import PathGenerator
@@ -58,6 +60,16 @@ class PathVariationRandomConfig(DestinationConfig):
     #: ``list of pose_3d``). Inferring it by comparing the destination name to the literal
     #: string ``"goal_pose"`` would let the name both choose the shape and then be ignored --
     #: and contradict the scenario, failing at run time.
+    #: ``start`` may name a destination on the ``sim`` channel too, and then the simulator
+    #: compiles the robot where the path begins instead of the trial moving it once the run is
+    #: going. One pose, both destinations, written from one call::
+    #:
+    #:     scenario: {start: start_pose, goal: goal_pose}
+    #:     sim:      {start: components.robot.pose}
+    #:
+    #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
+    #: quaternion and tells them apart by the keys present -- and an omitted z means the
+    #: model's own resting height, which is what a wheeled base needs.
     SLOTS = ("start", "goal")
 
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
@@ -84,8 +96,12 @@ class StartGoalSlots:  # pylint: disable=no-member
     """
 
     def _start_destination(self) -> str:
-        """The parameter the ``start`` slot is bound to."""
-        return self.parameters.binding("start")[1]
+        """The scenario parameter the ``start`` slot is bound to.
+
+        Named by channel because ``start`` may also name a destination in the world; this is
+        the trial's half of it.
+        """
+        return next(d for c, d in self.parameters.bindings("start") if c == SCENARIO_CHANNEL)
 
     def _goal_destination(self):
         """``(destination, single_pose_mode)`` for the ``goal`` slot.
@@ -304,7 +320,10 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
             return cached_start_pose, cached_goal_poses, cached_path, map_file_path, cached_length
 
-        path_generator = PathGenerator(map_file_path)
+        # The robot the campaign declared, not the constructor's default: the waypoints
+        # below are sampled against `robot_diameter` clearance, and a planner inflating by
+        # a different radius rejects poses the sampler just accepted.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         attempt = 0
         max_attempts = 1000  # Maximum attempts to find a valid path
@@ -366,7 +385,17 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
 
             self.progress_update(f"  Generated waypoints: {waypoints}")
             # Generate path considering any existing static objects
-            path = path_generator.generate_path(waypoints, [])
+            try:
+                path = path_generator.generate_path(waypoints, [])
+            except ValueError as exc:
+                # The two clearance tests are not the same test: the sampler checks a disc
+                # of cells around a candidate, the planner a distance transform of the whole
+                # grid, so a pose close to a wall can pass one and fail the other. That is
+                # this draw's luck, and the loop already exists to redraw -- raising here
+                # ends a campaign over a pose nobody asked for.
+                self.progress_update(f"   waypoint rejected by the planner: {exc}")
+                attempt += 1
+                continue
 
             if not path:
                 self.progress_update(f"   no path found")
@@ -393,7 +422,12 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             break
 
         if not path_found:
-            raise ValueError(
+            # Infeasible, not broken: this map has no path of this length, which is a property of
+            # the draw rather than of the campaign. Search composition drops the one config and
+            # records a failed evaluation, so an optimizer proposing a length the map cannot hold
+            # keeps going instead of taking every other config in the batch down with it. A sweep
+            # (tolerate_infeasible=False) still fails loudly, which is what a stated level asks for.
+            raise VariationInfeasibleError(
                 f"PathVariationRandom: Failed to generate valid path within maximum attempts for config '{config['name']}'.\n"
                 f"  Variation parameters:\n"
                 f"    map_file:              {map_file_path} (parameter: {self.parameters.map_file or config.get('_map_file')})\n"
@@ -447,6 +481,16 @@ class PathVariationRasterizedConfig(DestinationConfig):
     #: shape likewise comes from the scenario's declaration, not from
     #: ``num_goal_poses == 1`` -- a second rule for the same question could disagree both
     #: with the scenario and with the other path variation.
+    #: ``start`` may name a destination on the ``sim`` channel too, and then the simulator
+    #: compiles the robot where the path begins instead of the trial moving it once the run is
+    #: going. One pose, both destinations, written from one call::
+    #:
+    #:     scenario: {start: start_pose, goal: goal_pose}
+    #:     sim:      {start: components.robot.pose}
+    #:
+    #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
+    #: quaternion and tells them apart by the keys present -- and an omitted z means the
+    #: model's own resting height, which is what a wheeled base needs.
     SLOTS = ("start", "goal")
 
     #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
@@ -593,7 +637,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
         """Original behavior: generate paths from each start pose to all reachable raster points."""
         results = []
         path_index = 0
-        path_generator = PathGenerator(map_file_path)
+        # Inflated by the declared robot, matching the clearance the raster points were
+        # tested with -- see generate_path_for_config.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         for start_idx, start_pose in enumerate(start_poses):
             for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
@@ -615,7 +661,13 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                 # Generate path directly
                 waypoints = [start_pose, goal_pose]
-                path = path_generator.generate_path(waypoints, [])
+                try:
+                    path = path_generator.generate_path(waypoints, [])
+                except ValueError as exc:
+                    # A raster point the planner will not start or end on: skipped like any
+                    # other pair it cannot connect, rather than ending the campaign.
+                    self.progress_update(f"  waypoint rejected by the planner: {exc}")
+                    path = None
 
                 if path:
                     # Calculate path length
@@ -657,7 +709,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                      map_file_path, path_length: float):
         """New behavior: generate multiple goal poses using search radius algorithm."""
         results = []
-        path_generator = PathGenerator(map_file_path)
+        # Inflated by the declared robot, matching the clearance the raster points were
+        # tested with -- see generate_path_for_config.
+        path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
 
         for start_idx, start_pose in enumerate(start_poses):
             self.progress_update(f"Generating multi-goal path for start pose {start_idx}")
@@ -690,7 +744,11 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
             # Only proceed if we found all required goal poses
             if len(goal_poses_list) == self.parameters.num_goal_poses:
                 # Generate path through all waypoints
-                path = path_generator.generate_path(waypoints, [])
+                try:
+                    path = path_generator.generate_path(waypoints, [])
+                except ValueError as exc:
+                    self.progress_update(f"  waypoint rejected by the planner: {exc}")
+                    path = None
 
                 if path:
                     # Calculate path length

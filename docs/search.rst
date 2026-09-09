@@ -208,8 +208,10 @@ Marker rules:
    clear error naming the offending parameter set if a variation expands.
 
    **Zero configs is the other direction, and it is tolerated.** A draw can be
-   unrealizable rather than misconfigured — a path too short to hold the obstacles the
-   same draw asks for, say — and then the variation pipeline composes nothing for it.
+   unrealizable rather than misconfigured — a path length longer than any route the map
+   holds, or a path too short to hold the obstacles the same draw asks for — or refused
+   outright by a plugin whose declared parameter domain the search space overruns; either
+   way the variation pipeline composes nothing for it.
    That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
@@ -462,6 +464,21 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
 * ``runs`` — stop after this many individual **executions**. Counted from what each
   batch asks for, so it bounds wall-clock rather than results.
 
+.. note::
+
+   **A search that measures nothing is stopped, whatever its budget says.** Two batches in
+   a row in which no parameter set produced an evaluation end the campaign, with a reason
+   naming which half of it came back empty: nothing **composed** (the search space against
+   what the variation plugins accept) or nothing **measured** (the scenario, the stack, the
+   extractor). It is recorded as a stop of kind ``unproductive``.
+
+   Two rather than one, because a mostly-unrealizable space produces a batch where every
+   draw fails by chance and ending such a campaign on the first would stop a search that
+   was working. Two running is not luck, and every batch after it costs a composition — and
+   where the cells do run, a batch of trials — to learn the same thing again. A search that
+   is *meant* to run in a space this hostile has to widen its bounds; there is no budget
+   large enough to make an unproductive campaign productive.
+
 ``evaluations`` and ``runs`` are two counts and not one because neither predicts the
 other: one evaluation costs as many runs as it was given repetitions. While every cell
 gets the same ``execution.runs`` the product ``batches × per_batch × runs`` predicts
@@ -496,6 +513,36 @@ When the search ends, the fired criterion is **persisted** on the ``campaign`` r
 of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
 ``elapsed_s`` — directly SQL-queryable) and mirrored in
 ``SearchReport.extra['stop']``; the campaign analysis notebook prints it.
+
+Stopping a search part-way
+--------------------------
+
+Ending a search by hand is a normal way to end one — the budget is a ceiling, not a
+target — and **what it measured stays queryable**. Stopping the runs stops only the runs:
+the batches that completed are postprocessed and indexed like any other campaign's, so the
+campaign ends with its derived data present.
+
+Which phase it ends in says where the stop landed. A stop seen at a batch boundary is an
+ordinary stopping criterion to the loop — recorded as ``stop_kind = 'external'`` — and the
+campaign ends ``finished``; one that cut a batch short ends ``stopped``. Either way the
+cells it did score are in the index.
+
+Its cells are read the way a finished search's are:
+
+.. code-block:: sql
+
+   SELECT batch, paramset_id, objective, params_json
+   FROM run_view WHERE campaign_id = '<id>' ORDER BY batch, objective DESC;
+
+The per-batch objective trajectory is served from ``campaign.db`` directly
+(``GET /campaigns/{id}/search/history``, and ``objective_history`` on the campaign status),
+so it needs no postprocessing at all and is available while the search is still running.
+
+A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
+the runs and their results are kept and only the derived data is missing, which
+``postprocessing_error`` records and ``vast campaign postprocess`` supplies. A stop during
+``sharing`` cancels the upload and removes the partial archive. What each stop leaves is
+in the reply it returns.
 
 Surviving a service restart
 ---------------------------

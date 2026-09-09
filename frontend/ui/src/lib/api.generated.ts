@@ -501,8 +501,10 @@ export interface paths {
         };
         /**
          * Stream Job Log
-         * @description Server-sent events: one running job's log, tailed live (``Last-Event-ID``
-         *     resumes). A finished job whose pod was garbage-collected has no live log.
+         * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
+         *
+         *     A **finished** job is served too, not only a running one. What the events mean,
+         *     and which residual case is still an error, is ``_sse_log_stream``'s to say.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -809,7 +811,7 @@ export interface paths {
         put?: never;
         /**
          * Retrigger Campaign
-         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.
+         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.
          */
         post: operations["retrigger_campaign_campaigns__campaign_id__retrigger_post"];
         delete?: never;
@@ -1729,6 +1731,14 @@ export interface components {
             /** Sql */
             sql: string;
         };
+        /** Body_retrigger_campaign_campaigns__campaign_id__retrigger_post */
+        Body_retrigger_campaign_campaigns__campaign_id__retrigger_post: {
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
             /**
@@ -1861,13 +1871,25 @@ export interface components {
          *     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
          *     have to be revisited the first time an origin appears that is neither -- so switch on
          *     ``kind`` and never on whether ``from_campaign`` is empty.
+         *
+         *     **A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is
+         *     migrated on the way into the re-run's staging copy, so two runs of "the same campaign" can
+         *     read different config versions -- which makes them different experiments, and a reader
+         *     comparing their results has to be able to see it. :attr:`config_version_from` is recorded
+         *     on every re-run, so "read a current config" is a fact rather than a silence:
+         *     :attr:`config_migration_steps` is empty when nothing had to be carried forward, and
+         *     :attr:`config_version_from` is ``None`` only when nothing was recorded at all.
          */
         CampaignOrigin: {
+            /** Config Migration Steps */
+            config_migration_steps: string[];
             /**
              * Config Path
              * @default
              */
             config_path: string;
+            /** Config Version From */
+            config_version_from: number | null;
             /**
              * From Campaign
              * @default
@@ -2769,11 +2791,48 @@ export interface components {
              * @default run
              */
             kind: string;
+            /** Node */
+            node: string | null;
+            /** Started At */
+            started_at: number | null;
             /**
              * Status
              * @default pending
              */
             status: string;
+            usage: components["schemas"]["JobUsage"] | null;
+        };
+        /**
+         * JobUsage
+         * @description What one running job is consuming, against what it was given.
+         *
+         *     Both denominators, because they answer different questions and routinely differ. The
+         *     **request** is what the scheduler set aside, so measured-against-request answers "did we
+         *     reserve the right amount?" -- the sizing question, and the one the capacity meter and node
+         *     calibration are both about. The **limit** is the ceiling the kernel enforces, so
+         *     measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
+         *     may legitimately sit anywhere between the two.
+         *
+         *     Every field is optional, and absent means *not known* -- never zero. A lane that sets no
+         *     container limits has no ceiling to state; a container whose cpu limit was left open may use
+         *     the whole node, so no finite number is the truth; a cluster with no metrics API measures
+         *     nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
+         *     numbers are missing, when there is a reason worth reporting, is on
+         *     :attr:`ListJobsResponse.metrics_unavailable`.
+         */
+        JobUsage: {
+            /** Cpu Cores */
+            cpu_cores: number | null;
+            /** Cpu Limit */
+            cpu_limit: number | null;
+            /** Cpu Request */
+            cpu_request: number | null;
+            /** Memory Bytes */
+            memory_bytes: number | null;
+            /** Memory Limit Bytes */
+            memory_limit_bytes: number | null;
+            /** Memory Request Bytes */
+            memory_request_bytes: number | null;
         };
         /** ListCampaignsResponse */
         ListCampaignsResponse: {
@@ -2793,6 +2852,8 @@ export interface components {
             counts: components["schemas"]["JobCounts"];
             /** Jobs */
             jobs: components["schemas"]["JobSummary"][];
+            /** Metrics Unavailable */
+            metrics_unavailable: string | null;
         };
         /** ListWorkspacesResponse */
         ListWorkspacesResponse: {
@@ -3300,9 +3361,21 @@ export interface components {
          *     A reader showing ``completed`` as a success count is therefore wrong; successes are
          *     ``completed - failed``.
          *
+         *     ``outcomes_counted`` says whether ``failed``, ``killed`` and ``invalid`` are final for
+         *     the batch they describe. They are written when the batch's per-run verdicts are
+         *     tallied, which happens once, at the end — so before then they read 0, and 0 is also
+         *     what a batch that genuinely lost nothing reads. Those are not the same statement and a
+         *     reader cannot tell them apart from the number: a poll partway through a batch that had
+         *     already lost runs reported ``failed: 0``, and was read as a healthy sweep. This is the
+         *     difference between "none, and we have counted" and "none counted yet".
+         *
+         *     It does not weaken the standing rule that only a run's own JUnit verdict is
+         *     authoritative. It says when this aggregate is worth reading at all.
+         *
          *     The per-batch scope holds for a **live** status. One recovered from disk
          *     (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports
-         *     the whole campaign instead — there is no current batch for it to be relative to.
+         *     the whole campaign instead — there is no current batch for it to be relative to, and
+         *     its counters come from verdicts already on disk, so they are counted by construction.
          */
         RunProgress: {
             /**
@@ -3330,6 +3403,11 @@ export interface components {
              * @default 0
              */
             no_result: number;
+            /**
+             * Outcomes Counted
+             * @default false
+             */
+            outcomes_counted: boolean;
             /**
              * Total
              * @default 0
@@ -3971,6 +4049,16 @@ export interface components {
          *
          *     ``stage`` is the check that failed (``file``/``parse``/``schema``/
          *     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
+         *
+         *     ``severity`` states which of three answers this is, because a caller acts on them
+         *     differently and the text alone cannot be branched on:
+         *
+         *     - ``error`` — the campaign is wrong. It makes ``valid`` false.
+         *     - ``advice`` — a checked fact worth saying (a large build context, a container with
+         *       no memory limit). ``valid`` stays true; the campaign runs.
+         *     - ``unchecked`` — a check this report covers could not run here, so *nothing* was
+         *       learned about it either way. It makes ``valid`` false without being a defect in
+         *       the file, and its message names what would settle it.
          */
         ValidationProblem: {
             /** Config */
@@ -3983,6 +4071,11 @@ export interface components {
              */
             message: string;
             /**
+             * Severity
+             * @default error
+             */
+            severity: string;
+            /**
              * Stage
              * @default
              */
@@ -3991,6 +4084,16 @@ export interface components {
         /**
          * ValidationReport
          * @description Collect-all validation result (mirrors ``validate_project_file``).
+         *
+         *     ``valid`` means every check this report covers ran **and** passed, so a caller may
+         *     act on that one boolean — which is the only thing a boolean is good for. A check
+         *     that could not run makes it false and appears as an ``unchecked`` problem: "I could
+         *     not look" and "it is fine" are different answers, and a caller that reads only
+         *     ``valid`` must not be handed the second when the first is true.
+         *
+         *     ``world_checked`` is the three-state answer for the one check that needs a
+         *     container: ``True`` it ran and the world loads and compiles, ``False`` it was asked
+         *     for and could not run, ``None`` it was not asked for (``check_world=False``).
          */
         ValidationReport: {
             /**
@@ -4015,6 +4118,8 @@ export interface components {
              * @default false
              */
             valid: boolean;
+            /** World Checked */
+            world_checked: boolean | null;
         };
         /**
          * VariationPreview
@@ -5631,7 +5736,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_retrigger_campaign_campaigns__campaign_id__retrigger_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

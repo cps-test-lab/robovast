@@ -736,7 +736,8 @@ def _submit_inputs(cluster_config, campaign_id: str, campaign_root: str,
 def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=unused-argument
                          campaign_root: str, namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False,
-                         kube_context=None, state=None, admission=None) -> tuple:
+                         kube_context=None, state=None, admission=None,
+                         should_stop=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
     ``ok`` carries :func:`run_conversion_job`'s three values through unchanged, ``None``
@@ -767,6 +768,15 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     step now runs in a pod, so a step's line reaches this process only once the Job ends
     and its log is synced, and a live ``stage`` marker fed from here would be a marker
     that only ever moves after the phase it describes is over.
+
+    *should_stop*, when the caller has one, ends this early for a campaign that was
+    stopped: the Job is deleted and the campaign is left saying that its derived data was
+    not computed. Every step runs in the pod, so deleting it is the whole cancellation --
+    and every step is restartable, which is what makes deleting one mid-flight safe: a bag
+    records itself as converted only once its handlers have finished, and the index ingest
+    clears a campaign's rows before writing them, so a re-run replaces a partial load
+    rather than doubling it. What a cancelled campaign never has is the provenance record
+    that says it carries derived data, because that is written after everything else.
     """
     rosbag_cmds, image, tolerate_under, convert_resources = _submit_inputs(
         cluster_config, campaign_id, campaign_root, skip=skip, skip_rosout=skip_rosout)
@@ -776,19 +786,25 @@ def postprocess_campaign(cluster_config, campaign_id: str,  # pylint: disable=un
     ok, message = run_conversion_job(
         cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
         kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
-        convert_resources=convert_resources, admission=admission)
+        convert_resources=convert_resources, admission=admission,
+        should_stop=should_stop)
     return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message,
-                              force=force)
+                              force=force, should_stop=should_stop)
 
 
 def record_job_outputs(cluster_config, campaign_id: str, campaign_root: str,
-                       ok: bool, message: str, force: bool = False) -> tuple:
+                       ok: bool, message: str, force: bool = False,
+                       should_stop=None) -> tuple:
     """Pull down what the Job produced and turn its verdict into ``(ok, message)``.
 
     Everything a postprocessing Job's outcome means for the campaign tree, in one place, so
     a process that submitted the Job and one that only waited for it leave the campaign in
     the same state. Split from :func:`postprocess_campaign` for that second caller: a
     re-attach has no submit half and must not grow a second account of a failure.
+
+    *should_stop* is what separates a Job that failed from one this campaign's own stop
+    deleted (see :func:`await_job`). The flag latches, so it still answers here; asking it
+    rather than matching the message keeps a wording from becoming a contract.
     """
     import os  # noqa: PLC0415
 
@@ -812,6 +828,14 @@ def record_job_outputs(cluster_config, campaign_id: str, campaign_root: str,
         # which is exactly what a reader wants while the outcome is open.
         logger.warning("Postprocessing outcome unknown: %s", message)
         return None, message
+    if should_stop is not None and should_stop():
+        # A stop is not a fault either: no failure log is authored and nothing is echoed as
+        # one, because the operator asked for this and filing a deliberate act under faults
+        # sends whoever reads it looking for a fault that is not there. What the Job wrote
+        # before it was deleted is synced above, which is the whole account a cancelled
+        # postprocess has -- and the campaign keeps every run result it already produced.
+        logger.info("Postprocessing cancelled: %s", message)
+        return False, message
     # Echo the error to the service console too. The web UI already has it via the
     # synced postprocessing.log (POSTPROCESSING section); no campaign log handler is
     # attached at this point, so this reaches the ``vast serve`` stdout only — not
@@ -992,8 +1016,9 @@ _SCRIPTS_CM_PREFIX = "robovast-postproc-scripts-"
 
 
 def _scripts_cm_name(campaign_id: str, discriminator: str = "") -> str:
-    """Discriminated with its Job: each conversion deletes this when it finishes, so a
-    shared name lets a finishing conversion delete one another is still mounting."""
+    """Discriminated with its Job: the two are one unit -- see :func:`_own_scripts_cm` --
+    and a shared name would put two Jobs' scripts on one object, where the second attempt's
+    content reaches the first attempt's running interpreter."""
     return _short_job_name(_SCRIPTS_CM_PREFIX, campaign_id, discriminator)
 
 
@@ -1043,6 +1068,44 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
         },
         "data": payload,
     }
+
+
+def _own_scripts_cm(core, batch, namespace: str, job_name: str, cm_name: str) -> bool:
+    """Make the Job the owner of its scripts ConfigMap. ``True`` if the cluster took it.
+
+    **The ConfigMap's life belongs to the Job that mounts it, not to whoever is waiting
+    on that Job.** A waiter stops waiting for reasons that say nothing about the Job --
+    its own deadline, a stop request, a service restart, a pod the scheduler has not
+    placed yet -- and the Job goes on running without it. Deleting the scripts on the way
+    out therefore takes the mount away from a live conversion; the pod that follows cannot
+    start at all (``FailedMount``, no such ConfigMap), so the Job stays ``active``
+    forever, its campaign stays in ``postprocessing``, and its log ends mid-step with
+    nothing said. An ownerReference is what makes that unexpressible: Kubernetes deletes
+    the ConfigMap when the Job is deleted and not before, and ``ttlSecondsAfterFinished``
+    already deletes every Job that finishes.
+
+    Best-effort, and deliberately so: a cluster that refuses the patch leaves a ConfigMap
+    behind (labelled ``jobgroup``/``campaign-id`` for a sweep), which costs a few KiB. The
+    alternative failure is the wedged Job above, so this fails towards the leak.
+
+    ``blockOwnerDeletion`` is left off: it requires delete permission on the owner, and
+    all this needs is for the ConfigMap to go when the Job does.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        job = batch.read_namespaced_job(name=job_name, namespace=namespace)
+        core.patch_namespaced_config_map(
+            name=cm_name, namespace=namespace,
+            body={"metadata": {"ownerReferences": [{
+                "apiVersion": "batch/v1", "kind": "Job",
+                "name": job_name, "uid": job.metadata.uid,
+                "controller": True, "blockOwnerDeletion": False}]}})
+        return True
+    except (ApiException, AttributeError) as e:
+        logger.warning("Scripts ConfigMap %s could not be handed to job %s (%s); it will "
+                       "be left behind when the job is reaped", cm_name, job_name, e)
+        return False
 
 
 #: The slot :func:`job_failed_message` leaves for the pointer, filled by
@@ -1115,18 +1178,41 @@ def with_log_pointer(message: str, log_path) -> str:
 
 
 #: :func:`_adopt_or_replace` kept a live Job and the caller is now a waiter on someone
-#: else's Job. It decides ownership, not just control flow: everything that Job mounts --
-#: the scripts ConfigMap above all -- belongs to the attempt that created it, and a waiter
-#: must write none of it and delete none of it.
+#: else's Job -- one it must write nothing into, because that Job is executing out of the
+#: scripts it was created with (see :func:`run_conversion_job`).
 _JOB_ADOPTED = "adopted"
 
 #: The Job answering to this name was finished and has been deleted and re-created, so the
-#: caller owns this one and the resources it mounts.
+#: pod that reports back to the caller is the one this attempt asked for.
 _JOB_RECREATED = "recreated"
 
 
-def _live_job(batch, namespace: str, name: str) -> bool:
-    """Is a Job of this name present AND still active?
+def _stuck_job(core, namespace: str, name: str) -> str:
+    """Why this Job's pod will never start, or ``""`` -- including for "it will".
+
+    ``status.active`` counts a pod that cannot start, so without this an attempt meets a Job
+    that is permanently Pending, adopts it as work in flight, and waits on an outcome that
+    is never coming. A retrigger then does the same, which is what turns one blocked pod
+    into a campaign that can no longer be recovered by re-running its postprocessing.
+
+    Only the reasons that will NOT clear on their own: a pod queued behind a busy node or a
+    throttled pull is exactly the work in flight adoption exists for, and replacing its Job
+    would throw away a conversion that was about to run. Unreadable is not stuck, for the
+    reason :func:`_live_job` gives.
+    """
+    from .cluster_execution import blocked_and_contended_reasons  # noqa: PLC0415
+
+    try:
+        blocked, contended = blocked_and_contended_reasons(
+            core, namespace, f"job-name={name}")
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not check whether %s is stuck: %s", name, e)
+        return ""
+    return "" if name in contended else blocked.get(name, "")
+
+
+def _live_job(batch, core, namespace: str, name: str) -> bool:
+    """Is a Job of this name present, still active, and able to get anywhere?
 
     Separate from :func:`_adopt_or_replace` because the answer is needed *before* anything
     is written: a live Job's mounted resources are not ours to touch, and that has to be
@@ -1141,11 +1227,18 @@ def _live_job(batch, namespace: str, name: str) -> bool:
         existing = batch.read_namespaced_job(name=name, namespace=namespace)
     except ApiException:
         return False
-    return bool(getattr(getattr(existing, "status", None), "active", None))
+    if not getattr(getattr(existing, "status", None), "active", None):
+        return False
+    stuck = _stuck_job(core, namespace, name)
+    if stuck:
+        logger.info("Postprocessing job %s is active but cannot start (%s); it will be "
+                    "replaced rather than waited on", name, stuck)
+        return False
+    return True
 
 
-def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
-    """Keep a still-running Job; delete and re-create a finished one.
+def _adopt_or_replace(batch, core, namespace: str, name: str, manifest: dict) -> str:
+    """Keep a still-running Job; delete and re-create a finished or stuck one.
 
     Returns :data:`_JOB_ADOPTED`, :data:`_JOB_RECREATED`, or ``""`` if neither held. The
     caller needs the two apart rather than a bare success: only the re-created case owns
@@ -1174,11 +1267,13 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
         return ""
 
     status = getattr(existing, "status", None)
-    if getattr(status, "active", None):
+    stuck = _stuck_job(core, namespace, name) if getattr(status, "active", None) else ""
+    if getattr(status, "active", None) and not stuck:
         logger.info("Postprocessing job %s is already running; waiting on it", name)
         return _JOB_ADOPTED
 
-    logger.info("Replacing finished postprocessing job %s", name)
+    logger.info("Replacing %s postprocessing job %s",
+                f"stuck ({stuck})" if stuck else "finished", name)
     try:
         batch.delete_namespaced_job(name=name, namespace=namespace,
                                     propagation_policy="Foreground")
@@ -1492,7 +1587,8 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
     from .postprocess_host import (ENV_COMMANDS, ENV_FORCE,  # noqa: PLC0415
                                    ENV_SKIP)
-    from .postprocess_stage import (ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,  # noqa: PLC0415
+    from .postprocess_stage import (ENV_BATCH_JOBS,  # noqa: PLC0415
+                                    ENV_CAMPAIGN_ID, ENV_SKIP_BAGS,
                                     ENV_STAGE_DEST)
 
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
@@ -1542,8 +1638,13 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
         # conversion container stages the campaign tree WITHOUT its rosbags, which is the
         # bulk of a campaign by orders of magnitude. Staging them anyway would spend the
         # whole download and the whole node disk on data nothing in the pod reads.
-        "env": unbuffered_env + robovast_env + ([] if rosbag_cmds
-                               else [{"name": ENV_SKIP_BAGS, "value": "1"}]),
+        "env": (unbuffered_env + robovast_env
+                + ([] if rosbag_cmds else [{"name": ENV_SKIP_BAGS, "value": "1"}])
+                # One batch's job artifacts, for a per-batch Job. The bags are the bulk of
+                # a campaign and every batch's sit under the same prefix, so without this a
+                # search stages every earlier batch again on every batch.
+                + ([{"name": ENV_BATCH_JOBS, "value": discriminator}]
+                   if batch_commands is not None and discriminator else [])),
         "volumeMounts": [campaign_mount],
         "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
     }
@@ -1662,9 +1763,40 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
     }
 
 
+def _cancel_job(batch, namespace: str, name: str) -> str:
+    """Delete a postprocessing Job whose campaign was stopped; return the stated reason.
+
+    Deleted rather than left to finish, because the point of a stop is that its compute
+    ends now, and this Job is not reached by the teardown a stop already performs: that one
+    is scoped to ``jobgroup=scenario-runs`` so that it cannot cancel a content-addressed
+    image build a sibling campaign may be waiting on.
+
+    ``grace_period_seconds=0`` with foreground propagation, the same terms that teardown
+    uses: the conversion has no shutdown work worth waiting for, and a bag interrupted
+    mid-write costs nothing -- a bag records itself as converted only once its handlers
+    have finished, so the next run simply redoes it.
+
+    A deletion that fails is reported as the cancellation it was anyway, and any failure
+    rather than an API refusal alone: a stop can be a Ctrl+C that takes the route to the
+    cluster with it, and raising then would replace the operator's own stop with a
+    traceback from tidying up after it. The Job's ``ttlSecondsAfterFinished`` collects it.
+    """
+    from kubernetes import client  # noqa: PLC0415
+    try:
+        batch.delete_namespaced_job(
+            name=name, namespace=namespace,
+            body=client.V1DeleteOptions(grace_period_seconds=0,
+                                        propagation_policy="Foreground"))
+        logger.info("Postprocessing job %s deleted: the campaign was stopped", name)
+    except Exception as e:  # noqa: BLE001 - see above
+        logger.warning("Could not delete postprocessing job %s: %s", name, e)
+    return ("postprocessing cancelled: the campaign was stopped. The runs and their "
+            "results are untouched; re-run postprocessing to derive the data.")
+
+
 def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, name: str,
               timeout: int = _DEFAULT_TIMEOUT,
-              batch_commands=None) -> tuple:
+              batch_commands=None, should_stop=None) -> tuple:
     """Wait for the postprocessing Job *name* and return its ``(ok, message)``.
 
     A pure waiter: it creates nothing, replaces nothing and deletes nothing, so it is
@@ -1683,6 +1815,12 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
 
     *batch_commands* names what the Job was asked to do, and so what its success means: a
     batch Job has derived one batch's tables and completed no campaign.
+
+    *should_stop* is polled here rather than by either caller, which is what makes a stop
+    reach a Job this process merely found as well as one it submitted: a campaign stopped
+    during postprocessing would otherwise wait out a Job that can run for hours, while its
+    stop reported itself as done. A stop deletes the Job and is read as ``False`` -- the
+    outcome is not unknown, since nothing is going to produce it now.
     """
     from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
@@ -1693,6 +1831,8 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
     # minutes -- and the only way to watch one is a pod name nobody off-cluster has.
     next_live_log = 0.0
     while time.time() < deadline:
+        if should_stop is not None and should_stop():
+            return False, _cancel_job(batch, namespace, name)
         if time.time() >= next_live_log:
             publish_live_log(core, cluster_config, campaign_id, namespace, name)
             next_live_log = time.time() + _LIVE_LOG_INTERVAL
@@ -1731,12 +1871,11 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
         blocked = _blocked_reason(core, namespace, name)
         if blocked:
             return False, (
-                f"postprocessing job {name} cannot start: {blocked}. Its containers "
-                f"run the controller image and, where the campaign has rosbags, the "
-                f"campaign's own execution image, so this is about pulling or "
-                f"scheduling those -- not about postprocessing, which has not run. "
-                f"Nothing about the campaign's results is wrong; re-run "
-                f"postprocessing once the pod can start.")
+                f"postprocessing job {name} cannot start: {blocked}. This is about the "
+                f"pod -- pulling the controller image or the campaign's own execution "
+                f"image, finding a node for it, or mounting what it needs -- not about "
+                f"postprocessing, which has not run. Nothing about the campaign's "
+                f"results is wrong; re-run postprocessing once the pod can start.")
         time.sleep(_POLL_SECONDS)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives
@@ -1794,7 +1933,7 @@ def live_campaign_jobs(namespace: str, kube_context=None) -> dict:
 def reattach_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
                             namespace: str, job_name: str,
                             timeout: int = _DEFAULT_TIMEOUT,
-                            kube_context=None) -> tuple:
+                            kube_context=None, should_stop=None) -> tuple:
     """Wait for a postprocessing Job this process did not submit. ``(ok, message)``.
 
     Returns ``ok is None`` when the Job could not be confirmed live, and then *message*
@@ -1822,7 +1961,7 @@ def reattach_conversion_job(cluster_config, campaign_id: str, campaign_root: str
     batch = client.BatchV1Api()
     try:
         with api_transport_errors("re-attaching to the postprocessing job"):
-            if not _live_job(batch, namespace, job_name):
+            if not _live_job(batch, core, namespace, job_name):
                 return None, (f"postprocessing job {job_name} is no longer active, so this "
                               f"process has no outcome to record for {campaign_id}")
     except ClusterUnreachableError as e:
@@ -1830,8 +1969,9 @@ def reattach_conversion_job(cluster_config, campaign_id: str, campaign_root: str
     logger.info("Re-attached to the postprocessing job %s already in flight; its scripts "
                 "are untouched", job_name)
     ok, message = await_job(core, batch, cluster_config, campaign_id, namespace, job_name,
-                            timeout=timeout)
-    return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message)
+                            timeout=timeout, should_stop=should_stop)
+    return record_job_outputs(cluster_config, campaign_id, campaign_root, ok, message,
+                              should_stop=should_stop)
 
 
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
@@ -1839,7 +1979,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
                        batch_commands=None, convert_resources=None,
-                       admission=None) -> tuple:
+                       admission=None, should_stop=None) -> tuple:
     """Create the postprocessing Job and wait for it. Returns ``(ok, message)``.
 
     ``ok`` is three-valued, and the third value is the point of it: ``True`` the Job was
@@ -1863,6 +2003,9 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     pod on the cluster rather than being created against a cluster that has none -- see
     :func:`await_admission`. ``None`` creates it directly, which is what a lane with no queue
     (a local service, an off-cluster driver) must do.
+
+    *should_stop* ends the wait early for a campaign that was stopped, deleting the Job --
+    see :func:`await_job`, which polls it.
 
     *discriminator* names WHICH conversion of this campaign this is, and must be set by
     any caller that converts the same campaign more than once -- a search, which converts
@@ -1931,7 +2074,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     # the caller as a urllib3 traceback.
     try:
         with api_transport_errors("submitting the postprocessing job"):
-            adopted = _live_job(batch, namespace, name)
+            adopted = _live_job(batch, core, namespace, name)
     except ClusterUnreachableError as e:
         return False, f"postprocessing cannot be scheduled: {e}"
 
@@ -1949,14 +2092,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
-    # Job (the pod waits in ContainerCreating until the volume source exists) and delete
-    # it once the Job is done. Only where something mounts it: a Job with no conversion
-    # container declares no such volume, and creating the ConfigMap anyway would leave one
-    # behind for every host-only postprocess.
+    # Job, because the pod waits in ContainerCreating until the volume source exists. Only
+    # where something mounts it: a Job with no conversion container declares no such volume,
+    # and creating the ConfigMap anyway would leave one behind for every host-only
+    # postprocess.
     #
-    # `owned_cm_name` is the ConfigMap this attempt created or replaced, and it is the only
-    # thing the cleanup below deletes -- deletion follows creation, explicitly, so that an
-    # adopting waiter cannot remove the scripts of the Job it is waiting on.
+    # `owned_cm_name` is a ConfigMap this attempt created that NOTHING yet mounts, and it is
+    # the only thing the cleanup below deletes. It is cleared the moment a Job of ours
+    # exists, because from then on the Job's life decides the ConfigMap's -- see
+    # :func:`_own_scripts_cm`, and :data:`_JOB_ADOPTED` for the Job that was never ours.
     owned_cm_name = ""
     if rosbag_cmds and not adopted:
         cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
@@ -1999,17 +2143,24 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                 # started between that read and this create. Replace the finished one;
                 # adopt the one that raced us, and drop ownership of the ConfigMap with it,
                 # because from here on this attempt is a waiter on someone else's Job.
-                outcome = _adopt_or_replace(batch, namespace, name, manifest)
+                outcome = _adopt_or_replace(batch, core, namespace, name, manifest)
                 if not outcome:
                     return False, (f"postprocessing job {name} already exists and could "
                                    f"not be replaced; retry once it has been removed")
-                if outcome == _JOB_ADOPTED:
-                    owned_cm_name = ""
             logger.info("Postprocessing job %s created (conversion image=%s)", name,
                         image if rosbag_cmds else "none needed")
+            # A Job now mounts these scripts, so they stop being this attempt's to delete
+            # -- whether or not the cluster accepts the ownerReference, and whether the Job
+            # is the one just created or one that raced us to the name. Cleared before the
+            # wait rather than after it because every exit from the wait, including the ones
+            # that raise, passes the cleanup below.
+            if owned_cm_name:
+                _own_scripts_cm(core, batch, namespace, name, owned_cm_name)
+                owned_cm_name = ""
 
         return await_job(core, batch, cluster_config, campaign_id, namespace, name,
-                         timeout=timeout, batch_commands=batch_commands)
+                         timeout=timeout, batch_commands=batch_commands,
+                         should_stop=should_stop)
     finally:
         # Release the reservation the moment the pod is gone, so what it held is spendable on
         # the next drain. In the `finally` because every exit from here -- finished, failed
@@ -2017,11 +2168,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         # the cluster by a pod that no longer exists for as long as this service runs.
         if admitted:
             admission.finished(name)
-        # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
-        # manual sweep if the driver dies before this runs). The Job's own
-        # ttlSecondsAfterFinished reaps it. Empty for an adopted Job: those scripts are
-        # mounted in a container this attempt did not start, and deleting them out from
-        # under it is how a waiter breaks the conversion it is waiting on.
+        # Only a ConfigMap no Job ever mounted: the create failed, or the cluster went away
+        # between the two writes. Once a Job exists this is empty and the ConfigMap outlives
+        # the wait, which is the whole point -- a waiter that deletes the scripts of a Job
+        # still running wedges that Job forever (:func:`_own_scripts_cm`).
         if owned_cm_name:
             try:
                 core.delete_namespaced_config_map(name=owned_cm_name, namespace=namespace)

@@ -176,6 +176,30 @@ def load_cluster_config_plugins():
     return plugins
 
 
+def _resolve_registry_host(service_kwargs, namespace, kube_context):
+    """The host this deployment's registry answers on, or ``""`` when it is unpublished.
+
+    One lookup for two consumers that must agree: the credential the registry enforces is
+    keyed by this host in the clients' ``dockerconfigjson``, and the prefix campaigns build
+    into is derived from it. Resolved separately they could disagree, and the deployment
+    would authenticate under one name while telling every campaign to push to another.
+
+    Tolerant on purpose: this dials the API server, and setup must not hang or die because
+    it could not *look up* something it is merely trying to preserve. No answer means the
+    deployment is not published, which is a real state and not a failure.
+    """
+    from .service_deploy import published_host  # pylint: disable=import-outside-toplevel
+
+    host = (service_kwargs or {}).get("registry_host") or \
+        (service_kwargs or {}).get("ingress_host")
+    if host:
+        return host
+    try:
+        return published_host(namespace, kube_context)
+    except Exception:  # noqa: BLE001 - unreachable, unpublished, or no RBAC
+        return ""
+
+
 def get_cluster_config(config_name):
     """Get a cluster configuration instance by name.
 
@@ -240,6 +264,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
                  jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
+                 tailnet=False,
                 
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
@@ -309,6 +334,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
             config_name, (service_kwargs or {}).get("store_storage_path", ""),
             (service_kwargs or {}).get("store_storage_class", ""),
             get_cluster_config(config_name).get_storage_backend())
+    elif (service_kwargs or {}).get("index_storage_class"):
+        # The mirror image, and an argument error for the same reason: here the store IS a
+        # volume this deployment places, and --store-class already backs the index with it.
+        # A second class would put the index on a volume of its own, where it could outlive
+        # the campaigns every one of its rows was ingested from.
+        raise RuntimeError(
+            f"--index-class backs the campaign index on its own, but the '{config_name}' "
+            "provider places the object store as a volume, and the index takes that volume "
+            "so the two are created, moved and destroyed together. Use --store-class.")
 
     # Check if cluster is already set up — the deployed service's env is the
     # record (no local flag file), so this is correct even from another host.
@@ -378,8 +412,21 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
     # error, because someone who asked for a fixed clock and silently did not get one would
     # go on to trust measurements taken on a scaling one.
-    ensure_cpu_governor(client.AppsV1Api(), namespace,
-                        True if cpu_governor is None else cpu_governor,
+    #
+    # A provider whose nodes cannot take a governor at all moves the DEFAULT only. Attempting
+    # it there costs a readiness wait every run to rediscover the same answer, so it is not
+    # attempted and the reason is stated once. An explicit flag still reaches
+    # `ensure_cpu_governor` and still fails loudly: provider policy decides what happens when
+    # nobody said, never what happens when somebody did.
+    from .node_governor import PERFORMANCE, unavailable_message  # noqa: PLC0415
+    want_governor = True if cpu_governor is None else cpu_governor
+    if cpu_governor is None and not getattr(
+            get_cluster_config(config_name), "governor_is_settable", True):
+        logger.info("%s", unavailable_message(PERFORMANCE, config_name))
+        # Still reconciled to absent rather than skipped: setup writes the cluster's whole
+        # configuration on every run, so a DaemonSet an earlier setup left behind goes.
+        want_governor = False
+    ensure_cpu_governor(client.AppsV1Api(), namespace, want_governor,
                         explicit=cpu_governor is not None,
                         node_selector=jobs_node_labels)
 
@@ -464,6 +511,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from .service_deploy import ensure_index_secret  # pylint: disable=import-outside-toplevel
     ensure_index_secret(namespace, kube_context)
 
+    # The registry's password file, for the same reason and at the same moment: the store
+    # pod mounts it. Empty host -> no credential, because an unpublished deployment has no
+    # route to its registry and cannot build at all; publishing is what makes it reachable,
+    # so publishing is what turns auth on.
+    from .service_deploy import \
+        ensure_registry_htpasswd  # pylint: disable=import-outside-toplevel
+    registry_host = _resolve_registry_host(service_kwargs, namespace, kube_context)
+    registry_password = ensure_registry_htpasswd(namespace, kube_context, registry_host)
+
     # The storage flags for the registry and the index travel to the *store pod* now, not
     # to the service Deployment: that is where both volumes live. Passed as named arguments
     # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
@@ -484,8 +540,18 @@ def setup_server(config_name=None, list_configs=False, force=False,
         # Beside the store, never beside the workspaces: every row in the index was ingested
         # from a campaign in the store, so the two belong on one disk and move together.
         index_storage_path=index_host_path(store_storage_path),
+        # A class only a bucket-backed provider can be given (refused above for the others),
+        # and the one this deployment's own durable state needs on a managed node pool: with
+        # the campaigns in a bucket, a hostPath index is the only thing a replaced node takes
+        # with it.
+        index_storage_class=service_kwargs.pop("index_storage_class", ""),
+        index_storage_size=service_kwargs.pop("index_storage_size", ""),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
+        registry_authenticated=bool(registry_password),
+        # Read, not popped: `deploy_service` needs the same value to build the Ingress whose
+        # /v2 rule names this Service as a backend. Both halves or the route is dead.
+        ingress_class=service_kwargs.get("ingress_class", ""),
         **cluster_kwargs,
     )
 
@@ -495,7 +561,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # whose registry route and index DSN point at containers that do not exist.
     from .service_deploy import \
         verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
-    verify_store_pod_infrastructure(namespace, kube_context)
+    verify_store_pod_infrastructure(namespace, kube_context,
+                                    registry_authenticated=bool(registry_password))
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
     # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via
@@ -505,7 +572,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
-    from .service_deploy import deploy_service, published_host, wait_for_service_ready
+    from .service_deploy import deploy_service, wait_for_service_ready
     # Keep the registry prefix a re-run cannot drop. It is baked from the Ingress host,
     # so a `setup` without --ingress-host must not make `_registry_env` return None: the
     # Secret would go unlisted from the Deployment's envFrom, the pod would lose the prefix,
@@ -514,19 +581,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     #
     # `deploy_service` separates registry_host from ingress_host precisely so a caller
     # can re-bake the prefix without rebuilding the Ingress; `upgrade` already used that
-    # and `setup` did not. Recovering the host from the live Ingress makes the two agree.
-    if "registry_host" not in service_kwargs:
-        host = service_kwargs.get("ingress_host")
-        if not host:
-            # Only now, and only tolerantly: this dials the API server, and setup must
-            # not hang or die because it could not *look up* something it is merely
-            # trying to preserve. No answer means there is nothing to preserve.
-            try:
-                host = published_host(namespace, kube_context)
-            except Exception:  # noqa: BLE001 - unreachable, unpublished, or no RBAC
-                host = ""
-        if host:
-            service_kwargs["registry_host"] = host
+    # and `setup` did not. The host resolved once above is what both the password file and
+    # the prefix are derived from, so the registry cannot end up authenticating under one
+    # name while campaigns are told to push to another.
+    if "registry_host" not in service_kwargs and registry_host:
+        service_kwargs["registry_host"] = registry_host
     # The job node pool travels in the service's env because the admission controller is
     # what enforces it and the controller runs there. Passed as its own argument, NOT as
     # `env`: that parameter is the WHOLE environment rather than an addition to it, so a
@@ -536,7 +595,29 @@ def setup_server(config_name=None, list_configs=False, force=False,
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
                    job_node_labels=jobs_node_labels,
+                   registry_password=registry_password,
                    **service_kwargs)
+    # Reconciled on every setup, asked for or not, for the reason the governor DaemonSet
+    # is: setup writes the cluster's whole configuration, so dropping --tailnet takes the
+    # node away rather than leaving one nobody remembers configuring still answering.
+    # Placed after the service exists, because it proxies to it.
+    from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+    from .service_deploy import SERVICE_NAME, SERVICE_PORT  # noqa: PLC0415
+    try:
+        tailnet_deploy.ensure_tailnet(
+            namespace=namespace, kube_context=kube_context,
+            node_selector=store_selector or None, enabled=tailnet,
+            service_host=f"{SERVICE_NAME}.{namespace}.svc", service_port=SERVICE_PORT)
+    except ValueError:
+        # --tailnet with no credential in the environment is an argument error and is
+        # raised; anything else here is an optional route failing to come up, which must not
+        # fail a setup that otherwise succeeded -- the service is reachable by port-forward
+        # regardless.
+        raise
+    except Exception as exc:  # noqa: BLE001 - see above
+        logger.warning("Could not deploy the tailnet node: %s. The service is up and "
+                       "reachable with 'kubectl port-forward'; re-run setup to retry.", exc)
+
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull
@@ -703,6 +784,11 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     # `remove_daemonset` and the note the CLI prints.
     from .node_governor import delete_cpu_governor  # pylint: disable=import-outside-toplevel
     governor_removal = delete_cpu_governor(namespace, kube_context)
+    # The tailnet node goes with the deployment it fronts: left behind it would answer on a
+    # tailnet for a service that no longer exists, and its WireGuard identity would outlive
+    # everything that justified issuing it.
+    from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+    tailnet_deploy.remove(namespace, kube_context)
     # Same reasoning, and the same reason it is unconditional: a Deployment left behind holds a
     # pod and its reservation forever for a deployment that no longer exists. Its volume claim
     # is deliberately kept -- see `delete_buildkitd`.

@@ -14,6 +14,8 @@ stop of every still-running campaign and joins the workers.
 import threading
 from unittest import mock
 
+from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS,
+                                               STOP_SHARE)
 from robovast.service.client import LocalTransport, _LocalCampaign
 
 
@@ -24,11 +26,17 @@ class _State:
     before its thread exists is still live), so the fake must carry a phase."""
 
     def __init__(self, phase="running"):
+        # ``stopped`` is the RUN scope, which is what the worker doubles here wait on.
+        # ``stopped_scopes`` records every scope asked for, because what a stop lands on
+        # now depends on what is running and a single flag cannot tell the cases apart.
         self.stopped = threading.Event()
+        self.stopped_scopes = set()
         self.phase = phase
 
-    def request_stop(self):
-        self.stopped.set()
+    def request_stop(self, scope=STOP_RUNS):
+        self.stopped_scopes.add(scope)
+        if scope == STOP_RUNS:
+            self.stopped.set()
 
     def snapshot(self):
         from types import SimpleNamespace
@@ -142,3 +150,98 @@ def test_web_ui_stop_unknown_campaign_reports_not_tracked():
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is False
+
+
+def test_stop_during_postprocessing_says_what_it_leaves():
+    """A stop lands differently once the runs are over, and the reply has to say so.
+
+    The pipeline polls its own scope, so the step in flight is torn down rather than run to
+    the end — but the runs are over and every result they produced is kept. What the stop
+    gives up is the derived data, which nothing but a re-run brings back, and an operator
+    told only "stop requested" would have no reason to ask for one.
+
+    It must NOT name the phase the campaign ends in: that depends on how the *runs* ended,
+    and a campaign whose runs were stopped first ends ``stopped``, not ``finished``.
+    """
+    lt = _transport()
+    entry = _add_running(lt, "campaign-pp")
+    entry.state.phase = "postprocessing"
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-pp")
+
+    assert res.ok
+    # The postprocessing scope, and *only* it: the runs are already over, and flagging them
+    # is what used to discard the analysis of the batches that had finished.
+    assert entry.state.stopped_scopes == {STOP_POSTPROCESSING}
+    assert "postprocessing" in res.message and "re-run postprocessing" in res.message
+    assert "finished" not in res.message
+
+
+def test_stop_during_sharing_cancels_the_upload():
+    """An upload is a long-running thing of its own, so a stop reaches it and says so.
+
+    Its own scope, not the runs': the campaign is over by then, and the partial object the
+    cancellation leaves is what the reply is about.
+    """
+    lt = _transport()
+    entry = _add_running(lt, "campaign-share")
+    entry.state.phase = "sharing"
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-share")
+
+    assert res.ok
+    assert entry.state.stopped_scopes == {STOP_SHARE}
+    assert "upload" in res.message
+
+
+def test_stop_on_an_ended_campaign_is_refused():
+    """Nothing is running, so nothing is stopped — and the reply must not claim otherwise.
+
+    A cheerful "stop requested" over a campaign that is already over sends the reader
+    looking for an effect that never came.
+    """
+    lt = _transport()
+    entry = _add_running(lt, "campaign-done")
+    entry.state.phase = "finished"
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-done")
+
+    assert res.ok is False
+    assert "already over" in res.message and "finished" in res.message
+    assert entry.state.stopped_scopes == set()
+
+
+def test_stop_while_running_keeps_its_own_wording():
+    """The postprocessing sentence must not turn up on a campaign that is still running —
+    there it would promise results that the stopped runs will not produce."""
+    lt = _transport()
+    entry = _add_running(lt, "campaign-run")
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-run")
+
+    assert res.ok and res.message == "stop requested"
+    assert entry.state.stopped_scopes == {STOP_RUNS}
+    entry.state.stopped.set()  # let the fake worker exit
+
+
+def test_stop_between_the_runs_and_postprocessing_cancels_the_analysis():
+    """``finishing`` is past the runs, so a stop there is a stop of what is left.
+
+    The window is real — the controller sets ``finishing`` and the worker only then enters
+    ``postprocessing`` — and testing the phase for equality with ``postprocessing`` left it
+    uncovered: the stop took the run scope, cancelled nothing (the runs were already over)
+    and still answered "stop requested".
+    """
+    lt = _transport()
+    entry = _add_running(lt, "campaign-finishing")
+    entry.state.phase = "finishing"
+
+    with mock.patch("subprocess.run"):
+        res = lt.stop("campaign-finishing")
+
+    assert res.ok
+    assert entry.state.stopped_scopes == {STOP_POSTPROCESSING}

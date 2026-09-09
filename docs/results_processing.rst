@@ -53,6 +53,8 @@ Doing it by hand instead pushes the snapshot as a workspace and runs that:
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
 sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
 the recorded image is gone; otherwise prefer the retrigger, which reuses the exact bytes.
+All three launches are gated by the same pre-flight over these records; see
+:ref:`results-retrigger-preflight`.
 
 The structure inside is domain-specific, but typically includes:
 
@@ -167,7 +169,9 @@ Each configuration variant gets its own directory:
    <config-name>/
    ├── _config/
    │   ├── config.yaml                       # Configuration identifier hashes
-   │   ├── scenario.config                   # Resolved parameter values (YAML)
+   │   ├── scenario.config                   # Resolved scenario parameters (YAML)
+   │   ├── sim.config                        # Resolved sim block [if the config has one]
+   │   ├── sut.config                        # Resolved sut block [if the config has one]
    │   ├── maps/                             # [navigation only]
    │   │   ├── <name>.pgm                    # 2D occupancy grid image
    │   │   └── <name>.yaml                   # Map metadata (resolution, origin, thresholds)
@@ -185,6 +189,21 @@ configuration, wrapped in a single key matching the scenario name:
    test_scenario:
      growth_rate: 0.5
      initial_population: 50
+
+One file per variation channel, and each holds what that channel resolved to for this
+configuration: ``scenario.config`` the parameters the scenario file declares, ``sim.config``
+the simulator's whole resolved block, ``sut.config`` the flat ``<source>.<path>: value``
+block the system under test was configured with. ``config.yaml`` holds none of them — it carries
+only the identifier hashes that group configurations across campaigns.
+
+The last two are **records**, not inputs: what a run reads is the mounted overrides file
+(``sim``) and the rewritten config copies (``sut``). They sit beside the configuration so
+that what each channel was given is readable without diffing two copies of a stack's
+configuration. The campaign-level ``_transient/configurations.yaml`` carries the same values
+for every configuration in one document.
+
+All three are also read into the index, so a factor can be filtered and grouped by whichever
+channel it was written on — see :ref:`channel-param-columns`.
 
 Run Directory
 ^^^^^^^^^^^^^
@@ -817,6 +836,58 @@ opposite remedies**: ``quota_bound`` means the container exhausted the quota its
 ceiling is reported first because that remedy is a line in the campaign's own ``.vast``.
 
 
+.. _channel-param-columns:
+
+Which channel a factor was written on, and its column
+-----------------------------------------------------
+
+A campaign varies its factors on three channels (:ref:`the destination reference
+<config-variation-destination>`), and the ``runs`` table gives each one a ``param_*`` column
+so that a question about a factor is the same query whichever channel it came from.
+
+The name differs, because the destinations do:
+
+.. list-table::
+   :widths: 20 40 40
+   :header-rows: 1
+
+   * - Channel
+     - Destination
+     - Column
+   * - ``scenario:``
+     - ``speed``
+     - ``param_speed``
+   * - ``sim:``
+     - ``components.floorplan.floor.friction``
+     - ``param_sim_friction``
+   * - ``sut:``
+     - ``nav2.….inflation_layer.inflation_radius``
+     - ``param_sut_inflation_radius``
+
+A scenario parameter keeps its own name, which is what an analysis has always read. A ``sim:``
+or ``sut:`` destination is a *path*, and its whole path makes no column anybody can type — the
+``sut:`` example does not fit in an identifier at all, and an XPath destination is not
+identifier-shaped anywhere but its end. So the column is named from the **end** of the
+destination, prefixed by its channel, and grows leftwards only as far as it must to stay
+unambiguous: two ``friction`` keys under different components become ``param_sim_floor_friction``
+and ``param_sim_wall_friction`` rather than quietly sharing one column.
+
+Uniqueness is decided over the **whole campaign**, not one configuration, because the table is
+one shape for every row in it.
+
+.. note::
+
+   **Do not guess a column name — read it from the table.** The suffix rule depends on what
+   else the campaign varies, so the same destination is ``param_sut_inflation_radius`` in one
+   campaign and ``param_sut_inflation_layer_inflation_radius`` in another that also varies the
+   global costmap's. ``describe_campaign_data`` lists what a campaign actually has.
+
+Every destination's value is in ``run_view.channels_json`` regardless, under the channel name
+the ``.vast`` writes it on — including one whose name would collide with a scenario parameter,
+or would not fit an identifier even at full length. Those get no column and are reported at
+warning level during ingest, naming the destination: a column silently missing is the same
+wrong answer as a column silently shared.
+
 .. _reading-result-files:
 
 Reading these files
@@ -1020,6 +1091,41 @@ contributed automatically by variation plugins that implement
 ``collect_prov_metadata``; no manual configuration is required.
 
 
+.. _results-retrigger-preflight:
+
+Re-running a campaign: the pre-flight
+-------------------------------------
+
+Every re-run — **Retrigger campaign** in the web UI, ``vast campaign rerun <id>``,
+``start_campaign(from_campaign=<id>)`` over MCP, ``POST /campaigns/<id>/retrigger`` — is answered
+by the service walking the campaign's records first, and refusing one that cannot work as
+recorded: a launch that could only fail in the backend is refused before it starts. Five axes,
+which fail independently and are all reported together:
+
+``config``
+   the frozen ``.vast`` is readable, and at a version the migration ladder can carry forward.
+``host``
+   this robovast still speaks the recorded image's container protocol.
+``images``
+   a new run can start from the images the campaign recorded. A container whose image the campaign
+   *built* cannot be replaced, since the build context is not archived; one it merely declared is
+   resolved again at launch.
+``plugins``
+   third-party ``plugins:`` resolved to something re-installable.
+``providers``
+   which asset-provider distributions supplied the campaign.
+
+Only ``blocked`` refuses. ``unknown`` does not: a campaign recorded before a given field existed is
+exactly what a re-run of an old campaign is, and refusing it for a record nobody wrote would defeat
+the purpose. Every blocking verdict names the artifact and how to obtain it.
+
+Read the report without launching anything — it stages nothing and starts no container — with
+``vast campaign rerun --check <id>``, ``get_campaign_summary``'s ``retrigger`` key, or
+``GET /campaigns/<id>/retrigger/check``. Override it, for an axis you have decided you understand,
+with ``vast campaign rerun <id> --force``, ``start_campaign(from_campaign=<id>, force=True)``,
+**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body.
+
+
 .. _results-postprocessing:
 
 Postprocessing
@@ -1114,6 +1220,15 @@ done. The web *Retrigger postprocessing* dialog therefore closes as soon as you 
 *Run*. A second re-trigger is refused while one is already running. ``vast campaign
 postprocess`` is the same dispatch from the CLI, so all three surfaces behave alike --
 there is no longer a local, synchronous path that behaves differently from the rest.
+
+Because it re-enters that phase as a tracked campaign, a re-trigger can also be **stopped**
+like one: ``stop`` cancels it — deleting the Job on the cluster lane — the campaign returns
+to ``finished``, and ``postprocessing_error`` says it was cancelled rather than that it
+failed. Nothing that was already derived is lost, and nothing claims to be derived that is
+not: an interrupted bag is redone next time, a partial index load is replaced rather than
+doubled, and the provenance record that says a campaign carries derived data is written
+last, so a cancelled campaign simply reads as not postprocessed (see :doc:`architecture`).
+Ask for it again whenever the derived data is wanted.
 
 Because a post-run step is separate from the runs themselves, a **failure of one of
 these steps does not fail the campaign**. The campaign stays ``finished`` (its runs

@@ -462,6 +462,14 @@ def _assemble_config_mount(staging: str, generated: str, campaign_data: dict) ->
     ``<config>/_config/scenario.config``, which is exactly where ``entrypoint.sh``
     looks by default — so a single staged config needs no ``SCENARIO_PARAMETER_FILE``
     override at all.
+
+    **One configuration, or none.** A configuration's own files land at the paths the
+    campaign's copies would have occupied, so a second configuration's copies would land on
+    the first's and the exec would answer for a cell nobody asked about. The selector is a
+    glob and can match several, so this is refused rather than resolved by copy order.
+
+    Raises:
+        ValueError: When more than one configuration was selected.
     """
     mount = os.path.join(staging, "config")
     os.makedirs(mount, exist_ok=True)
@@ -482,7 +490,13 @@ def _assemble_config_mount(staging: str, generated: str, campaign_data: dict) ->
                 shutil.copytree(src, dst, dirs_exist_ok=True)
             else:
                 shutil.copy2(src, dst)
-    for config in campaign_data.get("configs") or []:
+    configs = campaign_data.get("configs") or []
+    if len(configs) > 1:
+        raise ValueError(
+            "one container's /config is one configuration's: "
+            f"{len(configs)} were selected ({', '.join(c.get('name', '') for c in configs)}). "
+            "Name a single configuration.")
+    for config in configs:
         per_config = os.path.join(generated, config.get("name", ""), "_config")
         if os.path.isdir(per_config):
             shutil.copytree(per_config, mount, dirs_exist_ok=True)

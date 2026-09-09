@@ -39,7 +39,7 @@ from robovast.common import convert_dataclasses_to_dict
 
 from .. import config_view
 from ..data_model import Orientation, Pose, Position
-from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig
+from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig, resting_z
 
 # ---------------------------------------------------------------------------
 # Config model
@@ -163,6 +163,13 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
 
+    #: None: this obstacle is REVEALED partway through the run -- parked out of the
+    #: way and teleported in when the robot comes within the trigger distance -- so
+    #: it is the one placement that must keep the simulator's movable default.
+    #: SetEntityState refuses an entity with no free joint, so welding it here would
+    #: fail the trial on its first call.
+    SIM_INSTANCES_MOTION = None
+
     @classmethod
     def config_view_data(cls, config, base_path):
         """The obstacles, plus the trigger point that spawns them."""
@@ -260,22 +267,29 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         """Keep all obstacles at least trigger_distance ahead on the path."""
         return self._current_trigger_distance
 
-    def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
+    def _post_process(self, obstacle_objects, obstacle_anchors, path, obstacle_geometry) -> dict:
         """The two extra outputs, by SLOT -- the campaign names their destinations.
 
         * ``trigger_point``     — the spawn pose position of the single placed obstacle.
         * ``trigger_threshold`` — the current trigger distance value.
+
+        ``trigger_point`` is a whole POSITION, z included, because a scenario revealing the
+        obstacle has to state one: the distance test that fires the trigger is planar and reads
+        only x and y, but the teleport that follows it places a body. Reporting z as 0.0 -- a
+        height the obstacle is never at -- left the scenario to invent one, and the value near
+        to hand is the robot's, which seats a floor-standing obstacle inside the floor.
         """
         if not obstacle_objects:
             return {}
 
         obj_dict = convert_dataclasses_to_dict([obstacle_objects[0]])[0]
         pos = obj_dict['spawn_pose']['position']
+        _, size = obstacle_geometry[0] if obstacle_geometry else (None, None)
         return {
             'trigger_point': {
                 'x': pos['x'],
                 'y': pos['y'],
-                'z': 0.0,
+                'z': resting_z(size),
             },
             'trigger_threshold': self._current_trigger_distance,
         }

@@ -257,7 +257,8 @@ class _Batch:
 
 def _listed(batch, core):
     return {j.metadata.name: (phase, detail)
-            for j, phase, detail in list_jobs_with_phase(batch, core, "ns", "sel")}
+            for j, phase, detail in ((x.job, x.phase, x.detail)
+                                     for x in list_jobs_with_phase(batch, core, "ns", "sel"))}
 
 
 def test_a_contended_job_is_listed_pending_with_the_schedulers_reason():

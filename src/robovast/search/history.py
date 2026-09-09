@@ -37,6 +37,7 @@ parameter set after it would differ.
 
 import json
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from .types import Evaluation, ParamSet
 
@@ -57,6 +58,90 @@ class RecordedBatch:
     asked: int = 0
     evaluations: list = field(default_factory=list)
     reps: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SearchPosition:
+    """Where a search stands, folded from the batches its store recorded.
+
+    Every number the loop needs to carry on from is here, so a campaign being re-entered
+    and one starting now are read the same way: an empty record folds to the zero
+    position, and there is no resume branch for the caller to forget a field in.
+
+    One value rather than a set of counters assigned separately, because a counter missed
+    at the call site is silent: it reads as zero, which is a legal value. Two of these
+    decide when a search STOPS -- without ``best_objective`` a resumed ``target_objective``
+    cannot know it is already met, and without ``best_per_batch`` ``no_improvement`` cannot
+    know how long the search has been flat -- so a field added here must be filled in the
+    one place that builds it.
+
+    Attributes:
+        batches: batches already recorded, and so the index of the next one.
+        evaluations: parameter sets scored across them.
+        runs: executions those batches ALLOCATED -- see :meth:`position_from`.
+        history: every recorded :class:`~robovast.search.types.Evaluation`, in order.
+        best_objective: best-so-far in raw objective units, ``None`` when nothing has
+            scored or when the search has several objectives and no scalar best exists.
+        best_per_batch: best-so-far AFTER each batch, index-aligned with batch numbers --
+            what ``no_improvement`` measures staleness over.
+        age_s: how long the campaign has been alive, in wall-clock seconds. What a ``time``
+            budget caps, so a resumed search does not get a fresh clock.
+    """
+
+    batches: int = 0
+    evaluations: int = 0
+    runs: int = 0
+    history: list = field(default_factory=list)
+    best_objective: Optional[float] = None
+    best_per_batch: list = field(default_factory=list)
+    age_s: float = 0.0
+
+
+def position_from(batches: list, *, default_runs: int,
+                  fold_best: Callable[[Optional[float], list], Optional[float]],
+                  age_s: float = 0.0) -> SearchPosition:
+    """Fold *batches* into the :class:`SearchPosition` they add up to.
+
+    A pure fold over the record, with no store of its own: the caller has already read the
+    batches to re-drive its strategy through them, and reading them twice is one more way
+    for the replay and the counters to disagree about the same campaign.
+
+    *fold_best* is handed in rather than reimplemented. Which of two objective values is
+    better is direction-aware and belongs to the strategy's objective spec, so the campaign
+    has exactly one answer to it and this asks that one.
+
+    ``best_per_batch`` gains an entry only once something has scored, which is what
+    :meth:`~robovast.search.stopping.StopConditions._record` does for the live loop -- and it
+    has to be the same rule, because the two lists are the same list either side of a
+    restart. Carrying a value forward is unnecessary rather than skipped: *fold_best* keeps
+    a best it already has, so once set it stays set and no batch can drop back to nothing.
+    """
+    evaluations = runs = 0
+    history: list = []
+    best = None
+    best_per_batch: list = []
+    for batch in batches:
+        evaluations += len(batch.evaluations)
+        history.extend(batch.evaluations)
+        # What the batch COST, by the same measure the live loop uses: executions
+        # attempted -- every cell's ALLOCATION, not what produced a sample. A draw that
+        # composed to nothing still occupied the plan its allocation reserved, so this
+        # sums over every recorded cell rather than over the scored ones.
+        #
+        # Read from the record rather than re-derived. `search.repetitions` sizes each
+        # cell separately, so re-deriving meant recounting an unevenly-spent campaign as
+        # an evenly spent one -- under where the policy had spent above `execution.runs`,
+        # over where it had spent below -- and a `runs` budget then stopped the resumed
+        # search in the wrong place. `default_runs` stands in only for a row that recorded
+        # no allocation, which is a store from before one could be recorded, where it is
+        # what that cell actually got.
+        runs += sum((n or default_runs) for n in batch.reps)
+        best = fold_best(best, batch.evaluations)
+        if best is not None:
+            best_per_batch.append(best)
+    return SearchPosition(batches=len(batches), evaluations=evaluations, runs=runs,
+                          history=history, best_objective=best,
+                          best_per_batch=best_per_batch, age_s=age_s)
 
 
 def _evaluation(row) -> Evaluation:

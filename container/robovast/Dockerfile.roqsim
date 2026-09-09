@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=26a23107f72f67d00ae00265e34b3104e1eb20c0
+ARG ROQSIM_REF=fbe7721aed56785039ef7eb7cc1a148c95d7e507
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -200,7 +200,10 @@ COPY --from=roqsim-src / /opt/roqsim
 # One pip pass over all of them, so a package's dependency on a sibling resolves against
 # that sibling rather than against PyPI -- where `roqsim` is an unrelated project. This is
 # the same reason a campaign carrying a wheel list installs them as one group -- except that
-# here nobody has to maintain the list.
+# here nobody has to maintain the list. A sibling a listed package depends on must itself be
+# listed, though: pip resolves the ones it was handed against each other and everything else
+# against PyPI, so an unlisted sibling fails the build with "No matching distribution found"
+# for a package that is right there in /opt/roqsim.
 #
 # `scenario_execution_roqsim` is the substrate's OSC action library, and it is in this list for a
 # reason worth knowing: a campaign whose scenario writes `import osc.roqsim` fails at scenario PARSE
@@ -219,6 +222,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_manipulation_assets \
         /opt/roqsim/roqsim_mobile_manipulation \
         /opt/roqsim/roqsim_scenes \
+        /opt/roqsim/roqsim_nav \
         /opt/roqsim/roqsim_walker \
         /opt/roqsim/roqsim_webctrl \
         /opt/roqsim/scenario_execution_roqsim

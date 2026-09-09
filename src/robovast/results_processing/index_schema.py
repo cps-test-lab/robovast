@@ -58,6 +58,7 @@ is ``UNKNOWN`` rather than genuinely textual will do it.
 
 import logging
 
+from robovast.common.errors import TableColumnLimitExceeded
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, widest)
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,14 @@ NOTE_WIDENING = "widening"
 #: retyped once a value gives it a verdict.
 _PG_TYPE = {UNKNOWN: "text", INTEGER: "bigint", REAL: "double precision", TEXT: "text"}
 
+#: Postgres's hard per-table column limit (actually ~1600, lower with wide types; this
+#: stays comfortably under it rather than chasing the exact number, which also depends on
+#: row layout). Checked here, in Python, before any DDL is sent -- a ``CREATE``/``ALTER``
+#: that fails *at* the database aborts the surrounding transaction, which would take every
+#: other table this ingest touches down with it. See :class:`~robovast.common.errors.
+#: TableColumnLimitExceeded`.
+_MAX_TABLE_COLUMNS = 1500
+
 
 def _quote(identifier: str) -> str:
     """Quote an identifier for DDL, doubling any embedded quote.
@@ -121,6 +130,26 @@ def _quote(identifier: str) -> str:
     is the one place that has to be right.
     """
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def _refuse_if_too_wide(table: str, column_count: int, *, source: str = "") -> None:
+    """Raise :class:`TableColumnLimitExceeded` if *column_count* would not fit.
+
+    Called before any DDL for *table* is sent -- see :data:`_MAX_TABLE_COLUMNS` on why
+    the check has to happen here rather than by reacting to Postgres's own refusal.
+    """
+    if column_count <= _MAX_TABLE_COLUMNS:
+        return
+    raise TableColumnLimitExceeded(
+        f"'{table}' would need {column_count} columns"
+        + (f" (from {source})" if source else "")
+        + f", past Postgres's practical per-table limit ({_MAX_TABLE_COLUMNS}). This is "
+        "almost always a message flattened one column per array element (a costmap, a "
+        "path, an occupancy grid) rather than a genuinely wide table -- store it losslessly "
+        "instead of flattening it (e.g. a dedicated handler like `costmap_to_csv`), or cap "
+        "how many array indices the generic CSV handler emits.",
+        next_step=f"replace the generic to_csv handler that produced '{table}' with one "
+        "that does not flatten an array into one column per element")
 
 
 def qualified(table: str, schema: str = METRIC_SCHEMA) -> str:
@@ -278,21 +307,42 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
 
     if not known:
         columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
+        _refuse_if_too_wide(table, len(columns), source=source)
         defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
-        conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
-        # The one index data.db also built: every read is scoped to a run or a campaign,
-        # and a sequential scan of a pose table is the difference between a plot and a
-        # timeout.
-        index_cols = ", ".join(_quote(col) for col, _ in context)
-        conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
-                     f"ON {name} ({index_cols})")
-        for col, verdict in columns:
-            _record_verdict(conn, table, col, verdict, schema)
-        # Here rather than once at setup: tables appear as data files appear, so a scope
-        # applied only to what existed at setup would leave every later table unscoped --
-        # and an unscoped table does not error, it answers with the whole corpus.
-        _scope().secure_table(conn, table, schema)
+        # One transaction over the whole of "this table now exists", because the index
+        # connection is autocommit and the last statement in it is the one that scopes the
+        # table. Statement by statement, an ingest that died in between -- a killed
+        # postprocessing pod, a lost connection -- committed a table, and the column
+        # verdicts that make every later call take the widen path below, while leaving it
+        # uncovered by the campaign policy. Nothing then repaired it until an unrelated
+        # campaign's ingest ran its whole-index sweep, and until then every scoped read of
+        # the index was refused outright. Rolled back as a unit, the table simply is not
+        # there, and the next ingest creates and scopes it properly.
+        with conn.transaction():
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
+            # The one index data.db also built: every read is scoped to a run or a
+            # campaign, and a sequential scan of a pose table is the difference between a
+            # plot and a timeout.
+            index_cols = ", ".join(_quote(col) for col, _ in context)
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
+                         f"ON {name} ({index_cols})")
+            for col, verdict in columns:
+                _record_verdict(conn, table, col, verdict, schema)
+            # Here rather than once at setup: tables appear as data files appear, so a
+            # scope applied only to what existed at setup would leave every later table
+            # unscoped -- and an unscoped table does not error, it answers with the whole
+            # corpus.
+            _scope().secure_table(conn, table, schema)
         return widened
+
+    # Checked once, up front, for the whole batch of ALTERs this call is about to issue --
+    # not inside the loop below, so a batch that would tip the table over the limit is
+    # refused before its first, otherwise-fine column is added. Partial widening would
+    # leave the table's on-disk shape depending on dict iteration order for no benefit: the
+    # caller (ingest_run) discards this whole file's write on the refusal anyway.
+    new_columns = [c for c in types if c not in known]
+    if new_columns:
+        _refuse_if_too_wide(table, len(known) + len(new_columns), source=source)
 
     for column, verdict in types.items():
         if column not in known:
@@ -319,4 +369,13 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
         logger.info("index: %s.%s widened %s -> %s%s",
                     table, column, current, target, f" by {source}" if source else "")
 
+    # The table was here before this call, so the create branch above did not scope it --
+    # and an index written by a version without that branch's transaction may hold one
+    # that nothing ever did. One catalog read says which, and the repair then happens at
+    # the first touch of the table rather than waiting for a whole-campaign sweep.
+    #
+    # Last, after the width guard: a batch that guard refuses must send nothing at all,
+    # and the caller discards that file's write anyway. Still before the rows themselves,
+    # which the sink copies in only once this returns.
+    _scope().secure_table_if_needed(conn, table, schema)
     return widened

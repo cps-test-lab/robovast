@@ -23,6 +23,9 @@ from dataclasses import asdict, is_dataclass
 import yaml
 
 from .config import validate_config
+from . import yaml_strict
+from .config_extends import resolve_extends
+from .config_presets import expand_configuration_presets
 from .file_cache import FileCache
 
 # numpy and scenario_execution are deliberately NOT imported here. This module is what
@@ -100,7 +103,9 @@ def load_config(config_file, subsection=None, allow_missing=False, upgrade=False
     with open(config_file, 'r') as f:
         try:
             # Load all documents, the first one contains the config
-            documents = list(yaml.safe_load_all(f))
+            # Strict unless this is an archive read: `upgrade=True` reads a campaign
+            # that already ran, and the value it ran with is the one a repeat keeps.
+            documents = yaml_strict.load_all(f, path=config_file, strict=not upgrade)
             if not documents:
                 logger.error("No documents found in scenario file")
                 raise ValueError("No documents found in scenario file")
@@ -116,12 +121,22 @@ def load_config(config_file, subsection=None, allow_missing=False, upgrade=False
             # reader of one is not entitled to an opinion about the rest of the file. A
             # caller loading the *whole* config still gets full validation, which is
             # where an unsupported version genuinely matters.
+            # Before the migration ladder, not after: a step transforms a whole document,
+            # and the document is the merged one. Migrating the child alone would leave the
+            # base's blocks in the shape the step just moved away from, in one config.
+            config = resolve_extends(config, config_file)
+
             if subsection:
                 _warn_unsupported_version(config, config_file, subsection)
+                config = expand_configuration_presets(config)
             elif upgrade:
                 config = _upgraded(config, config_file)
-                validate_config(config)
+                config = expand_configuration_presets(config)
+                # Lenient: this path exists to read a campaign that already ran, and a key
+                # the schema does not declare changed nothing when it ran.
+                validate_config(config, strict=False)
             else:
+                config = expand_configuration_presets(config)
                 validate_config(config)
 
             if subsection:

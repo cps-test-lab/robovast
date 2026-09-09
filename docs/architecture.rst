@@ -10,6 +10,8 @@ are all thin **clients** of the same contract. This lets an LLM (or any client)
 author, run, re-postprocess, and reason over large-scale simulation campaigns
 through an interface that can live on a **different host** from the client.
 
+.. _architecture-interface:
+
 One interface, one implementation, many clients
 -----------------------------------------------
 
@@ -72,8 +74,7 @@ namespace, two origins, no shadowing.
 
 The practical consequence, and the reason it is worth the packaging: ``pip install
 robovast-client`` is 13 packages and ~30 MB against the core's 88 and ~290 MB, and a
-``vast`` assembled from it lists exactly the verbs it can run. See :ref:`client`, and
-``AGENTS.md`` §5 for the rules a change here must hold.
+``vast`` assembled from it lists exactly the verbs it can run. See :ref:`client`.
 
 Where the driver runs
 ----------------------
@@ -126,6 +127,42 @@ publishes it to the object store when the tunnel is still up — a Stop-button s
 the phase survives a service restart instead of reconstructing as an ambiguous
 ``"finished"``. Every terminal-phase filter (listings, the ``--wait-and-download``
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
+
+A stop that arrives once the runs are **over** — during postprocessing — ends differently,
+and both halves of the difference matter. It is not reached by either lane's teardown (the
+local one removes the scenario container; the cluster one is label-scoped to
+``jobgroup=scenario-runs`` so that it cannot cancel a shared image build, and the
+postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the flag itself:
+``await_job`` deletes the Job — which makes a Job this process only *re-attached* to
+stoppable as well — and the local lane signals the conversion's process group, whose
+container tears itself down. And the campaign is **not** ``"stopped"`` — its runs all
+finished and their results are complete, so it ends ``"finished"`` with the reason on
+``postprocessing_error`` and no derived data, exactly as a postprocessing *failure* does,
+because in both cases what is missing is only the derived data and only a re-run supplies
+it. ``stop`` says which of the two stops it performed in its reply, and the reason is
+recorded as a cancellation rather than through the failure account: no failure log is
+authored, because a stop is not a fault.
+
+What a cancelled postprocess leaves is bounded by design rather than by luck, though the
+two lanes bound it differently. The rosbag conversion — the long step, and the one a stop
+is usually aimed at — is written to survive being killed on both: a bag records itself as
+converted only once its handlers have finished, and every output is rewritten rather than
+appended, so an interrupted bag is simply redone. Locally the steps after it (the index
+ingest, the metadata, the provenance record) run in this process and are cancelled only
+*between* steps, so they are never entered part-way. In the cluster's Job they run in the
+pod, so a stop landing during the ingest interrupts it — and that is survivable for the
+reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
+clears a campaign's rows before writing them, so a re-run replaces a partial load rather
+than doubling it. An ingest handed a directory that holds no campaign at all — neither
+``campaign.db`` nor a single run directory — is refused *before* that clear, so a wrong
+path cannot empty a campaign's rows and then record the emptiness as its answer: the
+registry's entry is what separates "ingested and measured nothing" from "never ingested",
+and a query trusts it to make that distinction.
+
+What neither lane leaves is a campaign that *claims* derived data it does not have. The
+provenance record is written last, after the ingest, precisely so that its presence means
+every step succeeded — so a cancelled campaign has none, reads as not postprocessed, and
+asks for the re-run that settles it.
 
 Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
 handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
@@ -257,8 +294,11 @@ A campaign does **record** which workspace and ``.vast`` it was launched from, o
 of it: nothing resolves it to run anything — a retrigger relaunches from the campaign's own
 frozen ``_config/`` — so deleting the workspace it names still takes nothing with it. It
 answers "where did this come from?", which is a fact about the past; it does not answer
-"where do I re-run it from?", which is always the campaign itself. See
-:ref:`web-ui-origin`.
+"where do I re-run it from?", which is always the campaign itself. A **re-run** records the
+config version it read as well (``origin_config_version_from`` and the migration steps that
+got it there), because a re-run migrates a staged copy of the parent's frozen ``.vast``, and
+two runs of "the same campaign" that read different config versions are not the same
+experiment. See :ref:`web-ui-origin`.
 
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
@@ -338,8 +378,11 @@ two origins, no shadowing. Adding an ``__init__.py`` to either directory would b
 merge silently, so neither has one.
 
 The direction of the dependency is load-bearing: ``robovast-cluster`` depends on
-``robovast``, never the reverse. See ``AGENTS.md`` §5 for the packaging rules that follow
-from it, including why a lane cannot be offered as an extra.
+``robovast``, never the reverse. That is why a lane is **not installable as an extra** — a
+``robovast[cluster]`` extra is the edge back, and closes the cycle. Every place that installs
+a lane does so as its own step: the controller Dockerfile, ``make venv`` and ``make build``
+each name it, and a test guards the Dockerfile, because an omission there cannot fail before
+deployment.
 
 .. _container-exec-architecture:
 
@@ -665,10 +708,13 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - DB — the index's ``postprocessing_steps``; the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
-   * - each configuration's ``_config/sim.config``
-     - File — what the simulator was given, a whole document read once (by a person
-       replaying a cell, or by the run view). Its *effective* values already reach the DB
-       through ``campaign.unit``, so a second copy would be a second source of truth
+   * - each configuration's ``_config/sim.config`` and ``_config/sut.config``
+     - Both — the file is what each channel was given, a whole document a person reads when
+       replaying a cell by hand. Its values also reach the DB, as ``campaign.unit``'s
+       ``channels_json`` and the ``param_*`` columns built from it, because a factor nobody
+       can filter or group by is a factor the campaign varied and no query can see. The file
+       is written by the **composer** and the column by the **controller**, from one reader
+       (``read_config_channels``), so the two cannot say different things
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
    * - ``_execution/interventions.json``
@@ -729,7 +775,8 @@ Querying results
 
 Per-run metrics are consolidated into the central results index (one
 table per CSV stem) plus a ``runs`` **dimension table** — per-run
-``status``/``duration_s`` and each scenario parameter as a ``param_*`` column.
+``status``/``duration_s`` and each varied parameter as a ``param_*`` column, on whichever
+channel it was written (:ref:`channel-param-columns`).
 That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
 table (the operational source of truth for per-run outcomes, written live from
 each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
@@ -788,7 +835,7 @@ plain decimal number becomes ``INTEGER``/``REAL`` and is stored numerically, and
 else stays ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the
 column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its text, and
 NaN has no SQLite representation, so accepting it would delete data instead of typing it).
-Scenario ``param_*`` columns are typed the same way from their resolved values.
+``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
 caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
 

@@ -164,6 +164,21 @@ class StopConditions:
         elif self._best_history:
             self._best_history.append(self._best_history[-1])
 
+    def seed_history(self, best_per_batch: list) -> None:
+        """Seed the per-batch best-so-far a resumed search already has behind it.
+
+        The resume counterpart of :meth:`_record`, and the reason ``no_improvement`` can be
+        trusted across a restart: a stopping set is built from configuration alone, before
+        any store is open, so it cannot read its own history and would otherwise start every
+        re-entered search believing it had just improved.
+
+        A named method rather than a public list because ``_stale_batches`` walks this by
+        index and reads it as one entry per batch that had a best; handing it a
+        differently-shaped list is the one way to make the criterion measure something else
+        while still returning a number.
+        """
+        self._best_history.extend(best_per_batch)
+
     def should_stop(self, snap: StopSnapshot) -> Optional[StopResult]:
         """Return the first criterion that fires, else ``None``. Call once/batch."""
         self._record(snap)

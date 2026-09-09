@@ -34,6 +34,7 @@ from importlib.metadata import entry_points
 from pprint import pformat
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
+from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
 from .errors import missing_input_error
@@ -41,7 +42,8 @@ from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
-from .variation.base_variation import VariationInfeasibleError
+from .variation.base_variation import (VariationConfigError,
+                                       VariationInfeasibleError)
 from .variation.loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
@@ -184,7 +186,19 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
 
 def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
-    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+    # Constructing a plugin validates its parameters, so a refusal happens HERE -- and
+    # reported from outside this function it named neither the plugin nor the config block,
+    # leaving "Config validation failed" as the whole of what a reader got for a value one
+    # plugin among several would not take. Only that one class is intercepted: every other
+    # way a construction can fail keeps the exception it already raises, including the ones
+    # carrying their own next step.
+    try:
+        variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+    except VariationConfigError as e:
+        msg = f"Variation failed. {variation_class.__name__}: {e}"
+        logger.error(msg)
+        progress_update_callback(msg)
+        raise VariationConfigError(msg, config_name=e.config_name) from e
 
     # Collect input files for campaign self-containment
     input_files = variation.get_input_files()
@@ -496,13 +510,35 @@ def _entity_names_in(value) -> set:
     return set()
 
 
+#: What settles a world query the simulator itself answered by failing: the image is the
+#: only thing that can change the answer.
+_IMAGE_STEP = ("the simulator in {image} answered the query itself, so that image is what "
+               "decides it: check the world path it names, and repin or rebuild the image "
+               "if it does not understand the query.")
+
+#: What settles a world query that nothing ran. Kept apart from _IMAGE_STEP because the two
+#: send a caller to opposite places, and the reply is the only thing that can tell them
+#: apart -- a lane that cannot start a container says nothing about the .vast.
+_LANE_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
+              "execution lane can start a container (get_resource_usage, or `vast service "
+              "resources`) and validate again.")
+
+
 class WorldQueryUnavailable(RuntimeError):
     """The world could not be described, with the reason a caller can act on.
 
     Not "this campaign is wrong": it is unverifiable from here. Kept distinct from a plain
     ``ValueError`` so a caller pre-*checking* can carry on (and warn) while a caller *asking*
     can report why. Collapsing the two makes a failed lookup indistinguishable from a clean one.
+
+    ``next_step`` is what would settle the question, and it is the whole value of this
+    exception to a caller who cannot: a reason with no remedy leaves an agent guessing at
+    the ``.vast`` for a failure that was never about the file.
     """
+
+    def __init__(self, message: str, *, next_step: str = ""):
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
@@ -567,16 +603,18 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         # The command's own last words, not the runner's: an old image whose simulator does not
         # know a flag says so itself ("unrecognized arguments: --overridable"), and that names
         # the remedy. Without this the CalledProcessError left the service returning a bare 500.
+        spoke = _command_failure(lines)
         raise WorldQueryUnavailable(
-            f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or str(exc)}") from None
+            f"{name} could not describe this world in {image}: {spoke or exc}",
+            next_step=(_IMAGE_STEP.format(image=image) if spoke else _LANE_STEP)) from None
     finally:
         runner.close()
     payload = _last_json_line(lines)
     if payload is None:
         raise WorldQueryUnavailable(
             f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or '(no output)'}")
+            f"{_command_failure(lines) or '(no output)'}",
+            next_step=_IMAGE_STEP.format(image=image))
     return payload, image
 
 
@@ -755,11 +793,11 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     half needs nothing from either execution lane.
     """
     from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
-        ENV_SOURCE, SutChannelError, declared_sources, materialize, merge_sut_block,
-        split_destination)
+        ENV_SOURCE, SutChannelError, check_destinations, declared_sources, materialize,
+        merge_sut_block, split_destination)
 
     execution = parameters.get("execution", {}) or {}
-    authored = {c.get("name"): (c.get("sut") or {})
+    authored = {c.get("name"): channel(c, SUT)
                 for c in (parameters.get("configuration") or [])}
     # A DECLARED SOURCE IS STAGED EVEN WHEN NOTHING ADDRESSES IT. Declaring one drops the original
     # from run_files for the campaign as a whole, so returning early here leaves a campaign that
@@ -767,6 +805,16 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
     # on a missing path, a long way from the declaration.
     if not declared_sources(execution, vast_dir):
         return
+
+    # THE FIXED BLOCK IS CHECKED LIKE A FACTOR IS. A variation's destinations are checked with
+    # the rest of its declared outputs; an authored block reaches no plugin, and a mapping
+    # format's assignment creates the path it was given -- so a misspelt destination would
+    # write a key the stack never reads, in a cell that runs and reports normally. Checked
+    # once over the union rather than per configuration: what a source can address depends on
+    # the file, and every configuration reads the same one.
+    fixed = {destination for block in authored.values() for destination in block}
+    if fixed:
+        check_destinations(execution, vast_dir, sorted(fixed))
 
     for config in configs:
         block = merge_sut_block(authored.get(config.get("_config_name")) or {},
@@ -789,6 +837,42 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
                                    config.get("name", ""))
         config["sut"] = block
         config.setdefault("_config_files", []).extend(contribution.files)
+
+
+def _check_config_file_paths(configs, scenario_file):
+    """Refuse a per-configuration file that would land on one the run owns.
+
+    A configuration's copy of a file is staged where the campaign's copy would have been,
+    at ``/config/<deploy path>`` -- which is also where the run's own furniture lives: the
+    entrypoint, the parameter documents, the scripts every container sources. A deploy path
+    equal to one of those would replace it.
+
+    Refused here because both lanes discover it late and unhelpfully: locally as two mount
+    sources for one target, on the cluster as a pod whose entrypoint is a campaign's YAML
+    file -- in both cases after the image pull, at the cost of a cell.
+    """
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        RESERVED_CONFIG_MOUNT_NAMES, RESERVED_CONFIG_MOUNT_PATTERNS)
+
+    reserved = set(RESERVED_CONFIG_MOUNT_NAMES)
+    if scenario_file:
+        reserved.add(os.path.basename(scenario_file))
+    for config in configs:
+        for deploy_rel, _src in (config.get("_config_files") or []):
+            name = os.path.basename(deploy_rel)
+            if os.path.dirname(deploy_rel):
+                # Only the mount root is contested: the run writes nothing into a
+                # subdirectory of it, so `nav2/scenario.config` is a campaign's own
+                # business.
+                continue
+            if name in reserved or any(fnmatch.fnmatch(name, p)
+                                       for p in RESERVED_CONFIG_MOUNT_PATTERNS):
+                raise ValueError(
+                    f"Config '{config.get('name')}': the file '{deploy_rel}' would be "
+                    f"staged over one the run itself owns at the config mount. RoboVAST "
+                    f"puts these there: {', '.join(sorted(reserved))} (and "
+                    f"{', '.join(RESERVED_CONFIG_MOUNT_PATTERNS)}). Deploy it under a "
+                    f"subdirectory, or rename it.")
 
 
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
@@ -818,7 +902,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     if not backend_name(execution):
         return
 
-    authored = {c.get("name"): (c.get("sim") or {})
+    authored = {c.get("name"): channel(c, SIM)
                 for c in (parameters.get("configuration") or [])}
     uses_channel = any(authored.values()) or any(c.get("sim") for c in configs)
 
@@ -832,8 +916,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         deploy_paths = {rel for rel, _ in (config.get("_config_files") or [])}
         try:
             resolved = merge_sim_block(
-                execution, sim_values, vast_dir,
-                deploy_paths=deploy_paths, config_name=config.get("name", ""))
+                execution, sim_values, vast_dir, deploy_paths=deploy_paths)
         except Exception as exc:  # noqa: BLE001 - re-raised only where it is the user's
             if uses_channel:
                 raise
@@ -856,6 +939,13 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             logger.debug("simulator backend declared no input files: %s", exc)
             continue
         for rel in declared:
+            # An ABSOLUTE path is already staged: it is a configuration's own file, whose
+            # `sim` value names the config mount rather than the campaign directory. Adding
+            # it to run_files would ask the campaign to stage a path that exists only inside
+            # a container -- which is the shape a variation that generates its cell's world
+            # produces, and the one case where the world is not a campaign file at all.
+            if os.path.isabs(rel):
+                continue
             if rel not in run_files:
                 run_files.append(rel)
 
@@ -1273,7 +1363,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # 9: _run_files now also carries the local plugin modules the config references, so a cached
 # entry from 8 describes both a different input set and a different config identity -- the
 # modules are content-hashed, and earlier formats do not carry them.
-_CACHE_FORMAT_VERSION = 9
+# 10: a configuration's staged files are addressed at the config mount rather than under a
+# per-configuration directory, and an entry carries its RESOLVED sim block -- so one written
+# by 9 replays container paths that no longer exist.
+_CACHE_FORMAT_VERSION = 10
 
 
 def _build_generate_cache_key(
@@ -1515,13 +1608,20 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     ``tolerate_infeasible`` controls what happens when a variation raises
     :class:`~.variation.base_variation.VariationInfeasibleError` (a specific
-    parameter draw cannot be realized, as opposed to a plugin bug): when
-    ``False`` (the default — batch-mode campaigns and direct callers) it
-    propagates and aborts composition, same as any other exception; when
-    ``True`` (search-mode composition, via :class:`~robovast.search.compose.Compose`)
-    the affected top-level config block is dropped and composition continues
-    with the rest. Every other exception always propagates regardless of this
-    flag.
+    parameter draw cannot be realized, as opposed to a plugin bug) or
+    :class:`~.variation.base_variation.VariationConfigError` (a plugin refuses the
+    parameters it was handed): when ``False`` (the default — batch-mode campaigns and
+    direct callers) it propagates and aborts composition, same as any other exception;
+    when ``True`` (search-mode composition, via
+    :class:`~robovast.search.compose.Compose`) the affected top-level config block is
+    dropped and composition continues with the rest. Every other exception always
+    propagates regardless of this flag.
+
+    Both classes and nothing wider: they are the two ways a *draw* can turn out
+    unrunnable, and a search that ends on one has spent every batch before it for
+    nothing. A campaign in which they are the rule rather than the exception is a
+    different problem, and the controller stops it — see
+    :meth:`~robovast.execution.controller.CampaignController._search_loop`.
 
     Caching is active for all flows when ``use_cache=True``.  Two cache
     entries are stored under ``<vast_dir>/.cache/``:
@@ -1793,12 +1893,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # Initialize config dict with scenario parameters if they exist
         config_dict = {}
 
-        scenario_parameters = config.get('parameters', [])
+        scenario_parameters = channel(config, SCENARIO)
         if scenario_parameters:
-            # Convert list of single-key dicts to a single dict
-            for param in scenario_parameters:
-                if isinstance(param, dict):
-                    config_dict.update(param)
+            config_dict.update(scenario_parameters)
 
             # Validate that all specified parameters exist in the scenario
             if existing_scenario_parameters:
@@ -1838,12 +1935,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except VariationInfeasibleError as exc:
+            except (VariationInfeasibleError, VariationConfigError) as exc:
                 # Name the config block here -- neither execute_variation nor the plugin
                 # knows it, but it is exactly what a reader needs to act on the message
                 # (which config, not just which plugin/why), whether this propagates
                 # (batch mode) or is only logged before the config is dropped (search).
-                named_exc = VariationInfeasibleError(
+                #
+                # Both classes, and the type is preserved: a draw a plugin refuses and a
+                # draw no arrangement realizes are equally unrunnable, so a search skips
+                # both -- while a batch, which tolerates neither, still gets the message
+                # that fits its case.
+                named_exc = type(exc)(
                     f"config '{config['name']}': {exc}", config_name=config['name'])
                 if not tolerate_infeasible:
                     raise named_exc from exc
@@ -1905,6 +2007,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # that implies. Before the normalisation below, so those files are treated exactly like
     # any other artifact a variation produced.
     _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir)
+
+    # Every per-configuration file now exists, from both producers, and none has been
+    # normalised yet -- the one point where the whole set can be checked against the names
+    # the run owns.
+    _check_config_file_paths(configs, scenario_file)
 
     # Normalize _config_files and _config_transient_files: convert artifact absolute
     # paths (those inside output_dir) to paths relative to output_dir.  This makes

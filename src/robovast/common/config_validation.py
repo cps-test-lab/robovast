@@ -47,6 +47,9 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from robovast.common import yaml_strict
+from robovast.common.config_extends import resolve_extends
+from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
 from robovast.common.containers import ros_repo_name
 
@@ -138,7 +141,8 @@ def _build_context_advisories(config_path):
         f"transferred once per built container on every build. The largest entries are: "
         f"{biggest}. Campaign outputs and the standard ignored names are already "
         f"excluded, so anything left is going into the image build on purpose or by "
-        f"accident -- if by accident, move it out of the project directory.")]
+        f"accident -- if by accident, move it out of the project directory.",
+        severity="advice")]
 
 
 def _resource_advisories(config_path):
@@ -187,7 +191,8 @@ def _resource_advisories(config_path):
         "the run's AVAILABLE_MEM (downward API limits.memory) reports the NODE's memory "
         "as its budget, so a process sizing itself from it will size itself to the node. "
         "Declare resources.memory for every container that declares resources.cpu. "
-        "get_campaign_summary on a comparable finished campaign reports what it used.")]
+        "get_campaign_summary on a comparable finished campaign reports what it used.",
+        severity="advice")]
 
 
 def _calibration_role_advisories(config_path):
@@ -236,7 +241,7 @@ def _calibration_role_advisories(config_path):
         "thing under test never throttles mid-plan, and it keys on the name. The name is "
         "also what a scenario's remote(\"ipc:///ipc/<name>\") and exec_in_container use, so "
         "rename those with it.",
-        field="execution.containers")]
+        field="execution.containers", severity="advice")]
 
 
 def _liveness_advisories(config_path):
@@ -265,12 +270,19 @@ def _liveness_advisories(config_path):
         "Set execution.timeout to the longest a single run should legitimately take; "
         "get_campaign_summary on a comparable finished campaign reports what its runs "
         "took.",
-        field="execution.timeout")]
+        field="execution.timeout", severity="advice")]
 
 
-def _problem(stage, message, config=None, field=None):
-    """Build one structured problem entry."""
-    return {"stage": stage, "config": config, "field": field, "message": message}
+def _problem(stage, message, config=None, field=None, severity="error"):
+    """Build one structured problem entry.
+
+    ``severity`` defaults to ``error`` because that is what a check reports when it
+    reports anything; an advisory has to say so (``advice``), and so does a check that
+    could not run (``unchecked``). See ``ValidationProblem``: the three are acted on
+    differently, and only ``advice`` leaves ``valid`` true.
+    """
+    return {"stage": stage, "config": config, "field": field, "message": message,
+            "severity": severity}
 
 
 def _safe_load(config_path):
@@ -283,7 +295,9 @@ def _safe_load(config_path):
         return None, _problem("file", f"Config file not found: {config_path}")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            documents = list(yaml.safe_load_all(f))
+            documents = yaml_strict.load_all(f, path=config_path)
+    except yaml_strict.DuplicateKeyError as e:
+        return None, _problem("parse", str(e))
     except yaml.YAMLError as e:
         return None, _problem("parse", f"YAML parse error: {e}")
     except OSError as e:
@@ -292,7 +306,17 @@ def _safe_load(config_path):
         return None, _problem("parse", "No documents found in the .vast file.")
     if not isinstance(documents[0], dict):
         return None, _problem("parse", "Top-level .vast content is not a mapping.")
-    return documents[0], None
+    # Validation reports on the campaign that would run, which is the composed one. Reporting
+    # on the unresolved file would clear a campaign whose base contradicts it, and flag one
+    # whose base supplies what looks missing here.
+    try:
+        raw = resolve_extends(documents[0], config_path)
+    except ValueError as e:
+        return None, _problem("extends", str(e))
+    try:
+        return expand_configuration_presets(raw), None
+    except ValueError as e:
+        return None, _problem("presets", str(e))
 
 
 def _config_name_from_loc(raw, loc):
@@ -1040,7 +1064,60 @@ def _search_problems(search, vast_dir):
                         "search-extractor",
                         f"'{plugin}' does not override the 'extract' method.",
                         field="search.extract.plugin"))
+                else:
+                    problems.extend(
+                        _requires_run_files_problems(extractor_cls, plugin))
 
+    return problems
+
+
+def _requires_run_files_problems(extractor_cls, plugin):
+    """Refuse a malformed ``requires_run_files`` rather than checking nothing at runtime.
+
+    The declaration is what turns a file the extractor cannot find into a
+    ``NoSampleError`` instead of whatever its own code does with a missing path. A typo in
+    it therefore fails the way the thing it protects against fails -- silently, and
+    looking fine -- so it is checked here, where a wrong declaration is still cheap.
+
+    A bare string is refused rather than accepted: iterating one yields its characters, so
+    ``requires_run_files = "poses.csv"`` would ask for a run file called ``p``. An absolute
+    path or one climbing out of the run directory is refused too; the names are resolved
+    against a run directory and nothing else.
+    """
+    from pathlib import PurePosixPath  # pylint: disable=import-outside-toplevel
+
+    declared = getattr(extractor_cls, "requires_run_files", ())
+    field = "search.extract.plugin"
+    if isinstance(declared, str):
+        return [_problem(
+            "search-extractor",
+            f"'{plugin}' declares requires_run_files as a single string "
+            f"({declared!r}), which iterates as its characters -- so it would ask for a "
+            f"run file named {declared[:1]!r}. Use a tuple: ({declared!r},).",
+            field=field)]
+    try:
+        names = list(declared)
+    except TypeError:
+        return [_problem(
+            "search-extractor",
+            f"'{plugin}' declares requires_run_files as {type(declared).__name__}, which "
+            f"cannot be iterated. It is a tuple of per-run filenames.",
+            field=field)]
+    problems = []
+    for name in names:
+        if not isinstance(name, str) or not name:
+            problems.append(_problem(
+                "search-extractor",
+                f"'{plugin}' declares a requires_run_files entry that is not a filename: "
+                f"{name!r}.", field=field))
+            continue
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts:
+            problems.append(_problem(
+                "search-extractor",
+                f"'{plugin}' declares requires_run_files entry {name!r}, which is not "
+                f"relative to a run directory. The names are resolved inside one run's "
+                f"directory and nowhere else.", field=field))
     return problems
 
 
@@ -1391,14 +1468,25 @@ def _search_composition_report(config_path):
     if sample["infeasible"]:
         listed = "; ".join(f"{item['name']} {item['params']}"
                            for item in sample["infeasible"])
+        # Still an advisory when the whole sample failed, and deliberately: this sample is
+        # a handful of draws, so "none of 4 composed" is weak evidence about a space that
+        # is merely mostly infeasible -- refusing the campaign would block a search whose
+        # needle is real but rare. It is said in stronger words, and the run-time guard is
+        # what acts on evidence: a campaign that measures nothing in two consecutive
+        # batches is stopped, having observed batches rather than a sample.
+        outlook = (
+            "Nothing sampled composes, so as written this campaign may produce nothing "
+            "at all; it will be stopped after two batches that measure nothing. Check "
+            "the search_space bounds against what the variation plugins accept."
+            if sample["composed"] == 0 else
+            "The campaign skips such draws and continues, but a high rate here means "
+            "much of the search space is infeasible — check the search_space bounds "
+            "against the variation's constraints.")
         problems.append(_problem(
             "search-composition",
             f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
-            f"set(s) could not be composed: {listed}. The campaign skips such draws "
-            "and continues, but a high rate here means much of the search space is "
-            "infeasible — check the search_space bounds against the variation's "
-            "constraints.",
-            field="search.search_space"))
+            f"set(s) could not be composed: {listed}. {outlook}",
+            field="search.search_space", severity="advice"))
 
     # Counts describe one composed batch, not the whole campaign: how many configs a
     # search ultimately evaluates depends on its budget and on how many draws turn out

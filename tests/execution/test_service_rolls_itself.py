@@ -94,7 +94,7 @@ def svc(monkeypatch):
 _CAMPAIGN = "nav-2026-01-01-000000"
 
 #: The smallest ``.vast`` that validates — what a campaign froze, as the check reads it back.
-_VAST = {"version": 3, "metadata": {"name": "pilot"},
+_VAST = {"version": 4, "metadata": {"name": "pilot"},
          "configuration": [{"name": "config1"}],
          "execution": {"scenario_file": "scenario.osc", "runs": 2,
                        "containers": {"scenario": {"image": "base:1"}}}}

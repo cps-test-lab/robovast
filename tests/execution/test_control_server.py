@@ -28,9 +28,11 @@ def test_snapshot_reflects_state_updates():
     assert body["batch"] == 2 and body["batches_done"] == 2
     # no_result (delivered nothing), failed (delivered a failing verdict), killed
     # (an operator stopped its job) and invalid (the runner threw the trial away) are
-    # distinct counters — see RunProgress.
+    # distinct counters — see RunProgress. `outcomes_counted` is False because nothing
+    # has tallied this batch's verdicts: it is what keeps the three zeros above from
+    # reading as "and we looked".
     assert body["runs"] == {"completed": 3, "total": 8, "no_result": 0, "failed": 0,
-                            "killed": 0, "invalid": 0}
+                            "killed": 0, "invalid": 0, "outcomes_counted": False}
     assert body["budget"][0]["label"] == "batches"
     assert body["best_objective"] == 0.25
     # The per-batch trajectory is deliberately NOT here: it lived on this payload as

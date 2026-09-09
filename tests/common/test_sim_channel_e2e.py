@@ -45,7 +45,7 @@ def _project(tmp_path, configuration):
         (worlds / name).write_text(_WORLD)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 3
+        version: 4
         metadata: {{name: sim-channel}}
         configuration:
         {configuration}
@@ -105,8 +105,9 @@ def test_an_override_sweep_keeps_one_world_and_varies_inside_it(tmp_path):
 def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
     vast = _project(tmp_path, textwrap.indent(textwrap.dedent("""\
         - name: roofless
-          sim:
-            overrides: {plugins: {ceiling: {enabled: false}}}
+          parameters:
+            sim:
+              overrides: {plugins: {ceiling: {enabled: false}}}
           variations:
           - ParameterVariationList:
               scenario: goal_pose
@@ -122,8 +123,9 @@ def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
 def test_a_variation_wins_over_the_configurations_fixed_value(tmp_path):
     vast = _project(tmp_path, textwrap.indent(textwrap.dedent("""\
         - name: both
-          sim:
-            config: worlds/depot.yaml
+          parameters:
+            sim:
+              config: worlds/depot.yaml
           variations:
           - ParameterVariationList:
               sim: config

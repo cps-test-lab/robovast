@@ -58,7 +58,9 @@ QUERIES = {
         "  FROM resource_usage WHERE in_window = 1 "
         "  GROUP BY container, config_name, run_id, timestamp) t "
         "GROUP BY container ORDER BY container"),
-    # advice.py -- SYSTEM_MEM_SQL.
+    # advice.py -- SYSTEM_MEM_SQL, its peak arm only. The unreclaimable arm reads
+    # memory_anon/shmem/slab, which postdate the data.db writer: no oracle has those columns,
+    # so a differential over them would compare the index against nothing.
     "advice system memory": (
         "SELECT container, MAX(memory_peak) AS mem_peak FROM system_usage "
         "WHERE in_window = 1 AND memory_peak IS NOT NULL GROUP BY container "

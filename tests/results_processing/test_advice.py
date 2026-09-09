@@ -406,3 +406,94 @@ def test_every_campaign_dimension_is_schema_qualified(name):
         f"{name} names campaign dimension(s) {', '.join(sorted(bare))} without the "
         f"`campaign.` schema. These used to be an ATTACHed database; unqualified they now "
         f"resolve to nothing, or to a metric table that happens to share the name.")
+
+
+# -- which memory measurement a suggestion rests on ----------------------------------------
+
+MIB = 1024 ** 2
+
+
+def _cgroup(container, *, peak, unreclaimable=None, samples=0, with_split=None):
+    """One :data:`advice.SYSTEM_MEM_SQL` row. *samples* 0 is a campaign recorded before the
+    breakdown existed, which is how every older campaign reads."""
+    return {"container": container, "mem_peak": peak, "mem_unreclaimable": unreclaimable,
+            "samples": samples,
+            "samples_with_split": samples if with_split is None else with_split}
+
+
+def _suggested_mib(items, container="sut"):
+    mem = [a for a in items if a["kind"].startswith("memory")]
+    assert mem, "expected memory advice"
+    value = mem[0]["evidence"]["suggested_per_container"][container]
+    assert value.endswith("Mi"), value
+    return int(value[:-2]), mem[0]["detail"]
+
+
+def test_a_limit_is_sized_on_what_the_container_cannot_reclaim():
+    """A cgroup's peak counts page cache, which the kernel evicts under pressure rather than
+    killing anything. Reserving for it reserves for the kernel's caching policy: a process
+    streaming a file to disk in a bounded buffer can report a peak equal to its whole limit
+    while holding a few MiB, because the peak is the cache of what it wrote."""
+    usage, declared = [_usage("sut", mem_peak=4000 * MIB)], _declared("sut")
+    rows = [_cgroup("sut", peak=1000 * MIB, unreclaimable=200 * MIB, samples=300)]
+
+    suggested, detail = _suggested_mib(A.resource_advice(usage, declared, rows))
+    # 200Mi x 1.25 = 250Mi, rounded up to the 128Mi granularity -- not 1000Mi x 1.25.
+    assert 250 <= suggested <= 384, suggested
+    assert "cannot reclaim" in detail
+
+
+def test_without_the_breakdown_the_whole_peak_is_used_and_named_as_such():
+    """The error is in the safe direction -- over-reserving costs packing, under-reserving
+    costs the run -- so the fallback is silent about nothing except which figure it is."""
+    usage, declared = [_usage("sut", mem_peak=4000 * MIB)], _declared("sut")
+    rows = [_cgroup("sut", peak=1000 * MIB)]
+
+    suggested, detail = _suggested_mib(A.resource_advice(usage, declared, rows))
+    assert 1250 <= suggested <= 1400, suggested
+    assert "INCLUDING page cache" in detail
+
+
+def test_a_partly_covered_container_falls_back_rather_than_peaking_over_a_subset():
+    """The split is a property of the node a run landed on. Taking the max over only the
+    covered samples yields something that looks like a peak and is the peak of a subset,
+    biased downwards -- on the one measurement whose under-estimate is an OOM kill."""
+    usage, declared = [_usage("sut", mem_peak=4000 * MIB)], _declared("sut")
+    rows = [_cgroup("sut", peak=1000 * MIB, unreclaimable=200 * MIB,
+                    samples=300, with_split=299)]
+
+    suggested, detail = _suggested_mib(A.resource_advice(usage, declared, rows))
+    assert 1250 <= suggested <= 1400, "one uncovered sample is enough to fall back"
+    assert "INCLUDING page cache" in detail
+
+
+def test_a_campaign_that_mixes_the_two_says_so_instead_of_picking_one():
+    """A mixed cluster legitimately carries both. Naming one of them for all of it would tell
+    the reader that figures which are over-estimates are not."""
+    usage = [_usage("sut", mem_peak=4000 * MIB), _usage("sim", mem_peak=4000 * MIB)]
+    declared = _declared("sut") + _declared("sim")
+    rows = [_cgroup("sut", peak=1000 * MIB, unreclaimable=200 * MIB, samples=300),
+            _cgroup("sim", peak=1000 * MIB)]
+
+    _, detail = _suggested_mib(A.resource_advice(usage, declared, rows))
+    assert "more than one measurement" in detail
+    assert "cannot reclaim" in detail and "INCLUDING page cache" in detail
+
+
+def test_an_unreclaimable_figure_of_zero_is_not_a_container_that_needs_nothing():
+    """Every sample covered and the sum still zero means the columns were present and empty,
+    not that the container held no anonymous memory. Sizing a limit at zero from that would
+    kill it on the first allocation."""
+    usage, declared = [_usage("sut", mem_peak=4000 * MIB)], _declared("sut")
+    rows = [_cgroup("sut", peak=1000 * MIB, unreclaimable=0, samples=300)]
+
+    suggested, _ = _suggested_mib(A.resource_advice(usage, declared, rows))
+    assert 1250 <= suggested <= 1400, suggested
+
+
+def test_the_sum_is_taken_inside_the_row_not_across_the_maxima():
+    """anon, shmem and slab are independent gauges. Summing their separate maxima adds peaks
+    that never coexisted, which is a reservation for a moment that did not happen."""
+    sql = " ".join(A.SYSTEM_MEM_SQL.split())
+    assert "MAX(COALESCE(memory_anon, 0) + COALESCE(memory_shmem, 0)" in sql
+    assert "MAX(memory_anon)" not in sql

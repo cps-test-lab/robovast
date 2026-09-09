@@ -32,6 +32,8 @@ import {
   ringBudget,
 } from '@/lib/eta'
 import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from '@/lib/jobKind'
+import { jobAgeSeconds, jobMeters, type UsageMeter } from '@/lib/jobUsage'
+import { CHIP_COLOURS, distinctColorer } from '@/lib/nameColor'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { runMeterFailedText, runMeterSegments, runMeterText } from '@/lib/runMeter'
 import { useQuery } from '@tanstack/react-query'
@@ -957,6 +959,14 @@ function JobsSection({
       </Typography>
     )
   }
+  // Built over every listed job, not the rendered slice: a row scrolled past the cap must not
+  // change the colour of the rows above it, and the whole point is that one node is one colour
+  // down the list. Collision-avoiding, because two nodes sharing a colour would read as one
+  // machine -- which is the exact question this column is here to answer.
+  const nodeColour = distinctColorer(
+    jobs.map((j) => j.node).filter((n): n is string => Boolean(n)),
+    CHIP_COLOURS,
+  )
   return (
     <>
       {/* Flat rows separated by hairlines rather than a bordered card each: the panel is
@@ -967,6 +977,7 @@ function JobsSection({
             key={job.job_name}
             campaignId={campaignId}
             job={job}
+            nodeColour={nodeColour}
             open={expanded.has(job.job_name)}
             onToggle={() => onToggle(job.job_name)}
             onStopJob={onStopJob}
@@ -983,9 +994,106 @@ function JobsSection({
   )
 }
 
+// A job's age and, while it runs, what it is consuming — the row's right-hand column.
+//
+// In `meta` rather than `note`: this belongs on the title's own line, and `note` is the slot for a
+// job in TROUBLE. A second line under every healthy running row would push a wide batch's list
+// past what fits on a screen, which is the one thing the Jobs tab has to stay good at.
+//
+// Redrawn by the jobs poll and not by a timer of its own. The list refetches every couple of
+// seconds while a campaign runs, which is finer than `formatDuration` resolves above a minute, so
+// a clock here would be one timer per row repainting a string that had not changed.
+function JobVitals({
+  job,
+  nodeColour,
+}: {
+  job: JobSummary
+  nodeColour: (node: string) => string
+}) {
+  const age = jobAgeSeconds(job)
+  const { cpu, memory } = jobMeters(job)
+  if (age == null && !cpu && !memory && !job.node) return null
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+      {/* Before the age and the meters: it answers "where", which is what a reader scanning a
+          skewed batch is looking for, and a column of chips is what makes the skew visible at
+          all. A job with no node yet simply has none — that is what "not placed" looks like,
+          and a placeholder would claim a machine. */}
+      {job.node ? <NodeChip node={job.node} colour={nodeColour(job.node)} /> : null}
+      {age != null ? (
+        <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+          {formatDuration(age)}
+        </Typography>
+      ) : null}
+      <UsageMeterBar title="cpu" meter={cpu} />
+      <UsageMeterBar title="memory" meter={memory} />
+    </Stack>
+  )
+}
+
+// Which machine a job landed on. Coloured the way a campaign's launcher is, and for the same
+// reason: the name is the information and the colour is only what lets a reader see, without
+// reading twenty rows, that a batch has piled onto one machine. Both go through
+// `lib/nameColor`, so a name is never one colour here and another there.
+function NodeChip({ node, colour }: { node: string; colour: string }) {
+  return (
+    <Tooltip title={`Running on ${node}`}>
+      <Chip
+        size="small"
+        label={node}
+        variant="outlined"
+        sx={{
+          borderColor: colour,
+          color: colour,
+          // The tint carries the scanning cue; the text carries the information.
+          bgcolor: `${colour}14`,
+          height: 18,
+          maxWidth: 140,
+          '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' },
+        }}
+      />
+    </Tooltip>
+  )
+}
+
+// One resource's meter: track is the ceiling, fill is what is used, hairline is the reservation.
+// The exact figures are on the hover, following the run meter above — a ~104px track holds one
+// short label and the rest is asked of a single row.
+function UsageMeterBar({ title, meter }: { title: string; meter: UsageMeter | null }) {
+  if (!meter) return null
+  return (
+    <HoverFacts
+      title={title}
+      facts={[
+        ...meter.facts,
+        // Said only when it applies, and said as a fact rather than a caveat: an open cpu limit
+        // means the container may use the whole node, so the bar is scaled to the reservation
+        // and its right-hand end is not a ceiling.
+        ...(meter.trackIsRequest
+          ? [{ label: 'no limit', value: 'bar shows the request' }]
+          : []),
+      ]}
+    >
+      <Box sx={{ width: 104, flexShrink: 0, cursor: 'help' }}>
+        <MeterBar
+          height={14}
+          fraction={meter.fraction}
+          marker={meter.marker ?? undefined}
+          text={
+            <Box component="span" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.65rem' }}>
+              {meter.text}
+            </Box>
+          }
+        />
+      </Box>
+    </HoverFacts>
+  )
+}
+
 function JobRow({
   campaignId,
   job,
+  nodeColour,
   open,
   onToggle,
   onStopJob,
@@ -993,6 +1101,8 @@ function JobRow({
 }: {
   campaignId: string
   job: JobSummary
+  /** Colour for this job's node, assigned across the whole listing. */
+  nodeColour: (node: string) => string
   open: boolean
   onToggle: () => void
   onStopJob?: (job: JobSummary) => void
@@ -1020,20 +1130,6 @@ function JobRow({
     >
       {job.detail}
     </Typography>
-  ) : null
-  // Where the conversion's output is, said on the row itself. A row that cannot be opened has
-  // to answer the question the missing chevron raises, or it reads as a job nobody can see
-  // into.
-  const where = postprocessing ? (
-    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-      output is in the Log tab, under POSTPROCESSING — where it stays after this job is gone
-    </Typography>
-  ) : null
-  const note = detail || where ? (
-    <>
-      {detail}
-      {where}
-    </>
   ) : null
   const header = {
     variant: 'row' as const,
@@ -1078,7 +1174,11 @@ function JobRow({
     // derives its toggle's aria-label from the title only when it IS a string, so wrapping
     // this to mute the colour would take the accessible name off every job row.
     title: job.display_name || job.job_name,
-    note,
+    meta: <JobVitals job={job} nodeColour={nodeColour} />,
+    // Where a postprocessing row's output is lives on its chip's tooltip, not here: `note` is
+    // a line under every such row for the life of the campaign, and it would be spent saying
+    // that nothing is missing. What belongs in this always-visible slot is a job in trouble.
+    note: detail,
   }
   // The postprocessing row is a header and nothing else, because the log it would open is not
   // this pod's to serve. The conversion runs in initContainers -- the bag download, then the

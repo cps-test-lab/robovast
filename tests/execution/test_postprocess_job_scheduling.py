@@ -25,7 +25,8 @@ from robovast.execution.cluster_execution.postprocess_job import (CAMPAIGN_MOUNT
                                                                   HOST_CONTAINER,
                                                                   STAGE_CONTAINER,
                                                                   build_manifest)
-from robovast.execution.cluster_execution.postprocess_stage import ENV_SKIP_BAGS
+from robovast.execution.cluster_execution.postprocess_stage import (ENV_BATCH_JOBS,
+                                                                     ENV_SKIP_BAGS)
 
 _CMDS = [{"plugins": [{"type": "rosout_to_csv"}]}]
 
@@ -276,3 +277,25 @@ def test_every_container_runs_python_unbuffered():
         env = {e["name"]: e.get("value") for e in container.get("env") or []}
         assert env.get("PYTHONUNBUFFERED") == "1", (
             f"container {name} buffers its output, so the live log lags behind it")
+
+
+def test_a_batch_stages_only_its_own_jobs():
+    """Every batch's bags sit under the same campaign prefix, and bags are the bulk.
+
+    Without narrowing, batch N stages batches 0..N as well as its own, so a search's
+    staging grows with the campaign while the work per batch does not. The tag is the one
+    the batch's runs were already written under, so there is one naming of a batch rather
+    than two.
+    """
+    spec = _pod_spec(batch_commands=[{"nav2_bt_tree": {}}], discriminator="batch-3/reps-5")
+
+    stage_env = {e["name"]: e["value"] for e in _by_name(spec)[STAGE_CONTAINER]["env"]
+                 if "value" in e}
+    assert stage_env[ENV_BATCH_JOBS] == "batch-3/reps-5"
+
+
+def test_a_campaign_level_pass_stages_every_batch():
+    """It derives the whole campaign, so narrowing it to one batch would hide the rest."""
+    stage_env = {e["name"]: e["value"] for e in _by_name(_pod_spec())[STAGE_CONTAINER]["env"]
+                 if "value" in e}
+    assert ENV_BATCH_JOBS not in stage_env

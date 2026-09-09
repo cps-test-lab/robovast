@@ -57,10 +57,13 @@ from pathlib import Path
 from robovast.client import file_address
 from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
-from robovast.execution.control_server import Phase, is_running
+from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
+                                               STOP_SCOPE_MESSAGES, Phase, is_running,
+                                               stop_scope_for_phase)
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
-                                        JobSummary, ListJobsResponse, LogChunk, ResourceUsage,
+                                        JobSummary, JobUsage, ListJobsResponse, LogChunk,
+                                        ResourceUsage,
                                         DiskSpace, UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
@@ -118,6 +121,28 @@ def _pod_wait_reporter(on_wait):
     return report
 
 
+def _metrics_failure_reason(exc, resource: str) -> "str | None":
+    """Why a ``metrics.k8s.io`` read failed, or ``None`` when this cannot tell.
+
+    A string is a settled fact about the cluster -- an add-on nobody installed, a role nobody
+    reconciled -- so a caller may remember it and stop asking for a while. ``None`` says the
+    failure looks transient (a timeout, an aggregated API restarting mid-read); a caller
+    reports it but must not remember it, or one hiccup blinds the reading for the whole memo.
+
+    *resource* names the sub-resource in the message because the two grants are given
+    independently: a role may carry ``nodes`` and not ``pods``, and a reason naming the wrong
+    one sends a reader to reconcile something that is already there.
+    """
+    status = getattr(exc, "status", None)
+    if status == 403:
+        return (f"the service's ClusterRole does not grant metrics.k8s.io/{resource} -- "
+                "run `vast service upgrade` to reconcile RBAC")
+    if status == 404:
+        return ("metrics.k8s.io is not served -- install metrics-server on the cluster "
+                "to measure real cpu/memory use")
+    return None
+
+
 class ClusterService(LocalTransport):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
@@ -152,6 +177,15 @@ class ClusterService(LocalTransport):
     #: window would spend a round trip and an audit-log line six times a minute to learn the
     #: same thing. Only *failures* are memoised; a working cluster is read fresh each window.
     _METRICS_ABSENT_TTL = 600.0
+
+    #: How long one pod-metrics snapshot is served before it is read again. The window each
+    #: sample states is how often the cluster can *have* a new one, so that window is the TTL
+    #: and these only bound it -- against a cluster that states none, or an absurd one. Reading
+    #: faster than the window spends a round trip to be handed the same numbers back, and a
+    #: campaign card polls its job list every couple of seconds.
+    _POD_METRICS_TTL_DEFAULT = 15.0
+    _POD_METRICS_TTL_MIN = 10.0
+    _POD_METRICS_TTL_MAX = 60.0
 
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
@@ -216,6 +250,21 @@ class ClusterService(LocalTransport):
         # only. See ``_METRICS_ABSENT_TTL``: a cluster that does not serve metrics.k8s.io
         # must not be asked every usage window forever. Read under ``_usage_lock``.
         self._metrics_absent: "tuple[float, str] | None" = None
+        # Last pod-metrics snapshot as ``(expires_at, {job: {container: (cores, bytes)}})``.
+        # Named apart from the ``_pod_metrics`` method that fills it: an attribute assigned
+        # here shadows a method of the same name on the instance, so the reader would become
+        # uncallable the moment the service was constructed.
+        # One read serves every campaign: the Jobs all carry the same ``jobgroup``, so a
+        # second open campaign card costs nothing.
+        self._pod_metrics_snapshot: "tuple[float, dict] | None" = None
+        # Its own memo, never ``_metrics_absent``. The nodes and pods grants are given
+        # independently, so a 403 on one says nothing about the other -- sharing would blank
+        # the capacity meter over a missing job-usage grant, under a reason naming the wrong
+        # sub-resource.
+        self._pod_metrics_absent: "tuple[float, str] | None" = None
+        # Not ``_usage_lock``: that one is held across a reading that talks to every kubelet
+        # in turn, and the job listing must not wait behind it.
+        self._pod_metrics_lock = threading.Lock()
         # How far along the blocking work for each campaign currently is — the counts behind
         # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
         # dropped when they finish, so a present entry means "busy right now". In memory on
@@ -532,14 +581,9 @@ class ClusterService(LocalTransport):
                 # process-wide (see kube_client). Only the read is capped here.
                 _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
         except Exception as e:  # noqa: BLE001 - capacity must still be answerable
-            status = getattr(e, "status", None)
-            if status == 403:
-                return absent("the service's ClusterRole does not grant "
-                              "metrics.k8s.io/nodes -- run `vast service upgrade` to "
-                              "reconcile RBAC")
-            if status == 404:
-                return absent("metrics.k8s.io is not served -- install metrics-server "
-                              "on the cluster to measure real cpu/memory use")
+            settled = _metrics_failure_reason(e, "nodes")
+            if settled is not None:
+                return absent(settled)
             # Anything else (a timeout, an unavailable aggregated API mid-restart) is
             # transient as far as this can tell, so it is reported without being remembered.
             logger.debug("could not read node metrics: %s", e)
@@ -736,7 +780,7 @@ class ClusterService(LocalTransport):
         """
         from .cluster_execution import \
             list_jobs_with_phase  # pylint: disable=import-outside-toplevel
-        phases = [phase for _job, phase, _detail in list_jobs_with_phase(
+        phases = [listed.phase for listed in list_jobs_with_phase(
             self._k8s_batch(), self._k8s(), self.namespace, "jobgroup=scenario-runs")]
         return (sum(1 for p in phases if p == "running"),
                 sum(1 for p in phases if p in ("pending", "waiting", "blocked")))
@@ -1631,11 +1675,20 @@ class ClusterService(LocalTransport):
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
+        usage_by_job, metrics_reason = self._pod_metrics()
         jobs = [
-            JobSummary(job_name=job.metadata.name, status=phase, kind=self._job_kind(job),
-                       display_name=self._job_display_name(campaign_id, job),
-                       detail=detail)
-            for job, phase, detail in list_jobs_with_phase(
+            JobSummary(job_name=listed.job.metadata.name, status=listed.phase,
+                       kind=self._job_kind(listed.job),
+                       display_name=self._job_display_name(campaign_id, listed.job),
+                       detail=listed.detail, node=listed.node,
+                       started_at=self._job_started_at(listed.job),
+                       # Usage only while it runs. A sample outlives the pod that produced it,
+                       # so a job that has just finished still has one, and a completed row
+                       # carrying it reads as a job still burning cores.
+                       usage=(self._job_usage(
+                           listed.job, usage_by_job.get(listed.job.metadata.name))
+                           if listed.phase == "running" else None))
+            for listed in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
         # Planned jobs are the campaign's own by construction: probes queue under a separate
         # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
@@ -1652,7 +1705,129 @@ class ClusterService(LocalTransport):
             calibration=sum(1 for j in jobs if j.kind == JobKind.CALIBRATION),
             postprocessing=sum(1 for j in jobs if j.kind == JobKind.POSTPROCESSING),
             total=len(runs))
-        return ListJobsResponse(jobs=jobs, counts=counts)
+        return ListJobsResponse(jobs=jobs, counts=counts,
+                                metrics_unavailable=metrics_reason)
+
+    def _pod_metrics(self) -> tuple:
+        """Live per-container cpu/memory for every campaign's job pods: ``(by_job, reason)``.
+
+        ``by_job`` maps Job name to ``{container: (cores, bytes)}``, keyed off the pod's own
+        ``job-name`` label. **One list for the whole namespace**, never one per campaign: every
+        campaign's Jobs carry the same ``jobgroup``, so a single read serves all of them and a
+        second open campaign card costs nothing. A Job that is not the caller's is simply never
+        looked up.
+
+        Joined by label rather than by pod name because that is what this listing has: the
+        alternative is a pod listing of its own, a second call per window to learn a mapping
+        the metrics item already states.
+
+        Held for the window the samples themselves report, clamped by ``_POD_METRICS_TTL_*``.
+        metrics-server resamples on its own schedule, so a read faster than that window is a
+        round trip spent to be handed the same numbers back. The *shortest* window in the batch
+        is taken, so no sample is served past its own life.
+
+        Failures are memoised for ``_METRICS_ABSENT_TTL`` when they are settled facts about the
+        cluster, and reported without being remembered when they are not -- see
+        :func:`_metrics_failure_reason`.
+
+        **Never queues behind another caller's read.** A refresh already in flight yields the
+        snapshot in hand, because this decorates a listing that is polled every couple of
+        seconds: a job list must not wait on an aggregated API to say which jobs exist.
+
+        Requires ``metrics.k8s.io/pods`` get+list in the service's usage ClusterRole (see
+        ``service_deploy._service_rbac_manifests``). A deployment whose RBAC predates that
+        grant keeps working -- it gets a 403, and the reason names the command that fixes it.
+        """
+        from .kube_client import (CONNECT_TIMEOUT_SECONDS,  # pylint: disable=import-outside-toplevel
+                                  parse_duration, parse_resource)
+        from .postprocess_job import POSTPROCESS_JOBGROUP  # pylint: disable=import-outside-toplevel
+
+        if not self._pod_metrics_lock.acquire(blocking=False):
+            held = self._pod_metrics_snapshot
+            return (held[1] if held is not None else {}), None
+        try:
+            now = time.monotonic()
+            held = self._pod_metrics_snapshot
+            if held is not None and now < held[0]:
+                return held[1], None
+            remembered = self._pod_metrics_absent
+            if remembered is not None and now - remembered[0] < self._METRICS_ABSENT_TTL:
+                return {}, remembered[1]
+            try:
+                listed = self._k8s_custom().list_namespaced_custom_object(
+                    "metrics.k8s.io", "v1beta1", self.namespace, "pods",
+                    label_selector=f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP})",
+                    # A (connect, read) pair rather than a scalar, for the reason spelled out
+                    # in ``_measured_cpu_mem``.
+                    _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
+            except Exception as e:  # noqa: BLE001 - a job listing must still be answerable
+                settled = _metrics_failure_reason(e, "pods")
+                if settled is not None:
+                    self._pod_metrics_absent = (time.monotonic(), settled)
+                    return {}, settled
+                logger.debug("could not read pod metrics: %s", e)
+                return {}, f"pod metrics could not be read: {e}"
+            by_job, window = {}, None
+            for item in listed.get("items") or []:
+                labels = (item.get("metadata") or {}).get("labels") or {}
+                job = labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
+                containers = {}
+                for container in item.get("containers") or []:
+                    usage = container.get("usage") or {}
+                    cores, byts = usage.get("cpu"), usage.get("memory")
+                    # Both quantities or neither, as in ``_measured_cpu_mem``: half a
+                    # container's reading is not a reading.
+                    if cores and byts:
+                        containers[container.get("name")] = (parse_resource(cores),
+                                                             int(parse_resource(byts)))
+                if job and containers:
+                    by_job[job] = containers
+                sample = parse_duration(item.get("window"))
+                if sample is not None and (window is None or sample < window):
+                    window = sample
+            ttl = min(max(window or self._POD_METRICS_TTL_DEFAULT,
+                          self._POD_METRICS_TTL_MIN), self._POD_METRICS_TTL_MAX)
+            self._pod_metrics_snapshot = (time.monotonic() + ttl, by_job)
+            self._pod_metrics_absent = None
+            return by_job, None
+        finally:
+            self._pod_metrics_lock.release()
+
+    @staticmethod
+    def _job_usage(job, measured) -> "JobUsage | None":
+        """One job's :class:`JobUsage` from its *measured* ``{container: (cores, bytes)}``.
+
+        ``None`` when nothing was measured: a record of zeros would read as an idle job rather
+        than as an unmeasured one.
+
+        The denominators are summed over **exactly the containers the measurement covers**, so
+        numerator and denominator describe the same set. A metrics-server that reported a
+        different container set than the template declares would otherwise put one container's
+        usage under a whole pod's ceiling.
+        """
+        from .kube_client import workload_resources  # pylint: disable=import-outside-toplevel
+
+        if not measured:
+            return None
+        given = workload_resources(getattr(getattr(job, "spec", None), "template", None),
+                                   measured.keys())
+        return JobUsage(cpu_cores=sum(v[0] for v in measured.values()),
+                        memory_bytes=sum(v[1] for v in measured.values()),
+                        cpu_request=given["cpu_request"], cpu_limit=given["cpu_limit"],
+                        memory_request_bytes=given["memory_request"],
+                        memory_limit_bytes=given["memory_limit"])
+
+    @staticmethod
+    def _job_started_at(job) -> "float | None":
+        """When the Job started, epoch seconds, or ``None`` if the cluster has not said.
+
+        The *Job's* start, which Kubernetes stamps before the pod is scheduled and before its
+        inputs are staged. That makes it the answer to "how long has this trial been going"
+        rather than "how long has it been executing", and it is the only one of the two that
+        exists for a job still pending or blocked -- where the question is worth asking.
+        """
+        started = getattr(getattr(job, "status", None), "start_time", None)
+        return started.timestamp() if started is not None else None
 
     def _planned_jobs(self, campaign_id, created) -> list:
         """The campaign's admitted-but-not-yet-created jobs, as ``waiting`` summaries.
@@ -1724,14 +1899,16 @@ class ClusterService(LocalTransport):
         return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a running Job's live pod log from byte *offset* onward.
+        """Serve a Job's log from byte *offset* onward, live from its pod or from the store.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
         plus any sim/SUT sidecars; see :class:`PodLogTail`). Reads are
         incremental: a cached tail keeps the full assembled text so the byte offset
         still maps onto it, but each poll only pulls the delta from the kube API
-        rather than the whole log. Live source only; a missing pod raises (→ 404).
+        rather than the whole log. A pod that is gone is not an error: the log comes from
+        the campaign's objects instead (:meth:`_archived_job_log`), which is the ordinary
+        state of every finished job.
 
         A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
         native sidecars, so kubelet runs them *during* the init phase, while the pod is
@@ -1752,7 +1929,7 @@ class ClusterService(LocalTransport):
         label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
-            raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
+            return self._archived_job_log(campaign_id, job_name, offset)
         pod = pods.items[0]
         tail = self._job_log_tail(campaign_id, job_name)
         try:
@@ -1761,10 +1938,79 @@ class ClusterService(LocalTransport):
                 text, next_offset = tail.merged.slice_from(offset)
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                raise KeyError(
-                    f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
+                return self._archived_job_log(campaign_id, job_name, offset)
             raise
         return LogChunk(text=text, next_offset=next_offset, eof=terminal)
+
+    def _archived_job_log(self, campaign_id: str, job_name: str, offset: int) -> LogChunk:
+        """A finished job's log, read from the campaign's objects instead of its pod.
+
+        A pod is deleted when its Job is cleaned up, so for most of a campaign's life the
+        live source above is gone while the same output is durable in the object store: the
+        job mirrors ``/out`` there as it ends, which is also what makes an already-finished
+        run of a still-running campaign readable at all. Without this the log of every run
+        but the executing one is a 404.
+
+        Merged and tagged through the same :class:`MergedLogBuffer` as both live tails, so a
+        reader sees one stream with the same ``[container]`` prefixes rather than a
+        differently-shaped archive. The files are complete and immutable here, so ordering
+        is per file rather than per poll, and the whole buffer is built on each call --
+        there is no delta to track, and ``eof`` is unconditionally true.
+
+        Raises:
+            KeyError: When the campaign has no such job, or its artifacts were never
+                uploaded (a run killed before it could mirror). Reported as absent rather
+                than as an empty log, which would read as a run that said nothing.
+        """
+        import yaml
+
+        from robovast.common.execution import (
+            JOB_LINKS_MANIFEST_REL, resolve_job_artifact_rel)
+        from robovast.common.log_tail import (MAIN_LOG, MergedLogBuffer,
+                                              container_of_log_file, is_sidecar_log,
+                                              tag_width)
+
+        storage, bucket, prefix = self._campaign_object_location(campaign_id,
+                                                                 interactive=True)
+        manifest = storage.read_object(bucket, f"{prefix}{JOB_LINKS_MANIFEST_REL}")
+        if manifest is None:
+            raise KeyError(
+                f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
+                f"job {job_name!r}")
+        try:
+            job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
+        except FileNotFoundError as e:
+            raise KeyError(f"{e} in campaign {campaign_id!r}") from None
+
+        log_prefix = f"{prefix}{job_rel}/logs/"
+        objects, _ = storage.list_entries(bucket, log_prefix)
+        names = sorted(key[len(log_prefix):] for key, _ in objects)
+        # Main container first, then the sidecars in name order -- the local lane's order,
+        # so the same job does not read differently depending on which lane served it.
+        files = [n for n in names if n == MAIN_LOG]
+        files += [n for n in names if is_sidecar_log(n)]
+        if not files:
+            raise KeyError(
+                f"job {job_name!r} of campaign {campaign_id!r} uploaded no logs")
+
+        multi = len(files) > 1
+        containers = [container_of_log_file(n) for n in files]
+        width = tag_width(containers) if multi else 0
+        entries = []
+        for file_order, (name, container) in enumerate(zip(files, containers)):
+            raw = storage.read_object(bucket, f"{log_prefix}{name}") or b""
+            lines = raw.decode("utf-8", errors="replace").split("\n")
+            # A file ending in a newline splits with a trailing "" that is not a line. Only
+            # the last one: a blank line inside the log is the container's own output.
+            if lines and lines[-1] == "":
+                lines.pop()
+            for line_order, line in enumerate(lines):
+                entries.append(((file_order, line_order), container, line))
+
+        merged = MergedLogBuffer()
+        merged.append(entries, multi=multi, width=width)
+        text, next_offset = merged.slice_from(offset)
+        return LogChunk(text=text, next_offset=next_offset, eof=True)
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 
@@ -1921,6 +2167,28 @@ class ClusterService(LocalTransport):
                 f"and not a problem with this project. Check it with "
                 f"`kubectl -n {self.namespace} get deploy/{BUILDKITD_NAME}`; "
                 f"`vast service upgrade` re-applies it if it is missing.")
+
+        # And here for the same reason, one step further on: a build whose push will be
+        # refused is a build that installs every package and then fails at its last step.
+        # Nothing upstream could have said so -- `can_build_images` answers whether this
+        # deployment has a registry configured, which is a property of how it was set up,
+        # and the cache probe above is a manifest read, which a registry may serve while
+        # refusing to receive one. So the credential is asked directly, once, before the
+        # context is copied and staged.
+        #
+        # Only a registry that answered *and* refused stops a build; an unreachable one
+        # does not (see `push_refused`). The verdict is the one the post-build classifier
+        # already gives this failure -- infrastructure, not a `build:` entry to edit --
+        # just arrived before the compute.
+        if self._images.push_refused(image_ref):
+            raise ImageBuildFailed(
+                f"this deployment's image registry refused the credential it would push "
+                f"'{spec.tag}' with, so the build would fail at its last step after "
+                f"installing everything. That is an infrastructure problem and not "
+                f"fixable by editing `build:`: the push Secret is minted at "
+                f"`vast cluster setup` and re-read by `vast service upgrade`, so a "
+                f"credential rotated since this deployment was set up needs one of those. "
+                f"`vast doctor -n {self.namespace}` says which.")
 
         # Registered *before* staging so a concurrent build's context sweep can see
         # this build is in flight — its context exists in the object store for the
@@ -2545,13 +2813,31 @@ class ClusterService(LocalTransport):
         build is content-addressed and therefore shared, so cancelling it could strand a
         sibling campaign waiting on the same image, and the image is a cache entry rather
         than this campaign's property. ``_await_build_image`` detaches instead.
+
+        A campaign already **postprocessing** is likewise not reached by that teardown --
+        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by its own
+        scope instead: ``run_conversion_job`` polls it and deletes the Job.
+
+        Which unit of work a stop lands on is
+        :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, shared
+        with the local lane so the two cannot disagree, and the reply it carries says what
+        that stop leaves behind.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
-        entry.state.request_stop()
+        phase = entry.state.snapshot().phase
+        scope = stop_scope_for_phase(phase)
+        if scope is None:
+            return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
+        entry.state.request_stop(scope)
+        if scope != STOP_RUNS:
+            # The teardown is label-scoped to ``jobgroup=scenario-runs``, so it would not
+            # reach a postprocessing Job or an upload anyway; not calling it keeps this
+            # from reading as though it might.
+            return ActionResult(ok=True, message=STOP_SCOPE_MESSAGES[scope])
         self._teardown_campaign_jobs(campaign_id)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
@@ -3766,12 +4052,17 @@ class ClusterService(LocalTransport):
         retrigger went through ``postprocess_campaign`` and the import chain did not, so an
         imported raw campaign was the one case that took the local path on a cluster.
         """
+        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
+
         from .postprocess_job import postprocess_campaign  # noqa: PLC0415
 
         return postprocess_campaign(
             self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
             force=force, skip=list(skip or []), kube_context=self.kube_context,
             state=state,
+            # A postprocess is a tracked campaign while it runs, so ``stop`` reaches it --
+            # and with this, ends it instead of leaving it to finish.
+            should_stop=stop_checker(state),
             # The same queue the campaign's trials went through, so this pod waits for room
             # rather than being created against a cluster that has none.
             admission=self._admission_controller())
@@ -3810,11 +4101,13 @@ class ClusterService(LocalTransport):
                 request.campaign_id, self._SHARE_STATUS_OBJECTS,
                 "the campaign's postprocessing status")
             cfg = self._cluster_config()
+            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
                 kube_context=self.kube_context, state=state,
-                admission=self._admission_controller())
+                admission=self._admission_controller(),
+                should_stop=stop_checker(state))
             # The recording re-materialises after the pod has run, because the pod is what
             # wrote the provenance marker and the run rows the reconstruction reads: from
             # the copies pulled *before* the postprocess, a campaign that was just
@@ -3921,9 +4214,11 @@ class ClusterService(LocalTransport):
             campaign_root = self._materialize(
                 campaign_id, self._SHARE_STATUS_OBJECTS,
                 "the campaign's postprocessing status")
+            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
             ok, message = reattach_conversion_job(
                 self._cluster_config(), campaign_id, str(campaign_root), self.namespace,
-                job_name, kube_context=self.kube_context)
+                job_name, kube_context=self.kube_context,
+                should_stop=stop_checker(state))
             if ok is None:
                 logger.info("Left the postprocessing record of %s alone: %s",
                             campaign_id, message)

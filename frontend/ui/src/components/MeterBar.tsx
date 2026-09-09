@@ -24,6 +24,11 @@ export interface MeterSegment {
 //     failed / running), each its own color. When given, it supersedes
 //     fraction/buffer. Used by the campaign run bar.
 // `text` overlays centered on the bar.
+// `marker` draws a hairline at a share of the track, ON TOP of whatever fills it. Its
+// difference from `buffer` is the whole reason it exists: a buffer is painted *under* the
+// fill, so it vanishes the moment the fill passes it — which is exactly when a second
+// quantity is most worth seeing (a container using more than it reserved). A marker is
+// order-independent, so the two values stay legible whichever is larger.
 export function MeterBar({
   fraction,
   buffer,
@@ -31,6 +36,7 @@ export function MeterBar({
   height = 16,
   text,
   segments,
+  marker,
 }: {
   fraction?: number
   buffer?: number
@@ -38,6 +44,7 @@ export function MeterBar({
   height?: number
   text?: ReactNode
   segments?: MeterSegment[]
+  marker?: number
 }) {
   const f = clamp01(fraction ?? 0)
   const b = buffer == null ? 0 : clamp01(buffer)
@@ -109,6 +116,23 @@ export function MeterBar({
           {segment(f, 0.55)}
         </>
       )}
+      {marker != null ? (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            // Inset by its own width at the far end so a marker at 1 stays on the track
+            // instead of being clipped by `overflow: hidden` — a reference line that
+            // disappears exactly when the two values meet would be worse than none.
+            left: `calc(${clamp01(marker) * 100}% - ${clamp01(marker)}px)`,
+            width: '1px',
+            bgcolor: 'text.primary',
+            opacity: 0.45,
+            transition: 'left 0.4s ease',
+          }}
+        />
+      ) : null}
       {text != null ? (
         <Typography
           variant="caption"

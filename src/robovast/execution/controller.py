@@ -49,14 +49,15 @@ from pathlib import Path
 
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_data import (aggregate_run_status, invalid_runs,
-                                           list_run_dirs, read_container_failures,
+                                           list_run_dirs, read_config_channels,
+                                           read_container_failures,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.search.extractor import NoSampleError
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
-                       RunOptions)
+                       RunOptions, ShareStopped)
 from .control_server import Phase, failure_detail, is_terminal
 from .notify import Notifier
 
@@ -79,6 +80,13 @@ _BAR = "=" * 60
 #: launches of the *same* campaign name never collide (see ``campaign_id_for``).
 _campaign_id_lock = threading.Lock()
 _LAST_CAMPAIGN_ID: str | None = None
+
+#: S3-compatible bucket names are capped at 63 characters, and the cluster lane's
+#: embedded object store uses the campaign id as its bucket name verbatim (see
+#: ``in_pod_storage.campaign_storage_location``). Refused HERE, at mint time -- before
+#: any pod or Job exists -- rather than left to surface as a storage-layer 400 once a
+#: campaign has already been accepted and started.
+_MAX_CAMPAIGN_ID_LEN = 63
 
 
 def _sanitise_campaign_name(name: str) -> str:
@@ -118,10 +126,51 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
         while True:
             now = datetime.now()
             cid = f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
+            if len(cid) > _MAX_CAMPAIGN_ID_LEN:
+                # The timestamp suffix's length is fixed, so this is deterministic in
+                # `name` alone -- refused on the first iteration, not discovered by
+                # spinning the collision loop.
+                budget = _MAX_CAMPAIGN_ID_LEN - (len(cid) - len(name))
+                raise CampaignConfigError(
+                    f"Campaign id {cid!r} is {len(cid)} characters, past the "
+                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster lane's storage "
+                    f"backend puts on a bucket name. The timestamp suffix is fixed, so "
+                    f"the campaign name/slug {name!r} ({len(name)} chars) is what has to "
+                    f"shorten -- to {budget} characters or fewer.")
             if cid != _LAST_CAMPAIGN_ID:
                 _LAST_CAMPAIGN_ID = cid
                 return cid
             time.sleep(0.005)
+
+
+#: Batches in a row that may measure nothing before a search is stopped. Two, not one:
+#: a search space that is mostly (but not entirely) unrealizable produces a batch where
+#: every draw fails by chance -- at eight draws a batch and two thirds of the space
+#: infeasible that is one batch in twenty-five -- and ending such a campaign on the first
+#: one would stop a search that was working. Two running is not luck; it is a campaign
+#: that cannot produce, and every batch after it costs composition and yields nothing.
+EMPTY_BATCH_LIMIT = 2
+
+
+def _empty_batch_reason(unrunnable: dict) -> str:
+    """Why a batch scored nothing, phrased for whoever has to fix it.
+
+    The two counts answer different questions, so a stop that lumped them together would
+    send a reader to the wrong file: nothing COMPOSED means the draws cannot be turned
+    into configs (the search space against what the variation plugins accept), while
+    nothing MEASURED means they ran and produced no result (the scenario, the stack, the
+    extractor).
+    """
+    composition_failed = unrunnable.get("composition_failed", 0)
+    no_sample = unrunnable.get("no_sample", 0)
+    if composition_failed and not no_sample:
+        return ("no parameter set could be composed -- check the search_space bounds "
+                "against what the variation plugins accept")
+    if no_sample and not composition_failed:
+        return ("every parameter set ran and produced no measurable sample -- check the "
+                "scenario and the extractor")
+    return ("no parameter set produced a result: "
+            f"{composition_failed} could not be composed, {no_sample} produced no sample")
 
 
 class CampaignController:
@@ -492,8 +541,12 @@ class CampaignController:
         # than merging: a previous batch's failures must not carry into this one.
         # ``batch_since`` is stamped with them, and for the same reason: the counters
         # are only readable as a rate against the clock they reset with.
+        #
+        # ``outcomes_counted`` goes back to False with them, which is the whole of what it
+        # is for: from here until this batch's verdicts are tallied, a 0 in ``failed`` is
+        # "not counted yet" and not "nothing failed".
         self.state.update(runs={"completed": 0, "total": total, "no_result": 0,
-                                "failed": 0},
+                                "failed": 0, "outcomes_counted": False},
                           batch_since=time.time())
         self._batch_active.set()
 
@@ -554,7 +607,8 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs),
                 status=aggregate_run_status(run_dirs, invalid=invalidated),
-                result_dir=os.path.relpath(cdir, self.campaign_root))
+                result_dir=os.path.relpath(cdir, self.campaign_root),
+                channels=read_config_channels(Path(cdir)))
             outcomes = read_run_outcomes(Path(cdir), Path(self.campaign_root))
             self.store.record_runs(unit_id, outcomes)
             # The verdicts are parsed here anyway for the store; tallying them into the
@@ -574,7 +628,7 @@ class CampaignController:
                 logger.warning("Batch complete: %d trial(s) invalidated by the runner.",
                                invalid_runs_count)
             self.state.update_runs(failed=failed_runs, killed=killed_runs,
-                                   invalid=invalid_runs_count)
+                                   invalid=invalid_runs_count, outcomes_counted=True)
             self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
         # The same per-batch checkpoint the search loop takes. Redundant with
@@ -604,23 +658,35 @@ class CampaignController:
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
         start = time.monotonic()
-        best_objective = None          # best-so-far, in raw objective units
         result = None
-        # On `self`, not a local, and that is the whole point: the loop below runs in a
-        # callee, so a local here would still read 0 after the callee raised -- which is
+        # Where this campaign already stands: the zero position for one starting now, and
+        # everything its record holds for one being re-entered after a service restart. One
+        # value rather than a counter assigned per line, because two of the fields below
+        # decide when the search STOPS rather than merely what it displays, and a counter
+        # left at zero is indistinguishable from one that is legitimately zero.
+        position = self._rehydrate_search(
+            campaign_id, lambda best, evs: self._update_best(best, evs, obj_name))
+        # On `self`, not locals, and that is the whole point: the loop below runs in a
+        # callee, so locals here would still read 0 after the callee raised -- which is
         # how the first campaign to exercise this path recorded `batches: 0` for 22
-        # batches of completed work. A count that survives the raise is the one fact this
+        # batches of completed work. Counts that survive the raise are the one fact this
         # record exists to carry.
-        self._batches_done = 0
-        # Same reason as _batches_done above: on `self`, so a raise in the callee does
-        # not lose the counts the stop record and the progress line are built from.
-        self._evaluations_done = 0
-        self._runs_done = 0
-        # Zero for a campaign starting now; for one being re-entered after a service
-        # restart, everything its earlier life recorded. `_search_loop` already begins at
-        # `self._batches_done` -- it was written that way so an abort mid-loop still counted
-        # the batches behind it -- so seeding these IS the resume.
-        start -= self._rehydrate_search(campaign_id)
+        self._batches_done = position.batches
+        self._evaluations_done = position.evaluations
+        self._runs_done = position.runs
+        # How many batches in a row measured nothing, and why the last of them did. Reset to
+        # zero by any batch that scores a cell -- a resumed campaign therefore starts the
+        # count again, which is right: what it is watching for is a campaign that cannot
+        # produce, and the batches it did produce are on record.
+        self._empty_batches = 0
+        self._empty_batch_reason = ""
+        self._history.extend(position.history)
+        best_objective = position.best_objective   # best-so-far, in raw objective units
+        # `_search_loop` already begins at `self._batches_done` -- it was written that way
+        # so an abort mid-loop still counted the batches behind it -- so seeding these IS
+        # the resume.
+        stop.seed_history(position.best_per_batch)
+        start -= position.age_s
         # The search's time ORIGIN, published once, so every reader can derive elapsed itself
         # instead of waiting for the next batch to republish it.
         #
@@ -634,8 +700,15 @@ class CampaignController:
         # `_progress_signal` includes each budget row's `current`, so a row rewritten from
         # wall-clock advances the progress signal on every poll forever and no time-budgeted
         # search could be called stalled again. An origin cannot do that.
+        #
+        # `batches_done` and `best_objective` go with it, for the same reason and in the same
+        # breath: they are what the readers show beside the budget, so publishing them only
+        # at the first batch boundary leaves a resumed search unreportable for exactly as
+        # long as a batch takes.
         if self.state is not None:
-            self.state.update(search_since=time.time() - (time.monotonic() - start))
+            self.state.update(search_since=time.time() - (time.monotonic() - start),
+                              batches_done=self._batches_done,
+                              best_objective=best_objective)
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -646,12 +719,21 @@ class CampaignController:
         # the campaign card has no batches row to offer (or, since the objective chart
         # hangs off that row, to open).
         #
-        # Honest at t=0 rather than optimistic: `0 / 50` batches and `0s` elapsed are
-        # facts, and a `target_objective` with nothing to report yet comes through as NaN,
-        # which `_budget_item` renders as `None` and the readers show as `—`. A `metric`
-        # criterion reports nothing at all until the strategy has measured it, and
-        # `_progress` already omits that row rather than inventing a value for it.
-        self._publish_budget(stop, StopSnapshot(batch=0, elapsed=0.0))
+        # From the campaign's POSITION, which is zero only for a campaign that has none.
+        # Built from the same counters the loop publishes from, never from literals: this
+        # runs after the position is restored, so a literal zero here reports a resumed
+        # search as having done nothing until its next batch closes -- a whole batch, on a
+        # reading whose only job is to answer that question before one completes.
+        #
+        # Honest rather than optimistic either way: a `target_objective` with nothing to
+        # report yet comes through as NaN, which `_budget_item` renders as `None` and the
+        # readers show as `—`. A `metric` criterion reports nothing at all until the strategy
+        # has measured it, and `_progress` already omits that row rather than inventing a
+        # value for it.
+        self._publish_budget(stop, StopSnapshot(
+            batch=self._batches_done, elapsed=time.monotonic() - start,
+            best_objective=best_objective, evaluations=self._evaluations_done,
+            runs=self._runs_done))
         try:
             result, best_objective = self._search_loop(
                 campaign_id, stop, obj_name, start, best_objective)
@@ -666,47 +748,41 @@ class CampaignController:
             raise
         return self._finish_search(campaign_id, result, self._batches_done, start)
 
-    def _rehydrate_search(self, campaign_id: int) -> float:
-        """Re-drive the strategy and the counters from what this campaign already recorded.
+    def _rehydrate_search(self, campaign_id: int, fold_best):
+        """Re-drive the strategy from what this campaign already recorded, and return the
+        :class:`~robovast.search.history.SearchPosition` that record folds to.
 
-        Returns how long the campaign has already been alive, in seconds, which the caller
-        subtracts from its ``time.monotonic()`` origin. Wall-clock age rather than time
-        actually spent computing, because that is what a ``time`` budget caps: a search that
-        got a fresh clock on every restart would have no wall-clock bound at all.
+        The caller assigns every counter from that one value, so a field added to the
+        position is filled in one place instead of being remembered at each of them.
 
-        A no-op for a campaign starting now, whose store has no batches -- so there is no
-        resume branch here, only a loop over a record that is usually empty.
+        The age it carries is wall-clock rather than time actually spent computing, because
+        that is what a ``time`` budget caps: a search that got a fresh clock on every restart
+        would have no wall-clock bound at all.
+
+        For a campaign starting now the record is empty and folds to the zero position, so
+        the fold has no resume branch. What is conditional here is only what would be a lie
+        for a fresh campaign: re-driving a strategy through nothing, and announcing a resume
+        that is not one.
 
         The strategy is re-driven through :meth:`~robovast.search.strategy.SearchStrategy.resume`
         rather than restored from a serialized state, because nothing serializes one; see
         that method for why the replay is by batch and asks before it tells.
         """
-        from robovast.search.history import recorded_batches
+        from robovast.search.history import position_from, recorded_batches
 
         batches = recorded_batches(self.store, campaign_id)
-        if not batches:
-            return 0.0
-        self.strategy.resume(batches)
-        self._batches_done = len(batches)
-        for batch in batches:
-            self._evaluations_done += len(batch.evaluations)
-            self._history.extend(batch.evaluations)
-            # What the batch COST, by the same measure the live loop uses: executions
-            # attempted -- every cell's ALLOCATION, not what produced a sample. A draw that
-            # composed to nothing still occupied the plan its allocation reserved, so this
-            # sums over every recorded cell rather than over the scored ones.
-            #
-            # Read from the record rather than re-derived. `search.repetitions` sizes each
-            # cell separately, so re-deriving meant recounting an unevenly-spent campaign as
-            # an evenly spent one -- under where the policy had spent above `execution.runs`,
-            # over where it had spent below -- and a `runs` budget then stopped the resumed
-            # search in the wrong place. `execution.runs` stands in only for a row that
-            # recorded no allocation, which is a store from before one could be recorded,
-            # where it is what that cell actually got.
-            self._runs_done += sum((n or self.runs) for n in batch.reps)
-        logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
-                    "%d run(s) already spent.",
-                    self._batches_done, self._evaluations_done, self._runs_done)
+        position = position_from(
+            batches, default_runs=self.runs, fold_best=fold_best,
+            age_s=self._campaign_age(campaign_id) if batches else 0.0)
+        if batches:
+            self.strategy.resume(batches)
+            logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
+                        "%d run(s) already spent.",
+                        position.batches, position.evaluations, position.runs)
+        return position
+
+    def _campaign_age(self, campaign_id: int) -> float:
+        """How long this campaign has been alive, in wall-clock seconds."""
         return max(0.0, time.time() - (self._campaign_started_at(campaign_id) or time.time()))
 
     def _campaign_started_at(self, campaign_id: int):
@@ -793,6 +869,15 @@ class CampaignController:
             fresh, recalled = self._split_already_evaluated(param_sets, batch_idx)
             self._runs_done += sum((ps.n_reps or self.runs) for ps in fresh)
             scored = self._run_search_batch(fresh, batch_idx, batch_id)
+            # A batch that measured nothing, counted. Only when there was something to
+            # measure: a batch of cells an earlier one already scored is short by design and
+            # says nothing about whether this campaign can produce.
+            if fresh and not scored:
+                self._empty_batches += 1
+                logger.warning("Batch %d produced no evaluation (%d in a row): %s",
+                               batch_idx, self._empty_batches, self._empty_batch_reason)
+            elif scored:
+                self._empty_batches = 0
             # The strategy is told about every cell it proposed, whether this batch
             # measured it or an earlier one did. A recalled cell is a real answer to a
             # real proposal -- it is what that cell measured -- so withholding it would
@@ -831,6 +916,17 @@ class CampaignController:
             # batch boundary rather than only from the start.
             self.backend.publish_records(self.campaign_root)
             result = stop.should_stop(snap)
+            if not result and self._empty_batches >= EMPTY_BATCH_LIMIT:
+                # Not a criterion the campaign declared, and it does not need to be: a
+                # search that cannot produce an evaluation will not start producing one by
+                # being given more budget, and every batch it is given costs a composition
+                # -- and, where the cells run, a batch of trials -- to learn the same thing
+                # again. Reported as its own kind so the record says the campaign was
+                # stopped rather than that it finished its budget.
+                result = StopResult(
+                    kind="unproductive",
+                    reason=(f"{self._empty_batches} batches in a row produced no "
+                            f"evaluation: {self._empty_batch_reason}"))
             if not result and self.state is not None and self.state.stop_requested:
                 result = StopResult(kind="external",
                                     reason="stop requested via control API")
@@ -977,6 +1073,10 @@ class CampaignController:
         failed_runs = 0
         killed_runs = 0
         invalid_runs_count = 0
+        # Why the cells that produced nothing produced nothing, for the run-of-empty-batches
+        # check below. Counted per cell rather than inferred afterwards from the store,
+        # because the reason is what makes the stop message actionable.
+        unrunnable = {"composition_failed": 0, "no_sample": 0}
         try:
             for reps, group in sorted(groups.items()):
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
@@ -1011,6 +1111,7 @@ class CampaignController:
                             params=ps.values, objectives={}, measures={},
                             n_samples=0, status="composition_failed", result_dir="",
                             n_reps=reps)
+                        unrunnable["composition_failed"] += 1
                         continue
                     config_dir = Path(self.campaign_root) / config_name
                     result_dir = os.path.relpath(config_dir, self.campaign_root)
@@ -1035,7 +1136,8 @@ class CampaignController:
                             batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                             params=ps.values, objectives={}, measures={},
                             n_samples=0, status="no_sample", result_dir=result_dir,
-                            n_reps=reps)
+                            n_reps=reps,
+                            channels=read_config_channels(config_dir))
                         # Unlike composition_failed, these runs HAPPENED: record them so the
                         # cell's failures are visible and counted rather than vanishing with
                         # the evaluation that could not use them.
@@ -1045,13 +1147,15 @@ class CampaignController:
                         failed_runs += cfg_failed
                         killed_runs += cfg_killed
                         invalid_runs_count += cfg_invalid
+                        unrunnable["no_sample"] += 1
                         continue
                     evaluations.append(ev)
                     unit_id = self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=result_dir, n_reps=reps)
+                        result_dir=result_dir, n_reps=reps,
+                        channels=read_config_channels(config_dir))
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
@@ -1061,8 +1165,7 @@ class CampaignController:
         finally:
             # Same tally as batch mode: a trial that ran and failed is invisible in the
             # resultless count, so surface it before the batch's progress is closed out.
-            if self.state is not None and (failed_runs or killed_runs
-                                           or invalid_runs_count):
+            if self.state is not None:
                 if failed_runs:
                     logger.warning("Batch %d: %d run(s) did not pass.",
                                    batch_idx, failed_runs)
@@ -1072,9 +1175,17 @@ class CampaignController:
                 if invalid_runs_count:
                     logger.warning("Batch %d: %d trial(s) invalidated by the runner.",
                                    batch_idx, invalid_runs_count)
+                # Written even when every count is zero, which it was not before: a batch
+                # that lost nothing must be distinguishable from one whose verdicts have
+                # not been read yet, and both read 0. ``outcomes_counted`` carries that
+                # difference, and it can only become true if this runs.
                 self.state.update_runs(failed=failed_runs, killed=killed_runs,
-                                       invalid=invalid_runs_count)
+                                       invalid=invalid_runs_count,
+                                       outcomes_counted=True)
             self._end_batch_progress()
+        # What the loop needs if this batch scored nothing: not that it was empty, which it
+        # can see, but which of the two ways every cell came back with nothing.
+        self._empty_batch_reason = _empty_batch_reason(unrunnable)
         return evaluations
 
     def _run_postprocessing(self, tag: str = "") -> None:
@@ -1376,6 +1487,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     backend.publish_execution_records(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
+        from robovast.execution.control_server import stop_checker
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -1390,6 +1502,11 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             # against whatever the cluster has at that instant -- and this runs at the END
             # of a campaign, when other campaigns have had the whole run to fill it.
             admission=getattr(backend, "admission", None),
+            # A stop reaches this phase through the same flag the run loop reads. Without
+            # it the flag is only *checked* before this step, so a campaign stopped once
+            # postprocessing has begun converts to the end regardless while its stop
+            # reports itself as done.
+            should_stop=stop_checker(state),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
@@ -1418,8 +1535,17 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                 # postprocessing failure keeps ``phase == finished`` (the runs are
                 # the deliverable) and records the reason on its own field, distinct
                 # from a run failure (``phase == failed``). Re-run corrects it.
+                #
+                # A cancellation lands here too, and is worded as one: the campaign's runs
+                # all finished and their results are complete, so it is not ``stopped``
+                # either -- what is missing is the derived data, which is exactly what
+                # ``postprocessing_error`` says and a re-run supplies. Told apart by the
+                # flag rather than by the message, so both stages' wordings are covered
+                # without either of them becoming a contract.
+                cancelled = state.postprocessing_stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
-                state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {message}")
+                state.set_phase(Phase.FINISHED, stage=(
+                    message if cancelled else f"postprocessing failed: {message}"))
             # The durable outcome record is written once by _finish_campaign after
             # both share and postprocessing have run, so a single outcome.json carries
             # phase=finished + share_error + postprocessing_error (and covers the
@@ -1679,6 +1805,19 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
             state.set_phase(Phase.SHARING)
         backend.share_campaign(campaign_root, options,
                                progress_callback=make_upload_progress_cb(state))
+    except ShareStopped as e:
+        # The operator's own doing, so it is recorded as a cancellation and announced as
+        # one: filing a deliberate act under faults sends whoever reads it looking for a
+        # fault that is not there. Same field as a failure, because what a reader does
+        # next is the same -- re-trigger the share -- and same best-effort contract: the
+        # campaign and its results are untouched.
+        detail = share_cancelled_detail(backend, e)
+        logger.info("Upload-to-share cancelled; continuing with the campaign. %s", detail)
+        if state is not None:
+            state.update(share_error=detail)
+        if notifier is not None:
+            notifier.upload_cancelled(detail)
+        return
     except Exception as e:  # pylint: disable=broad-except
         # A provider's own refusal (bad credentials, a URL that is not the share, a
         # remote that said no) is self-contained and opts out of the tail via
@@ -1702,6 +1841,34 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old
         # controller's ``provider.SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
+
+
+def share_cancelled_detail(backend, stopped: ShareStopped) -> str:
+    """Discard a cancelled upload's partial artifact; return what to record.
+
+    The cleanup is the reason this is not just a message. A cancelled upload leaves a
+    truncated archive behind, and a truncated archive "uploads, lists and downloads
+    exactly like a good one, and only fails at the far end" -- the very shape
+    ``DockerBackend._refuse_unimportable`` exists to keep off a share. So the partial is
+    removed, and where the provider cannot remove it the sentence **names the object it
+    left** rather than reporting a clean cancellation over a share that now holds a
+    half-written campaign.
+    """
+    detail = str(stopped)
+    if not stopped.object_name:
+        return detail
+    try:
+        note = backend.discard_partial_share(stopped.object_name)
+    except Exception as e:  # noqa: BLE001 - the cancellation is the news, not this
+        # Reported, never raised: a cleanup that failed must not turn a cancellation into
+        # an error. Worded as uncertainty because that is what it is -- the delete may
+        # have been refused, or the object may never have been created -- and asserting
+        # either would be the kind of wrong answer that looks right.
+        logger.warning("Could not discard the partial upload %s: %s",
+                       stopped.object_name, e)
+        return (f"{detail} — a partial '{stopped.object_name}' may be left on the "
+                f"share: {e}")
+    return f"{detail} {note}".strip() if note else detail
 
 
 class UploadProgress:
@@ -1747,14 +1914,32 @@ class UploadProgress:
             self._source_total = max(0, int(total or 0))
             self._publish(force=True)
 
+    def raise_if_stopped(self) -> None:
+        """End the upload if its stop scope was set.
+
+        This object is where the check belongs because it is the only thing both live
+        loops already call — the archiver's writer thread through :meth:`on_member` and
+        the sending thread through :meth:`__call__` — so one poll covers building the
+        archive and putting it on the wire. Nothing below here has to know what a campaign
+        or a scope is, which is the same reason ``stop_checker`` is a predicate.
+
+        Called from both, so a cancellation lands whichever side is doing the work: a
+        local archive write drives only ``on_member``, and a resumable path-based upload
+        only ``__call__``.
+        """
+        if self._state.share_stop_requested:
+            raise ShareStopped("upload to share cancelled by stop request")
+
     def on_member(self, nbytes: int) -> None:
         """Count *nbytes* of campaign payload as consumed by the archiver."""
+        self.raise_if_stopped()
         with self._lock:
             self._source_done += max(0, int(nbytes or 0))
             self._publish()
 
     def __call__(self, sent, total) -> None:
         """The providers’ progress callback: *sent* bytes on the wire so far."""
+        self.raise_if_stopped()
         with self._lock:
             self._sent = sent
             # A provider that knows its total (the path-based, resumable upload) has a
