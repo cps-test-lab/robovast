@@ -2,14 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """What the host container sends back, and what it must not.
 
-The pod's filesystem does not outlive it, so anything the host stage derived exists
-nowhere until it is uploaded -- and the campaign it derived it from was staged into the
-same tree. The upload therefore has to tell one from the other: everything new or changed
-is output, everything untouched is the store's own copy of itself.
+The pod's filesystem does not outlive it, so anything the Job derived exists nowhere until
+it is uploaded -- and the campaign it derived it from was staged into the same tree. The
+upload therefore has to tell one from the other: new or changed since the snapshot is
+output, untouched is the store's own copy of itself.
 
-That "everything new" rule is right for what the stages produce and wrong for scratch, so
-the exceptions are pinned here rather than left to the diff.
+The stat-diff alone cannot see the CONVERSION's output, which is why the record it writes
+is the second half of the rule; that ordering is pinned here because nothing in a
+same-container test reproduces it. The "everything new" half is right for what the stages
+produce and wrong for scratch, so those exceptions are pinned here too.
 """
+
+import json
 
 import pytest
 
@@ -65,6 +69,26 @@ def campaign(tmp_path):
     return root
 
 
+def _convert(campaign, *outputs):
+    """Write *outputs* and the record naming them, as the conversion initContainer does.
+
+    Before the snapshot, because that is the ordering: the conversion is an initContainer
+    and the host container starts only once it has exited.
+    """
+    from robovast.results_processing.postprocessing import STAGED_PROVENANCE
+
+    for rel in outputs:
+        path = campaign / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x,y\n")
+    record = campaign / STAGED_PROVENANCE
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"entries": [
+        {"output": rel, "sources": ["cfg/0/rosbag2"], "plugin": "rosbags_process/to_csv"}
+        for rel in outputs
+    ]}))
+
+
 def test_the_provenance_marker_is_uploaded(store, campaign):
     """``_transient/postprocessing.yaml`` is the proof that the ingest ran.
 
@@ -96,6 +120,55 @@ def test_the_staged_rosbags_are_not_written_back_over_themselves(store, campaign
     postprocess_host._upload_derived(object(), "camp", str(campaign), before)
 
     assert _payload(store) == ["camp/cfg/0/poses.csv"]
+
+
+def test_the_conversions_own_output_is_uploaded(store, campaign):
+    """It predates the snapshot, and the store has never held it.
+
+    The conversion is an initContainer, so every CSV it derives is on disk before this
+    container starts and the stat-diff reads all of it as staged data. Diffed alone, the
+    tables an analysis reads -- poses, the per-action feedback and status, the costmaps --
+    were ingested into the index and then deleted with the pod, so a campaign's download
+    carried none of them while its index carried all of them.
+    """
+    _convert(campaign, "cfg/0/poses.csv", "cfg/0/action_navigate_to_pose_status.csv")
+    before = postprocess_host._snapshot(str(campaign))
+
+    postprocess_host._upload_derived(object(), "camp", str(campaign), before)
+
+    assert sorted(_payload(store)) == ["camp/cfg/0/action_navigate_to_pose_status.csv",
+                                       "camp/cfg/0/poses.csv"]
+
+
+def test_the_conversions_output_is_uploaded_with_the_host_stages(store, campaign):
+    """One upload carries both halves of what the Job derived.
+
+    The host stage's own steps read the conversion's files -- ``nav2_bt_tree`` reconstructs
+    ``nav2_behaviors.csv`` from the raw transitions -- so a campaign that keeps only the
+    second is one whose derived data cannot be recomputed or checked against its source.
+    """
+    _convert(campaign, "cfg/0/nav2_behavior_tree.csv")
+    before = postprocess_host._snapshot(str(campaign))
+    (campaign / "cfg" / "0" / "nav2_behaviors.csv").write_text("b\n")
+
+    postprocess_host._upload_derived(object(), "camp", str(campaign), before)
+
+    assert sorted(_payload(store)) == ["camp/cfg/0/nav2_behavior_tree.csv",
+                                       "camp/cfg/0/nav2_behaviors.csv"]
+
+
+def test_a_campaign_with_no_conversion_still_uploads_by_diff(store, campaign):
+    """No record is the normal case for a batch Job and for a campaign with no bags.
+
+    The diff is then the whole answer, so a missing record must not cost the host stage's
+    own outputs their upload.
+    """
+    before = postprocess_host._snapshot(str(campaign))
+    (campaign / "cfg" / "0" / "run_log.csv").write_text("l\n")
+
+    postprocess_host._upload_derived(object(), "camp", str(campaign), before)
+
+    assert _payload(store) == ["camp/cfg/0/run_log.csv"]
 
 
 def test_the_per_bag_hash_cache_is_not_campaign_data(store, campaign):

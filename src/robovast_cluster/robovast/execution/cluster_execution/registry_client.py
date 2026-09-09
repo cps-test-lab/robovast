@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Minimal read-only registry v2 client: does this image tag already exist?
+"""Minimal registry v2 client: is this image tag there, and may we publish one?
 
 Only one question is asked here, and it is the durable answer to "has this exact build
 already been pushed?". The previous answer came from the build Job's status, which expires
@@ -32,6 +32,10 @@ That collapse is right for *that* question and wrong for "is this image there to
 the probe itself reports three states (:func:`manifest_state`) and ``manifest_exists`` is the
 fail-closed view of it. A caller who must not confuse "could not ask" with "not there" asks
 for the state.
+
+Every read here is a read. The one request that is not, :func:`push_state`'s blob-upload
+probe, exists because no read can answer whether a *push* will be accepted -- a registry
+may serve manifests to anyone and refuse to receive one -- and it writes no bytes.
 """
 
 import base64
@@ -246,26 +250,32 @@ _TOKEN_SAFETY_S = 5
 _TOKEN_DEFAULT_TTL_S = 60
 
 
-def _token_key(host: str, path: str, creds) -> tuple:
-    """What a cached token is valid for: the host, the repository, and whose credential got it.
+def _token_key(host: str, path: str, creds, scope: str = "pull") -> tuple:
+    """What a cached token is valid for: host, repository, credential, and access.
 
     The repository is in the key because a registry token is scoped to one: reusing repo A's
     token on repo B earns a 401, which is survivable (the dance simply reruns) but pointless.
-    It is derived from *path* rather than passed in, because this module builds only two path
-    shapes -- ``<repo>/manifests/<ref>`` and ``<repo>/blobs/<digest>`` -- and splitting on
-    those is exact. A third shape must extend this.
+    It is derived from *path* rather than passed in, because every path this module builds
+    is ``<repo>/manifests/…`` or ``<repo>/blobs/…`` -- the upload paths
+    :func:`push_state` uses included -- and splitting on those is exact. A shape outside
+    both must extend this.
 
     The credential is in the key as a DIGEST, never the password itself: one controller drives
     campaigns whose namespaces may hold different pull secrets, and a token fetched with one
     must not be handed to another. Hashing it keeps a credential out of a process-lifetime dict
     that nothing redacts.
+
+    *scope* is in the key because a registry token grants one access level, not the
+    repository as such. Sharing a key across levels is not merely wasteful: a pull token
+    presented for a push request earns a 401, and to a caller asking "may this credential
+    push?" that 401 is indistinguishable from a credential that may not.
     """
     repository = path.split("/manifests/")[0].split("/blobs/")[0]
     if creds:
         who = hashlib.sha256(f"{creds[0]}:{creds[1]}".encode()).hexdigest()[:16]
     else:
         who = "anonymous"
-    return (host, repository, who)
+    return (host, repository, who, scope)
 
 
 def _cached_token(key: tuple) -> "Optional[str]":
@@ -305,7 +315,8 @@ def _forget_token(key: tuple) -> None:
 def _registry_request(host: str, path: str, *, method: str = "HEAD",
                       dockerconfigjson: str = "", insecure: bool = False,
                       ca_path: str = "", accept: str = _ACCEPT,
-                      patience_s: float = DEFAULT_PATIENCE):
+                      patience_s: float = DEFAULT_PATIENCE,
+                      token_scope: str = "pull"):
     """One authenticated v2 request against *host*, or ``None``.
 
     Speaks just enough of the v2 API: the request, retried once with a Bearer token when
@@ -335,7 +346,10 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
 
     creds = credentials_for(dockerconfigjson, host) if dockerconfigjson else None
     headers = {"Accept": accept}
-    key = _token_key(host, path, creds)
+    # *token_scope* only keys the cache -- the scope a token actually carries comes from
+    # the registry's own challenge, which asks for what the request needs. What it
+    # prevents is a token earned for one access level being presented for another.
+    key = _token_key(host, path, creds, token_scope)
 
     # A deadline rather than a number of goes, and the deadline is the ONLY bound: each
     # attempt can itself burn _TIMEOUT, so a count bounds the tries and not the wait --
@@ -395,6 +409,85 @@ def _registry_request(host: str, path: str, *, method: str = "HEAD",
         except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
             logger.warning("registry check: could not reach %s (%s)", host, e)
             return None
+
+
+#: :func:`push_state` verdicts. ``PUSH_UNKNOWN`` is not a synonym for ``PUSH_REFUSED``:
+#: it means the registry could not be asked, which must not be reported as a credential
+#: that will be rejected -- that would refuse a build over an unreachable registry.
+PUSH_ALLOWED, PUSH_REFUSED, PUSH_UNKNOWN = "allowed", "refused", "unknown"
+
+
+def push_state(image_ref: str, *, dockerconfigjson: str = "", insecure: bool = False,
+               ca_path: str = "", patience_s: float = DEFAULT_PATIENCE) -> str:
+    """Whether the credential in hand may **push** to *image_ref*'s repository.
+
+    The question :func:`manifest_state` cannot answer, and the reason it looks as though
+    it can: a ``HEAD`` on a manifest exercises the *pull* path, and a registry may serve
+    reads to anyone -- or to a valid pull credential -- while refusing a push. So an
+    ``ABSENT`` from that probe means "this tag is not published", never "the push that
+    would publish it will be accepted". A build that read it as the latter ran to
+    completion, installed every package, and failed at its last step with a 401.
+
+    Asked by opening a blob upload (``POST /v2/<repo>/blobs/uploads/``), which is the
+    first thing a push does and the first thing that needs push scope. No layer bytes go
+    anywhere: the session is cancelled again on the way out, and a registry that ignores
+    the cancellation garbage-collects an upload nothing ever wrote to.
+
+    ``PUSH_UNKNOWN`` on every uncertainty -- an unreachable registry, a status that is
+    neither an acceptance nor a refusal, a ref that will not parse. The caller must not
+    turn that into a refusal: this exists to move a *certain* failure earlier, not to add
+    a new way for a reachable registry to block a build.
+    """
+    try:
+        host, repository, _ = split_image_ref(image_ref)
+    except ValueError as e:
+        logger.warning("registry push check: %s", e)
+        return PUSH_UNKNOWN
+    resp = _registry_request(
+        host, f"{repository}/blobs/uploads/", method="POST",
+        dockerconfigjson=dockerconfigjson, insecure=insecure, ca_path=ca_path,
+        accept="application/json", patience_s=patience_s, token_scope="push")
+    if resp is None:
+        return PUSH_UNKNOWN
+    if resp.status_code in (200, 201, 202):
+        _cancel_upload(host, resp.headers.get("Location", ""),
+                       dockerconfigjson=dockerconfigjson, insecure=insecure,
+                       ca_path=ca_path)
+        return PUSH_ALLOWED
+    if resp.status_code in (401, 403):
+        return PUSH_REFUSED
+    logger.warning(
+        "registry push check: unexpected status %s for %s; the registry did not say "
+        "whether this credential may push", resp.status_code, image_ref)
+    return PUSH_UNKNOWN
+
+
+def _cancel_upload(host: str, location: str, *, dockerconfigjson: str = "",
+                   insecure: bool = False, ca_path: str = "") -> None:
+    """Best-effort ``DELETE`` of the upload session :func:`push_state` opened.
+
+    Never raises and never reported: the probe's answer is already in hand, and an
+    abandoned upload that received no bytes is something every registry cleans up. Doing
+    it anyway is the courtesy of not leaving one per build submit.
+    """
+    if not location:
+        return
+    # A registry may answer with an absolute URL or a path; only the path is ours to
+    # rebuild against the host we are already talking to.
+    path = location
+    for prefix in ("http://", "https://"):
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            path = path.partition("/")[2]
+            break
+    path = path.lstrip("/")
+    if path.startswith("v2/"):
+        path = path[len("v2/"):]
+    if not path:
+        return
+    _registry_request(host, path, method="DELETE", dockerconfigjson=dockerconfigjson,
+                      insecure=insecure, ca_path=ca_path, accept="application/json",
+                      patience_s=0.0, token_scope="push")
 
 
 def _head_manifest(image_ref: str, *, dockerconfigjson: str = "",

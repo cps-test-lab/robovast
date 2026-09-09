@@ -71,9 +71,16 @@ def test_an_unknown_slot_is_refused_naming_the_real_ones():
         TwoOutputs(scenario={"map": "map_file", "meshh": "x"})
 
 
-def test_a_slot_cannot_go_to_both_channels():
-    with pytest.raises(ValidationError, match="goes to one channel"):
-        TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+def test_a_slot_may_go_to_both_channels():
+    """One value is one output however many places need it.
+
+    This used to be refused. What the rule cost was a plugin having to invent a second slot
+    for the same value -- one name per channel, describing one fact, free to drift apart --
+    and the campaign then binding both. Several destinations is what a binding says; several
+    VALUES is still several slots.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "a"), (SIM_CHANNEL, "b"))
 
 
 def test_slots_refuse_a_bare_name():
@@ -129,6 +136,46 @@ def test_update_slots_routes_each_output_to_its_channel():
                                  {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
 
     assert out["config"] == {"map_file": "maps/a.yaml"}
+    assert out["sim"] == {"plugins.floorplan.mesh": "3d/a.stl"}
+
+
+def test_one_output_may_name_a_destination_on_each_channel():
+    """One value both sides of the compile boundary need is one output, not two.
+
+    A start pose the simulator places the robot at and the stack under test is told about is
+    the same pose. Carrying it as a second slot would name the same fact twice, and the two
+    names could then drift apart; binding it twice says what is true.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "plugins.floorplan.mesh"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "mesh_file"),
+                                    (SIM_CHANNEL, "plugins.floorplan.mesh"))
+    # Both destinations are declared, so validation and preview see the pair.
+    assert cfg.outputs() == {SCENARIO_CHANNEL: ["map_file", "mesh_file"],
+                             SIM_CHANNEL: ["plugins.floorplan.mesh"]}
+
+
+def test_the_single_binding_accessor_refuses_a_slot_bound_twice():
+    """Answering with the first would make the result depend on channel order."""
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "plugins.floorplan.mesh"})
+    assert cfg.binding("map") == (SCENARIO_CHANNEL, "map_file")
+    with pytest.raises(KeyError, match="bindings"):
+        cfg.binding("mesh")
+
+
+def test_a_slot_bound_twice_is_written_to_both_destinations():
+    """The value reaches every destination from the one call, so the two cannot disagree."""
+    # pylint: disable-next=no-value-for-parameter
+    variation = _Slotted.__new__(_Slotted)
+    variation.parameters = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                                      sim={"mesh": "plugins.floorplan.mesh"})
+    variation._config_child_indices = {}
+
+    out = variation.update_slots({"name": "cfg"},
+                                 {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
+
+    assert out["config"] == {"map_file": "maps/a.yaml", "mesh_file": "3d/a.stl"}
     assert out["sim"] == {"plugins.floorplan.mesh": "3d/a.stl"}
 
 
@@ -701,9 +748,75 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     instances = _instances_for_sim([_Obj()], [("box", [0.5, 0.5, 1.0])])
     assert instances[0]["name"] == "obstacle_7"
     assert instances[0]["size"] == [0.5, 0.5, 1.0]
-    assert instances[0]["pos"] == [1.0, 2.0]
+    # The pose in the shape a placement plugin reads, which is the shape the spawn service
+    # states one in. A flat `pos` is a second spelling those plugins treat as absent, so an
+    # obstacle written that way compiles at the origin -- in a run about where it was put.
+    assert instances[0]["pose"] == {"position": {"x": 1.0, "y": 2.0}}
+    assert "pos" not in instances[0] and "yaw" not in instances[0]
     # 'box' is the placement plugin's own default, so it is not restated per instance.
     assert "shape" not in instances[0]
+    # Nothing about motion by default: the instance takes the simulator's, and restating a
+    # default is noise that goes stale when the default moves.
+    assert "motion" not in instances[0]
+
+    # Scenery says so, because a simulator whose placements default to a physics body would let
+    # the robot push an obstacle off the position this variation chose -- the independent
+    # variable of the sweep.
+    scenery = _instances_for_sim([_Obj()], [("box", [0.5, 0.5, 1.0])], motion="static")
+    assert scenery[0]["motion"] == "static"
+
+
+def test_the_trigger_point_states_the_height_the_obstacle_stands_at():
+    """A scenario revealing the obstacle must state a whole pose, so the slot must carry one.
+
+    The distance test that fires the trigger is planar, so z rode along as 0.0 -- a height a
+    floor-standing obstacle is never at. The teleport that follows the trigger is not planar:
+    given 0.0 it seats a 1 m box half a metre inside the floor, and the solver answers the
+    penetration by launching it. The number is fixed here because two channels depend on it
+    agreeing -- the instance the simulator compiles, and the pose the scenario asks for.
+    """
+    from dataclasses import dataclass, field
+
+    from robovast_nav.data_model import Orientation, Pose, Position
+    from robovast_nav.variation.obstacle_variation import resting_z
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTrigger)
+
+    @dataclass
+    class _Obj:
+        entity_name: str = "dynamic_0"
+        model: str = "box.sdf.xacro"
+        xacro_arguments: str = "width:=0.5, length:=0.5, height:=1.0"
+        spawn_pose: Pose = field(default_factory=lambda: Pose(
+            position=Position(x=1.0, y=2.0), orientation=Orientation(yaw=0.0)))
+
+    class _Stub:
+        _current_trigger_distance = 1.5
+
+    values = ObstacleVariationWithDistanceTrigger._post_process(
+        _Stub(), [_Obj()], [], [], [("box", [0.5, 0.5, 1.0])])
+    assert values["trigger_point"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+    # The origin is the prop's CENTRE, so standing on the floor is half the declared height --
+    # the same number a placement plugin applies to an instance that omits z, which is how
+    # `_instances_for_sim` writes them.
+    assert resting_z([0.5, 0.5, 1.0]) == 0.5
+    assert resting_z([0.4, 0.4, 0.8]) == 0.4
+    # No declared geometry, no height to report: the channels that lack a size are the ones
+    # that never compile the obstacle, and 0.0 is what they have always said.
+    assert resting_z(None) == 0.0
+
+
+def test_the_triggered_obstacle_keeps_the_movable_default():
+    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported.
+    SetEntityState refuses an entity with no free joint, so this is the one placement that must
+    NOT be welded -- while a plain placed obstacle is scenery and must be."""
+    from robovast_nav.variation.obstacle_variation import ObstacleVariation
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTrigger)
+
+    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION is None
+    assert ObstacleVariation.SIM_INSTANCES_MOTION == "static"
 
 
 def test_a_density_is_refused_where_a_single_obstacle_is_required():

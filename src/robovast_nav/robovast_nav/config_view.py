@@ -178,11 +178,16 @@ def _instances_of(config: dict) -> list:
     """The ``instances`` list this configuration wrote to the ``sim`` channel, if any.
 
     The destination is the campaign's to choose (``sim: {instances: plugins.boxes.instances}``),
-    so it is found by shape -- a list of mappings carrying ``pos`` -- rather than by a key
+    so it is found by shape -- a list of mappings carrying a placement -- rather than by a key
     name this module would otherwise have to know.
+
+    ``pose`` is that placement; ``pos`` is the spelling it replaced, still accepted here because
+    this reads campaigns that were RECORDED, and a stored configuration keeps whatever shape it
+    was written with. Refusing it would blank the obstacles out of every earlier campaign's map.
     """
     for value in (config.get("sim") or {}).values():
-        if isinstance(value, list) and value and isinstance(value[0], dict) and "pos" in value[0]:
+        if (isinstance(value, list) and value and isinstance(value[0], dict)
+                and ("pose" in value[0] or "pos" in value[0])):
             return value
     return []
 

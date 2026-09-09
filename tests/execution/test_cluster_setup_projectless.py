@@ -94,6 +94,12 @@ def _deploy_stubs(monkeypatch):
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    from robovast.execution.cluster_execution import tailnet_deploy
+    # Every setup reconciles the optional tailnet node, which reads the API server
+    # even when none is configured.
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
+
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
     config = mock.Mock()
@@ -212,6 +218,11 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
     from robovast.execution.cluster_execution import node_governor
     monkeypatch.setattr(node_governor, "ensure_cpu_governor",
                         mock.Mock(return_value=False))
+    # Reconciled on every setup for the same reason, and it reads the API server even when
+    # no tailnet is configured.
+    from robovast.execution.cluster_execution import tailnet_deploy
+    monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
+    monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     # Setup reports which image and digest the pod came up on, once it is serving. Two
     # more reads against the API server, and reporting-only -- they swallow their own
     # errors, so unstubbed they cost a connect timeout apiece and say nothing.
@@ -367,3 +378,61 @@ def test_setup_reports_where_it_put_the_data(monkeypatch, deploy_stubs):
     reported = setup_server(config_name="rke2", namespace="default")
     assert reported["data_node"] == "node-a"
     assert reported["data_source"] == "auto"
+
+
+# -- the governor default a provider may move --------------------------------
+
+def test_a_vm_provider_is_not_asked_for_a_governor_it_cannot_set(deploy_stubs, caplog):
+    """Attempting it there costs a readiness wait every run to rediscover the same answer.
+
+    Reconciled to absent rather than skipped: setup writes the cluster's whole configuration
+    on every run, so a DaemonSet an earlier setup left behind still goes.
+    """
+    import logging
+
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = False
+    with caplog.at_level(logging.INFO):
+        setup_server(config_name="gcp", namespace="default")
+
+    node_governor.ensure_cpu_governor.assert_called_once()
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is False
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is False
+    assert "cpu_governor_scaling" in caplog.text, "what is left unfixed must still be said"
+
+
+def test_naming_the_flag_is_obeyed_even_where_the_provider_says_it_cannot_work(deploy_stubs):
+    """Provider policy decides what happens when nobody said, never what happens when
+    somebody did -- and the attempt then fails loudly rather than being overruled here."""
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = False
+    setup_server(config_name="gcp", namespace="default", cpu_governor=True)
+
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is True
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is True
+
+
+def test_a_provider_that_can_take_one_still_gets_it_by_default(deploy_stubs):
+    """The default is unchanged everywhere else: bare metal is where this works."""
+    from robovast.execution.cluster_execution import node_governor
+
+    deploy_stubs.governor_is_settable = True
+    setup_server(config_name="rke2", namespace="default")
+
+    assert node_governor.ensure_cpu_governor.call_args.args[2] is True
+    assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is False
+
+
+def test_an_index_class_is_refused_where_the_store_already_backs_the_index():
+    """Offline, before anything dials the cluster -- an argument error must not cost a
+    connection timeout, nor leave a half-set-up cluster behind it.
+
+    rke2 places the object store as a volume, and --store-class backs the index with that
+    same volume so the two are created, moved and destroyed together. A second class would
+    let the index outlive the campaigns every one of its rows was ingested from.
+    """
+    with pytest.raises(RuntimeError, match="--store-class"):
+        setup_server(config_name="rke2", namespace="default",
+                     service_kwargs={"index_storage_class": "local-path"})

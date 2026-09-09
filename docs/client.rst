@@ -54,8 +54,9 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast campaign stop|stop-job|log``
      - Stop a campaign, kill one wedged job, read its infrastructure log.
    * - ``vast campaign rerun <id>``
-     - Launch a new campaign from what a past one recorded. ``--check`` reports whether it
-       can be, and costs nothing.
+     - Launch a new campaign from what a past one recorded. The service refuses one its
+       pre-flight blocks; ``--check`` reports every axis without launching, ``--force``
+       launches regardless (:ref:`results-retrigger-preflight`).
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
@@ -163,6 +164,11 @@ Then check it, and run it:
    vast workspace validate my-experiment my.vast   # every problem at once
    vast workspace preview  my-experiment my.vast   # how many configurations is that?
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
+
+``validate`` prints each problem with its severity and exits non-zero unless every check it
+covers ran and passed — including the world check, which needs a container. So a lane that
+cannot start one is reported as ``unchecked`` rather than counted as a pass; use
+``--no-world-check`` to ask for the narrower verdict on the file alone.
 
 Omit the path when the workspace holds exactly one ``.vast`` and the service will resolve
 it, naming the candidates if there are several. ``--push DIR`` does the push and the launch

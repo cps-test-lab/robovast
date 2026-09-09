@@ -214,10 +214,16 @@ def index_volume(storage_path: str = "", storage_class: str = "") -> dict:
                          "type": "DirectoryOrCreate"}}
 
 
-def index_pvc_manifest(namespace: str, storage_class: str, size: str = "20Gi"):
+#: The claim's size when the operator did not state one. Sized for the metadata of a large
+#: corpus, not for the campaigns themselves -- those are in the object store.
+DEFAULT_INDEX_SIZE = "20Gi"
+
+
+def index_pvc_manifest(namespace: str, storage_class: str, size: str = ""):
     """The claim :func:`index_volume` names, or ``None`` where a hostPath backs it."""
     if not storage_class:
         return None
+    size = size or DEFAULT_INDEX_SIZE
     return {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",

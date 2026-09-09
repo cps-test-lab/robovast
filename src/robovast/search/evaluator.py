@@ -27,7 +27,7 @@ from pathlib import Path
 
 from robovast.common.config import SearchConfig
 
-from .extractor import Extractor, completed_run_dirs
+from .extractor import Extractor, NoSampleError, completed_run_dirs
 from .plugins import EXTRACTOR_GROUP, load_ref
 from .types import Evaluation, ParamSet
 
@@ -52,8 +52,45 @@ class Evaluator:
         extractor_cls = load_ref(cfg.extract.plugin, EXTRACTOR_GROUP, vast_dir)
         self.extractor: Extractor = extractor_cls(**cfg.extract.params)
         self.objective_names = [o.name for o in cfg.objectives]
+        # Kept for the messages below: a refusal that names the extractor is one whose
+        # reader knows which file to go and look at.
+        self._plugin = cfg.extract.plugin
+
+    def _require_declared_files(self, config_dir: Path, completed) -> None:
+        """Refuse a cell whose extractor declared a file none of its runs has.
+
+        A name absent from *every* completed run is the structural case, and the one that
+        has actually happened: the file is written by a ``postprocessing:`` step, and
+        extraction runs between batches, before postprocessing runs at all (see
+        :mod:`robovast.search.extractor`). Nothing about that was visible -- the
+        extractor's own code met a path that was not there and returned a number, so the
+        objective was the same value for every parameter set in the space and the search
+        had no gradient to climb while reporting itself converged.
+
+        Missing from only some runs is not touched: that is one trial's data being odd,
+        and an extractor aggregating over runs is where the decision about it belongs.
+        """
+        declared = getattr(self.extractor, "requires_run_files", ()) or ()
+        if isinstance(declared, str):  # a bare string iterates as characters
+            declared = (declared,)
+        for name in declared:
+            if any((run_dir / name).exists() for run_dir in completed):
+                continue
+            raise NoSampleError(
+                f"{config_dir}: '{self._plugin}' declares it reads '{name}', and no "
+                f"completed run of this configuration has that file. If a "
+                f"`postprocessing:` step produces it, that is the whole explanation: "
+                f"extraction scores a batch so the strategy can be asked for the next "
+                f"one, and postprocessing runs once over the finished campaign -- so "
+                f"nothing it writes exists yet. Read what the runner wrote, or move the "
+                f"measurement into the scenario.")
 
     def evaluate(self, config_dir: Path, params: ParamSet) -> Evaluation:
+        completed = completed_run_dirs(config_dir)
+        # Before the extractor, not after: once it has been handed a directory whose files
+        # are not there, what happens is up to code this class did not write, and what
+        # that code does is return a number.
+        self._require_declared_files(config_dir, completed)
         result = self.extractor.extract(config_dir)
         missing = [n for n in self.objective_names if n not in result.objectives]
         if missing:
@@ -83,7 +120,7 @@ class Evaluator:
         # Kept rather than dropped: the extractor measured them, and `measures` is where a
         # named measurement that is not optimized already lives.
         measures = {**result.measures, **extras}
-        n_samples = len(completed_run_dirs(config_dir))
+        n_samples = len(completed)
         logger.debug("Evaluated %s -> objectives=%s measures=%s n=%d",
                      params.id, objectives, measures, n_samples)
         return Evaluation(params=params, objectives=objectives,

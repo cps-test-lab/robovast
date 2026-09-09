@@ -162,15 +162,25 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
       </Alert>
     )
   }
+  // A check that could not run is why `valid` is false without anything being wrong with
+  // the file, so it is not painted as a defect: red on "the world was not checked" sends
+  // the reader looking for a mistake that is not there.
+  const errors = report.problems.filter((p) => p.severity === 'error')
+  const unchecked = report.problems.filter((p) => p.severity === 'unchecked')
+  const tone = errors.length ? 'error' : 'warning'
   return (
-    <Paper sx={{ p: 1, maxHeight: 120, overflow: 'auto', borderColor: 'error.main' }} variant="outlined">
-      <Typography variant="caption" color="error">
-        {report.problems.length} problem{report.problems.length === 1 ? '' : 's'}
+    <Paper sx={{ p: 1, maxHeight: 120, overflow: 'auto', borderColor: `${tone}.main` }} variant="outlined">
+      <Typography variant="caption" color={tone}>
+        {errors.length > 0 && `${errors.length} problem${errors.length === 1 ? '' : 's'}`}
+        {errors.length > 0 && unchecked.length > 0 && ' · '}
+        {unchecked.length > 0 &&
+          `${unchecked.length} check${unchecked.length === 1 ? '' : 's'} did not run`}
       </Typography>
       <Divider sx={{ my: 0.5 }} />
       {report.problems.map((p, i) => (
         <Typography key={i} variant="caption" component="div" sx={{ fontFamily: 'monospace' }}>
           <b>{p.stage}</b>
+          {p.severity === 'error' ? '' : ` (${p.severity})`}
           {p.config ? ` [${p.config}]` : ''}
           {p.field ? ` ${p.field}` : ''}: {p.message}
         </Typography>

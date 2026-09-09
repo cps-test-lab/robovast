@@ -233,10 +233,36 @@ class ObstacleVariationConfig(DestinationConfig):
         return v
 
 
-def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
+def resting_z(size) -> float:
+    """The z a placement plugin seats an obstacle of these extents at, standing on the floor.
+
+    A placement plugin puts a prop's ORIGIN at its centre, so a floor-standing prop's z is half
+    its height. :func:`_instances_for_sim` leans on that by omitting z and letting the plugin
+    apply it; a *scenario* that has to state the pose itself -- a teleport, a spawn -- has no
+    such default and needs the number said out loud. This is the one place it is computed, so
+    the two channels describe one placement rather than two that can drift.
+
+    Getting it wrong is not a near miss: an obstacle stated a few centimetres low is seated
+    INSIDE the floor, and the solver answers that penetration by launching it metres upward.
+
+    A campaign that declares no ``size`` gets 0.0, which is what the geometry-free channels have
+    always reported. That case cannot reach a placement: ``size`` is required wherever the
+    ``instances`` slot is bound, which is exactly where a simulator compiles the obstacle.
+    """
+    return float(size[2]) / 2.0 if size and len(size) >= 3 else 0.0
+
+
+def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> list:
     """The placement as *geometry*: what a list-valued placement plugin compiles.
 
-    Deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
+    *motion* is written per instance when the placement is not what the simulator would assume.
+    roqsim's placement plugins default to ``motion: physics`` -- a body the solver owns -- which
+    is right for an obstacle a trial teleports in and wrong for scenery it only drives around: a
+    pushable obstacle can be nudged off the placement the campaign chose, and the run then
+    measures a layout nobody selected. Left ``None`` the instance says nothing and takes the
+    default, because restating a default is noise that goes stale when the default moves.
+
+    Otherwise deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
     model reference and spawner arguments -- one simulator's spawning vocabulary -- while what
     has to exist in a compiled model is a shape at a pose.
 
@@ -252,20 +278,29 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
     for obj, (shape, size) in zip(obstacle_objects or [], obstacle_geometry or []):
         entry = convert_dataclasses_to_dict([obj])[0]
         position = entry.get('spawn_pose', {}).get('position', {})
-        instance = {'pos': [position.get('x', 0.0), position.get('y', 0.0)]}
+        # The pose in the shape the simulator's placement plugins read -- the same shape the
+        # spawn service states one in. `pos`/`yaw` were a second spelling of it, and a
+        # placement plugin that reads only `pose` treats them as absent: the obstacle then
+        # compiles at the ORIGIN, in a run whose whole subject is where the obstacle was put.
+        # No z: omitting it sits the obstacle on the floor, which is what a placement wants
+        # and what the campaign means by a 2-D position.
+        pose = {'position': {'x': position.get('x', 0.0), 'y': position.get('y', 0.0)}}
+        yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
+        if yaw:
+            pose['orientation'] = {'yaw': yaw}
+        instance = {'pose': pose}
         # The SAME name the trial uses. Without it a placement plugin invents its own
         # (`boxes_0`), so a scenario driving `obstacle_0` by name would address nothing --
         # the two channels would agree on how many obstacles exist and where, and disagree
         # about what they are called, which is the one mismatch nothing else would catch.
         if entry.get('entity_name'):
             instance['name'] = entry['entity_name']
-        yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
-        if yaw:
-            instance['yaw'] = yaw
         if size:
             instance['size'] = list(size)
         if shape and shape != 'box':
             instance['shape'] = shape
+        if motion is not None:
+            instance['motion'] = motion
         instances.append(instance)
     return instances
 
@@ -309,6 +344,14 @@ class ObstacleVariation(NavVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationConfig
+
+    #: What the ``instances`` this variation writes say about who owns their pose.
+    #: ``static`` here: a placed obstacle is scenery the trial drives AROUND, and a
+    #: simulator whose placements default to physics would otherwise let the robot
+    #: push one off the position this variation chose -- which is the independent
+    #: variable. A subclass whose obstacle is moved DURING the trial sets ``None``
+    #: and takes the default.
+    SIM_INSTANCES_MOTION = "static"
 
     @classmethod
     def config_view_data(cls, config, base_path):
@@ -514,14 +557,15 @@ class ObstacleVariation(NavVariation):
         objects_parameter_name = self.parameters.binding("objects")[1]
         values = {
             'objects': convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else [],
-            **self._post_process(obstacle_objects, obstacle_anchors, path),
+            **self._post_process(obstacle_objects, obstacle_anchors, path, obstacle_geometry),
         }
         # The same placement, described for the simulator: what must be COMPILED IN so the
         # trial has something to drive. Written in the same call as the trial's view, because
         # a world carrying fewer obstacles than the scenario names is a run that fails on a
         # service call, not a configuration anyone can fix afterwards.
         if self.parameters.is_bound('instances'):
-            values['instances'] = _instances_for_sim(obstacle_objects, obstacle_geometry)
+            values['instances'] = _instances_for_sim(
+                obstacle_objects, obstacle_geometry, motion=self.SIM_INSTANCES_MOTION)
         result_config = self.update_slots(
             config, values,
             other_values={'_map_file': map_file_path, '_path': path,
@@ -542,13 +586,16 @@ class ObstacleVariation(NavVariation):
         Base implementation returns 0.0 (no restriction)."""
         return 0.0
 
-    def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
+    def _post_process(self, obstacle_objects, obstacle_anchors, path, obstacle_geometry) -> dict:
         """Return additional scenario parameters to merge after obstacle placement.
 
         Called after all obstacle_configs have been placed successfully.
         *obstacle_objects*: List[StaticObject]
         *obstacle_anchors*: List[Position] — path anchors matching each obstacle
         *path*: full planned path (List[Position])
+        *obstacle_geometry*: List[(shape, size)] in placement order, so a hook reporting a
+        pose can state the z a placement plugin would apply (:func:`resting_z`) rather than
+        leaving a scenario to guess at one.
 
         Base implementation returns an empty dict."""
         return {}

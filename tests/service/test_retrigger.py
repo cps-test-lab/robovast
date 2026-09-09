@@ -32,7 +32,7 @@ DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 
 
 def _vast(containers=None):
-    return {"version": 3, "metadata": {"name": "pilot"},
+    return {"version": 4, "metadata": {"name": "pilot"},
             "configuration": [{"name": "config1"}],
             "execution": {"scenario_file": "scenario.osc", "runs": 3,
                           "containers": containers or {"scenario": {"image": "base:1"}}}}
@@ -288,6 +288,81 @@ def test_a_config_missing_a_recorded_run_file_is_refused(svc, tmp_path):
     with pytest.raises(retrigger.RetriggerRefused) as e:
         plan.materialize()
     assert "files/nav2_params.yaml" in str(e.value)
+
+
+# -- the pre-flight refuses the launch, whichever client asked ---------------------
+
+
+@pytest.fixture
+def image_outside_the_window(monkeypatch):
+    """Make the recorded image report a protocol version this host cannot drive.
+
+    The host axis is the one the launch itself does not re-derive -- ``prepare`` pins the
+    recorded ref and would hand it to a backend that cannot run it -- so it is what a gate
+    on the operation has to catch.
+    """
+    from robovast.common import execution
+
+    monkeypatch.setattr(execution, "image_compat_version", lambda image: (1, "label"))
+    monkeypatch.setattr(
+        execution, "check_image_compat",
+        lambda image, version=None, source="", unreadable=False:
+            f"{image} speaks container protocol 1, outside this host's window")
+
+
+def test_a_blocked_preflight_refuses_the_launch_and_names_the_axis(svc, tmp_path,
+                                                                   image_outside_the_window):
+    """The gate is on the operation, so a client that never checked cannot start a campaign
+    that can only fail in the backend. Its message carries the axis's own detail, which is
+    the actionable half."""
+    _source_campaign(tmp_path / "results", execution=BUILT)
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        svc.retrigger_campaign("pilot-2026-08-08-120000")
+    assert "host" in str(e.value)
+    assert "outside this host's window" in str(e.value)
+    assert "--force" in str(e.value)
+
+
+def test_a_refused_preflight_stages_nothing(svc, tmp_path, image_outside_the_window):
+    """It refuses before ``prepare``, so there is no tree to release -- and the refusal costs
+    a few record reads rather than a directory."""
+    _source_campaign(tmp_path / "results", execution=BUILT)
+    with pytest.raises(retrigger.RetriggerRefused):
+        svc.retrigger_campaign("pilot-2026-08-08-120000")
+    assert _staged(svc) == []
+
+
+def test_force_launches_past_a_blocking_axis(svc, tmp_path, monkeypatch,
+                                             image_outside_the_window):
+    """The argument is honoured rather than advisory: an axis the caller has decided they
+    understand is theirs to override, and it is the only way past."""
+    _source_campaign(tmp_path / "results", execution=BUILT)
+    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c: ({}, None))
+    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
+                        lambda *a, **k: None)
+
+    ref = svc.retrigger_campaign("pilot-2026-08-08-120000", force=True)
+    assert ref.campaign_id
+    for entry in list(svc._campaigns.values()):        # noqa: SLF001
+        if entry.thread:
+            entry.thread.join(5)
+
+
+def test_a_runnable_campaign_is_not_gated(svc, tmp_path, monkeypatch):
+    """The pre-flight blocks; ``unknown`` and ``upgradable`` do not. A campaign recorded
+    before a field existed is the case the whole pre-flight exists to rescue, so it must
+    still launch."""
+    _source_campaign(tmp_path / "results", execution=BUILT)
+    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c: ({}, None))
+    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
+                        lambda *a, **k: None)
+
+    assert svc.retrigger_campaign("pilot-2026-08-08-120000").campaign_id
+    for entry in list(svc._campaigns.values()):        # noqa: SLF001
+        if entry.thread:
+            entry.thread.join(5)
 
 
 # -- the staging directory is scratch, and must not accumulate ---------------------

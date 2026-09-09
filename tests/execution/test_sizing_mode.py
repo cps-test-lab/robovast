@@ -546,6 +546,126 @@ def test_a_node_with_no_recorded_reason_is_not_a_refusal():
     r._refuse_a_probe_that_could_not_measure("n1", calibration)
 
 
+# -- a probe that lost a container ------------------------------------------------------
+
+
+def _crash(container="simulation", exit_code=1, restarts=3):
+    """What ``restarted_job_forensics`` hands back for one crashed probe."""
+    detail = f"container {container} restarted {restarts}x after Error (exit {exit_code})"
+    return {"detail": detail,
+            "containers": [{"pod_name": "a-probe-pod", "container": container,
+                            "role": container, "restart_count": restarts,
+                            "reason": "Error", "exit_code": exit_code,
+                            "invalidating": True, "detail": detail}]}
+
+
+def _sweep_runner(monkeypatch, crashed, probes=None):
+    """A runner mid-batch with probes out, whose cluster reports *crashed*."""
+    import types
+
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-1"
+    r._batch_tag = "batch-0"
+    r._calibration_applies = True
+    r.namespace = "ns"
+    r.k8s_client = object()
+    r._probes = dict({"probe-a": "n1"} if probes is None else probes)
+    r.freed, r.deleted, r.captured, r.asked = [], [], [], []
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": [], "refused": {}},
+        abandon=lambda node_id, key: r.freed.append((node_id, key)))
+    r._delete_job = lambda name: r.deleted.append(name)
+    r._capture_container_failures = lambda *a, **k: r.captured.append(a)
+    monkeypatch.setattr(
+        kb, "restarted_job_forensics",
+        lambda core, ns, label, job_names=None: r.asked.append(sorted(job_names or []))
+        or crashed)
+    return r
+
+
+def _sweep(runner):
+    return runner._fail_on_crashed_probes("a-label", "/campaign", object(), "b", "c/")
+
+
+def test_a_probe_that_lost_a_container_fails_the_campaign(monkeypatch):
+    """A probe's workload containers are native sidecars, so one that dies is RESTARTED
+    rather than ending the Job: the probe keeps sampling a stack that keeps dying, holds its
+    node while it does, and the campaign has no verdict to report. The probe runs one of the
+    campaign's own configurations, so every run would meet the same fault."""
+    from robovast.execution.backends import CampaignConfigError
+
+    r = _sweep_runner(monkeypatch, {"probe-a": _crash()})
+    with pytest.raises(CampaignConfigError) as raised:
+        _sweep(r)
+    message = str(raised.value)
+    assert "n1" in message and "simulation" in message and "exit 1" in message
+    assert r.captured, "the dead container's log outlives its pod by minutes, not hours"
+    assert r.deleted == ["probe-a"], "a pinned pod restarting holds its node until deleted"
+    assert r.freed == [("n1", "probe-a")] and not r._probes
+
+
+def test_the_sweep_asks_only_about_this_batch_probes(monkeypatch):
+    """The label selector is campaign-wide and finished Jobs linger, so an unscoped answer
+    re-reports an earlier batch's restart to every batch that follows."""
+    r = _sweep_runner(monkeypatch, {}, probes={"probe-a": "n1", "probe-b": "n2"})
+    _sweep(r)
+    assert r.asked == [["probe-a", "probe-b"]]
+
+
+def test_a_probe_still_running_cleanly_is_left_to_its_measurement(monkeypatch):
+    """The sweep answers one question -- did a container die -- and a probe that has not
+    lost one is still the measurement it was started for."""
+    r = _sweep_runner(monkeypatch, {})
+    _sweep(r)
+    assert r._probes == {"probe-a": "n1"} and not r.deleted
+
+
+def test_no_outstanding_probe_asks_the_cluster_nothing(monkeypatch):
+    """This runs every couple of seconds for the whole batch, and probes are outstanding
+    only at its start: past that the question costs a pod list per cycle and answers
+    nothing."""
+    r = _sweep_runner(monkeypatch, {}, probes={})
+    _sweep(r)
+    assert r.asked == []
+
+
+def test_an_unreadable_cluster_leaves_the_probe_to_the_other_door(monkeypatch):
+    """Best-effort about the reading: the refusal path judges the same probe a cycle later,
+    which is what happened before this sweep existed."""
+    r = _sweep_runner(monkeypatch, {})
+    monkeypatch.setattr(kb, "restarted_job_forensics",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("api down")))
+    _sweep(r)
+    assert r._probes == {"probe-a": "n1"}
+
+
+def test_the_statistic_defers_to_the_container_that_died():
+    """What a crashed probe wrote is a fragment, so the measurement refuses it for whichever
+    statistic that fragment fails -- a reason describing the measurement, not the fault. It
+    also ends on `execution.sizing: fixed`, which would run the same trial into the same
+    crash with the measuring removed."""
+    from robovast.execution.backends import CampaignConfigError
+
+    r, calibration = _runner_that_refused("its probe produced fewer than 10 samples")
+    r._probe_failures = {"n1": "container simulation restarted 3x after Error (exit 1)"}
+    with pytest.raises(CampaignConfigError) as raised:
+        r._refuse_a_probe_that_could_not_measure("n1", calibration)
+    message = str(raised.value)
+    assert "simulation" in message and "exit 1" in message
+    assert "lengthen the trial" not in message and "sizing: fixed" not in message
+
+
+def test_a_node_that_lost_no_container_still_gets_the_sizing_message():
+    """The deferral is a precedence, not a replacement: a probe that genuinely could not be
+    measured is still a sizing question and still gets the remedy for it."""
+    from robovast.execution.backends import CampaignConfigError
+
+    r, calibration = _runner_that_refused("its probe produced fewer than 10 samples")
+    with pytest.raises(CampaignConfigError) as raised:
+        r._refuse_a_probe_that_could_not_measure("n1", calibration)
+    assert "lengthen the trial" in str(raised.value)
+
+
 # -- what a `.vast` may say, and what it may not -----------------------------------------
 
 

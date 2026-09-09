@@ -56,6 +56,7 @@ import copy
 import hashlib
 import logging
 import os
+import posixpath
 import re
 import shlex
 import tempfile
@@ -69,8 +70,8 @@ from kubernetes import client
 
 from robovast.common import (get_execution_env_variables, plan_containers,
                              prepare_campaign_configs, scenario_env)
-from robovast.common.campaign_data import (KIND_INVALID, record_container_failures,
-                                           record_intervention)
+from robovast.common.campaign_data import (KIND_INVALID, PROBE_DIR,
+                                           record_container_failures, record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
 from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
@@ -80,7 +81,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
-                                         RunOptions)
+                                         RunOptions, ShareStopped)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
@@ -643,6 +644,14 @@ class BatchJobRunner:
     #: attribute would be shared by every runner in the process; :meth:`_drop_job`
     #: replaces it with a per-instance set on first use.
     _invalidated = None
+    #: Nodes whose probe lost a container, ``{node id: what died}``. Kept because a probe
+    #: that CRASHED and one that merely measured badly are refused by different code at
+    #: different moments, and only this says which happened: what a dead stack wrote is a
+    #: fragment, so the refusal reading it names whichever statistic that fragment fails
+    #: rather than the container that died. ``None`` rather than a dict for the reason
+    #: given above -- a mutable class attribute would be shared by every runner in the
+    #: process -- and :meth:`_fail_on_crashed_probes` replaces it on first use.
+    _probe_failures = None
     #: How often a batch that is blocked repeats why, so a long wait for
     #: capacity stays visible in the log instead of scrolling past.
     _BLOCKED_LOG_INTERVAL_SECONDS = 60.0
@@ -1137,8 +1146,9 @@ class BatchJobRunner:
         as the campaign root, uploaded to the campaign prefix, so per-config
         results land at ``<campaign>/<config>/<run>/`` via each document's
         ``_output_dir``. Job-level artifacts go to a per-job subdir, and each
-        config's files are mirrored under ``/config/<config-name>/`` to avoid
-        collisions. The job's multi-document param file ships in ``_transient/``
+        config's files are staged at ``/config/<deploy path>`` -- where the campaign's
+        own copy would otherwise be, so ``/config`` is the view belonging to the cell
+        that is running. The job's multi-document param file ships in ``_transient/``
         and so lands at ``/config/<job-tag>.params.yaml``.
         """
         _, _, _, _, campaign_prefix = self._s3_settings()
@@ -1153,15 +1163,34 @@ class BatchJobRunner:
         sim_rename = (
             f"(cp /config/{job_tag}.sim.yaml {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
             if sim_overlay["document"] else "")
-        per_config_mirror = "".join(
-            f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/ /config/{cn}/ 2>/dev/null || true); "
-            for cn in job.config_names
+        # Each configuration's own files, staged where the campaign's copy would have been.
+        # Copied per declared path rather than mirroring `<config>/_config/` wholesale,
+        # because that directory also holds this cell's RECORDS -- `config.yaml`,
+        # `scenario.config`, `sim.config`, `sut.config` -- and `scenario.config` at
+        # `/config/scenario.config` is the entrypoint's default parameter file. Composition
+        # knows exactly which paths are inputs, so they are named rather than filtered out
+        # of a wholesale copy by a list that would have to grow with every new record.
+        #
+        # After both campaign mirrors below, so a cell's copy lands on the campaign's; the
+        # packer keeps one file-owning configuration per job, so which copy wins is never
+        # in question (see `WorkItem.files_key`).
+        staged = []
+        for item in job.items:
+            for deploy_rel, _src in (item.config.get("_config_files") or []):
+                entry = (item.config_name, deploy_rel)
+                if entry not in staged:
+                    staged.append(entry)
+        per_config_stage = "".join(
+            f"(mkdir -p /config/{posixpath.dirname(rel)} && "
+            f"mc cp mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/{rel} "
+            f"/config/{rel} 2>/dev/null || true); "
+            for cn, rel in staged
         )
         init_cmd = (
             f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
-            f"{per_config_mirror}"
+            f"{per_config_stage}"
             f"{sim_rename}"
             f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient; do "
             f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
@@ -1509,6 +1538,75 @@ class BatchJobRunner:
             f"ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for the role named above, "
             f"or set execution.sizing: fixed and declare what this campaign needs.")
 
+    def _fail_on_crashed_probes(self, job_label, campaign_root, storage, bucket_name,
+                                campaign_prefix) -> None:
+        """Fail the campaign when an outstanding probe lost a workload container.
+
+        **The restart sweep the batch's own jobs get, asked about the probes too.** A probe
+        is in neither ``created_names`` nor ``jobs_by_name`` -- deliberately, so it never
+        reaches ``get_remaining_jobs`` alongside the batch's work -- and
+        :meth:`_invalidate_restarted_jobs` scopes itself to those names. Without this, the
+        one signal that condemns a job which still looks healthy is never asked about the
+        one job class whose failure holds a node, and with it the campaign, indefinitely.
+
+        It has to be asked, because a probe pod runs what a trial runs: its workload
+        containers are native sidecars carrying ``restartPolicy: Always``, so one that dies
+        is restarted rather than ending the Job. The probe goes on writing monitor samples
+        for a stack that keeps dying, and what is read out of it is a measurement of the
+        restart loop -- refused, eventually, for whichever statistic that fragment fails,
+        while the container's own error appears nowhere the campaign reports.
+
+        A probe runs one of this campaign's own configurations, so a workload container that
+        dies in it is not a flaky trial to drop and re-sample: every run would meet the same
+        fault. Stopping here is the cheapest honest outcome, and the evidence is captured
+        before the Job is deleted because the kubelet keeps a dead container's log only for
+        as long as it keeps the pod.
+
+        Best-effort about the *reading*, never about the response: a pod list that fails
+        leaves the probe to be judged a cycle later, by whichever door it reaches next.
+        """
+        from .node_calibration import probe_output_dir  # noqa: PLC0415
+
+        if not self._probes:
+            return
+        try:
+            crashed = restarted_job_forensics(self.k8s_client, self.namespace, job_label,
+                                              job_names=list(self._probes))
+        except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+            logger.warning("Batch %s: could not check for restarted probes: %s",
+                           self._batch_tag, exc)
+            return
+        failed = []
+        for key, entry in sorted(crashed.items()):
+            node_id = self._probes.pop(key, None)
+            if node_id is None:
+                continue
+            if self._probe_failures is None:
+                self._probe_failures = {}
+            self._probe_failures[node_id] = entry["detail"]
+            failed.append((node_id, entry["detail"]))
+            logger.warning("Batch %s: calibration probe for node %s -- %s",
+                           self._batch_tag, node_id, entry["detail"])
+            # Evidence first, and never at the cost of the response -- the same order and
+            # the same reason as an invalidated job's.
+            try:
+                self._capture_container_failures(entry, key, probe_output_dir(node_id), (),
+                                                 campaign_root, storage, bucket_name,
+                                                 campaign_prefix)
+            except Exception as exc:  # noqa: BLE001 - a diagnostic must not raise
+                logger.warning("Batch %s: could not capture evidence for probe %s: %s",
+                               self._batch_tag, key, exc)
+            # The pod is pinned and restarting, so it holds its node until something deletes
+            # it. The reservation behind it is released by the queue's own ``cancel`` as this
+            # batch unwinds; what has to happen here is the deletion, which nothing else
+            # reaches on a campaign that ends by raising.
+            self._delete_job(key)
+            if self._calibration is not None:
+                self._calibration.abandon(node_id, key)
+        if failed:
+            node_id, detail = failed[0]
+            raise self._probe_crash_error(node_id, detail, others=len(failed) - 1)
+
     def _collect_probes(self, storage, bucket_name, campaign_prefix) -> None:
         """Read whichever probes have finished, and let their nodes take work.
 
@@ -1586,6 +1684,14 @@ class BatchJobRunner:
         """
         if not getattr(self, "_calibration_applies", False):
             return
+        # **A container that died outranks the statistic it made unreadable.** A probe whose
+        # stack crashed still writes samples, so it is refused for what that fragment fails
+        # -- too few samples, nothing usable, no verdict -- and every one of those reasons
+        # describes the measurement rather than the fault. Where the crash is on record it is
+        # the cause, and the statistic is its consequence.
+        crash = (self._probe_failures or {}).get(node_id)
+        if crash:
+            raise self._probe_crash_error(node_id, crash)
         reason = (calibration.outcome().get("refused") or {}).get(node_id)
         if not reason:
             return
@@ -1597,6 +1703,28 @@ class BatchJobRunner:
             f"allocation while the others run at measured figures, which is not a comparable "
             f"campaign. {remedy}, or set execution.sizing: fixed to declare the sizing "
             f"outright.")
+
+    def _probe_crash_error(self, node_id, detail, others: int = 0) -> CampaignConfigError:
+        """The terminal error for a probe that lost a container, wherever it was noticed.
+
+        One function for both doors -- the restart sweep, and a refusal reading what a
+        crashed probe left behind -- because they are one fault seen at two moments, and a
+        reader must not get a different diagnosis depending on which saw it first.
+
+        Deliberately NOT the sizing message its siblings raise. That one ends on
+        ``execution.sizing: fixed``, which is sound advice for a node that could not be
+        measured and wrong for one whose container died: a declared reservation runs the
+        same trial into the same fault with the measuring removed.
+        """
+        also = (f" {others} further probe(s) of this batch failed the same way."
+                if others else "")
+        return CampaignConfigError(
+            f"Node {node_id}'s calibration probe lost a container: {detail}.{also} A probe "
+            f"runs one of this campaign's own configurations, so a workload container dying "
+            f"in it is the campaign's to fix rather than the allocation's -- every run would "
+            f"meet the same fault. What that container printed before it died is in "
+            f"_execution/container_failures.json, beside the probe's own output under "
+            f"{PROBE_DIR}/.")
 
     def _remedy_for(self, reason: str) -> str:
         """What would actually change the outcome, for the reason this probe was refused.
@@ -2681,6 +2809,14 @@ class BatchJobRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Batch %s: could not record the invalidation of %s: %s",
                            self._batch_tag, job_name, exc)
+        self._delete_job(job_name)
+
+    def _delete_job(self, job_name) -> None:
+        """Delete one Job of this campaign, tolerating one that has already gone.
+
+        A 404 is the expected end of a race with the job controller, and it reports that
+        what this asks for has happened -- so it is not an error to pass on.
+        """
         try:
             self.k8s_batch_client.delete_namespaced_job(
                 job_name, self.namespace, grace_period_seconds=0,
@@ -2889,6 +3025,13 @@ class BatchJobRunner:
                 # instead of this one, leaving a measured node idle for a cycle for no reason.
                 # Collecting first means a node calibrated in this pass takes work in this
                 # pass.
+                # **Asked before the probes are read, not after.** Both questions are
+                # about the same pod, and the one that gets there first decides what the
+                # campaign reports: a crashed probe's fragment reads as a bad measurement,
+                # so collecting first ends the campaign naming a statistic and hiding the
+                # container that died.
+                self._fail_on_crashed_probes(job_label, campaign_root, storage,
+                                             bucket_name, campaign_prefix)
                 self._collect_probes(storage, bucket_name, campaign_prefix)
                 # Works the GLOBAL queue, so this may create another campaign's jobs too --
                 # that is what makes the ordering cluster-wide while keeping the queue
@@ -3744,6 +3887,25 @@ class KubernetesBackend(ExecutionBackend):
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
                     "_execution / metrics) to %s/%s", n, bucket, prefix)
 
+    def campaign_results_bytes(self, campaign_root: str) -> "int | None":
+        """Sum the campaign's stored objects — the durable home on this lane is the store.
+
+        Measured against the object store rather than ``campaign_root`` because this
+        driver's disk is scratch: a campaign this process *resumed* holds only its control
+        plane locally (see ``campaign_resume``), so a walk of the local tree would report a
+        fraction of the campaign as its total and be believed. The store is authoritative
+        whatever the driver happens to hold.
+
+        A listing pass — sizes arrive with the keys, so this moves no data and costs one
+        request per 1000 objects, once, at the end of a campaign.
+        """
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        bucket, prefix = in_pod_storage.campaign_storage_location(
+            self.cluster_config, campaign_id)
+        storage = in_pod_storage.storage_client_for(self.cluster_config)
+        objects, _ = storage.list_entries(bucket, prefix)
+        return sum(int(size or 0) for _, size in objects)
+
     def preflight_upload_to_share(self) -> None:
         """Fail fast when ``--upload-to-share`` is set but no share is configured.
 
@@ -3802,15 +3964,51 @@ class KubernetesBackend(ExecutionBackend):
         # *in*; a metadata walk is cheap next to the upload that reads all of it anyway.
         on_member = getattr(progress_callback, "on_member", None)
         if on_member is not None:
+            # Before the metadata walk, let alone the transfer: a share already cancelled
+            # must not start reading a campaign that can be a terabyte.
+            progress_callback.raise_if_stopped()
             progress_callback.set_source_total(
                 campaign_archive.campaign_source_bytes(campaign_root))
-        with campaign_archive.campaign_tar_stream(campaign_root,
-                                                  on_member=on_member) as stream:
-            provider.upload_archive_stream(stream, object_name,
-                                           progress_callback=progress_callback)
+        try:
+            with campaign_archive.campaign_tar_stream(campaign_root,
+                                                      on_member=on_member) as stream:
+                provider.upload_archive_stream(stream, object_name,
+                                               progress_callback=progress_callback)
+        except ShareStopped as stopped:
+            # Name the object on the way out. This path is chunked with no resume, so what
+            # is on the share now is a truncated archive under the real name, and only the
+            # caller that catches this can decide to discard it -- but only this scope
+            # knows what it was called.
+            stopped.object_name = object_name
+            raise
         if on_member is not None:
             progress_callback.finish()
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
+
+    def discard_partial_share(self, object_name: str) -> str:
+        """Delete the truncated archive a cancelled upload left on the share.
+
+        The streamed path is chunked and cannot resume, so an interrupted upload leaves a
+        partial object under the archive's real name -- and that object lists and downloads
+        exactly like a complete one, failing only at the far end, on somebody else's
+        service, after a full transfer. That is the shape
+        ``DockerBackend._refuse_unimportable`` exists to keep off a share, and a
+        cancellation must not manufacture it.
+
+        Raises if the delete did not happen, and does **not** soften that into a note: it
+        cannot tell a provider that will not delete from an object that was never created
+        (``remove_archive`` raises for both), and guessing between them is what would make
+        the report wrong. ``controller.share_cancelled_detail`` is the one caller that
+        must not raise over a cancellation, and it words the uncertainty there.
+        """
+        from . import in_pod_upload  # pylint: disable=import-outside-toplevel
+        provider = in_pod_upload.load_provider_from_env()
+        if provider is None:
+            raise CampaignConfigError(
+                f"cannot remove the partial '{object_name}': no share is configured "
+                "(ROBOVAST_SHARE_TYPE unset).")
+        provider.remove_archive(object_name)
+        return f"the partial '{object_name}' was removed from the share."
 
     def count_run_artifacts(self, campaign_id: str,
                             campaign_root: str) -> int | None:

@@ -169,6 +169,10 @@ class GcpClusterConfig(BaseConfig):
     and persisted in the cluster flag file between ``setup`` and ``cleanup``.
     """
 
+    #: GKE node pools are Compute Engine VMs, whose guest kernels expose no cpufreq policy.
+    #: See :attr:`BaseConfig.governor_is_settable`.
+    governor_is_settable = False
+
     def __init__(self):
         super().__init__()
         self._gcs_bucket: Optional[str] = None
@@ -311,8 +315,12 @@ class GcpClusterConfig(BaseConfig):
             iter(store_pod.attach_infrastructure(
                 [], namespace,
                 index_storage_path=kwargs.get('index_storage_path', ''),
+                index_storage_class=kwargs.get('index_storage_class', ''),
+                index_storage_size=kwargs.get('index_storage_size', ''),
                 registry_storage_path=kwargs.get('registry_storage_path', ''),
-                registry_storage_class=kwargs.get('registry_storage_class', ''))),
+                registry_storage_class=kwargs.get('registry_storage_class', ''),
+                registry_authenticated=kwargs.get('registry_authenticated', False),
+                ingress_class=kwargs.get('ingress_class', ''))),
             namespace=namespace)
         logging.info("GCP cluster ready (campaign data goes straight to the bucket).")
 

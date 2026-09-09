@@ -552,3 +552,56 @@ def test_the_default_still_preserves_the_executable_bit(monkeypatch, tmp_path):
 
     assert client.download_prefix("b", "camp-1", str(tmp_path)) == 1
     assert store.heads == ["camp-1/bin/run.sh"]
+
+
+# -- a campaign id that is too long to be a bucket name ----------------------
+#
+# S3-compatible bucket names are capped at 63 characters, and the embedded-store path
+# (no shared bucket configured) uses the sanitised campaign id AS the bucket name.
+# ``campaign_id_for`` (execution/controller.py) refuses an id long enough to need this
+# at launch time; this is the defence for one minted before that check existed.
+
+
+def test_a_short_id_is_used_as_the_bucket_name_unchanged():
+    bucket, prefix = in_pod_storage.campaign_storage_location(_S3Config(), "nav2-baseline-1")
+    assert bucket == "nav2-baseline-1"
+    assert prefix == ""
+
+
+def test_a_too_long_id_is_truncated_with_a_hash_not_silently_broken():
+    long_id = "a" * 71
+    bucket, _prefix = in_pod_storage.campaign_storage_location(_S3Config(), long_id)
+    assert len(bucket) <= 63
+    assert bucket != long_id[:63], "truncation alone is not the fix -- a hash must ride along"
+
+
+def test_two_ids_sharing_a_truncated_head_still_get_distinct_buckets():
+    """The realistic collision: a campaign id is slug + date + counter, so two runs of
+    the same experiment on the same day share every character up to the counter -- the
+    exact prefix a naive truncation would keep."""
+    shared_head = "a" * 60
+    bucket_1, _ = in_pod_storage.campaign_storage_location(_S3Config(), shared_head + "-001")
+    bucket_2, _ = in_pod_storage.campaign_storage_location(_S3Config(), shared_head + "-002")
+    assert bucket_1 != bucket_2
+
+
+def test_the_same_id_always_bounds_to_the_same_bucket():
+    """Deterministic: this is looked up on every later read of the same campaign, not
+    only decided once at launch."""
+    long_id = "b" * 80
+    first, _ = in_pod_storage.campaign_storage_location(_S3Config(), long_id)
+    second, _ = in_pod_storage.campaign_storage_location(_S3Config(), long_id)
+    assert first == second
+
+
+def test_a_long_id_is_not_bounded_on_the_shared_bucket_path():
+    """On the shared bucket the id becomes a key PREFIX, not a bucket name -- no 63-char
+    limit applies there, so it must be carried through unbounded."""
+    class _Shared(_S3Config):
+        def get_s3_bucket(self):
+            return "team-bucket"
+
+    long_id = "c" * 80
+    bucket, prefix = in_pod_storage.campaign_storage_location(_Shared(), long_id)
+    assert bucket == "team-bucket"
+    assert prefix == f"{long_id}/"

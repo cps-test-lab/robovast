@@ -88,8 +88,9 @@ def _add_port(service, name, port):
 
 
 def attach_infrastructure(docs, namespace="default", index_storage_path="",
-                          index_storage_class="", registry_storage_path="",
-                          registry_storage_class=""):
+                          index_storage_class="", index_storage_size="",
+                          registry_storage_path="", registry_storage_class="",
+                          ingress_class="", registry_authenticated=False):
     """Add the registry and the index to a provider's parsed store manifest.
 
     *docs* is the provider's ``robovast`` manifest, parsed, with its store volume already
@@ -119,7 +120,7 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     containers = spec.setdefault("containers", [])
     volumes = spec.setdefault("volumes", [])
     for container, volume in (
-            (registry_deploy.registry_container(),
+            (registry_deploy.registry_container(authenticated=registry_authenticated),
              registry_deploy.registry_volume(registry_storage_path,
                                              registry_storage_class)),
             (index_deploy.index_container(),
@@ -129,6 +130,14 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
         if not any(v.get("name") == volume["name"] for v in volumes):
             volumes.append(volume)
 
+    if registry_authenticated:
+        # The password file, beside the blobs it guards. Added here rather than in the
+        # loop above because it pairs with no container of its own -- it is a second
+        # volume for one of them.
+        auth_volume = registry_deploy.registry_auth_volume()
+        if not any(v.get("name") == auth_volume["name"] for v in volumes):
+            volumes.append(auth_volume)
+
     service = _find(docs, "Service", STORE_SERVICE_NAME)
     if service is None:
         service = {"apiVersion": "v1", "kind": "Service",
@@ -136,12 +145,19 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
                    "spec": {"type": "ClusterIP", "ports": [],
                             "selector": dict(STORE_POD_SELECTOR)}}
         docs.append(service)
+    # This Service is the registry's Ingress backend, so it needs whatever the controller
+    # requires of one -- the same annotations the service's own Service gets, from the same
+    # place. Merged rather than assigned: a provider's manifest may carry its own.
+    backend = registry_deploy.ingress_backend_annotations(ingress_class)
+    if backend:
+        service["metadata"].setdefault("annotations", {}).update(backend)
     _add_port(service, "registry", registry_deploy.REGISTRY_PORT)
     _add_port(service, "index", index_deploy.INDEX_PORT)
 
     claims = [c for c in (registry_deploy.registry_pvc_manifest(namespace,
                                                                 registry_storage_class),
-                          index_deploy.index_pvc_manifest(namespace, index_storage_class))
+                          index_deploy.index_pvc_manifest(namespace, index_storage_class,
+                                                          index_storage_size))
               if c]
     return claims + docs
 
@@ -192,3 +208,31 @@ def missing_infrastructure(pod) -> list:
         return list(infrastructure_container_names())
     running = {getattr(c, "name", None) for c in (pod.spec.containers or [])}
     return [name for name in infrastructure_container_names() if name not in running]
+
+
+def registry_enforces_auth(pod) -> bool:
+    """Whether the **live** registry container is actually configured to authenticate.
+
+    The same 409 that keeps an existing store pod keeps its old container spec, so turning
+    auth on in the manifest does not turn it on in the cluster. Without this the credential
+    would be minted, written to both Secrets and reported as done, over a registry still
+    serving anonymous pushes -- a setup that says it closed a hole it left open, which is
+    worse than one that never claimed to.
+
+    Reads the container's environment rather than a version or a label: it is the thing
+    that decides, so it cannot be right here and wrong in the pod.
+
+    ``False`` for a pod that is absent or carries no registry container -- both are already
+    reported by :func:`missing_infrastructure`, and answering "not authenticating" is true
+    of them anyway.
+    """
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    if pod is None:
+        return False
+    for container in (pod.spec.containers or []):
+        if getattr(container, "name", None) != registry_deploy.REGISTRY_CONTAINER_NAME:
+            continue
+        return any(getattr(e, "name", None) == "REGISTRY_AUTH"
+                   for e in (getattr(container, "env", None) or []))
+    return False

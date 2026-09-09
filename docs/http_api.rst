@@ -25,6 +25,14 @@ A browser exchanges it for a session cookie at ``/login``; the CLI and MCP send
 if none is configured; a deployed one is published over an Ingress with TLS. See
 :doc:`deployment` for the boundary and ``vast login``.
 
+The gate is ASGI middleware (:class:`robovast.service.auth.AuthMiddleware`), not a FastAPI
+dependency, so a new route is covered automatically: a dependency would miss the mounted
+``/mcp`` sub-app, which does not run the parent app's dependencies, and
+``BaseHTTPMiddleware`` would buffer the streaming responses. It resolves a
+:class:`~robovast.service.auth.Principal` rather than a boolean — read identity from that
+rather than re-parsing headers, so exchanging the shared secret for an identity provider
+replaces one resolver instead of every route.
+
 Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
 ``sources_root`` for any caller that is not on the same machine, because those are
 filesystem paths only useful — and only safe — to one that is; a forwarded request

@@ -217,6 +217,14 @@ It provides four views:
   resolved again at launch, exactly as a fresh launch from the workspace would, and the
   new campaign says which containers that applied to, because it will not be running
   the same bytes.
+  Every re-run goes through the **pre-flight** (:ref:`the same five axes
+  <results-retrigger-preflight>` the CLI's ``vast campaign rerun --check`` prints), and
+  the service refuses on a blocking one — a config no migration step carries forward, an
+  image outside this host's container-protocol window — so a re-run that could only fail
+  in the backend is answered before it launches. The browser reads that report first and
+  says which axis blocks, in a dialog whose **Re-run anyway** starts the campaign
+  regardless: the override belongs to whoever has decided they understand the axis. A
+  refusal that arrives anyway is the service's own sentence, in a sticky error notice.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
@@ -703,6 +711,13 @@ configuration originally came from — copied forward at launch rather than look
 survives the parent campaign being deleted and a re-run of a re-run still names the root. The
 campaign listing is paged, so a hover that had to find its parent in the list would answer
 differently depending on where you had scrolled.
+
+A re-run also gets a ``Config`` row saying which config version it read: ``v1 → v4,
+migrated`` when the ladder had to carry the parent's frozen ``.vast`` forward, and ``v4, as
+written`` when it did not. Both are worth a row, because a re-run that read a different
+config version than the campaign it reproduces is not repeating the same experiment — and
+without the second wording, "nothing was migrated" would look exactly like "nobody recorded
+it", which is what a re-run from before this was kept shows: no row.
 
 A campaign that ran **before this was recorded** has no hover at all. Its ``.vast`` basename
 could be read out of its snapshot, but that says nothing about which workspace, and filling in
@@ -1272,9 +1287,18 @@ Reading the configuration a campaign ran
 
 **Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
 frozen ``_config/`` — the configuration it was actually staged with — at
-``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
-(after variation expansion) and stays for the rest of its life, so the configuration of a
-campaign that is still running can be read while it runs.
+``#/config/campaign/<campaign_id>``. It appears once the campaign can have that snapshot at
+all and stays for the rest of its life, so the configuration of a campaign that is still
+running can be read while it runs.
+
+Two phases are before that point and the entry is hidden through both. A run stages
+``_config/`` when its **first batch is prepared**; a campaign taken in from an archive has it
+once the bytes land, and is listed at ``importing`` from before the first of them arrives —
+its campaign directory does not exist yet. The run's gate is one-way: the controller advances
+to ``running`` before that first batch is staged, so the entry can still be offered a little
+early. The Config view reports that as what it is — the configuration is not staged yet, with
+a **Retry** — rather than as a campaign that never froze one. The two absences look identical
+from a listing, and only the campaign's phase separates them.
 
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
@@ -1334,7 +1358,7 @@ implying a position it does not have.
 
 **Data browser.** The left panel lists the campaign's tables in the results
 index — one per metric CSV, plus the ``runs`` **dimension table**
-(per-run ``status``/``duration_s`` and each scenario parameter as a ``param_*``
+(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*``
 column), with ``campaign.db`` attached as schema ``campaign``. Write **read-only SQL**
 in the editor and **Run** it; the result shows as a table and, via the chart builder,
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric

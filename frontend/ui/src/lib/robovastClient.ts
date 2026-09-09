@@ -90,14 +90,35 @@ const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
 export const isTerminalPhase = (phase: string | undefined): boolean =>
   !!phase && !RUNNING_PHASES.has(phase)
 
+// Phases before the run loop starts. They have no progress bar of their own, so the only
+// signal that one is wedged rather than slow is how long it has been held — and nothing a
+// campaign stages for a reader exists yet (see `mayHaveStagedConfig`).
+export const PRE_RUN_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'initializing', 'building', 'starting', 'plugin install', 'variation',
+])
+
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
-export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
-// Results are ready to explore only once the run finished AND its configured postprocessing
-// pipelines ran: "finished" alone is reached *before* postprocessing chains, and a campaign that
-// defines no postprocessing never gets the derived data the Results views query. The single gate
-// for what the Results topic (Explorer / Run / Data) shows.
-export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
+// The phases in which a campaign has ENDED with results worth reading. `stopped` and `crashed`
+// belong here as much as `finished` does: the runs they completed are on disk and their analysis
+// runs like any other campaign's, so gating on `finished` alone hid exactly the campaigns whose
+// partial results someone had a reason to go looking at. A stopped campaign in particular could
+// never qualify however often its data was rebuilt -- `status_recovery.record_step_outcome`
+// deliberately preserves `stopped` across a re-postprocess, so the phase never becomes `finished`.
+//
+// `failed` stays out, and for a reason about the data rather than about tidiness: a failed campaign
+// never finished projecting its results, so its root is missing pieces postprocessing needs, which
+// is why the controller skips postprocessing for it.
+const ENDED_WITH_RESULTS_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'finished', 'stopped', 'crashed',
+])
+
+// Results are ready to explore only once the campaign ENDED AND its configured postprocessing
+// pipelines ran: the end is reached *before* postprocessing chains, and a campaign that defines no
+// postprocessing never gets the derived data the Results views query. The single gate for what the
+// Results topic (Explorer / Run / Data) shows.
+export const hasResults = (c: CampaignSummary) =>
+  ENDED_WITH_RESULTS_PHASES.has(c.phase) && c.postprocessed
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
 // zero means there is no store to read — the campaign never started, or ended before writing one.
 // Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
@@ -152,6 +173,12 @@ export const DESCRIPTION_MAX_LEN = 200
 export const UI_RESULT_BYTES = 8 * 1024 * 1024
 
 export type CampaignRef = Schemas['CampaignRef']
+
+// Whether a campaign can be re-run, per axis (config version, container protocol, images,
+// plugins, asset providers). `blocking` names the axes that stop it, and each axis's `detail`
+// says what to do about it.
+export type RetriggerReport = Schemas['RetriggerReport']
+export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
 
@@ -564,10 +591,21 @@ export const robovast = {
     ),
 
   // Launch a NEW campaign from this one's frozen config and pinned image — the source is
-  // untouched, and the returned id is the new campaign's, not this one's. Refuses (400) when
-  // the campaign never recorded an image its runs could start from.
-  retriggerCampaign: (campaignId: string) =>
-    request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`),
+  // untouched, and the returned id is the new campaign's, not this one's. The service runs the
+  // pre-flight and refuses (400) on a blocking axis, naming each one; `force` launches anyway.
+  retriggerCampaign: (campaignId: string, force = false) =>
+    request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`, {
+      force,
+    }),
+
+  // The same pre-flight the retrigger enforces, read without launching — so a refusal can be
+  // explained, and the override offered, before the button is pressed rather than after. Costs
+  // nothing: it stages nothing and starts no container.
+  retriggerCheck: (campaignId: string) =>
+    request<RetriggerReport>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/retrigger/check`,
+    ),
 
   // Permanently delete one campaign wholesale (local dir / cluster object-store data +
   // leftover Jobs + cache). Refused by the service while the campaign is still running.

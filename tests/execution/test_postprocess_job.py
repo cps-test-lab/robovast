@@ -588,13 +588,47 @@ class _FakeBatch:
         self.calls.append('create')
 
 
+class _FakeCore:
+    """Enough of CoreV1Api for the blocked-pod probe behind _stuck_job.
+
+    *pods* are handed to the real pod-signal code, so a test says what Kubernetes says and
+    the classification stays the shared one rather than a second opinion written here.
+    """
+
+    def __init__(self, pods=(), events=()):
+        self.pods, self.events = list(pods), list(events)
+
+    def list_namespaced_pod(self, namespace, label_selector=None):
+        return type('L', (), {'items': self.pods})()
+
+    def list_namespaced_event(self, namespace, field_selector=None):
+        reason = (field_selector or '').split('=')[-1]
+        return type('L', (), {'items': [e for e in self.events
+                                        if e.reason == reason]})()
+
+    def list_node(self):
+        return type('L', (), {'items': []})()
+
+
+def _unpullable_pod(job='job-x'):
+    """A pod whose image will never arrive -- the blocked shape the pod's own status carries."""
+    waiting = type('W', (), {'reason': 'ImagePullBackOff', 'message': 'no such image'})()
+    cs = type('CS', (), {'state': type('S', (), {'waiting': waiting})()})()
+    return type('P', (), {
+        'metadata': type('M', (), {'name': f'{job}-pod', 'labels': {'job-name': job}})(),
+        'spec': type('Sp', (), {'node_name': 'node-a'})(),
+        'status': type('St', (), {'phase': 'Pending', 'conditions': [],
+                                  'init_container_statuses': [],
+                                  'container_statuses': [cs]})()})()
+
+
 def test_a_running_job_is_adopted_not_replaced():
     """Two postprocesses of one campaign must not race each other's pods."""
     batch = _FakeBatch(active=1)
 
     # Reported as adoption rather than as bare success: the caller has to know it is a
     # waiter on someone else's Job, because that decides what it may write and delete.
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_ADOPTED
+    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
 
@@ -605,8 +639,43 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     """
     batch = _FakeBatch(active=None)
 
-    assert pj._adopt_or_replace(batch, 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
+
+
+def test_an_active_job_whose_pod_cannot_start_is_replaced_not_adopted():
+    """``status.active`` counts a pod that will never run, so adopting on that field alone
+    makes a campaign unrecoverable: the attempt waits on an outcome that is not coming, and
+    every retrigger after it adopts the same Job and waits again. Re-running postprocessing
+    is the documented recovery, so it has to be able to reach a new pod.
+    """
+    batch = _FakeBatch(active=1)
+    core = _FakeCore(pods=[_unpullable_pod()])
+
+    assert pj._adopt_or_replace(batch, core, 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert batch.calls.index('delete') < batch.calls.index('create')
+    assert not pj._live_job(batch, core, 'ns', 'job-x')
+
+
+def test_a_job_queued_behind_a_busy_cluster_is_still_adopted():
+    """The counterpart, and the reason the check asks for the reasons that will NOT clear:
+    a pod waiting for a node or a throttled pull is the work in flight adoption exists for,
+    and replacing its Job would throw away a conversion that was about to run.
+    """
+    waiting = type('W', (), {'reason': 'ImagePullBackOff',
+                             'message': 'toomanyrequests: rate limit exceeded'})()
+    cs = type('CS', (), {'state': type('S', (), {'waiting': waiting})()})()
+    pod = type('P', (), {
+        'metadata': type('M', (), {'name': 'job-x-pod', 'labels': {'job-name': 'job-x'}})(),
+        'spec': type('Sp', (), {'node_name': 'node-a'})(),
+        'status': type('St', (), {'phase': 'Pending', 'conditions': [],
+                                  'init_container_statuses': [],
+                                  'container_statuses': [cs]})()})()
+    batch = _FakeBatch(active=1)
+
+    assert pj._adopt_or_replace(batch, _FakeCore(pods=[pod]), 'ns', 'job-x',
+                                {}) == pj._JOB_ADOPTED
+    assert 'delete' not in batch.calls
 
 
 def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
@@ -628,10 +697,10 @@ def test_staging_memory_is_a_bound_and_not_headroom_for_the_campaign():
 
     convert = pj.step_resources(**{k: POSTPROCESS_CONVERT_DEFAULTS[k]
                                    for k in ("cpu", "memory")})
-    assert _mem_mib(pj.POSTPROCESS_STAGE_RESOURCES) < _mem_mib(convert)
+    assert _mem_mib(pj.stage_resources()) < _mem_mib(convert)
     # The disk request, by contrast, is the campaign's and stays: it is what reserves the
     # shared emptyDir the campaign lands in.
-    assert pj.POSTPROCESS_STAGE_RESOURCES["requests"]["ephemeral-storage"]
+    assert pj.stage_resources()["requests"]["ephemeral-storage"]
 
 
 def test_a_partly_populated_root_does_not_read_as_a_whole_campaign(tmp_path, monkeypatch):
@@ -1025,7 +1094,7 @@ def test_staging_is_never_raised_by_what_a_campaign_asks_for():
     """
     containers = _containers(_manifest(convert_resources={"cpu": 6, "memory": "12Gi"}))
     assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
-    assert containers["stage"]["resources"] == pj.POSTPROCESS_STAGE_RESOURCES
+    assert containers["stage"]["resources"] == pj.stage_resources()
 
 
 def test_one_step_cannot_edit_another_steps_resources():
@@ -1090,8 +1159,9 @@ class _SubmitBatch:
         if self.existing_active is None:
             from kubernetes.client.rest import ApiException
             raise ApiException(status=404)
-        return type('J', (), {'status': type('S', (), {
-            'active': self.existing_active})()})()
+        return type('J', (), {
+            'metadata': type('M', (), {'uid': 'job-uid'})(),
+            'status': type('S', (), {'active': self.existing_active})()})()
 
     def create_namespaced_job(self, namespace, body):
         self.calls.append('create-job')
@@ -1119,6 +1189,10 @@ class _SubmitCore:
 
     def replace_namespaced_config_map(self, name, namespace, body):
         self.calls.append('replace-cm')
+
+    def patch_namespaced_config_map(self, name, namespace, body):
+        self.calls.append('own-cm')
+        self.owner = ((body.get("metadata") or {}).get("ownerReferences") or [None])[0]
 
     def delete_namespaced_config_map(self, name, namespace):
         self.calls.append('delete-cm')
@@ -1167,8 +1241,17 @@ def test_adopting_a_live_job_does_not_touch_the_scripts_it_mounts(monkeypatch):
     assert calls == ['read-job']
 
 
-def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch):
-    """Nothing is running under this name, so this attempt owns the scripts it writes."""
+def test_a_fresh_submit_hands_the_scripts_to_the_job_that_mounts_them(monkeypatch):
+    """Nothing is running under this name, so this attempt writes the scripts -- and then
+    gives them away.
+
+    The ConfigMap outlives the wait on purpose. A waiter stops waiting for reasons that say
+    nothing about the Job (its own deadline, a stop, a service restart), and deleting the
+    scripts on the way out takes the mount away from a Job that is still running: the pod
+    that follows cannot start at all, so the Job stays active forever, the campaign stays in
+    postprocessing, and its log ends mid-step. The ownerReference is what makes that
+    unexpressible -- the Job's own ttlSecondsAfterFinished is what collects it.
+    """
     calls = []
     core = _SubmitCore(calls=calls)
     batch = _SubmitBatch(existing_active=None, calls=calls)
@@ -1177,8 +1260,9 @@ def test_a_fresh_submit_still_creates_the_scripts_and_cleans_them_up(monkeypatch
 
     assert ok is True
     # The scripts land before the Job -- the pod holds in ContainerCreating until the
-    # volume source exists -- and are swept up once the Job is done.
-    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
+    # volume source exists -- and are handed to it, never deleted, after.
+    assert calls == ['read-job', 'create-cm', 'create-job', 'read-job', 'own-cm']
+    assert core.owner["kind"] == "Job" and core.owner["uid"] == "job-uid"
 
 
 def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
@@ -1191,7 +1275,27 @@ def test_a_stale_configmap_of_a_dead_job_is_still_replaced(monkeypatch):
     ok, _message = _submit(monkeypatch, core, batch)
 
     assert ok is True
-    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job', 'delete-cm']
+    assert calls == ['read-job', 'create-cm', 'replace-cm', 'create-job',
+                     'read-job', 'own-cm']
+
+
+def test_a_configmap_no_job_ever_mounted_is_deleted(monkeypatch):
+    """The one case the cleanup still exists for: the ConfigMap was written and the Job
+    create then failed, so nothing mounts it and leaving it behind is a pure leak."""
+    calls = []
+    core = _SubmitCore(calls=calls)
+    batch = _SubmitBatch(existing_active=None, calls=calls)
+
+    def _refuse(namespace, body):
+        calls.append('create-job')
+        from kubernetes.client.rest import ApiException
+        raise ApiException(status=500)
+
+    batch.create_namespaced_job = _refuse
+    ok, message = _submit(monkeypatch, core, batch)
+
+    assert ok is False and "could not create postprocessing job" in message
+    assert calls == ['read-job', 'create-cm', 'create-job', 'delete-cm']
 
 
 # -- Unknown is not failure --------------------------------------------------
@@ -1552,3 +1656,100 @@ def test_the_predicate_reaches_the_waiter_and_the_record(monkeypatch, tmp_path):
 
     assert seen["waiter"] is predicate
     assert seen["record"] is predicate
+
+
+def test_stage_ephemeral_request_scales_with_the_campaign():
+    """The staged tree is the campaign, so the disk request has to describe this one.
+
+    Left at the floor it describes a typical campaign, and a larger one is scheduled onto a
+    node that cannot hold it and evicted partway through -- which loses the whole
+    postprocessing rather than the excess.
+    """
+    gib = 1 << 30
+    floor = to_bytes(pj.POSTPROCESS_EPHEMERAL_FLOOR)
+    ceiling = to_bytes(pj.POSTPROCESS_EPHEMERAL_CAP)
+
+    # A campaign smaller than the floor still asks for the floor.
+    assert to_bytes(pj.stage_ephemeral_request(1 * gib)) == floor
+    # One larger than it asks for its own size, with headroom for what the conversion
+    # writes into the same mount.
+    assert to_bytes(pj.stage_ephemeral_request(100 * gib)) > 100 * gib
+    # Never above its own limit: a request over its limit is not a pod spec.
+    assert to_bytes(pj.stage_ephemeral_request(10_000 * gib)) == ceiling
+    # A store that cannot be listed leaves the floor standing.
+    assert to_bytes(pj.stage_ephemeral_request(None)) == floor
+
+
+def test_stage_container_carries_the_campaigns_own_disk_request():
+    """The figure has to reach the pod spec, which is the only thing the scheduler reads."""
+    gib = 1 << 30
+    containers = _containers(_manifest(stage_bytes=100 * gib))
+    asked = containers["stage"]["resources"]["requests"]["ephemeral-storage"]
+
+    assert to_bytes(asked) > 100 * gib
+    # and the guard on what staging may hold in memory is unchanged by it
+    assert containers["stage"]["resources"]["requests"]["memory"] == "1Gi"
+
+
+class _ListingStore:
+    """A store that records which prefix it was asked to enumerate."""
+
+    def __init__(self, objects=()):
+        self.listed = []
+        self._objects = list(objects)
+
+    def list_entries(self, bucket, prefix):
+        self.listed.append(prefix)
+        return self._objects, []
+
+
+def _with_store(monkeypatch, store):
+    from robovast.execution.cluster_execution import in_pod_storage
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: store)
+
+
+def test_a_per_batch_job_sizes_only_its_own_batch(monkeypatch):
+    """A search creates one of these per batch, while the campaign is still growing.
+
+    Listing the whole prefix each time would re-enumerate every earlier batch, so the cost
+    of sizing would grow with the square of the search. `_jobs/` is where the bags are and
+    the only part the include rule narrows.
+    """
+    store = _ListingStore([("camp/_jobs/batch-3/j/rosbag2/b.mcap", 4096)])
+    _with_store(monkeypatch, store)
+
+    total = pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False,
+                            batch_jobs="batch-3")
+
+    assert store.listed == ["camp/_jobs/batch-3"]
+    assert total == 4096
+
+
+def test_a_whole_campaign_job_sizes_the_whole_prefix(monkeypatch):
+    store = _ListingStore([("camp/cfg/0/rosbag2/b.mcap", 8192)])
+    _with_store(monkeypatch, store)
+
+    total = pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False, batch_jobs="")
+
+    assert store.listed == ["camp/"]
+    assert total == 8192
+
+
+def test_bags_are_not_reserved_for_when_the_pod_will_not_stage_them(monkeypatch):
+    """No conversion container means no bag is staged, so none is reserved for."""
+    store = _ListingStore([("camp/cfg/0/rosbag2/b.mcap", 8192),
+                           ("camp/cfg/0/out.csv", 512)])
+    _with_store(monkeypatch, store)
+
+    assert pj._stage_bytes(object(), "bucket", "camp/", skip_bags=True, batch_jobs="") == 512
+
+
+def test_a_store_that_cannot_be_listed_leaves_the_floor_standing(monkeypatch):
+    """Sizing is advisory: it must never be why a campaign is not postprocessed."""
+    class _Broken:
+        def list_entries(self, bucket, prefix):
+            raise RuntimeError("store is down")
+
+    _with_store(monkeypatch, _Broken())
+
+    assert pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False, batch_jobs="") is None

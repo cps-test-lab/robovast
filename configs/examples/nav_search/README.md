@@ -327,11 +327,11 @@ because these are the numbers to publish.
 
 At ~25 s of driving per run plus bring-up, and with the lane to itself, a campaign is tens of
 minutes. **Sharing the lane changes that by an order of magnitude, and not only in wall
-clock.** Running all nine at once on a four-node cluster alongside another user's work, each
-campaign took hours rather than minutes, one aborted before its first batch because a
-contended node could not be calibrated, and one spent half its budget on batches that were
-never scored — see the scheduling note under *Notes for anyone extending this*. Run them one
-or two at a time if the results are meant to be compared with each other.
+clock.** Run every campaign here at once on a small cluster alongside another user's work and
+each one takes hours rather than minutes, a campaign can abort before its first batch because
+a contended node fails calibration, and a search can spend much of its budget on batches that
+are never scored — see the scheduling note under *Notes for anyone extending this*. Run them
+one or two at a time if the results are meant to be compared with each other.
 
 ## Running one
 
@@ -357,21 +357,19 @@ campaigns against each other is `analysis/compare.py`, above.
   surfaces and they are not interchangeable: `sim:` writes into the compiled world (every
   campaign here), `sut:` rewrites the system under test's own config files, and `scenario:`
   sets scenario parameters. `nav_search_minimax.vast` is the one that uses all three.
-- **A `sut:` source needs a scenario parameter to land on.** Staging gives each configuration
-  its own rewritten copy at `/config/<config-name>/<path>` and drops the original from
-  `run_files`, so exactly one copy exists; the trial finds it because RoboVAST rewrites *a
-  scenario parameter whose value is the source's declared path*. A parameter left at its
-  `.osc` default is not one the campaign set, so nothing is rewritten and the trial launches
-  a path that is no longer there. Declare it on the `scenario:` channel, as
-  `nav_search_minimax.vast` does with `params_file`.
+- **A `sut:` source needs nothing in the `.vast` to reach the trial.** Staging gives each
+  configuration its own rewritten copy at `/config/<path>` — the declared path, where the
+  campaign's copy would have been — and drops the original from `run_files`, so exactly one
+  copy exists and it is the running cell's. The trial finds it by writing the ordinary path
+  relative to its own directory, which is that mount.
 - **Do not saturate the lane a search is running on -- its own scoring is what loses the
   race.** A search scores each batch before proposing the next, and on a cluster that means a
   small conversion Job scheduled alongside the batch's runs. The runs are the bulk and get
   placed; the little job does not, and a batch whose conversion never ran has no
   `nav_metrics.csv` for the extractor to read. It refuses that batch -- correctly, and it says
-  exactly why -- but the runs are already spent. Measured on a contended lane: a 256-run QD
-  campaign had two of four batches go unscored, so **half its simulator bought nothing**, and
-  its archive was built from half the feedback it paid for.
+  exactly why -- but the runs are already spent. On a contended lane a search can lose a
+  large fraction of its batches this way, so **much of its simulator buys nothing** and its
+  archive is built from a fraction of the feedback it paid for.
 
   `no_sample` units in `campaign.db` are where this shows up, and a campaign with a high
   `no_sample` count should be read as a scheduling failure rather than as a search that found

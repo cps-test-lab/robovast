@@ -52,6 +52,8 @@ import re
 import shlex
 import tempfile
 
+from robovast.common.config_channels import SIM, channel
+
 logger = logging.getLogger(__name__)
 
 #: Where a staged document is written. Writable by an unprivileged container, unlike the
@@ -223,11 +225,35 @@ class ExecSlotContainerRunner:
         return arg
 
 
-def _problem(message: str, config=None, field: str = "") -> dict:
-    """One structured problem, in the shape ``validate_project_file`` returns."""
+def _problem(message: str, config=None, field: str = "",
+             severity: str = "error") -> dict:
+    """One structured problem, in the shape ``validate_project_file`` returns.
+
+    ``severity`` carries the distinction this module exists to keep: ``error`` for a world
+    that does not load, ``unchecked`` for a question nothing here could ask. Both are
+    reported, neither is a pass, and a caller can tell them apart without reading English.
+    """
     return {"stage": "world", "config": config,
             "field": field or "execution.containers.simulation.config",
-            "message": message}
+            "message": message, "severity": severity}
+
+
+def _collapse_lane_wide(problems: list, blocks: int) -> list:
+    """One problem for a failure that was not about any one configuration.
+
+    A lane that cannot start a container fails every block for the same reason, and the
+    loop cannot know that while it runs. Left per block, one unreachable lane becomes as
+    many copies of one message as the campaign has distinct worlds: a reply that grows
+    with the sweep and says a single thing.
+
+    Collapsed only when the text is identical across every block, so a difference between
+    two configurations is never folded away.
+    """
+    if blocks < 2 or len(problems) != blocks:
+        return problems
+    if len({problem["message"] for problem in problems}) != 1:
+        return problems
+    return [{**problems[0], "config": None}]
 
 
 def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
@@ -266,12 +292,11 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
 
     _add(None, campaign_sim_block(execution))
     for config in (parameters.get("configuration") or []):
-        if not isinstance(config, dict) or not config.get("sim"):
+        if not isinstance(config, dict) or not channel(config, SIM):
             continue
         try:
             resolved = merge_sim_block(
-                execution, flatten_sim_block(config.get("sim") or {}), vast_dir,
-                config_name=config.get("name", ""))
+                execution, flatten_sim_block(channel(config, SIM)), vast_dir)
         except Exception as exc:  # noqa: BLE001 - a bad block is the schema's to report
             logger.debug("could not resolve sim block for %s: %s",
                          config.get("name"), exc)
@@ -287,8 +312,8 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     One problem per distinct world that does not, in the flat shape the rest of
     ``validate_project`` returns. An empty list means every world was asked and answered
     cleanly — **not** that nothing was checked: a campaign with no simulator backend
-    returns early, and anything that could not be asked comes back as an advisory naming
-    what would settle it. Silence never stands for a pass.
+    returns early, and anything that could not be asked comes back as an ``unchecked``
+    problem naming what would settle it. Silence never stands for a pass.
 
     Always ``--entities``, i.e. always compiling the model. Measured, the compile adds
     0.1-1.0 s to a container that costs 1-15 s, so the cheaper half-answer buys nothing
@@ -300,8 +325,9 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     from robovast.common.errors import ActionableError
 
     execution = parameters.get("execution", {}) or {}
+    blocks = _distinct_blocks(parameters, vast_dir)
     problems = []
-    for config_name, block in _distinct_blocks(parameters, vast_dir):
+    for config_name, block in blocks:
         runner = ExecSlotContainerRunner(
             exec_call, workspace_id=workspace_id, config_path=config_path)
         token = set_container_runner_factory(lambda _spec, _r=runner: _r)
@@ -331,13 +357,13 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             problems.append(_problem(
                 f"this campaign's world was NOT checked: {exc}."
                 + (f" Next: {step}" if step else ""),
-                config=config_name))
+                config=config_name, severity="unchecked"))
             continue
         except ActionableError as exc:
             problems.append(_problem(
                 f"this campaign's world was NOT checked: {exc}."
                 + (f" Next: {exc.next_step}" if exc.next_step else ""),
-                config=config_name))
+                config=config_name, severity="unchecked"))
             continue
         finally:
             _reset_factory(token)
@@ -350,7 +376,7 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             problems.append(_problem(
                 f"{world} loads but its model does not compile in {image}: "
                 f"{build_error}", config=config_name))
-    return problems
+    return _collapse_lane_wide(problems, len(blocks))
 
 
 def _reset_factory(token) -> None:

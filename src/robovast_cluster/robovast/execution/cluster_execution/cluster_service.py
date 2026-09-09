@@ -57,7 +57,9 @@ from pathlib import Path
 from robovast.client import file_address
 from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
-from robovast.execution.control_server import STOP_DURING_POSTPROCESSING, Phase, is_running
+from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
+                                               STOP_SCOPE_MESSAGES, Phase, is_running,
+                                               stop_scope_for_phase)
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
@@ -1897,14 +1899,16 @@ class ClusterService(LocalTransport):
         return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a running Job's live pod log from byte *offset* onward.
+        """Serve a Job's log from byte *offset* onward, live from its pod or from the store.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
         plus any sim/SUT sidecars; see :class:`PodLogTail`). Reads are
         incremental: a cached tail keeps the full assembled text so the byte offset
         still maps onto it, but each poll only pulls the delta from the kube API
-        rather than the whole log. Live source only; a missing pod raises (→ 404).
+        rather than the whole log. A pod that is gone is not an error: the log comes from
+        the campaign's objects instead (:meth:`_archived_job_log`), which is the ordinary
+        state of every finished job.
 
         A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
         native sidecars, so kubelet runs them *during* the init phase, while the pod is
@@ -1925,7 +1929,7 @@ class ClusterService(LocalTransport):
         label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
-            raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
+            return self._archived_job_log(campaign_id, job_name, offset)
         pod = pods.items[0]
         tail = self._job_log_tail(campaign_id, job_name)
         try:
@@ -1934,10 +1938,79 @@ class ClusterService(LocalTransport):
                 text, next_offset = tail.merged.slice_from(offset)
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                raise KeyError(
-                    f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
+                return self._archived_job_log(campaign_id, job_name, offset)
             raise
         return LogChunk(text=text, next_offset=next_offset, eof=terminal)
+
+    def _archived_job_log(self, campaign_id: str, job_name: str, offset: int) -> LogChunk:
+        """A finished job's log, read from the campaign's objects instead of its pod.
+
+        A pod is deleted when its Job is cleaned up, so for most of a campaign's life the
+        live source above is gone while the same output is durable in the object store: the
+        job mirrors ``/out`` there as it ends, which is also what makes an already-finished
+        run of a still-running campaign readable at all. Without this the log of every run
+        but the executing one is a 404.
+
+        Merged and tagged through the same :class:`MergedLogBuffer` as both live tails, so a
+        reader sees one stream with the same ``[container]`` prefixes rather than a
+        differently-shaped archive. The files are complete and immutable here, so ordering
+        is per file rather than per poll, and the whole buffer is built on each call --
+        there is no delta to track, and ``eof`` is unconditionally true.
+
+        Raises:
+            KeyError: When the campaign has no such job, or its artifacts were never
+                uploaded (a run killed before it could mirror). Reported as absent rather
+                than as an empty log, which would read as a run that said nothing.
+        """
+        import yaml
+
+        from robovast.common.execution import (
+            JOB_LINKS_MANIFEST_REL, resolve_job_artifact_rel)
+        from robovast.common.log_tail import (MAIN_LOG, MergedLogBuffer,
+                                              container_of_log_file, is_sidecar_log,
+                                              tag_width)
+
+        storage, bucket, prefix = self._campaign_object_location(campaign_id,
+                                                                 interactive=True)
+        manifest = storage.read_object(bucket, f"{prefix}{JOB_LINKS_MANIFEST_REL}")
+        if manifest is None:
+            raise KeyError(
+                f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
+                f"job {job_name!r}")
+        try:
+            job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
+        except FileNotFoundError as e:
+            raise KeyError(f"{e} in campaign {campaign_id!r}") from None
+
+        log_prefix = f"{prefix}{job_rel}/logs/"
+        objects, _ = storage.list_entries(bucket, log_prefix)
+        names = sorted(key[len(log_prefix):] for key, _ in objects)
+        # Main container first, then the sidecars in name order -- the local lane's order,
+        # so the same job does not read differently depending on which lane served it.
+        files = [n for n in names if n == MAIN_LOG]
+        files += [n for n in names if is_sidecar_log(n)]
+        if not files:
+            raise KeyError(
+                f"job {job_name!r} of campaign {campaign_id!r} uploaded no logs")
+
+        multi = len(files) > 1
+        containers = [container_of_log_file(n) for n in files]
+        width = tag_width(containers) if multi else 0
+        entries = []
+        for file_order, (name, container) in enumerate(zip(files, containers)):
+            raw = storage.read_object(bucket, f"{log_prefix}{name}") or b""
+            lines = raw.decode("utf-8", errors="replace").split("\n")
+            # A file ending in a newline splits with a trailing "" that is not a line. Only
+            # the last one: a blank line inside the log is the container's own output.
+            if lines and lines[-1] == "":
+                lines.pop()
+            for line_order, line in enumerate(lines):
+                entries.append(((file_order, line_order), container, line))
+
+        merged = MergedLogBuffer()
+        merged.append(entries, multi=multi, width=width)
+        text, next_offset = merged.slice_from(offset)
+        return LogChunk(text=text, next_offset=next_offset, eof=True)
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 
@@ -2094,6 +2167,28 @@ class ClusterService(LocalTransport):
                 f"and not a problem with this project. Check it with "
                 f"`kubectl -n {self.namespace} get deploy/{BUILDKITD_NAME}`; "
                 f"`vast service upgrade` re-applies it if it is missing.")
+
+        # And here for the same reason, one step further on: a build whose push will be
+        # refused is a build that installs every package and then fails at its last step.
+        # Nothing upstream could have said so -- `can_build_images` answers whether this
+        # deployment has a registry configured, which is a property of how it was set up,
+        # and the cache probe above is a manifest read, which a registry may serve while
+        # refusing to receive one. So the credential is asked directly, once, before the
+        # context is copied and staged.
+        #
+        # Only a registry that answered *and* refused stops a build; an unreachable one
+        # does not (see `push_refused`). The verdict is the one the post-build classifier
+        # already gives this failure -- infrastructure, not a `build:` entry to edit --
+        # just arrived before the compute.
+        if self._images.push_refused(image_ref):
+            raise ImageBuildFailed(
+                f"this deployment's image registry refused the credential it would push "
+                f"'{spec.tag}' with, so the build would fail at its last step after "
+                f"installing everything. That is an infrastructure problem and not "
+                f"fixable by editing `build:`: the push Secret is minted at "
+                f"`vast cluster setup` and re-read by `vast service upgrade`, so a "
+                f"credential rotated since this deployment was set up needs one of those. "
+                f"`vast doctor -n {self.namespace}` says which.")
 
         # Registered *before* staging so a concurrent build's context sweep can see
         # this build is in flight — its context exists in the object store for the
@@ -2720,22 +2815,30 @@ class ClusterService(LocalTransport):
         than this campaign's property. ``_await_build_image`` detaches instead.
 
         A campaign already **postprocessing** is likewise not reached by that teardown --
-        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by the flag
-        instead: ``run_conversion_job`` polls it and deletes the Job. The reply says what
-        that leaves, because it differs from stopping a run: the runs are over and their
-        results are complete, so the campaign still ends as ``finished``, only without its
-        derived data.
+        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by its own
+        scope instead: ``run_conversion_job`` polls it and deletes the Job.
+
+        Which unit of work a stop lands on is
+        :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, shared
+        with the local lane so the two cannot disagree, and the reply it carries says what
+        that stop leaves behind.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
-        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
-        entry.state.request_stop()
+        phase = entry.state.snapshot().phase
+        scope = stop_scope_for_phase(phase)
+        if scope is None:
+            return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
+        entry.state.request_stop(scope)
+        if scope != STOP_RUNS:
+            # The teardown is label-scoped to ``jobgroup=scenario-runs``, so it would not
+            # reach a postprocessing Job or an upload anyway; not calling it keeps this
+            # from reading as though it might.
+            return ActionResult(ok=True, message=STOP_SCOPE_MESSAGES[scope])
         self._teardown_campaign_jobs(campaign_id)
-        if postprocessing:
-            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:

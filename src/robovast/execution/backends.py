@@ -56,10 +56,31 @@ class CampaignStopped(Exception):
 
     A *clean* terminal signal (Ctrl+C on ``vast serve``, the Stop button, an MCP
     stop) — distinct from a genuine failure. Callers set the campaign phase to
-    ``"stopped"`` and skip the finish work (result download, postprocessing,
-    finalize upload) that would otherwise fail noisily against a torn-down cluster
-    tunnel and produce misleading tracebacks.
+    ``"stopped"`` and skip the finish work that would otherwise fail noisily against a
+    torn-down cluster tunnel and produce misleading tracebacks. The analysis of the
+    batches that did finish is *not* part of what is skipped — it is owed, and the
+    service runs it (``LocalTransport.start_campaign``'s stopped path).
     """
+
+
+class ShareStopped(Exception):
+    """Raised out of an upload's progress callback when its stop scope was set.
+
+    A cancellation, not a failure, and the two must not be conflated: an upload that
+    failed says something about the share, while this one says the operator asked. The
+    provider contract already routes it -- "raise on failure (the caller treats any
+    exception as a failed upload and keeps the controller alive for a retrigger)" -- so
+    raising is how a streamed upload is interrupted at all; being its own type is what
+    lets the callers report it as the deliberate act it is.
+
+    Carries the object name so whoever handles it can clean up, or say what it left:
+    a cancelled stream leaves a truncated archive that lists and downloads exactly like
+    a whole one.
+    """
+
+    def __init__(self, message: str, object_name: str = ""):
+        super().__init__(message)
+        self.object_name = object_name
 
 
 @dataclass
@@ -232,6 +253,26 @@ class ExecutionBackend(ABC):
         that are unsure should call it rather than reason about it.
         """
 
+    def campaign_results_bytes(self, campaign_root: str) -> "int | None":
+        """Total bytes this campaign's results occupy in their **durable home**.
+
+        Measured once, in the run tail, so that reading the figure later is a field lookup
+        rather than a walk of the results: a campaign is displayed far more often than it
+        finishes, and enumerating storage per view scales with the campaign while telling
+        every viewer the same thing.
+
+        The default answers for a lane whose durable home IS ``campaign_root`` -- the local
+        :class:`DockerBackend`, which materialises every artifact there. A lane that keeps
+        its results elsewhere must override this and measure *there*, because the driver's
+        own disk is not evidence about what the durable home holds.
+
+        ``None`` means the size could not be established, which a reader must render as
+        "not recorded" rather than as zero. Best-effort by contract: a campaign's results
+        are the deliverable, and failing to measure them must never fail the campaign.
+        """
+        from robovast.execution.campaign_archive import campaign_source_bytes
+        return campaign_source_bytes(campaign_root)
+
     def preflight_upload_to_share(self) -> None:
         """Validate this backend can honour ``--upload-to-share`` before the campaign runs.
 
@@ -273,6 +314,9 @@ class ExecutionBackend(ABC):
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         on_member = getattr(progress_callback, "on_member", None)
         if on_member is not None:
+            # Before a byte is read: this reads the whole campaign, and a share already
+            # cancelled must not start on a terabyte of it.
+            progress_callback.raise_if_stopped()
             progress_callback.set_source_total(
                 campaign_archive.campaign_source_bytes(campaign_root))
         campaign_archive.make_campaign_tarball(
@@ -281,6 +325,18 @@ class ExecutionBackend(ABC):
             on_member=on_member)
         if on_member is not None:
             progress_callback.finish()
+
+    def discard_partial_share(self, object_name: str) -> str:
+        """Remove what a cancelled or failed upload left; return a note, or ``""``.
+
+        Nothing to do on this lane, and that is a property of the writer rather than an
+        omission here: ``campaign_archive.make_campaign_tarball`` builds into a temporary
+        name and renames only once the archive is complete, so an interrupted write leaves
+        no archive to mistake for one. The :class:`KubernetesBackend` overrides this,
+        having put its partial object on somebody else's storage.
+        """
+        del object_name
+        return ""
 
     @staticmethod
     def _refuse_unimportable(campaign_root: str) -> None:

@@ -57,15 +57,24 @@ def _summary_to_dict(summary) -> dict:
     ``description`` and ``finished_at`` are omitted when empty rather than reported as
     ``""``/null: a campaign started without a description has none, which is not the same
     fact as "the description is the empty string".
+
+    ``mode`` is carried because this listing is the only view an agent has: without it a
+    search and a sweep are indistinguishable here, and a search is read with different
+    queries (``run_view``'s ``batch``/``objective``/``paramset_id``). ``num_composition_failed``
+    and ``num_no_sample`` come along for the same reason — a search whose draws never
+    composed, or never scored, has ``num_runs`` telling only part of that.
     """
     entry = {
         "campaign_id": summary.campaign_id,
         "status": summary.phase,
+        "mode": summary.mode,
         "started_at": summary.started_at,
         "postprocessed": summary.postprocessed,
         "num_runs": summary.num_runs,
         "num_passed": summary.num_passed,
         "num_failed": summary.num_failed,
+        "num_composition_failed": summary.num_composition_failed,
+        "num_no_sample": summary.num_no_sample,
     }
     if summary.description:
         entry["description"] = summary.description
@@ -108,8 +117,10 @@ def list_campaigns(limit: int = 20, offset: int = 0,
 
     Returns:
         ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
-        started_at, postprocessed, num_runs, num_passed, num_failed}`` plus
-        ``description`` and ``finished_at`` where recorded — or ``{error}``.
+        mode, started_at, postprocessed, num_runs, num_passed, num_failed,
+        num_composition_failed, num_no_sample}`` plus ``description`` and ``finished_at``
+        where recorded — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
+        read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``).
 
         ``description`` is what its launcher said the run was for, and is usually the
         only thing telling two same-day ``campaign-<timestamp>`` ids apart.
@@ -282,6 +293,21 @@ def get_campaign_summary(campaign_id: str) -> dict:
     """)
     if origin:
         result.update({k: v for k, v in origin[0].items() if v is not None})
+
+    # Which config version a re-run read. Its own read for the reason the block above is one:
+    # these columns arrived in store schema 13, so folding them in would cost every earlier
+    # campaign the origin it does have. `origin_config_version_from` is written on every
+    # re-run, so an empty step list says the frozen config was read exactly as written, where
+    # an absent key says nothing recorded it -- and a re-run that read a different config
+    # version than the campaign it reproduces is not repeating the same experiment.
+    migration = data_access.rows(campaign_id, """
+        SELECT origin_config_version_from, origin_config_migration_steps
+        FROM campaign.campaign LIMIT 1
+    """)
+    if migration and migration[0]["origin_config_version_from"] is not None:
+        steps = migration[0]["origin_config_migration_steps"]
+        result["origin_config_version_from"] = migration[0]["origin_config_version_from"]
+        result["origin_config_migration_steps"] = json.loads(steps) if steps else []
 
     # Whether this campaign can be re-run. Additive, like `advice` above: an agent that
     # ignores the key loses nothing, and one that reads it can decide whether to call

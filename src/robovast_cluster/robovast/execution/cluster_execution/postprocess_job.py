@@ -45,7 +45,6 @@ the scripts always match the driver that generated the command.
 """
 
 import datetime
-import copy
 import hashlib
 import json
 import logging
@@ -162,11 +161,93 @@ _DEFAULT_TIMEOUT = 3 * 60 * 60
 #: ceiling near the reservation would fail a large campaign that never held that much at once,
 #: while a reservation near the ceiling would price every postprocessing pod at a disk figure
 #: almost none of them reach.
-POSTPROCESS_EPHEMERAL_REQUEST = "20Gi"
-POSTPROCESS_EPHEMERAL_LIMIT = "200Gi"
+#: The smallest disk a postprocessing step asks for, and what a step asks for when its need
+#: is not known. Not "the request": the stage step derives its own from what it will fetch.
+POSTPROCESS_EPHEMERAL_FLOOR = "20Gi"
+
+#: The most disk one postprocessing pod may claim on a node it shares with trials. Caps the
+#: stage step's derived figure, and is the ceiling every step is held to.
+#:
+#: **Disk is the one resource here whose request and ceiling are deliberately not equal**,
+#: unlike cpu and memory (see :func:`step_resources`). What a step *downloads* is ours to
+#: know and is what the request describes; what it *writes* into the shared mount is the
+#: campaign's, declared in its ``.vast`` -- a conversion may emit a few CSVs or encode video
+#: of every run, and a ``command:`` step may write anything at all. Holding a pod to a
+#: reservation that cannot account for that would evict campaigns for declaring the
+#: postprocessing they are entitled to declare. Same reason ``POSTPROCESS_HOST_FLOOR`` is
+#: raised by a campaign's own figure and never lowered by it.
+POSTPROCESS_EPHEMERAL_CAP = "200Gi"
+
+#: Headroom over the bytes the stage step will fetch, for what lands in the same mount but is
+#: not an object it downloaded: the conversion's own outputs, and the filesystem's per-file
+#: overhead across a campaign's many small files.
+STAGE_EPHEMERAL_HEADROOM = 1.5
 
 
-def step_resources(cpu, memory) -> dict:
+def _stage_bytes(cluster_config, bucket: str, prefix: str, skip_bags: bool,
+                 batch_jobs: str):
+    """Bytes the stage step will fetch, or ``None`` when the store cannot be listed.
+
+    Uses the stage step's own include rule rather than the whole prefix, so the figure
+    describes what that step downloads: a campaign whose pod opens no bag does not stage
+    them, and a per-batch Job stages one batch's job artifacts.
+
+    **A per-batch Job lists only its own batch.** Its Job is created once per batch while the
+    campaign is still growing, so listing the whole prefix each time would cost a pass over
+    every earlier batch as well -- work that grows with the square of the search. ``_jobs/``
+    is where the bags are and the only part ``build_include`` narrows; what is left is a run
+    directory's verdict and parameters, kilobytes against a batch of bags, and the floor
+    already covers more than that.
+
+    One metadata-only listing, on a path that is already creating a Job. ``None`` on any
+    store failure, deliberately: a sizing hint is not worth refusing to postprocess over,
+    and the floor it falls back to is what this step asked for unconditionally before.
+    """
+    from . import in_pod_storage  # noqa: PLC0415
+    from .postprocess_stage import build_include  # noqa: PLC0415
+
+    listed = f"{prefix.rstrip('/')}/_jobs/{batch_jobs.strip('/')}" if batch_jobs else prefix
+    try:
+        storage = in_pod_storage.storage_client_for(cluster_config)
+        objects, _ = storage.list_entries(bucket, listed)
+    except Exception as e:  # noqa: BLE001 - advisory; the floor covers a store that cannot answer
+        logger.debug("could not size the staged tree of s3://%s/%s: %s", bucket, listed, e)
+        return None
+
+    clean = prefix.rstrip("/")
+    key_prefix = f"{clean}/" if clean else ""
+    include = build_include(skip_bags, batch_jobs, exclude_config=False)
+    total = 0
+    for key, size in objects:
+        rel = key[len(key_prefix):] if key_prefix else key
+        if not rel or key.endswith("/"):
+            continue
+        if not include(rel):
+            continue
+        total += int(size or 0)
+    return total
+
+
+def stage_ephemeral_request(stage_bytes) -> str:
+    """The stage step's ``ephemeral-storage`` request for a campaign of *stage_bytes*.
+
+    The scheduler places the pod on this figure and the kubelet evicts against it, so it has
+    to describe the staged tree rather than a typical one: a campaign is written to the node's
+    disk in full, and what that costs is the size of the campaign. The floor still applies --
+    it is what a small campaign asks for -- and the limit still caps it, because a request
+    above its own limit is not a pod spec Kubernetes accepts.
+
+    ``None`` means the size could not be read; the floor then stands, which is the behaviour
+    of a deployment whose store cannot be listed at submission time.
+    """
+    floor = to_bytes(POSTPROCESS_EPHEMERAL_FLOOR)
+    ceiling = to_bytes(POSTPROCESS_EPHEMERAL_CAP)
+    want = floor if not stage_bytes else int(stage_bytes * STAGE_EPHEMERAL_HEADROOM)
+    gib = 1 << 30
+    return f"{max(floor, min(want, ceiling)) // gib}Gi"
+
+
+def step_resources(cpu, memory, ephemeral: str = "") -> dict:
     """One step's ``resources``, with cpu and memory as reservation *and* ceiling.
 
     **The equality is the point, and it is about comparability rather than thrift.** This pod
@@ -178,24 +259,40 @@ def step_resources(cpu, memory) -> dict:
 
     Nothing here is under test, so the throughput given up is real and the measurement it
     protects is worth more.
+
+    **Disk is stated as a pair instead**, and the asymmetry is not an oversight: see
+    :data:`POSTPROCESS_EPHEMERAL_CAP`. A step's reservation describes what RoboVAST will
+    download, which it knows; its ceiling has to cover what the campaign's own declared
+    postprocessing writes beside it, which it does not.
     """
     quantities = {"cpu": str(cpu), "memory": str(memory)}
+    request = ephemeral or POSTPROCESS_EPHEMERAL_FLOOR
     return {
-        "requests": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_REQUEST}),
-        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_LIMIT}),
+        "requests": dict(quantities, **{"ephemeral-storage": request}),
+        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_CAP}),
     }
 
 
-#: What the stage step gets. **Fixed, and a campaign's figure does not raise it** -- unlike
-#: the host step below.
-#:
-#: Staging lists the campaign's objects a page at a time and streams one object at a time to
-#: disk, so its footprint is set by that construction and not by the size of the campaign. The
-#: small memory bound is therefore a GUARD rather than a reservation: a regression in that
-#: streaming shows up as this step failing, and a limit that grew with whatever the campaign
-#: asked for is exactly the limit that would absorb it silently. This step also runs only our
-#: own code, so there is nothing here whose appetite a ``.vast`` would know better than we do.
-POSTPROCESS_STAGE_RESOURCES = step_resources(2, "1Gi")
+def stage_resources(stage_bytes=None) -> dict:
+    """What the stage step gets for a campaign of *stage_bytes*.
+
+    **cpu and memory are fixed, and a campaign's figure does not raise them** -- unlike the
+    host step below. Staging lists the campaign's objects a page at a time and streams one
+    object at a time, so what it holds *in memory* is set by that construction and not by the
+    size of the campaign. The small memory bound is therefore a GUARD rather than a
+    reservation: a regression in that streaming shows up as this step failing, and a limit
+    that grew with whatever the campaign asked for is exactly the limit that would absorb it
+    silently. This step also runs only our own code, so there is nothing here whose appetite a
+    ``.vast`` would know better than we do.
+
+    **Disk is the opposite, because that is where the streaming ends.** Every object lands on
+    the node's filesystem and stays there for the pod's life, so the staged tree *is* the
+    campaign and ephemeral-storage is the one figure here that has to scale with it. Left
+    fixed it describes a typical campaign rather than this one, and a campaign larger than
+    the figure is scheduled onto a node that cannot hold it and evicted partway through --
+    losing the whole postprocessing, not the excess.
+    """
+    return step_resources(2, "1Gi", ephemeral=stage_ephemeral_request(stage_bytes))
 
 #: The floor under the host step, which is where **everything the campaign declared that is
 #: not a rosbag conversion runs** -- its own metric plugins, metadata, publication, the health
@@ -1016,8 +1113,9 @@ _SCRIPTS_CM_PREFIX = "robovast-postproc-scripts-"
 
 
 def _scripts_cm_name(campaign_id: str, discriminator: str = "") -> str:
-    """Discriminated with its Job: each conversion deletes this when it finishes, so a
-    shared name lets a finishing conversion delete one another is still mounting."""
+    """Discriminated with its Job: the two are one unit -- see :func:`_own_scripts_cm` --
+    and a shared name would put two Jobs' scripts on one object, where the second attempt's
+    content reaches the first attempt's running interpreter."""
     return _short_job_name(_SCRIPTS_CM_PREFIX, campaign_id, discriminator)
 
 
@@ -1067,6 +1165,44 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
         },
         "data": payload,
     }
+
+
+def _own_scripts_cm(core, batch, namespace: str, job_name: str, cm_name: str) -> bool:
+    """Make the Job the owner of its scripts ConfigMap. ``True`` if the cluster took it.
+
+    **The ConfigMap's life belongs to the Job that mounts it, not to whoever is waiting
+    on that Job.** A waiter stops waiting for reasons that say nothing about the Job --
+    its own deadline, a stop request, a service restart, a pod the scheduler has not
+    placed yet -- and the Job goes on running without it. Deleting the scripts on the way
+    out therefore takes the mount away from a live conversion; the pod that follows cannot
+    start at all (``FailedMount``, no such ConfigMap), so the Job stays ``active``
+    forever, its campaign stays in ``postprocessing``, and its log ends mid-step with
+    nothing said. An ownerReference is what makes that unexpressible: Kubernetes deletes
+    the ConfigMap when the Job is deleted and not before, and ``ttlSecondsAfterFinished``
+    already deletes every Job that finishes.
+
+    Best-effort, and deliberately so: a cluster that refuses the patch leaves a ConfigMap
+    behind (labelled ``jobgroup``/``campaign-id`` for a sweep), which costs a few KiB. The
+    alternative failure is the wedged Job above, so this fails towards the leak.
+
+    ``blockOwnerDeletion`` is left off: it requires delete permission on the owner, and
+    all this needs is for the ConfigMap to go when the Job does.
+    """
+    from kubernetes.client.rest import ApiException  # noqa: PLC0415
+
+    try:
+        job = batch.read_namespaced_job(name=job_name, namespace=namespace)
+        core.patch_namespaced_config_map(
+            name=cm_name, namespace=namespace,
+            body={"metadata": {"ownerReferences": [{
+                "apiVersion": "batch/v1", "kind": "Job",
+                "name": job_name, "uid": job.metadata.uid,
+                "controller": True, "blockOwnerDeletion": False}]}})
+        return True
+    except (ApiException, AttributeError) as e:
+        logger.warning("Scripts ConfigMap %s could not be handed to job %s (%s); it will "
+                       "be left behind when the job is reaped", cm_name, job_name, e)
+        return False
 
 
 #: The slot :func:`job_failed_message` leaves for the pointer, filled by
@@ -1139,18 +1275,41 @@ def with_log_pointer(message: str, log_path) -> str:
 
 
 #: :func:`_adopt_or_replace` kept a live Job and the caller is now a waiter on someone
-#: else's Job. It decides ownership, not just control flow: everything that Job mounts --
-#: the scripts ConfigMap above all -- belongs to the attempt that created it, and a waiter
-#: must write none of it and delete none of it.
+#: else's Job -- one it must write nothing into, because that Job is executing out of the
+#: scripts it was created with (see :func:`run_conversion_job`).
 _JOB_ADOPTED = "adopted"
 
 #: The Job answering to this name was finished and has been deleted and re-created, so the
-#: caller owns this one and the resources it mounts.
+#: pod that reports back to the caller is the one this attempt asked for.
 _JOB_RECREATED = "recreated"
 
 
-def _live_job(batch, namespace: str, name: str) -> bool:
-    """Is a Job of this name present AND still active?
+def _stuck_job(core, namespace: str, name: str) -> str:
+    """Why this Job's pod will never start, or ``""`` -- including for "it will".
+
+    ``status.active`` counts a pod that cannot start, so without this an attempt meets a Job
+    that is permanently Pending, adopts it as work in flight, and waits on an outcome that
+    is never coming. A retrigger then does the same, which is what turns one blocked pod
+    into a campaign that can no longer be recovered by re-running its postprocessing.
+
+    Only the reasons that will NOT clear on their own: a pod queued behind a busy node or a
+    throttled pull is exactly the work in flight adoption exists for, and replacing its Job
+    would throw away a conversion that was about to run. Unreadable is not stuck, for the
+    reason :func:`_live_job` gives.
+    """
+    from .cluster_execution import blocked_and_contended_reasons  # noqa: PLC0415
+
+    try:
+        blocked, contended = blocked_and_contended_reasons(
+            core, namespace, f"job-name={name}")
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not check whether %s is stuck: %s", name, e)
+        return ""
+    return "" if name in contended else blocked.get(name, "")
+
+
+def _live_job(batch, core, namespace: str, name: str) -> bool:
+    """Is a Job of this name present, still active, and able to get anywhere?
 
     Separate from :func:`_adopt_or_replace` because the answer is needed *before* anything
     is written: a live Job's mounted resources are not ours to touch, and that has to be
@@ -1165,11 +1324,18 @@ def _live_job(batch, namespace: str, name: str) -> bool:
         existing = batch.read_namespaced_job(name=name, namespace=namespace)
     except ApiException:
         return False
-    return bool(getattr(getattr(existing, "status", None), "active", None))
+    if not getattr(getattr(existing, "status", None), "active", None):
+        return False
+    stuck = _stuck_job(core, namespace, name)
+    if stuck:
+        logger.info("Postprocessing job %s is active but cannot start (%s); it will be "
+                    "replaced rather than waited on", name, stuck)
+        return False
+    return True
 
 
-def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
-    """Keep a still-running Job; delete and re-create a finished one.
+def _adopt_or_replace(batch, core, namespace: str, name: str, manifest: dict) -> str:
+    """Keep a still-running Job; delete and re-create a finished or stuck one.
 
     Returns :data:`_JOB_ADOPTED`, :data:`_JOB_RECREATED`, or ``""`` if neither held. The
     caller needs the two apart rather than a bare success: only the re-created case owns
@@ -1198,11 +1364,13 @@ def _adopt_or_replace(batch, namespace: str, name: str, manifest: dict) -> str:
         return ""
 
     status = getattr(existing, "status", None)
-    if getattr(status, "active", None):
+    stuck = _stuck_job(core, namespace, name) if getattr(status, "active", None) else ""
+    if getattr(status, "active", None) and not stuck:
         logger.info("Postprocessing job %s is already running; waiting on it", name)
         return _JOB_ADOPTED
 
-    logger.info("Replacing finished postprocessing job %s", name)
+    logger.info("Replacing %s postprocessing job %s",
+                f"stuck ({stuck})" if stuck else "finished", name)
     try:
         batch.delete_namespaced_job(name=name, namespace=namespace,
                                     propagation_policy="Foreground")
@@ -1466,7 +1634,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
                    pull_secret_name: str = "", discriminator: str = "",
                    tolerate_under=(), skip=None, batch_commands=None,
-                   convert_resources=None) -> dict:
+                   convert_resources=None, stage_bytes=None) -> dict:
     """Build the postprocessing Job manifest.
 
     Args:
@@ -1575,7 +1743,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, s3: tuple,
                 + ([{"name": ENV_BATCH_JOBS, "value": discriminator}]
                    if batch_commands is not None and discriminator else [])),
         "volumeMounts": [campaign_mount],
-        "resources": copy.deepcopy(POSTPROCESS_STAGE_RESOURCES),
+        "resources": stage_resources(stage_bytes),
     }
     convert = {
         "name": CONVERT_CONTAINER,
@@ -1800,12 +1968,11 @@ def await_job(core, batch, cluster_config, campaign_id: str, namespace: str, nam
         blocked = _blocked_reason(core, namespace, name)
         if blocked:
             return False, (
-                f"postprocessing job {name} cannot start: {blocked}. Its containers "
-                f"run the controller image and, where the campaign has rosbags, the "
-                f"campaign's own execution image, so this is about pulling or "
-                f"scheduling those -- not about postprocessing, which has not run. "
-                f"Nothing about the campaign's results is wrong; re-run "
-                f"postprocessing once the pod can start.")
+                f"postprocessing job {name} cannot start: {blocked}. This is about the "
+                f"pod -- pulling the controller image or the campaign's own execution "
+                f"image, finding a node for it, or mounting what it needs -- not about "
+                f"postprocessing, which has not run. Nothing about the campaign's "
+                f"results is wrong; re-run postprocessing once the pod can start.")
         time.sleep(_POLL_SECONDS)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives
@@ -1891,7 +2058,7 @@ def reattach_conversion_job(cluster_config, campaign_id: str, campaign_root: str
     batch = client.BatchV1Api()
     try:
         with api_transport_errors("re-attaching to the postprocessing job"):
-            if not _live_job(batch, namespace, job_name):
+            if not _live_job(batch, core, namespace, job_name):
                 return None, (f"postprocessing job {job_name} is no longer active, so this "
                               f"process has no outcome to record for {campaign_id}")
     except ClusterUnreachableError as e:
@@ -1981,7 +2148,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
-        batch_commands=batch_commands, convert_resources=convert_resources)
+        batch_commands=batch_commands, convert_resources=convert_resources,
+        stage_bytes=_stage_bytes(cluster_config, bucket, campaign_prefix,
+                                 skip_bags=not rosbag_cmds,
+                                 batch_jobs=discriminator if batch_commands is not None else ""))
     name = manifest["metadata"]["name"]
 
     # Whether a Job of this name is already running is decided HERE, ahead of every write,
@@ -2004,7 +2174,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
     # the caller as a urllib3 traceback.
     try:
         with api_transport_errors("submitting the postprocessing job"):
-            adopted = _live_job(batch, namespace, name)
+            adopted = _live_job(batch, core, namespace, name)
     except ClusterUnreachableError as e:
         return False, f"postprocessing cannot be scheduled: {e}"
 
@@ -2022,14 +2192,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
-    # Job (the pod waits in ContainerCreating until the volume source exists) and delete
-    # it once the Job is done. Only where something mounts it: a Job with no conversion
-    # container declares no such volume, and creating the ConfigMap anyway would leave one
-    # behind for every host-only postprocess.
+    # Job, because the pod waits in ContainerCreating until the volume source exists. Only
+    # where something mounts it: a Job with no conversion container declares no such volume,
+    # and creating the ConfigMap anyway would leave one behind for every host-only
+    # postprocess.
     #
-    # `owned_cm_name` is the ConfigMap this attempt created or replaced, and it is the only
-    # thing the cleanup below deletes -- deletion follows creation, explicitly, so that an
-    # adopting waiter cannot remove the scripts of the Job it is waiting on.
+    # `owned_cm_name` is a ConfigMap this attempt created that NOTHING yet mounts, and it is
+    # the only thing the cleanup below deletes. It is cleared the moment a Job of ours
+    # exists, because from then on the Job's life decides the ConfigMap's -- see
+    # :func:`_own_scripts_cm`, and :data:`_JOB_ADOPTED` for the Job that was never ours.
     owned_cm_name = ""
     if rosbag_cmds and not adopted:
         cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
@@ -2072,14 +2243,20 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
                 # started between that read and this create. Replace the finished one;
                 # adopt the one that raced us, and drop ownership of the ConfigMap with it,
                 # because from here on this attempt is a waiter on someone else's Job.
-                outcome = _adopt_or_replace(batch, namespace, name, manifest)
+                outcome = _adopt_or_replace(batch, core, namespace, name, manifest)
                 if not outcome:
                     return False, (f"postprocessing job {name} already exists and could "
                                    f"not be replaced; retry once it has been removed")
-                if outcome == _JOB_ADOPTED:
-                    owned_cm_name = ""
             logger.info("Postprocessing job %s created (conversion image=%s)", name,
                         image if rosbag_cmds else "none needed")
+            # A Job now mounts these scripts, so they stop being this attempt's to delete
+            # -- whether or not the cluster accepts the ownerReference, and whether the Job
+            # is the one just created or one that raced us to the name. Cleared before the
+            # wait rather than after it because every exit from the wait, including the ones
+            # that raise, passes the cleanup below.
+            if owned_cm_name:
+                _own_scripts_cm(core, batch, namespace, name, owned_cm_name)
+                owned_cm_name = ""
 
         return await_job(core, batch, cluster_config, campaign_id, namespace, name,
                          timeout=timeout, batch_commands=batch_commands,
@@ -2091,11 +2268,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         # the cluster by a pod that no longer exists for as long as this service runs.
         if admitted:
             admission.finished(name)
-        # Best-effort cleanup of the scripts ConfigMap this attempt created (labeled for
-        # manual sweep if the driver dies before this runs). The Job's own
-        # ttlSecondsAfterFinished reaps it. Empty for an adopted Job: those scripts are
-        # mounted in a container this attempt did not start, and deleting them out from
-        # under it is how a waiter breaks the conversion it is waiting on.
+        # Only a ConfigMap no Job ever mounted: the create failed, or the cluster went away
+        # between the two writes. Once a Job exists this is empty and the ConfigMap outlives
+        # the wait, which is the whole point -- a waiter that deletes the scripts of a Job
+        # still running wedges that Job forever (:func:`_own_scripts_cm`).
         if owned_cm_name:
             try:
                 core.delete_namespaced_config_map(name=owned_cm_name, namespace=namespace)

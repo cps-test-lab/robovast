@@ -60,17 +60,38 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
                 yield campaign, config_name, run_number, folder_path
 
 
+#: Names the campaign's own ``.vast`` within ``_config/``, one line, relative to it.
+#:
+#: ``_config/`` mirrors the project tree, so a campaign built on a base archives both — and
+#: which of them the campaign *is* is a fact robovast has at launch and cannot recover
+#: afterwards by looking. A dotfile so it matches neither ``*.vast`` nor a recursive glob.
+CAMPAIGN_POINTER = ".campaign"
+
+
+def write_campaign_pointer(config_dir, vast_path) -> None:
+    """Record which file under *config_dir* is the campaign's own. Counterpart of the read
+    in :func:`campaign_vast`, kept beside it so the format has one definition."""
+    config_dir = Path(config_dir)
+    rel = Path(vast_path).relative_to(config_dir).as_posix()
+    (config_dir / CAMPAIGN_POINTER).write_text(rel + "\n", encoding="utf-8")
+
+
 def campaign_vast(campaign_dir) -> Path:
-    """The single ``.vast`` under a campaign's ``_config/`` — the one source of truth
+    """The campaign's own ``.vast`` under its ``_config/`` — the one source of truth
     for that campaign's config (both the editable postprocessing/visualization blocks
     and the as-ran variations/execution). Raises ``ValueError`` if it is missing.
+
+    Read the pointer when there is one. Falling back to the sole/first ``*.vast`` serves
+    campaigns archived before pointers were written, where there is exactly one file and the
+    two rules agree; for a campaign archived beside a base, only the pointer is right, because
+    alphabetical order has no reason to put the campaign first.
 
     Distinct from :func:`find_campaign_vast_file`, which takes a *results dir* and picks
     the most recent campaign; this takes a specific campaign directory.
     """
-    config_dir = Path(campaign_dir) / "_config"
-    vasts = sorted(config_dir.glob("*.vast"))
-    if not vasts:
+    found = campaign_vast_or_none(campaign_dir)
+    if found is None:
+        config_dir = Path(campaign_dir) / "_config"
         # Say what the absence *means*, because the bare "no .vast in <dir>" was read as
         # a broken config and is nothing of the kind: the frozen config is projected with
         # a campaign's results, so a directory without one is a campaign whose results
@@ -81,7 +102,35 @@ def campaign_vast(campaign_dir) -> Path:
             "results were never projected into this directory (it failed before that "
             "step, or it belongs to another driver). There is nothing to read its "
             "configuration from.")
-    return vasts[0]
+    return found
+
+
+def campaign_vast_or_none(campaign_dir):
+    """:func:`campaign_vast` for callers that treat absence as an ordinary answer.
+
+    Every reader of a campaign's frozen config resolves it here, so the pointer is honoured
+    everywhere rather than in the one place that remembered to look. A caller keeping its own
+    ``glob("*.vast")`` would silently read a *base* in a campaign archived beside one.
+    """
+    return vast_in_config_dir(Path(campaign_dir) / "_config")
+
+
+def vast_in_config_dir(config_dir):
+    """:func:`campaign_vast_or_none` for a caller that already holds the ``_config/`` path."""
+    config_dir = Path(config_dir)
+    if not config_dir.is_dir():
+        return None
+    pointer = config_dir / CAMPAIGN_POINTER
+    if pointer.is_file():
+        named = config_dir / pointer.read_text(encoding="utf-8").strip()
+        if not named.is_file():
+            raise ValueError(
+                f"{pointer} names {named.name!r}, which is not in {config_dir}. The archive "
+                "records which .vast is the campaign's own and that file is missing, so its "
+                "configuration cannot be read.")
+        return named
+    vasts = sorted(config_dir.glob("*.vast"))
+    return vasts[0] if vasts else None
 
 
 def campaign_execution(campaign_dir) -> dict:

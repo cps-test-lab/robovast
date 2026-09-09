@@ -31,6 +31,9 @@ def test_cluster_cleanup_removes_the_governor_daemonset(monkeypatch):
                         "delete_warm_daemonset", lambda ns, ctx: calls.append("warm"))
     monkeypatch.setattr("robovast.execution.cluster_execution.buildkitd_deploy."
                         "delete_buildkitd", lambda ns, ctx: calls.append("buildkitd"))
+    # Cleanup also takes the optional tailnet node away with the deployment it fronts.
+    monkeypatch.setattr("robovast.execution.cluster_execution.tailnet_deploy."
+                        "remove", lambda ns, ctx: calls.append("tailnet"))
     monkeypatch.setattr("robovast.execution.cluster_execution.service_deploy."
                         "delete_service", lambda **kw: calls.append("service"))
     monkeypatch.setattr("robovast.execution.cluster_execution.node_governor."

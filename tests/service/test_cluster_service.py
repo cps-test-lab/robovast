@@ -23,7 +23,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
                                                                    DEFAULT_AUX_DEADLINE_SECONDS,
                                                                    aux_pod_name,
                                                                    build_aux_pod_manifest)
-from robovast.execution.control_server import Phase
+from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -278,7 +278,7 @@ def _project_needing_a_build(tmp_path, python_packages=None):
     from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
     campaign_config = validate_config({
-        "version": 3,
+        "version": 4,
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
@@ -1762,13 +1762,63 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
     assert "mujoco model loaded" in lines[0]
 
 
-def test_get_job_log_missing_pod_raises(cs, monkeypatch):
+class _JobLogStorage:
+    """An object store holding one campaign's uploaded job artifacts, keyed by object name."""
+
+    def __init__(self, objects):
+        self.objects = dict(objects)
+
+    def read_object(self, bucket, key):
+        return self.objects.get(key)
+
+    def list_entries(self, bucket, prefix="", delimited=False):
+        return [(k, len(v)) for k, v in sorted(self.objects.items()) if k.startswith(prefix)], []
+
+
+def _no_pod(cs, monkeypatch, objects):
+    """A job whose pod is gone, and a campaign whose objects are *objects*."""
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[])
 
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    storage = _JobLogStorage(objects)
+    monkeypatch.setattr(cs, "_campaign_object_location",
+                        lambda cid, *, interactive=False: (storage, "bkt", f"{cid}/"))
+
+
+def test_get_job_log_of_a_finished_job_is_read_from_the_campaign_objects(cs, monkeypatch):
+    """No pod is the normal state of a finished job, not an error.
+
+    The job mirrored ``/out`` to the object store as it ended, so its log is read from there:
+    resolved through the job-link manifest to the artifact dir, main container first, the
+    sidecars after it, and tagged the way the live tail tags them so a run reads the same
+    whichever source served it.
+    """
+    from robovast.common.execution import JOB_LINKS_MANIFEST_REL
+    _no_pod(cs, monkeypatch, {
+        f"camp/{JOB_LINKS_MANIFEST_REL}": b"cfg/0/job: ../../_jobs/cfg-0\n",
+        "camp/_jobs/cfg-0/logs/system.log": b"mujoco model loaded\nrun ended\n",
+        "camp/_jobs/cfg-0/logs/system_simulation.log": b"sim up\n",
+        "camp/_jobs/cfg-0/logs/rosout.csv": b"not a container log\n",
+    })
+
+    chunk = cs.get_job_log("camp", "cfg/0")
+
+    assert chunk.eof, "an archived log is complete"
+    lines = chunk.text.splitlines()
+    assert [line.split("]")[0] + "]" for line in lines] == [
+        "[robovast]", "[robovast]", "[simulation]"]
+    assert "mujoco model loaded" in lines[0]
+    assert "not a container log" not in chunk.text
+    # The offset protocol continues past the archive the same way it does past a live tail.
+    assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
+
+
+def test_get_job_log_of_a_job_that_archived_nothing_is_absent(cs, monkeypatch):
+    """A job with no pod AND no uploaded logs is reported absent, not as an empty log."""
+    _no_pod(cs, monkeypatch, {})
     with pytest.raises(KeyError):
         cs.get_job_log("camp", "gone")
 
@@ -1813,9 +1863,11 @@ def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
 # -- stop (terminates in-flight cluster workloads) --------------------------
 
 def _stop_state(flagged, phase=Phase.RUNNING):
-    """A control-channel double for stop: the flag, and the phase the reply is chosen by."""
+    """A control-channel double for stop: which scope was flagged, and the phase it is
+    chosen by. Records the scope rather than a bare boolean -- which unit of work a stop
+    lands on is the thing under test."""
     return types.SimpleNamespace(
-        request_stop=lambda: flagged.update(stopped=True),
+        request_stop=lambda scope=STOP_RUNS: flagged.update(stopped=True, scope=scope),
         snapshot=lambda: types.SimpleNamespace(phase=phase))
 
 
@@ -1836,7 +1888,7 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
         lambda **kw: calls.update(kw))
 
     res = cs.stop("camp-1")
-    assert res.ok and flagged.get("stopped") is True
+    assert res.ok and flagged.get("scope") == STOP_RUNS
     # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup).
     assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
 
@@ -1846,8 +1898,9 @@ def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
     cannot reach it and the flag is what ends it (``await_job`` polls it).
 
     The reply has to say so, because the outcome differs from stopping a run: the runs are
-    over and every result they produced is kept, so the campaign still ends as ``finished``
-    -- what the stop gives up is the derived data, and only a re-run brings it back.
+    over and every result they produced is kept -- what the stop gives up is the derived
+    data, and only a re-run brings it back. It must not name the phase the campaign ends
+    in, which depends on how its runs ended rather than on this stop.
     """
     flagged = {}
     cs._campaigns["camp-1"] = types.SimpleNamespace(
@@ -1858,11 +1911,29 @@ def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
 
     res = cs.stop("camp-1")
 
-    assert res.ok and flagged.get("stopped") is True
-    assert "postprocessing" in res.message
-    assert "finished" in res.message and "re-run postprocessing" in res.message
+    assert res.ok
+    # The analysis, not the runs: flagging the runs here is what used to discard the
+    # analysis of the batches that had already finished.
+    assert flagged.get("scope") == STOP_POSTPROCESSING
+    assert "postprocessing" in res.message and "re-run postprocessing" in res.message
+    assert "finished" not in res.message
     # Not the run-phase wording: nothing of this campaign was still executing.
     assert "in-flight jobs terminated" not in res.message
+
+
+def test_cluster_stop_on_an_ended_campaign_is_refused(cs, monkeypatch):
+    """Both lanes share one scope decision, so both refuse a campaign that is over."""
+    flagged = {}
+    cs._campaigns["camp-1"] = types.SimpleNamespace(
+        state=_stop_state(flagged, phase=Phase.FINISHED))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: None)
+
+    res = cs.stop("camp-1")
+
+    assert res.ok is False and "already over" in res.message
+    assert flagged == {}
 
 
 def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
@@ -1888,7 +1959,8 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
         "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
         lambda **kw: calls.append(kw))
     stopped = []
-    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    state = types.SimpleNamespace(
+        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
     entry = types.SimpleNamespace(campaign_id="camp-a", state=state, thread=None)
     cs._campaigns["camp-a"] = entry
     monkeypatch.setattr(type(cs), "_is_done", lambda self, e: False)
@@ -1913,7 +1985,8 @@ def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(type(impl), "_kill_scenario_container",
                         lambda self: killed.append(True))
     stopped = []
-    state = types.SimpleNamespace(request_stop=lambda: stopped.append(True))
+    state = types.SimpleNamespace(
+        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
     impl._campaigns["camp-a"] = types.SimpleNamespace(
         campaign_id="camp-a", state=state, thread=None)
     monkeypatch.setattr(type(impl), "_is_done", lambda self, e: False)
@@ -1921,7 +1994,9 @@ def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     impl.shutdown()
 
     assert killed == [True]
-    assert stopped == [True]
+    # The run scope: what shutdown is for is ending the campaign so its container
+    # teardown runs before the process exits.
+    assert stopped == [STOP_RUNS]
 
 
 def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
@@ -2139,7 +2214,7 @@ def _stepped_campaign(tmp_path, revision):
         yaml.safe_dump({"image_revision": revision}))
     (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 3, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
                                                     "simulation": {}}}}))
     return tmp_path
 
@@ -2176,7 +2251,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
         yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
     (tmp_path / "_config").mkdir(parents=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 3, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
                                                     "simulation": {"image": "reg/sim:1"}}}}))
     with pytest.raises(scene_cache.SceneUnavailable) as err:
         scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
@@ -2194,7 +2269,7 @@ def _scene_identity_for(tmp_path, world, archive=True):
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
-    vast.write_text("version: 3\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+    vast.write_text("version: 4\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
                     "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):

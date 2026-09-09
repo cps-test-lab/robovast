@@ -196,6 +196,49 @@ def test_launching_a_campaign_gets_as_far_as_the_service(without_core, monkeypat
                         "description": "pilot"}
 
 
+def test_validating_reads_the_whole_report_without_the_core(without_core, monkeypatch):
+    """`workspace validate` DRIVEN, not merely `--help`-ed.
+
+    Every check it reports on runs service-side, so what the client does with the reply is
+    the whole of this verb: it reads each problem's severity and decides the exit code from
+    it. Reaching for the core to interpret a field of a reply it already has would fail at
+    call time, in exactly the install this distribution is.
+    """
+    import contextlib  # pylint: disable=import-outside-toplevel
+
+    from robovast.client import cli as root_cli  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        ValidationProblem, ValidationReport)
+
+    class _Ws:
+        workspace_id = "ws-1"
+        name = "demo"
+
+    class _Service:
+        def list_workspaces(self):
+            return SimpleNamespace(workspaces=[_Ws()])
+
+        def validate_project(self, _workspace_id, path="", check_world=True):
+            return ValidationReport(
+                valid=False, world_checked=False, configs=2, runs_per_config=3,
+                total_trials=6,
+                problems=[ValidationProblem(
+                    stage="world", severity="unchecked",
+                    message="this campaign's world was NOT checked: nothing ran the query")])
+
+    @contextlib.contextmanager
+    def _client(*_a, **_k):
+        yield _Service(), "fake service"
+
+    monkeypatch.setattr(root_cli, "service_client", _client)
+
+    result = CliRunner().invoke(root_cli.workspace, ["validate", "demo", "my.vast"])
+    assert result.exit_code != 0, "a check that did not run is not a pass"
+    assert "unchecked" in result.output
+    assert "could not run here" in result.output
+    assert "--no-world-check" in result.output, "say what would give a verdict here"
+
+
 def test_the_waiting_half_of_wait_and_download_needs_no_core(without_core):
     """``--wait-and-download`` calls `wait_for_campaign_outcome`, which lives in the
     client rather than the core -- otherwise it is the single thing keeping `run` there."""

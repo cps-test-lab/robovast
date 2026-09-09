@@ -101,14 +101,24 @@ def create_upload(address: str, executable: bool = False) -> dict:
 
     Returns:
         ``{token, path, expires_in, url}``; the URL lapses after ``expires_in`` seconds,
-        so request a new one rather than reusing a stale grant.
+        so request a new one rather than reusing a stale grant. ``url`` is absent only
+        when nobody can name an origin for it (see ``service_access.web_url``).
     """
-    from robovast.service.interface import CreateUploadRequest
+    from robovast.service.interface import CreateUploadRequest, Routes
+    client = service_access.client_or_local()
     try:
-        return service_access.client_or_local().create_upload(CreateUploadRequest(
-            address=address, executable=executable)).model_dump()
+        grant = client.create_upload(CreateUploadRequest(
+            address=address, executable=executable))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+    if not grant.url:
+        # The HTTP route handler (`app.py`) sets this on the way out; a caller reaching
+        # the same implementation in-process (the MCP mounted inside the service) skips
+        # that handler entirely, so without this the grant is unusable — every other
+        # side-channel URL in this package (files.py, execution.py, results.py) resolves
+        # itself the same way rather than depending on a layer above it.
+        grant.url = service_access.web_url(client, Routes.upload(grant.token))
+    return grant.model_dump()
 
 
 #: Shared note for the two tools that take *address*. Written once: the two make the same
@@ -118,11 +128,16 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
 #: workspace is not on this host at all, so a filesystem read would check a different
 #: file, or none, and report the verdict as if it were about the one the campaign runs.
+#:
+#: **Indented to the docstrings it is spliced into.** A paragraph at column 0 in a body
+#: indented by four leaves the docstring with no common indent, so ``Args:``/``Returns:``
+#: stop being recognised as sections and are served as prose in the tool description --
+#: on every request, duplicating what the parameter schema already carries.
 _ADDRESS_LANE = """
-A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so this
-is the file the campaign will actually run. Anything else is read as a path on the
-MCP-server host — for authoring before a workspace exists, and the only lane with no
-service running. ``lane`` says which answered.
+    A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
+    this is the file the campaign will actually run. Anything else is read as a path on
+    the MCP-server host — for authoring before a workspace exists, and the only lane with
+    no service running. ``lane`` says which answered.
 """
 
 
@@ -161,12 +176,13 @@ def _unchecked_world_advisory(config_path: str) -> list:
             return []
     except Exception:  # noqa: BLE001 - a file the checks above already reported on
         return []
-    return [{"stage": "world", "config": None,
+    return [{"stage": "world", "config": None, "severity": "unchecked",
              "field": "execution.containers.simulation.config",
              "message": "whether this campaign's world loads and compiles was NOT checked: "
                         "that runs the simulator, and this address was read as a plain file "
                         "with no service to run one. Validate through a workspace address "
-                        "(/sources/<workspace_id>/<path>) to have it checked."}]
+                        "(/sources/<workspace_id>/<path>) to have it checked, or pass "
+                        "check_world=False for the narrower verdict this lane can give."}]
 
 
 def validate_project(address: str, check_world: bool = True) -> dict:
@@ -177,9 +193,15 @@ def validate_project(address: str, check_world: bool = True) -> dict:
     strategy) — installed entry points and local ``./path.py:Class`` refs alike — each tagged
     with its config block and field, so the file is fixed in as few iterations as it can be.
 
-    ``valid: true`` means the file is well-formed, every reference resolves, and the world
-    loads and compiles. It does **not** mean a derived image will build — that failure passes
-    validation and then costs a full apt+pip cycle, so if a container adds packages, read
+    ``valid: true`` means every check this reports on ran **and** passed: the file is
+    well-formed, every reference resolves, and the world loads and compiles. A check that
+    could not run here makes it ``false`` and arrives as a problem with
+    ``severity: "unchecked"``, so "not verified" never reads as "fine" — ``world_checked``
+    (true / false / null when not requested) says which happened to the one check that needs
+    a container. An ``unchecked`` problem is not a defect in the file: its message names what
+    would settle it, and ``advice`` problems leave ``valid`` true. It does **not** mean a
+    derived image will build — that failure passes validation and then costs a full apt+pip
+    cycle, so if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
     **The world check is the only one here that runs a container**, and the only one catching a
@@ -197,10 +219,12 @@ def validate_project(address: str, check_world: bool = True) -> dict:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
     Returns:
-        ``{valid, configs, runs_per_config, total_trials, problems, lane}``, each problem
-        ``{stage, config, field, message}``. A clean campaign returns no world entry.
+        ``{valid, world_checked, configs, runs_per_config, total_trials, problems, lane}``,
+        each problem ``{stage, config, field, message, severity}`` with ``severity`` one of
+        ``error`` / ``advice`` / ``unchecked``. A clean campaign returns no world entry.
     """
     from robovast.common.config_validation import validate_project_file
+    from robovast.service.interface import ValidationReport
     from robovast.service.project_push import _resolve_workspace_id
     try:
         target = _address_lane(address)
@@ -209,20 +233,27 @@ def validate_project(address: str, check_world: bool = True) -> dict:
             # unchecked rather than letting a clean reply read as a checked one.
             report = validate_project_file(address)
             if check_world:
+                # Same rule as the service lane, because the answer is the same one: a
+                # world nobody could look at is not a world that passed. Empty when the
+                # campaign declares no simulator -- then there is no world to check, and
+                # `world_checked` stays null rather than claiming a verdict.
+                advisory = _unchecked_world_advisory(address)
                 report = {**report,
-                          "problems": list(report.get("problems") or [])
-                          + _unchecked_world_advisory(address)}
-            return {**report, "lane": "local file"}
+                          "world_checked": False if advisory else None,
+                          "valid": bool(report.get("valid")) and not advisory,
+                          "problems": list(report.get("problems") or []) + advisory}
+            return {**ValidationReport.model_validate(report).model_dump(),
+                    "lane": "local file"}
         client = service_access.client_or_local()
         workspace_id, rel_path = target
         report = client.validate_project(
             _resolve_workspace_id(client, workspace_id), rel_path, check_world)
         return {**report.model_dump(), "lane": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"valid": False, "configs": 0, "runs_per_config": 0,
-                "total_trials": 0,
-                "problems": [{"stage": "project", "config": None,
-                              "field": None, "message": str(e)}]}
+        return {"valid": False, "world_checked": None, "configs": 0,
+                "runs_per_config": 0, "total_trials": 0,
+                "problems": [{"stage": "project", "config": None, "field": None,
+                              "severity": "error", "message": str(e)}]}
 
 
 def preview_configurations(address: str, limit: int = 0) -> dict:

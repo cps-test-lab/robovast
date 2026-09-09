@@ -102,11 +102,16 @@ def _run_upgrade(before, after, rollout_error=None):
             # Reads the live store pod: an unstubbed call reaches a real API server.
             verify_store_pod_infrastructure=MagicMock(return_value=None),
             deploy_service=MagicMock(),
+            # Recovers (or mints) the built-in registry's credential so the upgrade can pass
+            # it to deploy_service; unstubbed it reads a Secret from a real API server.
+            ensure_registry_htpasswd=MagicMock(return_value="registry-password"),
             wait_for_service_ready=MagicMock(),
             wait_for_rollout=rollout,
             running_image_digest=MagicMock(side_effect=lambda *a, **k: next(digests))), \
             patch("robovast.execution.cluster_execution.cluster_setup."
                   "apply_controller_rbac", MagicMock()), \
+            patch("robovast.execution.cluster_execution.tailnet_deploy."
+                  "reconcile_existing", MagicMock(return_value="")), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."
                   "apply_buildkitd", MagicMock()), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."

@@ -42,6 +42,7 @@ Configuration format:
 import contextlib
 import csv
 import glob
+import hashlib
 import json
 import logging
 import math
@@ -237,6 +238,23 @@ class Command(BasePostprocessingPlugin):
 
         if not os.path.exists(script_path):
             return False, f"Script not found: {script_path}"
+
+        # The cluster lane's staging initContainer restores this bit for the `_config/`
+        # subtree a `command` step's script lives in (see `postprocess_stage.py`; the rest
+        # of a campaign's tree -- bags and CSVs, orders of magnitude larger -- skips that
+        # restoration on purpose, since nothing reads them as a program). This is a second,
+        # narrower line of defence for every other way a staged script can still arrive
+        # non-executable: the local (non-cluster) lane never runs that initContainer at
+        # all, and a workspace push from a filesystem or transport that does not preserve
+        # POSIX modes would land here the same way. Cheap either way -- one stat/chmod pair
+        # -- and this is the one caller that actually execve()s the file.
+
+        if os.path.isfile(script_path) and not os.access(script_path, os.X_OK):
+            try:
+                mode = os.stat(script_path).st_mode
+                os.chmod(script_path, mode | 0o111)
+            except OSError:
+                pass  # fall through; the exec below reports the real error if this didn't help
 
         # Build full command (optionally pass provenance to docker_exec and script)
         full_command = [script_path]
@@ -980,11 +998,32 @@ class Compress(BasePostprocessingPlugin):
 # configuration).
 
 
+#: Postgres truncates an identifier past this many bytes, silently. So a table name over
+#: the limit is not a long name, it is a *different* one -- and two data files whose names
+#: agree up to the cut become one table, whose rows are the two files' appended together
+#: with nothing raised. The same reality :data:`~robovast.results_processing.
+#: campaign_ingest._MAX_COLUMN_BYTES` states for columns.
+_MAX_TABLE_NAME_BYTES = 63
+
+#: How many hex characters of the full name's hash to keep when a table name is shortened.
+#: Long enough that two shortened names colliding by chance is not a real concern, short
+#: enough to leave most of the budget to the readable head.
+_TABLE_NAME_HASH_LEN = 8
+
+
 def _csv_to_table_name(filename: str) -> str:
-    """Convert a data filename to a valid SQLite table name.
+    """Convert a data filename to a table name the index can actually hold.
 
     Strips the .csv/.jsonl extension, replaces non-alphanumeric/underscore characters
     with underscores, lowercases, and prefixes with 't_' if it starts with a digit.
+
+    A name past :data:`_MAX_TABLE_NAME_BYTES` is shortened and given a hash of the whole
+    sanitised name, because Postgres would otherwise truncate it *for* us and two files
+    would silently share a table. Hashing the full name and not the kept head is the part
+    that matters: a bag-derived name is the recording's directory plus the topic, so two
+    topics under one long prefix agree in exactly the characters a bare truncation keeps.
+    The head is kept only so the table is recognisable to someone reading a table list;
+    ``_table_name_map`` is what a reader resolves a file to its table through.
 
     Examples:
         ``behaviors.csv``              -> ``behaviors``
@@ -1001,7 +1040,12 @@ def _csv_to_table_name(filename: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", stem).lower()
     if sanitized and sanitized[0].isdigit():
         sanitized = "t_" + sanitized
-    return sanitized or "t_unknown"
+    sanitized = sanitized or "t_unknown"
+    if len(sanitized.encode()) <= _MAX_TABLE_NAME_BYTES:
+        return sanitized
+    digest = hashlib.sha256(sanitized.encode()).hexdigest()[:_TABLE_NAME_HASH_LEN]
+    head = sanitized[: _MAX_TABLE_NAME_BYTES - 1 - _TABLE_NAME_HASH_LEN].rstrip("_")
+    return f"{head}_{digest}"
 
 
 #: py_trees' status names -> the numeric codes the ``behaviors`` table has always

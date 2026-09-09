@@ -101,6 +101,18 @@ class ScopeNotEnforceable(RuntimeError):
     include_traceback = False
 
 
+#: What makes a *table* covered, as a SQL expression over ``pg_class c``: row-level
+#: security enabled, forced (so the owner has no exemption), and carrying the campaign
+#: policy. Written once because two places ask it -- the whole-index sweep
+#: (:func:`_scoped_relations`, whose verdict :func:`assert_enforceable` refuses a read on)
+#: and the single-relation repair (:func:`table_is_secured`) -- and a table one of them
+#: called covered while the other did not would be an index that reports itself secured
+#: and still refuses every query. Takes ``%s`` = :data:`POLICY_NAME`.
+_TABLE_SECURED = """c.relrowsecurity AND c.relforcerowsecurity
+                         AND EXISTS (SELECT 1 FROM pg_policy p
+                                     WHERE p.polrelid = c.oid AND p.polname = %s)"""
+
+
 def _scoped_relations(conn) -> list:
     """``[(kind, schema, name, secured)]`` for everything the scope must cover.
 
@@ -112,15 +124,13 @@ def _scoped_relations(conn) -> list:
     schemas = [conn.execute("SELECT current_schema()").fetchone()[0] or "public",
                index_schema.CAMPAIGN_SCHEMA]
     rows = conn.execute(
-        """
+        f"""
         SELECT CASE c.relkind WHEN 'v' THEN 'view' ELSE 'table' END,
                n.nspname, c.relname,
                CASE WHEN c.relkind = 'v'
                     THEN coalesce('security_invoker=true' = ANY(c.reloptions)
                                   OR 'security_invoker=on' = ANY(c.reloptions), false)
-                    ELSE c.relrowsecurity AND c.relforcerowsecurity
-                         AND EXISTS (SELECT 1 FROM pg_policy p
-                                     WHERE p.polrelid = c.oid AND p.polname = %s)
+                    ELSE {_TABLE_SECURED}
                END
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -160,13 +170,72 @@ def ensure_reader_role(conn) -> None:
         conn.execute(f'GRANT "{READER_ROLE}" TO CURRENT_USER')
 
 
+def table_is_secured(conn, table: str,
+                     schema: str = index_schema.METRIC_SCHEMA) -> bool:
+    """Whether *table* already carries everything :func:`assert_enforceable` demands.
+
+    The single-relation form of the verdict :func:`_scoped_relations` computes for the
+    whole index, and deliberately the same expression: a table this returns ``True`` for
+    must be one that check would pass, or the ingest would report an index it has secured
+    and the next scoped read would still be refused -- so both read the verdict from
+    :data:`_TABLE_SECURED` rather than each spelling it out.
+
+    ``True`` for a table with no ``campaign_id`` -- there is nothing to scope it by, so
+    :func:`secure_table` would leave it alone and it needs no repair. A table that is not
+    there at all is also ``True``: nothing can leak through a relation that does not
+    exist, and the caller that is about to create it secures it as part of doing so.
+    """
+    row = conn.execute(
+        f"""
+        SELECT {_TABLE_SECURED}
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = %s
+                               AND NOT a.attisdropped
+        WHERE c.relkind = 'r' AND c.relname = %s
+          AND n.nspname = coalesce(nullif(%s, ''), current_schema())
+        """, (POLICY_NAME, SCOPE_COLUMN, table, schema)).fetchone()
+    return True if row is None else bool(row[0])
+
+
+def secure_table_if_needed(conn, table: str,
+                           schema: str = index_schema.METRIC_SCHEMA) -> bool:
+    """Secure *table* unless it already is; ``True`` when it had to be repaired.
+
+    The repair for a table that exists but is *not* covered, which
+    :func:`secure_table`'s own caller cannot be relied on to have produced. Securing a
+    table is not atomic with creating it unless something makes it so, and the index
+    connection is autocommit: an ingest that dies between the ``CREATE TABLE`` and the
+    policy leaves the table, and the column verdicts recorded beside it, committed and
+    unscoped. Every later ``ensure_table`` for that table then takes its widen path,
+    which had nothing that would notice -- so the index stayed refusing every scoped
+    read until someone happened to reprocess a campaign, which is how the repair came to
+    depend on unrelated work.
+
+    One indexed ``pg_catalog`` read on the common path, where the answer is "already
+    secured" and nothing further runs. That is per data file of per run, so it is not
+    free; it buys an index that heals itself at the first touch of the offending table
+    rather than at the next whole-campaign ingest.
+    """
+    if table_is_secured(conn, table, schema):
+        return False
+    logger.info("index: %s was not covered by the campaign scope; securing it",
+                index_schema.qualified(table, schema))
+    secure_table(conn, table, schema)
+    return True
+
+
 def secure_table(conn, table: str, schema: str = index_schema.METRIC_SCHEMA) -> None:
     """Put the campaign policy on one table and let the reader role select from it.
 
     Called from :func:`~robovast.results_processing.index_schema.ensure_table`, because
     tables appear as data files appear -- a ``poses.csv`` in a run directory creates
     ``poses`` -- so securing the index once at setup would leave every table created after
-    it unscoped, which is to say leaking.
+    it unscoped, which is to say leaking. That caller runs this inside the same
+    transaction as the ``CREATE TABLE``: a table committed without its policy is refused
+    by :func:`assert_enforceable` for as long as it survives, and the index connection is
+    autocommit, so the two statements are one act only if something makes them one.
+    :func:`secure_table_if_needed` is the repair for a table that already got past that.
 
     A table without a ``campaign_id`` column is left alone: the bookkeeping tables
     (``_column_types``, ``_column_notes``, ``_table_name_map``) describe the *index's*

@@ -248,6 +248,20 @@
         "title": "Body_query_campaign_data_sql_campaigns__campaign_id__query_post",
         "type": "object"
       },
+      "Body_retrigger_campaign_campaigns__campaign_id__retrigger_post": {
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "force"
+        ],
+        "title": "Body_retrigger_campaign_campaigns__campaign_id__retrigger_post",
+        "type": "object"
+      },
       "Body_validate_project_workspaces__workspace_id__validate_post": {
         "properties": {
           "check_world": {
@@ -456,12 +470,30 @@
         "type": "object"
       },
       "CampaignOrigin": {
-        "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.",
+        "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.\n\n**A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is\nmigrated on the way into the re-run's staging copy, so two runs of \"the same campaign\" can\nread different config versions -- which makes them different experiments, and a reader\ncomparing their results has to be able to see it. :attr:`config_version_from` is recorded\non every re-run, so \"read a current config\" is a fact rather than a silence:\n:attr:`config_migration_steps` is empty when nothing had to be carried forward, and\n:attr:`config_version_from` is ``None`` only when nothing was recorded at all.",
         "properties": {
+          "config_migration_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Config Migration Steps",
+            "type": "array"
+          },
           "config_path": {
             "default": "",
             "title": "Config Path",
             "type": "string"
+          },
+          "config_version_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Version From"
           },
           "from_campaign": {
             "default": "",
@@ -485,7 +517,9 @@
           }
         },
         "required": [
+          "config_migration_steps",
           "config_path",
+          "config_version_from",
           "from_campaign",
           "kind",
           "workspace_id",
@@ -664,6 +698,17 @@
             "title": "Postprocessing Error",
             "type": "string"
           },
+          "results_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Results Bytes"
+          },
           "share_error": {
             "default": "",
             "title": "Share Error",
@@ -697,6 +742,7 @@
           "phase",
           "postprocessed",
           "postprocessing_error",
+          "results_bytes",
           "share_error",
           "started_at"
         ],
@@ -2600,7 +2646,7 @@
         "type": "object"
       },
       "RunProgress": {
-        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n* ``killed`` \u2014 an operator stopped the run's job by hand (see\n  :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and\n  *not* part of ``failed``: a run somebody ended says nothing about the system under\n  test, so counting it as a trial failure would put a human intervention into the\n  campaign's measured outcome. It is a subset of ``no_result`` \u2014 a killed run delivered\n  nothing, which is exactly why it was recorded \u2014 so it explains part of that number\n  rather than adding to it.\n\n* ``invalid`` \u2014 the runner threw the trial away, because a container it ran against\n  crashed and was restarted under it (see\n  :func:`~robovast.execution.cluster_execution.cluster_execution.pod_invalidating_restart`).\n  Counted apart from ``failed`` for the same reason ``killed`` is, and for a sharper\n  one: the trial may well have written a *passing* verdict, against a simulator that\n  had lost its state. Unlike ``killed`` it is not a subset of ``no_result`` \u2014 an\n  invalidated run can have delivered a result, which is precisely the danger.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to.",
+        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n* ``killed`` \u2014 an operator stopped the run's job by hand (see\n  :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and\n  *not* part of ``failed``: a run somebody ended says nothing about the system under\n  test, so counting it as a trial failure would put a human intervention into the\n  campaign's measured outcome. It is a subset of ``no_result`` \u2014 a killed run delivered\n  nothing, which is exactly why it was recorded \u2014 so it explains part of that number\n  rather than adding to it.\n\n* ``invalid`` \u2014 the runner threw the trial away, because a container it ran against\n  crashed and was restarted under it (see\n  :func:`~robovast.execution.cluster_execution.cluster_execution.pod_invalidating_restart`).\n  Counted apart from ``failed`` for the same reason ``killed`` is, and for a sharper\n  one: the trial may well have written a *passing* verdict, against a simulator that\n  had lost its state. Unlike ``killed`` it is not a subset of ``no_result`` \u2014 an\n  invalidated run can have delivered a result, which is precisely the danger.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\n``outcomes_counted`` says whether ``failed``, ``killed`` and ``invalid`` are final for\nthe batch they describe. They are written when the batch's per-run verdicts are\ntallied, which happens once, at the end \u2014 so before then they read 0, and 0 is also\nwhat a batch that genuinely lost nothing reads. Those are not the same statement and a\nreader cannot tell them apart from the number: a poll partway through a batch that had\nalready lost runs reported ``failed: 0``, and was read as a healthy sweep. This is the\ndifference between \"none, and we have counted\" and \"none counted yet\".\n\nIt does not weaken the standing rule that only a run's own JUnit verdict is\nauthoritative. It says when this aggregate is worth reading at all.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to, and\nits counters come from verdicts already on disk, so they are counted by construction.",
         "properties": {
           "completed": {
             "default": 0,
@@ -2627,6 +2673,11 @@
             "title": "No Result",
             "type": "integer"
           },
+          "outcomes_counted": {
+            "default": false,
+            "title": "Outcomes Counted",
+            "type": "boolean"
+          },
           "total": {
             "default": 0,
             "title": "Total",
@@ -2639,6 +2690,7 @@
           "invalid",
           "killed",
           "no_result",
+          "outcomes_counted",
           "total"
         ],
         "title": "RunProgress",
@@ -3374,6 +3426,17 @@
             "title": "Progress Since",
             "type": "number"
           },
+          "results_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Results Bytes"
+          },
           "runs": {
             "$ref": "#/components/schemas/RunProgress"
           },
@@ -3517,6 +3580,7 @@
           "progress_age_s",
           "progress_deadline_s",
           "progress_since",
+          "results_bytes",
           "runs",
           "search_since",
           "share_error",
@@ -3856,7 +3920,7 @@
         "type": "object"
       },
       "ValidationProblem": {
-        "description": "One problem from :meth:`RobovastInterface.validate_project`.\n\n``stage`` is the check that failed (``file``/``parse``/``schema``/\n``scenario``/``generation``/plugin-ref/\u2026); ``config``/``field`` locate it.",
+        "description": "One problem from :meth:`RobovastInterface.validate_project`.\n\n``stage`` is the check that failed (``file``/``parse``/``schema``/\n``scenario``/``generation``/plugin-ref/\u2026); ``config``/``field`` locate it.\n\n``severity`` states which of three answers this is, because a caller acts on them\ndifferently and the text alone cannot be branched on:\n\n- ``error`` \u2014 the campaign is wrong. It makes ``valid`` false.\n- ``advice`` \u2014 a checked fact worth saying (a large build context, a container with\n  no memory limit). ``valid`` stays true; the campaign runs.\n- ``unchecked`` \u2014 a check this report covers could not run here, so *nothing* was\n  learned about it either way. It makes ``valid`` false without being a defect in\n  the file, and its message names what would settle it.",
         "properties": {
           "config": {
             "anyOf": [
@@ -3885,6 +3949,11 @@
             "title": "Message",
             "type": "string"
           },
+          "severity": {
+            "default": "error",
+            "title": "Severity",
+            "type": "string"
+          },
           "stage": {
             "default": "",
             "title": "Stage",
@@ -3895,13 +3964,14 @@
           "config",
           "field",
           "message",
+          "severity",
           "stage"
         ],
         "title": "ValidationProblem",
         "type": "object"
       },
       "ValidationReport": {
-        "description": "Collect-all validation result (mirrors ``validate_project_file``).",
+        "description": "Collect-all validation result (mirrors ``validate_project_file``).\n\n``valid`` means every check this report covers ran **and** passed, so a caller may\nact on that one boolean \u2014 which is the only thing a boolean is good for. A check\nthat could not run makes it false and appears as an ``unchecked`` problem: \"I could\nnot look\" and \"it is fine\" are different answers, and a caller that reads only\n``valid`` must not be handed the second when the first is true.\n\n``world_checked`` is the three-state answer for the one check that needs a\ncontainer: ``True`` it ran and the world loads and compiles, ``False`` it was asked\nfor and could not run, ``None`` it was not asked for (``check_world=False``).",
         "properties": {
           "configs": {
             "default": 0,
@@ -3929,6 +3999,17 @@
             "default": false,
             "title": "Valid",
             "type": "boolean"
+          },
+          "world_checked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "World Checked"
           }
         },
         "required": [
@@ -3936,7 +4017,8 @@
           "problems",
           "runs_per_config",
           "total_trials",
-          "valid"
+          "valid",
+          "world_checked"
         ],
         "title": "ValidationReport",
         "type": "object"
@@ -5493,7 +5575,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one running job's log, tailed live (``Last-Event-ID``\nresumes). A finished job whose pod was garbage-collected has no live log.",
+        "description": "Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).\n\nA **finished** job is served too, not only a running one. What the events mean,\nand which residual case is still an error, is ``_sse_log_stream``'s to say.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {
@@ -6477,7 +6559,7 @@
     },
     "/campaigns/{campaign_id}/retrigger": {
       "post": {
-        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.",
+        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.",
         "operationId": "retrigger_campaign_campaigns__campaign_id__retrigger_post",
         "parameters": [
           {
@@ -6490,6 +6572,15 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_retrigger_campaign_campaigns__campaign_id__retrigger_post"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

@@ -32,9 +32,11 @@ from typing import Optional
 import yaml
 
 from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dirs,
-                            read_execution_metadata, read_run_outcomes, read_scenario_config)
+                            read_config_channels, read_execution_metadata,
+                            read_run_outcomes, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore, read_campaign_description
+from robovast.common.results_utils import campaign_vast_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -103,19 +105,18 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         store_path.unlink()  # rebuild from scratch (schema/state may have changed)
 
     # The vast copy carries evaluation.visualization for the GUI; tolerate absence.
-    config_dir = campaign_dir / "_config"
     config_json: dict = {}
-    vast_files = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
-    if vast_files:
+    vast_file = campaign_vast_or_none(campaign_dir)
+    if vast_file is not None:
         try:
             # `upgrade=True`: this reads an ARCHIVED config, which may predate the current
             # version. The strict policy would raise, and the except below would swallow it into
             # an empty config -- so an old campaign's store rebuilt fine and silently lost the
             # visualization block the GUI reads from it, for exactly the campaigns whose store
             # had to be reconstructed. The archived file itself is not rewritten.
-            config_json = load_config(str(vast_files[0]), upgrade=True)
+            config_json = load_config(str(vast_file), upgrade=True)
         except Exception as e:  # pylint: disable=broad-except
-            logger.warning("Could not load %s for campaign store: %s", vast_files[0], e)
+            logger.warning("Could not load %s for campaign store: %s", vast_file, e)
 
     with CampaignStore(store_path) as store:
         # Paths are stored relative to the campaign root (the dir holding
@@ -147,6 +148,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 status=aggregate_run_status(run_dirs),
                 result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
+                channels=read_config_channels(cfg_dir),
             )
             store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
     logger.info("Built campaign store: %s", store_path)

@@ -56,8 +56,9 @@ from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
 from robovast.common.host_display import require_host_display
 from robovast.common.campaign_data import read_campaign_finished_at
 from robovast.common.store import read_campaign_created_at, read_campaign_description
-from robovast.execution.control_server import (STOP_DURING_POSTPROCESSING, ControllerState, Phase,
-                                               Status, failure_detail, is_terminal)
+from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
+                                               ControllerState, Phase, Status, failure_detail,
+                                               is_terminal, stop_scope_for_phase)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
                                         UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
@@ -76,6 +77,29 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+
+def _extended_bases(candidates, project_dir):
+    """Of *candidates*, the ones another candidate names in its ``extends:``.
+
+    A base is identified by something extending it, not by its shape. Guessing from shape --
+    "no ``execution:`` block, so a fragment" -- would also swallow a campaign someone is
+    halfway through writing, turning a validation error that names the missing section into
+    "this workspace has no .vast file".
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    bases = set()
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first = next(iter(yaml.safe_load_all(f)), None)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        ext = first.get("extends") if isinstance(first, dict) else None
+        if isinstance(ext, str) and ext.strip():
+            bases.add(Path(os.path.abspath(os.path.join(os.path.dirname(str(path)), ext))))
+    return bases
 
 
 def _as_dir(rel_path: str) -> str:
@@ -584,6 +608,11 @@ class LocalTransport(RobovastInterface):
         self._results_dir = results_dir
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
+        #: True once :meth:`shutdown` has begun. Read by work that is worth starting only
+        #: if it can finish: a shutdown stops every live campaign, so from a worker's side
+        #: it is indistinguishable from an operator's Stop, and the analysis a stop leaves
+        #: owed must not be started against storage this process is about to lose.
+        self._shutting_down = False
         # Incremental job-log tails, so a log panel polling twice a second folds in only
         # each container's delta instead of re-reading whole files. LRU-bounded so a
         # long-lived service does not accumulate buffers. Shared with ClusterService,
@@ -767,6 +796,11 @@ class LocalTransport(RobovastInterface):
                 v for v in sorted(project_dir.rglob("*.vast"))
                 if not any(part.startswith(".") or part in PINNED_SKIP_DIRS
                            for part in v.relative_to(project_dir).parts)]
+            # A base another .vast is built on is not itself a campaign to launch, so it does
+            # not make the workspace ambiguous. One that nothing extends still does -- an
+            # orphan is indistinguishable from a second campaign, and saying so is right.
+            bases = _extended_bases(vasts, project_dir)
+            vasts = [v for v in vasts if Path(os.path.abspath(str(v))) not in bases] or vasts
             if not vasts:
                 raise ValueError(
                     f"workspace {workspace_id!r} has no .vast file; "
@@ -1923,8 +1957,8 @@ class LocalTransport(RobovastInterface):
         import yaml
 
         from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, UnmigratableConfig,
-                                                find_migration_markers, upgrade_config_file)
-        from robovast.service.retrigger import _read_vast
+                                                find_migration_markers, read_vast,
+                                                upgrade_config_file)
 
         info = self.create_workspace(CreateWorkspaceRequest(name=workspace_name,
                                                             from_campaign=campaign_id))
@@ -1943,7 +1977,7 @@ class LocalTransport(RobovastInterface):
                 with open(staged, "w", encoding="utf-8") as handle:
                     yaml.dump(e.partial, handle, default_flow_style=False, sort_keys=False)
 
-        markers = find_migration_markers(_read_vast(staged))
+        markers = find_migration_markers(read_vast(staged))
         logger.warning(
             "materialised %s as work order in workspace %s: %d unresolved marker(s). It will not "
             "validate until each is resolved, which is deliberate.",
@@ -1976,7 +2010,38 @@ class LocalTransport(RobovastInterface):
                 for name, axis in report["axes"].items()
             })
 
-    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+    @staticmethod
+    def _admit_retrigger(report: dict, force: bool) -> None:
+        """Refuse a launch the pre-flight blocks on, unless the caller asked for it anyway.
+
+        On the operation rather than in each client, because a check a client may skip is not
+        a gate: the campaign whose recorded image is outside this host's protocol window then
+        fails in the backend, minutes after a launch that looked accepted. ``retrigger.check``
+        stages nothing and starts no container, so the launch pays a few record reads for it.
+
+        ``force`` is the caller's judgement about an axis they understand. It is logged
+        rather than carried onto the campaign, so the service's own log is where "this one was
+        launched past a refusal" can be read back.
+        """
+        from robovast.service.retrigger import RetriggerRefused
+
+        blocking = report["blocking"]
+        if not blocking:
+            return
+        axes = ", ".join(blocking)
+        if force:
+            logger.warning("retrigger of %s forced past a blocking pre-flight: %s",
+                           report["campaign_id"], axes)
+            return
+        raise RetriggerRefused(
+            f"cannot retrigger {report['campaign_id']!r}: its pre-flight blocks on {axes}.\n"
+            + "\n".join(f"  {name}: {report['axes'][name]['detail']}" for name in blocking)
+            + f"\n  Fix what the detail names, or re-run it anyway with force "
+              f"('vast campaign rerun {report['campaign_id']} --force', or force on the "
+              f"request). 'vast campaign rerun --check {report['campaign_id']}' reports "
+              f"every axis, including the ones that pass.")
+
+    def retrigger_campaign(self, campaign_id: str, force: bool = False) -> CampaignRef:
         """Launch a new campaign from *campaign_id*'s own records (see the interface).
 
         A thin orchestrator: :mod:`robovast.service.retrigger` decides everything about the
@@ -1987,6 +2052,7 @@ class LocalTransport(RobovastInterface):
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
+        self._admit_retrigger(retrigger.check(source_dir, campaign_id), force)
         plan = retrigger.prepare(
             source_dir, campaign_id,
             workspaces_root=self.store.registry.root,
@@ -2000,7 +2066,7 @@ class LocalTransport(RobovastInterface):
             self._guard_new_campaign()
             ref = self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
-                origin=self._retrigger_origin(campaign_id),
+                origin=self._retrigger_origin(campaign_id, plan.config_migration),
                 materialize=plan.materialize,
                 discard=plan.discard,
                 pinned_images=plan.pinned_images))
@@ -2014,8 +2080,8 @@ class LocalTransport(RobovastInterface):
         self._notifier(campaign_id).retriggered(ref.campaign_id)
         return ref
 
-    def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
-        """The origin to record for a re-run of *source_id*.
+    def _retrigger_origin(self, source_id: str, config_migration: dict) -> CampaignOrigin:
+        """The origin to record for a re-run of *source_id*, staged as *config_migration* says.
 
         Built here rather than in :mod:`robovast.service.retrigger`, which deliberately
         does not import the service interface.
@@ -2026,6 +2092,10 @@ class LocalTransport(RobovastInterface):
         Copied rather than resolved by walking ``from_campaign`` later, because the listing
         is paginated (a reader may not hold the parent at all) and because a parent is
         routinely deleted -- lineage that evaporates with it is lineage nobody can rely on.
+
+        The config version comes from the plan that staged the tree, so the record states
+        the version this run actually read rather than the one the source's frozen ``.vast``
+        would migrate to if it were staged again today.
 
         None of this is a link: the re-run runs from the source's frozen ``_config/``
         (:mod:`robovast.service.retrigger` says why), never from the workspace named here,
@@ -2038,7 +2108,9 @@ class LocalTransport(RobovastInterface):
             from_campaign=source_id,
             workspace_id=parent.workspace_id if parent else "",
             workspace_name=parent.workspace_name if parent else "",
-            config_path=parent.config_path if parent else "")
+            config_path=parent.config_path if parent else "",
+            config_version_from=config_migration["from"],
+            config_migration_steps=config_migration["steps"])
 
     def _admit_image_provenance(self, target, request: CreateCampaignRequest) -> None:
         """Refuse to launch a campaign whose image nobody could later identify.
@@ -2281,6 +2353,19 @@ class LocalTransport(RobovastInterface):
                 # outcome so "stopped" survives a service restart.
                 logger.info("Campaign %s stopped by request", campaign_id)
                 self._record_campaign_stopped(campaign_id, results_dir, state, backend)
+                # The batches that DID finish are complete on disk, so their analysis is
+                # still owed. `controller._finish_campaign` cannot run it on this path --
+                # on Ctrl+C the storage tunnel dies with the controller's process group --
+                # but the service can, and `_record_campaign_stopped` above draws exactly
+                # that line ("succeeds for a Stop-button stop; on Ctrl+C the tunnel is
+                # already gone"). So it runs here, ending back at `stopped`: how the
+                # campaign ended is not this step's to restate.
+                #
+                # Skipped while shutting down, for that same tunnel reason, and skipped
+                # for a campaign that asked for no postprocessing.
+                if request.postprocess and not self._shutting_down:
+                    self._postprocess(campaign_id, results_dir, state, entry,
+                                      ends_at=Phase.STOPPED)
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
                 # Not every failed campaign is a bug. A typo'd --config filter, a
@@ -2301,10 +2386,21 @@ class LocalTransport(RobovastInterface):
                     campaign_id, results_dir, state, e, backend)
                 return
             else:
-                # Analysis postprocessing (rosbags → CSV → data.db) — what the eval
-                # viewer / `query_campaign_data_sql` read. The batch/search loop leaves
-                # it separate, so run it here when the caller asked (the default).
-                if request.postprocess and self._postprocess_in_process():
+                # Analysis postprocessing — what the eval viewer and
+                # `query_campaign_data_sql` read. The batch/search loop leaves it
+                # separate, so run it here when the caller asked (the default).
+                #
+                # The second clause covers a stop that landed BETWEEN batches, where the
+                # loop ends cleanly rather than raising: the controller's own chain skips
+                # itself whenever a stop was requested, so on a lane that relies on that
+                # chain nothing would postprocess at all and a search stopped at a batch
+                # boundary would lose the analysis of every batch it completed.
+                # Ends at `finished` either way, which is not this branch's choice: a stop
+                # seen at a batch boundary is an ordinary stopping criterion to the loop
+                # (`stop_kind="external"`), so the campaign really did finish. Only the
+                # raising path -- the run cut mid-batch -- ends `stopped`.
+                stopped_runs = state.stop_requested and not self._shutting_down
+                if request.postprocess and (self._postprocess_in_process() or stopped_runs):
                     self._postprocess(campaign_id, results_dir, state, entry)
             finally:
                 # This lane's outermost scope, so the campaign ends here — on every
@@ -2623,9 +2719,18 @@ class LocalTransport(RobovastInterface):
         # established when the container is created, and a follow-up call only `docker
         # exec`s into it. Without this, asking for a window after a plain call would reuse
         # the mount-less container and silently draw nothing.
+        #
+        # The workspace's CONTENTS belong in it for the same reason, and this is the only
+        # member of the tuple that is not already immutable. A campaign is frozen once it
+        # starts, so its id is an identity; a workspace is editable by definition, and the
+        # project reaches a held container exactly once, when the container is created
+        # (the cluster lane mirrors it in with an init container, the local lane
+        # bind-mounts it). So a reused container answers from the tree it was staged
+        # from, and an edited workspace is answered for by the bytes it no longer holds --
+        # a validate that keeps reporting the problem its own fix already removed.
         identity = (request.workspace_id, request.campaign_id,
                     request.config_path, request.config_name, spec.image,
-                    bool(request.show_gui))
+                    bool(request.show_gui), _workspace_sha(spec))
         started = time.monotonic()
         query = bool(getattr(request, "query", False))
         out = self._exec_manager.run(spec, limit_s,
@@ -2798,11 +2903,19 @@ class LocalTransport(RobovastInterface):
                                          campaign_id=request.campaign_id or "")
         return ImageResolution(image=found.identity)
 
-    def _postprocess(self, campaign_id, results_dir, state, entry):
-        """Run analysis postprocessing for a just-finished local campaign.
+    def _postprocess(self, campaign_id, results_dir, state, entry,
+                     ends_at=Phase.FINISHED):
+        """Run analysis postprocessing for a just-ended local campaign.
 
-        Advances the phase ``... → postprocessing → finished`` and generates the
-        campaign's ``data.db``; a failure surfaces via status (phase ``failed``).
+        Advances the phase ``... → postprocessing → *ends_at*`` and generates the
+        campaign's derived data; a failure surfaces via status.
+
+        *ends_at* is **how the campaign ended**, not a result of this step: a campaign
+        whose runs were stopped postprocesses the batches that did finish and then goes
+        back to ``stopped``. The same rule
+        :func:`~robovast.execution.status_recovery.record_step_outcome` applies on the
+        re-run path -- a step that runs after a campaign has ended does not get to restate
+        how it ended -- so this is that rule's second caller rather than a second answer.
         """
         from robovast.client.logging_config import (add_campaign_log_handler,
                                                     remove_campaign_log_handler)
@@ -2827,9 +2940,9 @@ class LocalTransport(RobovastInterface):
             ok, message = run_postprocessing(
                 results_dir=results_dir, campaign=campaign_id,
                 output_callback=stage_output_callback(state, logger.info),
-                # The stop flag is only *checked* before this step (see
-                # controller._finish_campaign), so without it here a campaign stopped
-                # once postprocessing has begun runs to the end regardless.
+                # Reads the postprocessing scope, so this ends only for a stop aimed at
+                # the analysis. Without it a stop landing once postprocessing has begun
+                # would run to the end regardless.
                 should_stop=stop_checker(state))
             if ok:
                 from robovast.results_processing.postprocessing import \
@@ -2838,25 +2951,25 @@ class LocalTransport(RobovastInterface):
                         str(Path(results_dir) / campaign_id)):
                     state.update(postprocessed=True)
                 state.update(postprocessing_error=None)
-                state.set_phase(Phase.FINISHED)
+                state.set_phase(ends_at)
             else:
-                # The runs finished — a postprocessing failure keeps phase=finished
-                # (not a run failure) and records the reason on its own field, so it is
-                # re-triggerable and distinct from a failed run. Mirrors the cluster
-                # auto-chain in controller._chain_postprocessing.
+                # The runs are over — a postprocessing failure does not change how the
+                # campaign ended (that is ``ends_at``) and records the reason on its own
+                # field, so it is re-triggerable and distinct from a failed run. Mirrors
+                # the cluster auto-chain in controller._chain_postprocessing.
                 #
-                # A cancelled run lands here too and keeps that shape: its runs finished
-                # and their results are complete, so the campaign is not ``stopped`` —
-                # only its derived data is missing, which is what the field says and a
-                # re-run supplies. Told apart by the flag, not by the message.
-                cancelled = state.stop_requested
+                # A cancelled postprocess lands here too and keeps that shape: the runs and
+                # their results are complete, so only the derived data is missing, which is
+                # what the field says and a re-run supplies. Told apart by the flag, not by
+                # the message.
+                cancelled = state.postprocessing_stop_requested
                 state.update(postprocessing_error=message, postprocessed=False)
-                state.set_phase(Phase.FINISHED, stage=(
+                state.set_phase(ends_at, stage=(
                     message if cancelled else f"postprocessing failed: {message}"))
         except Exception as e:  # noqa: BLE001 - surfaced via status
             logger.exception("Postprocessing for %s failed", campaign_id)
             state.update(postprocessing_error=failure_detail(e), postprocessed=False)
-            state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {e}")
+            state.set_phase(ends_at, stage=f"postprocessing failed: {e}")
         finally:
             # Re-write the durable outcome to reflect the final postprocessing state: the
             # record _finish_campaign writes is made while postprocessing is still pending.
@@ -2985,14 +3098,18 @@ class LocalTransport(RobovastInterface):
         ``data.db`` would promote — this is the live path, so it sees them where the
         recovery path (which runs only once nothing is driving the campaign) mostly cannot:
 
-        * a build **in progress**. The file appears at 0%, so a campaign would spend the whole
-          of a twenty-minute ``data.db`` build reporting that its results were ready. The web
-          UI gates its Results views on exactly this flag, so it would offer them over a
-          database being appended to.
+        * a build **in progress**, which the *phase* decides. The file appears at 0%, so a
+          campaign would otherwise spend the whole of a twenty-minute ``data.db`` build
+          reporting that its results were ready, and the web UI gates its Results views on
+          exactly this flag -- it would offer them over a database being appended to. Read
+          from the phase and not from "some earlier attempt left an error", which is a fact
+          about the past that happens to correlate: a first postprocess, or a re-run of one
+          that previously succeeded, has no such error and is no less in progress.
         * a build that **failed**. ``postprocessing_error`` sets the flag False on purpose;
           promoting it back would hide the error behind "results are ready".
         """
-        if snap.postprocessed or snap.postprocessing_error:
+        if (snap.postprocessed or snap.postprocessing_error
+                or snap.phase == Phase.POSTPROCESSING):
             return snap
         from robovast.common.campaign_data import campaign_has_derived_data
         try:
@@ -3180,22 +3297,28 @@ class LocalTransport(RobovastInterface):
         same image, and the image is a cache entry rather than this campaign's property.
         ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
 
-        A campaign already **postprocessing** is stopped by the flag too: the pipeline polls
-        it, so the step in flight is torn down rather than run to the end. What that leaves
-        is said in the reply rather than left to be discovered, because the outcome differs
-        from stopping a run -- the runs are over and their results are complete, so the
-        campaign still ends as ``finished``, only without its derived data.
+        **What a stop lands on depends on what is running**, and
+        :func:`~robovast.execution.control_server.stop_scope_for_phase` is what decides --
+        the campaign's runs, its postprocessing, or its upload to share. The reply says
+        which, because the three leave different things behind, and a campaign that is
+        already over is refused rather than told a stop was requested.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(ok=False, message=f"campaign {campaign_id} not tracked here")
-        postprocessing = entry.state.snapshot().phase == Phase.POSTPROCESSING
-        entry.state.request_stop()
-        self._kill_scenario_container()
-        if postprocessing:
-            return ActionResult(ok=True, message=STOP_DURING_POSTPROCESSING)
-        return ActionResult(ok=True, message="stop requested")
+        phase = entry.state.snapshot().phase
+        scope = stop_scope_for_phase(phase)
+        if scope is None:
+            return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
+        entry.state.request_stop(scope)
+        # Only where a run is what is being stopped: during postprocessing or an upload
+        # there is no scenario container, and the pipeline/upload poll their own scope.
+        if scope == STOP_RUNS:
+            self._kill_scenario_container()
+        return ActionResult(
+            ok=True,
+            message=STOP_SCOPE_MESSAGES.get(scope, "stop requested"))
 
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: "str | None" = None, source: str = "api") -> ActionResult:
@@ -3958,6 +4081,9 @@ class LocalTransport(RobovastInterface):
         None of that happens on a lane that :meth:`_adopts_on_restart`: there the
         campaigns are meant to outlive this process, and the successor re-attaches.
         """
+        # Set before anything is torn down, so a worker reaching its own tail during the
+        # teardown sees it and does not start work this process cannot finish.
+        self._shutting_down = True
         # Held containers first, and unconditionally: they are the ones nothing else
         # reaps, and a service with no running campaign would otherwise return below while
         # still holding a multi-gigabyte image. Every slot, not just the caller's -- a query
@@ -3982,7 +4108,9 @@ class LocalTransport(RobovastInterface):
             return
         logger.info("Shutting down — stopping %d running campaign(s)", len(running))
         for entry in running:
-            entry.state.request_stop()
+            # The run scope: what this is for is ending the campaign so its container
+            # teardown runs before the process exits.
+            entry.state.request_stop(STOP_RUNS)
         self._terminate_running_campaigns(running)
         for entry in running:
             if entry.thread is not None:
@@ -4265,6 +4393,22 @@ class LocalTransport(RobovastInterface):
         # Results views over a build that did not finish. Read before the lock: it is disk
         # (and on the cluster lane, store) I/O, and nothing about it needs the map held.
         prior = self._prior_outcome(campaign_id)
+        # ...except the verdict this operation is here to REPLACE, which is both fields and
+        # only for a postprocess. That message describes an attempt that has ended, and
+        # carrying it makes the campaign report "postprocessing failed" for as long as the
+        # run meant to fix it lasts -- naming a cause the attempt in flight has already
+        # disproved. The flag goes with it: the previous run's provenance record is still on
+        # disk, so a rebuild would otherwise report "results are ready" over the data it is
+        # replacing, which is the state ``_derive_postprocessed`` refuses to promote *to* and
+        # so must not be handed either. ``work`` writes both when it ends -- cleared on
+        # success, replaced on failure -- and erring towards False meanwhile is the direction
+        # ``campaign_has_derived_data`` already calls the recoverable one.
+        #
+        # A share carries both unchanged: it is not redoing the postprocess, so the verdict
+        # it holds is still the current one.
+        rerunning = phase == Phase.POSTPROCESSING
+        carried_error = None if rerunning else prior.postprocessing_error
+        carried_flag = False if rerunning else prior.postprocessed
         with self._lock:
             existing = self._campaigns.get(campaign_id)
             if existing is not None and not self._is_done(existing):
@@ -4278,8 +4422,8 @@ class LocalTransport(RobovastInterface):
                             "— wait for that to finish")
             state = ControllerState()
             state.update(campaign_id=campaign_id,
-                         postprocessed=prior.postprocessed,
-                         postprocessing_error=prior.postprocessing_error,
+                         postprocessed=carried_flag,
+                         postprocessing_error=carried_error,
                          share_error=prior.share_error,
                          error=prior.error,
                          mode=prior.mode)
@@ -4355,7 +4499,7 @@ class LocalTransport(RobovastInterface):
             notifier = self._notifier(request.campaign_id)
             if ok:
                 notifier.postprocessed()
-            elif state.stop_requested:
+            elif state.postprocessing_stop_requested:
                 # A re-run is a tracked campaign while it lasts, so ``stop_campaign``
                 # reaches it and ends it. What comes back then is the operator's own
                 # doing, and announcing it as a failure would file that under faults.
@@ -4378,8 +4522,9 @@ class LocalTransport(RobovastInterface):
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
-            from robovast.execution.backends import RunOptions
-            from robovast.execution.controller import make_upload_progress_cb
+            from robovast.execution.backends import RunOptions, ShareStopped
+            from robovast.execution.controller import (make_upload_progress_cb,
+                                                       share_cancelled_detail)
             from robovast.execution.status_recovery import record_step_outcome
 
             # Its own phase file, so the campaign log shows what an upload did under a SHARE
@@ -4404,6 +4549,15 @@ class LocalTransport(RobovastInterface):
                                        progress_callback=make_upload_progress_cb(state))
                 ok, message = True, "upload-to-share complete"
                 logger.info("✓ %s", message)
+            except ShareStopped as e:
+                # An upload is a tracked campaign while it lasts, so ``stop_campaign``
+                # reaches it. What comes back then is the operator's own doing, so it is
+                # logged as a cancellation rather than an error -- and the partial is
+                # discarded (or named) before anything is recorded. It still lands on
+                # ``share_error``, because what a reader does next is the same as after a
+                # failure: re-trigger the share.
+                ok, message = False, share_cancelled_detail(backend, e)
+                logger.info("⏹  upload-to-share cancelled: %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
                 ok, message = False, failure_detail(e)
                 logger.error("✗ upload-to-share failed: %s", message)
@@ -4428,13 +4582,18 @@ class LocalTransport(RobovastInterface):
             project = self._resolve_project(workspace_id, path)
             result = validate_project_file(project.config_path)
         except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
-            return ValidationReport(valid=False, problems=[
-                ValidationProblem(stage="error", message=str(e))])
+            return ValidationReport(
+                valid=False, world_checked=False if check_world else None,
+                problems=[ValidationProblem(stage="error", message=str(e))])
         # Only once the cheap checks pass. Compiling a world for a file with a schema
         # error spends a container to report something already in the reply, and the world
         # a broken file names is not necessarily the one it will name when it is fixed.
         if check_world and result.get("valid"):
             result = self._with_world_check(workspace_id, path, project, result)
+        elif check_world:
+            # Asked for and not performed, so it is False rather than None: the caller's
+            # question was "and does the world load?", and this reply does not answer it.
+            result = {**result, "world_checked": False}
         return ValidationReport.model_validate(result)
 
     def _with_world_check(self, workspace_id: str, path: str, project,
@@ -4447,9 +4606,12 @@ class LocalTransport(RobovastInterface):
         The container is *held* (see ``ExecRequest.query``), so a second validation of the
         same project costs an exec rather than a container start.
 
-        A failure of the check itself is never a failure of the campaign: an advisory says
-        the world was not checked and why, and ``valid`` is left as the cheap checks found
-        it.
+        A failure of the check itself is never a *defect in the campaign*, but it is not a
+        pass either: it comes back as an ``unchecked`` problem naming what would settle it,
+        and ``world_checked`` says which of the three happened. ``valid`` covers this check,
+        so an unchecked world makes it false -- a caller that reads only the boolean, which
+        is what a boolean is for, must not be told the file is good to run when the most
+        expensive thing about it was never looked at.
         """
         from robovast.common.common import load_config
         from robovast.service.world_query import world_problems
@@ -4463,14 +4625,24 @@ class LocalTransport(RobovastInterface):
                 config_path=path,
                 vast_dir=str(Path(project.config_path).parent),
                 parameters=parameters)
-        except Exception as e:  # noqa: BLE001 - an unavailable check is not a bad campaign
-            logger.debug("the world check did not run: %s", e)
-            return result
+        except Exception as e:  # noqa: BLE001 - the check crashing is not a bad campaign
+            # Reported, not logged and dropped. A caller cannot see this service's log, so
+            # swallowing it returned a reply that had checked nothing and said so nowhere.
+            logger.warning("the world check did not run: %s", e)
+            problems = [{
+                "stage": "world", "config": None, "severity": "unchecked",
+                "field": "execution.containers.simulation.config",
+                "message": ("this campaign's world was NOT checked: the check itself "
+                            f"failed here ({e}). Next: nothing about the .vast changes "
+                            "this -- it is a defect in the service, whose log carries the "
+                            "traceback (`vast service log`).")}]
         if not problems:
-            return result
-        fatal = [p for p in problems if "was NOT checked" not in p["message"]]
+            return {**result, "world_checked": True}
+        unchecked = [p for p in problems if p.get("severity") == "unchecked"]
+        binding = [p for p in problems if p.get("severity", "error") != "advice"]
         return {**result,
-                "valid": result.get("valid", False) and not fatal,
+                "world_checked": not unchecked,
+                "valid": bool(result.get("valid")) and not binding,
                 "problems": list(result.get("problems") or []) + problems}
 
     def preview_configurations(
@@ -4728,12 +4900,13 @@ class LocalTransport(RobovastInterface):
         # the rest of the snapshot config being re-validatable.
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         from robovast.service.interface import CampaignPlotsResponse
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         plots = []
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for p in (visualization_block(cfg, "results", "data_browser", "plots") or []):
                 if isinstance(p, dict) and p.get("query"):
                     plots.append({"title": p.get("title", ""), "query": p["query"],
@@ -5172,11 +5345,12 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
+        from robovast.common.results_utils import vast_in_config_dir
         config_dir = Path(self._config_dir(campaign_id))
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        found = vast_in_config_dir(config_dir)
         workloads: dict = {}
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
+        if found is not None:
+            cfg, _ = _safe_load(str(found))
             for view in (visualization_block(cfg, "results", "explorer", "notebooks") or []):
                 if not isinstance(view, dict):
                     continue
@@ -5414,7 +5588,10 @@ class LocalTransport(RobovastInterface):
             postprocessing_error=snap.postprocessing_error or "",
             share_error=snap.share_error or "",
             # First line only -- see the field's note. Free here: `snap` is already in hand.
-            error=(snap.error or "").strip().splitlines()[0] if snap.error else "")
+            error=(snap.error or "").strip().splitlines()[0] if snap.error else "",
+            # From the same snapshot as everything above, so a row cannot show a size that
+            # belongs to a different reading of the campaign than its phase does.
+            results_bytes=snap.results_bytes)
         if key is not None:
             self._summary_cache[cid] = (key, summary)
         return summary
@@ -5622,3 +5799,50 @@ class LocalTransport(RobovastInterface):
         if key is not None:
             self._disk_status_cache[campaign_id] = (key, status)
         return status
+
+
+def _workspace_sha(spec) -> str:
+    """Fingerprint of the workspace *spec* stages, or ``""`` when it stages none.
+
+    Every file's relative path, size and inode timestamps, sorted -- deliberately NOT its
+    bytes. This runs on every exec and every query, and reading a workspace carrying
+    meshes would put a full tree read on the warm path this pool exists to keep warm.
+    Stat answers the question that is actually being asked: has the tree changed since a
+    container was staged from it?
+
+    ``st_ctime_ns`` as well as ``st_mtime_ns`` because only the first is beyond a writer's
+    reach: a tree restored by something that preserves mtime -- rsync -t, a tar extract --
+    still moves ctime. Paths and sizes are in it so an added, removed or renamed file is a
+    different tree whatever the clock did.
+
+    The residual: a file rewritten to the SAME size within one filesystem timestamp tick
+    fingerprints equal. That tick is 1 ms on ext4, measured rather than assumed, and it is
+    the window in which a container would also have to be staged for a stale answer to
+    reach anyone. Through the service's own API, the only writer, that means two different
+    versions of one file written a millisecond apart with identical length. Content hashing
+    is what closes it, at the cost this exists to avoid -- so if it ever bites, that is the
+    trade to revisit, not this function's inputs.
+
+    Empty for a campaign, which is frozen once it starts and is therefore identified by
+    its id alone -- so this adds nothing to a campaign's identity and cannot make two
+    equal campaigns look different.
+
+    A tree that cannot be read fingerprints as unreadable rather than as empty: a
+    workspace whose directory is missing is not the same tree as every other unreadable
+    one, and returning "" would let it share a held container with a campaign.
+    """
+    workspace_dir = getattr(spec, "workspace_dir", "")
+    if not workspace_dir:
+        return ""
+    root = Path(workspace_dir)
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            stat = path.stat()
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(
+                f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}".encode())
+    except OSError as err:
+        logger.debug("could not fingerprint workspace %s: %s", workspace_dir, err)
+        return f"unreadable:{workspace_dir}"
+    return digest.hexdigest()

@@ -18,6 +18,7 @@ Two properties are load-bearing and easy to lose:
 
 import pathlib
 
+import pytest
 import yaml
 
 from robovast.service.retrigger import (AXIS_BLOCKED, AXIS_OK, AXIS_UNKNOWN, AXIS_UPGRADABLE,
@@ -63,7 +64,7 @@ def test_an_old_config_is_upgradable_and_names_the_steps(tmp_path):
     root = _campaign(tmp_path, config={"version": 1, "execution": {"image": "img:1"}})
     axis = check(root, root.name)["axes"]["config"]
     assert axis["verdict"] == AXIS_UPGRADABLE
-    assert axis["steps"] == ["1_to_2", "2_to_3"]
+    assert axis["steps"] == ["1_to_2", "2_to_3", "3_to_4"]
     assert "not modified" in axis["detail"]
     assert check(root, root.name)["runnable"] is True
 
@@ -75,6 +76,21 @@ def test_a_config_from_a_newer_robovast_is_blocked(tmp_path):
     axis = check(root, root.name)["axes"]["config"]
     assert axis["verdict"] == AXIS_BLOCKED
     assert "upgrade robovast" in axis["detail"]
+
+
+@pytest.mark.parametrize("config,says", [
+    ({"execution": {}}, "declares no 'version:'"),
+    ({"version": "4", "execution": {}}, "must be an integer"),
+])
+def test_a_config_with_no_usable_version_is_blocked_and_says_which(tmp_path, config, says):
+    """There is nothing to start the ladder from, so a re-run cannot read this config at all.
+    The detail has to name that; a verdict about how the version compares to the supported one
+    describes an ordering the file does not have."""
+    root = _campaign(tmp_path, config=config)
+    axis = check(root, root.name)["axes"]["config"]
+    assert axis["verdict"] == AXIS_BLOCKED
+    assert says in axis["detail"]
+    assert check(root, root.name)["runnable"] is False
 
 
 def test_an_unreadable_config_is_diagnosed_not_raised(tmp_path):
@@ -211,10 +227,10 @@ def test_a_version_1_campaign_can_be_prepared_at_all(tmp_path):
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
                              description_limit=200, request_model=Request)
     try:
-        assert plan.config_migration == {"from": 1, "to": 3,
-                                         "steps": ["1_to_2", "2_to_3"]}
+        assert plan.config_migration == {"from": 1, "to": 4,
+                                         "steps": ["1_to_2", "2_to_3", "3_to_4"]}
         staged = yaml.safe_load(pathlib.Path(plan.config_path).read_text(encoding="utf-8"))
-        assert staged["version"] == 3
+        assert staged["version"] == 4
         # v1's execution.image became a container, which is what the rest of prepare() reads.
         assert staged["execution"]["containers"]["scenario"]["image"] == "ghcr.io/x/y:1"
         assert (source / "_config" / "campaign.vast").read_text(encoding="utf-8") == archived

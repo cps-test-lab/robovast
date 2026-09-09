@@ -34,7 +34,9 @@ sim:
 components:
   # The workbench. Only its top collides (the legs are visual in the model), so the arm cannot
   # snag a leg while reaching across.
-  - spawn_model: {model: industrial_table, pos: [0.0, 0.0, 0.0]}
+  # motion: static -- the arm is bolted to this bench, so it must not be a body the arm
+  # can shift. A prop is `physics` unless the world says otherwise.
+  - spawn_model: {model: industrial_table, pose: {position: {x: 0.0, y: 0.0, z: 0.0}}, motion: static}
     name: bench
 
   # The UR5e, bolted to the bench top, with the gripper welded to its flange.
@@ -103,14 +105,17 @@ components:
   # `publish_tf: static` so the TRIAL reads where the bin is instead of restating it. The pose is
   # latched once on /tf_static, which is right for a welded prop -- and it means this line is the
   # only place the bin's position is written down.
+  # motion: static -- the bin is a fixture the arm drops into, and `publish_tf: static` latches
+  # one frame for the whole run, which only a body that cannot move can honour.
   - spawn_model:
       model: drop_bin.xml
-      pos: [0.25, 0.40, 0.76]
+      pose: {position: {x: 0.25, y: 0.40, z: 0.76}}
       publish_tf: static
+      motion: static
     name: bin
 
   # The box, spawned last so it settles onto the bench rather than being placed exactly.
-  # `free: true` gives it a freejoint (it is the only thing here meant to move on its own);
+  # It is `motion: physics` by default (the only thing here meant to move on its own);
   # `publish_tf: dynamic` streams its true pose, which is what the trial's verdict reads --
   # nothing else publishes a free body's pose.
   #
@@ -119,9 +124,8 @@ components:
   # straight top-down grasp needs no wrist roll to line the jaws up.
   - spawn_model:
       model: graspable_box
-      free: true
       publish_tf: dynamic
-      pos: [0.45, 0.0, 0.79]
+      pose: {position: {x: 0.45, y: 0.0, z: 0.79}}
     name: parcel
 
   # -- ROS 2 transport -------------------------------------------------------------------------

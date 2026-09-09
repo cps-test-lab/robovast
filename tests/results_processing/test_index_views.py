@@ -27,7 +27,7 @@ SCHEMA = "v_test"
 #: array, an integer, a real, a boolean and a null -- one of each thing the two engines
 #: spell differently.
 _CONFIG = {
-    "version": 3,
+    "version": 4,
     "metadata": {"name": "demo", "keywords": ["a", "b"]},
     "results_processing": {"health_checks": None, "postprocessing": [{"run-log": {}}]},
     "execution": {"runs": 5, "ratio": 1.5, "enabled": True},

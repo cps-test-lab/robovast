@@ -41,6 +41,102 @@ def test_a_provider_without_an_object_store_still_gets_the_pod():
     assert service["metadata"]["name"] == store_pod.STORE_SERVICE_NAME
 
 
+def test_a_bucket_backed_provider_can_put_the_index_on_a_volume():
+    """The one piece of this deployment's durable state a bucket does not hold.
+
+    With the campaigns in a bucket there is no --store-class to back the index beside, so on a
+    node pool whose machines are replaced -- which is every managed one -- a hostPath index
+    goes with the node while every campaign it indexed survives.
+    """
+    docs = store_pod.attach_infrastructure([], "robotics",
+                                           index_storage_class="premium-rwo",
+                                           index_storage_size="100Gi")
+    claim = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    volume = next(v for v in pod["spec"]["volumes"]
+                  if v["name"] == index_deploy.INDEX_VOLUME_NAME)
+
+    assert claim["spec"]["storageClassName"] == "premium-rwo"
+    assert claim["spec"]["resources"]["requests"]["storage"] == "100Gi"
+    assert volume["persistentVolumeClaim"]["claimName"] == index_deploy.INDEX_VOLUME_NAME
+    assert "hostPath" not in volume
+    assert docs.index(claim) < docs.index(pod), (
+        "a pod scheduled against a claim that does not exist yet stays Pending")
+
+
+def test_a_published_registry_authenticates_and_still_probes(caplog):
+    """The registry shares its hostname with the token-gated UI and has no gate of its own,
+    so publishing without this serves an anonymous push/pull registry on a public name.
+
+    The probe is half the change: it used to read ``/v2/``, which answers 401 once auth is
+    on, and an httpGet probe counts that as a failure -- the container would never become
+    Ready and nothing in the message would mention authentication.
+    """
+    docs = store_pod.attach_infrastructure([], "robotics", registry_authenticated=True)
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    registry = next(c for c in pod["spec"]["containers"]
+                    if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
+    env = {e["name"]: e["value"] for e in registry["env"]}
+
+    assert env["REGISTRY_AUTH"] == "htpasswd"
+    assert env["REGISTRY_AUTH_HTPASSWD_PATH"].startswith(registry_deploy.REGISTRY_AUTH_DIR)
+    assert any(m["name"] == registry_deploy.REGISTRY_AUTH_VOLUME_NAME
+               for m in registry["volumeMounts"])
+    assert any(v.get("secret", {}).get("secretName")
+               == registry_deploy.REGISTRY_HTPASSWD_SECRET_NAME
+               for v in pod["spec"]["volumes"])
+    for probe in ("readinessProbe", "livenessProbe"):
+        assert registry[probe]["httpGet"]["path"] == "/debug/health"
+        assert registry[probe]["httpGet"]["port"] == registry_deploy.REGISTRY_DEBUG_PORT
+
+
+def test_an_unpublished_registry_is_left_open_and_mounts_no_secret():
+    """There is no route to it and no prefix to build into, so there is nothing to protect
+    and no credential to invent."""
+    docs = store_pod.attach_infrastructure([], "robotics")
+    pod = next(d for d in docs if d["kind"] == "Pod")
+    registry = next(c for c in pod["spec"]["containers"]
+                    if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
+
+    assert "REGISTRY_AUTH" not in {e["name"] for e in registry["env"]}
+    assert not any(v["name"] == registry_deploy.REGISTRY_AUTH_VOLUME_NAME
+                   for v in pod["spec"]["volumes"])
+
+
+def test_the_password_file_is_bcrypt_because_nothing_else_is_accepted():
+    """registry:2 verifies with Go's bcrypt and does not fall back to a weaker hash: it
+    fails every request instead, so there is no quieter way to get this wrong."""
+    entry = registry_deploy.htpasswd_entry("s3cret")
+    user, _, digest = entry.partition(":")
+
+    assert user == registry_deploy.REGISTRY_AUTH_USER
+    assert digest.startswith("$2")
+    assert "s3cret" not in entry
+
+
+def test_the_registrys_ingress_backend_is_annotated_like_the_services_own():
+    """The GKE Ingress fronts two Services, and reaches neither as a plain ClusterIP.
+
+    The registry answers on the store pod's Service, so a `gce` Ingress whose /v2 rule names
+    it needs container-native load balancing there too. Without it that backend never becomes
+    healthy and the reason is in the load balancer, not in anything RoboVAST prints -- while
+    the UI on `/` works, because the other Service was annotated.
+    """
+    service = next(d for d in store_pod.attach_infrastructure([], "robotics",
+                                                              ingress_class="gce")
+                   if d["kind"] == "Service")
+
+    assert service["metadata"]["annotations"] == registry_deploy.NEG_ANNOTATION
+
+
+def test_no_ingress_class_leaves_a_gke_specific_key_off_every_other_cluster():
+    service = next(d for d in store_pod.attach_infrastructure([], "robotics")
+                   if d["kind"] == "Service")
+
+    assert "annotations" not in service["metadata"]
+    assert registry_deploy.ingress_backend_annotations("nginx") == {}
+
+
 def test_attaching_twice_changes_nothing():
     """Setup is re-runnable, and every provider parses its manifest fresh each time."""
     once = _rke2_docs()
@@ -163,3 +259,45 @@ def test_a_migrated_cluster_passes(monkeypatch):
                   lambda self, n, ns: _Pod("minio", "registry", "index")})())
 
     service_deploy.verify_store_pod_infrastructure("default")
+
+
+# -- auth that was configured but never reached the cluster ----------------------------
+
+def _live_pod(*containers):
+    import types
+    return types.SimpleNamespace(spec=types.SimpleNamespace(containers=list(containers)))
+
+
+def _live_container(name, env_names=()):
+    import types
+    return types.SimpleNamespace(
+        name=name,
+        env=[types.SimpleNamespace(name=n, value="x") for n in env_names])
+
+
+def test_a_kept_store_pod_is_seen_to_be_serving_an_open_registry():
+    """The 409 that keeps an existing store pod keeps its container spec, so turning auth on
+    in the manifest does not turn it on in the cluster.
+
+    Without noticing this, setup mints a credential, writes both Secrets and reports
+    success over a registry still serving anonymous pushes -- claiming to have closed a hole
+    it left open, which is worse than never having claimed to.
+    """
+    open_registry = _live_pod(_live_container(registry_deploy.REGISTRY_CONTAINER_NAME,
+                                              ["REGISTRY_STORAGE_DELETE_ENABLED"]))
+
+    assert store_pod.registry_enforces_auth(open_registry) is False
+
+
+def test_a_recreated_store_pod_is_seen_to_enforce_it():
+    closed = _live_pod(_live_container(registry_deploy.REGISTRY_CONTAINER_NAME,
+                                       ["REGISTRY_STORAGE_DELETE_ENABLED", "REGISTRY_AUTH"]))
+
+    assert store_pod.registry_enforces_auth(closed) is True
+
+
+def test_a_pod_without_a_registry_is_not_read_as_authenticating():
+    """Absent and open are both "not asking for a credential", and the missing container is
+    already reported by its own check."""
+    assert store_pod.registry_enforces_auth(None) is False
+    assert store_pod.registry_enforces_auth(_live_pod(_live_container("minio"))) is False

@@ -60,7 +60,7 @@ def _project(tmp_path, configuration, run_files=""):
     block = textwrap.indent(textwrap.dedent(configuration).strip("\n"), "  ")
     vast = tmp_path / "campaign.vast"
     vast.write_text(
-        "version: 3\n"
+        "version: 4\n"
         "metadata: {name: sut-channel}\n"
         "configuration:\n"
         f"{block}\n"
@@ -156,8 +156,9 @@ def test_a_fixed_block_is_overridden_by_a_factor(tmp_path):
     """The precedence the other two channels have."""
     data = _compose(tmp_path, f"""\
         - name: fixed-and-varied
-          sut:
-            {_BASE}.inflation_layer.inflation_radius: 0.10
+          parameters:
+            sut:
+              {_BASE}.inflation_layer.inflation_radius: 0.10
           variations:
           - ParameterVariationList:
               sut: {_BASE}.inflation_layer.inflation_radius
@@ -170,8 +171,9 @@ def test_a_fixed_block_is_overridden_by_a_factor(tmp_path):
 def test_absence_reaches_the_file_the_cell_runs(tmp_path):
     data = _compose(tmp_path, f"""\
         - name: no-voxel
-          sut:
-            {_BASE}.voxel_layer: {{$absent: true}}
+          parameters:
+            sut:
+              {_BASE}.voxel_layer: {{$absent: true}}
     """)
     config = data["configs"][0]
     path = _written(config, "files/nav2_params.yaml")
@@ -188,6 +190,22 @@ def test_a_misspelled_destination_is_refused_before_anything_runs(tmp_path):
           - ParameterVariationList:
               sut: nav2.local_costmp.inflation_radius
               values: [0.30, 0.55]
+    """)
+
+
+def test_a_misspelled_destination_in_a_fixed_block_is_refused_too(tmp_path):
+    """A fixed value is checked like a factor is.
+
+    An assignment creates the path it is given, so an unchecked one writes a key the stack
+    never reads -- and that cell runs, succeeds and reports as though it had been
+    configured.
+    """
+    with pytest.raises(Exception, match="addresses nothing"):
+        _compose(tmp_path, """\
+        - name: typo-fixed
+          parameters:
+            sut:
+              nav2.local_costmp.inflation_radius: 0.10
     """)
 
 
@@ -218,6 +236,39 @@ def test_a_source_caught_by_a_run_files_glob_is_staged_only_as_the_rewritten_cop
     assert "files/empty_room.yaml" in staged, staged
     for config in data["configs"]:
         _written(config, "files/nav2_params.yaml")
+
+
+def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
+    """The seam this channel exists to close, end to end.
+
+    The scenario writes `get_scenario_file_directory() + '/files/nav2_params.yaml'`, which
+    is `/config/files/nav2_params.yaml` -- the declared path, unchanged. What makes that the
+    CELL's file rather than the campaign's is staging: each configuration's copy goes to
+    that path, and the campaign's original is not staged at all. So nothing has to be
+    rewritten, and no campaign has to remember to name the file.
+    """
+    from robovast.common.execution import build_job_parameter_documents
+    from robovast.execution.packer import JobSpec, WorkItem
+
+    data = _compose(tmp_path, f"""\
+        - name: inflation
+          parameters:
+            scenario: {{params_file: files/nav2_params.yaml}}
+          variations:
+          - ParameterVariationList:
+              sut: {_BASE}.inflation_layer.inflation_radius
+              values: [0.30, 0.55]
+    """)
+    configs = data["configs"]
+
+    # Each cell has its own copy, at the declared path ...
+    staged = {c["name"]: _written(c, "files/nav2_params.yaml") for c in configs}
+    assert len(set(staged.values())) == len(configs), staged
+    # ... and what the trial is told is that path, carried rather than rewritten.
+    for config in configs:
+        job = JobSpec(items=[WorkItem(config=config, run_number=0)], index=0)
+        document = build_job_parameter_documents(job, "nav")[0]["nav"]
+        assert document["params_file"] == "files/nav2_params.yaml"
 
 
 def test_the_environment_carrier_refuses_rather_than_doing_nothing(tmp_path):

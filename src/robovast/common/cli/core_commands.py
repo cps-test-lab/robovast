@@ -40,7 +40,7 @@ from robovast.service.interface import DEFAULT_PORT
 logger = get_logger(__name__)
 
 
-def _ensure_ui_built(rebuild: bool = False) -> None:
+def ensure_ui_built(rebuild: bool = False) -> None:
     """(Re)build the web UI's ``frontend/ui/dist`` for a source checkout, when needed.
 
     No-op unless run from a source tree: a packaged install / in-cluster pod has
@@ -48,6 +48,11 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
     ``ROBOVAST_UI_DIST``), so there is nothing — and no ``npm`` — to build. In a
     checkout, build only when ``frontend/ui/dist`` is missing or older than the UI
     sources (or when *rebuild*), so a normal ``vast serve`` costs just an mtime scan.
+
+    Public because ``vast serve`` is not its only caller: on a cold tree this is an
+    npm install and a bundle, minutes of work that says nothing about whether the
+    service comes up, so ``.github/test_vast.py`` runs it before it starts timing a
+    service startup.
     """
     import subprocess
     from pathlib import Path
@@ -175,8 +180,8 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     # the registry, ROBOVAST_PROJECT. In-pod there is neither a project .env nor a user
     # config, so the deployment env is the whole environment.
     # Build the SPA the service serves, so a source checkout needs one command
-    # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
-    _ensure_ui_built(rebuild=rebuild_ui)
+    # (no-op for a packaged/in-cluster install — see ensure_ui_built).
+    ensure_ui_built(rebuild=rebuild_ui)
 
     in_pod = bool(os.environ.get('KUBERNETES_SERVICE_HOST'))
     if backend == 'auto':

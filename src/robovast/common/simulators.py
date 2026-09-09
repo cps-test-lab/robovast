@@ -736,6 +736,36 @@ def flatten_sim_block(block, prefix: str = "") -> dict:
     return out
 
 
+def unflatten_sim_block(flat: dict) -> dict:
+    """``{dotted path: leaf}`` -> nested ``sim:`` mapping. Inverse of :func:`flatten_sim_block`.
+
+    Composition works on the flat form, because that is the only shape in which two writes to
+    one destination are the same key. What a configuration *carries* is the nested form, so
+    anything that composes a block has to put it back -- a channel whose shape depended on
+    whether presets were involved would be the "two shapes on one key" that
+    :func:`flatten_sim_block` exists to prevent.
+    """
+    out: dict = {}
+    for path, value in (flat or {}).items():
+        parts = str(path).split(".")
+        node = out
+        for part in parts[:-1]:
+            existing = node.get(part)
+            if existing is not None and not isinstance(existing, dict):
+                raise ValueError(
+                    f"sim: destination {path!r} is under {part!r}, which is already set to a "
+                    f"value ({existing!r}). One of them has to go: a destination cannot be both "
+                    "a leaf and a branch.")
+            node = node.setdefault(part, {})
+        last = parts[-1]
+        if isinstance(node.get(last), dict) and node[last]:
+            raise ValueError(
+                f"sim: destination {path!r} is set to a value, but destinations under it are "
+                "set too. One of them has to go.")
+        node[last] = value
+    return out
+
+
 def backend_own_keys(backend: SimulatorBackend) -> Optional[set]:
     """The key names a backend's ``CONFIG_CLASS`` declares, or ``None`` if it has none."""
     model = getattr(backend, "CONFIG_CLASS", None)
@@ -782,29 +812,31 @@ def _deep_set(target: dict, path: tuple, value) -> None:
     node[path[-1]] = value
 
 
-def _namespace_sim_value(value, deploy_paths: set, prefix: str):
-    """Rewrite a value naming a per-config generated file to its path in the container.
+def _absolute_staged_path(value, deploy_paths: set, prefix: str):
+    """Rewrite a value naming a staged config file to its absolute path in the container.
 
-    The same test the scenario channel uses (:func:`~robovast.common.execution._namespace_file_params`):
-    a value is a file *because it equals a staged deploy path*, not because anyone declared
+    A value is a file *because it equals a staged deploy path*, not because anyone declared
     the key file-valued -- so no backend has to say which of its keys hold paths.
 
-    **Absolute**, unlike the scenario channel's, because a scenario resolves a file
-    parameter against its own directory while a simulator is a separate process with an
-    unrelated working directory.
+    **Absolute**, unlike the scenario channel, which needs no rewrite at all: a scenario
+    resolves a file parameter against its own directory, which is the config mount itself,
+    while a simulator is a separate process with an unrelated working directory. Only the
+    world reaches the simulator through a backend's own path handling; the override tree
+    travels verbatim into a document the simulator reads, so a relative value in it would
+    be resolved against wherever that process happens to run.
     """
     if isinstance(value, dict):
-        return {k: _namespace_sim_value(v, deploy_paths, prefix)
+        return {k: _absolute_staged_path(v, deploy_paths, prefix)
                 for k, v in value.items()}
     if isinstance(value, list):
-        return [_namespace_sim_value(v, deploy_paths, prefix) for v in value]
+        return [_absolute_staged_path(v, deploy_paths, prefix) for v in value]
     if isinstance(value, str) and value in deploy_paths:
         return f"{prefix}/{value}"
     return value
 
 
 def merge_sim_block(execution: dict, sim_values=None, base_dir: str = "", *,
-                    deploy_paths=None, config_name: str = "") -> dict:
+                    deploy_paths=None) -> dict:
     """Campaign default + one configuration's ``sim`` values -> one validated block.
 
     *sim_values* is the flat ``{dotted destination: value}`` a configuration carries. The
@@ -826,8 +858,9 @@ def merge_sim_block(execution: dict, sim_values=None, base_dir: str = "", *,
         _deep_set(merged, resolve_sim_path(backend, path, name), value)
 
     if deploy_paths:
-        merged = _namespace_sim_value(
-            merged, set(deploy_paths), f"{CONFIG_MOUNT}/{config_name}")
+        # The config mount itself: a configuration's own copy of a file is staged where the
+        # campaign's copy would have been, so the deploy path IS the path in the container.
+        merged = _absolute_staged_path(merged, set(deploy_paths), CONFIG_MOUNT)
 
     cfg = _validated_cfg(backend, merged, name)
     dump = getattr(cfg, "model_dump", None)

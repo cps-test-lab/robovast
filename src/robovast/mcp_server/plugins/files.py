@@ -45,18 +45,22 @@ logger = logging.getLogger(__name__)
 #: Attached to ``list_files`` alone, not to both discovery tools: every tool description
 #: is sent on every request, so a table repeated across two of them is paid for twice per
 #: turn, and the tool that *finds* a path is the one that needs it.
+#: Indented to the docstring it is spliced into, and spliced ABOVE ``Args:`` rather than
+#: appended. At column 0 it would leave that docstring with no common indent, so its
+#: ``Args:``/``Returns:`` would stop being recognised as sections and be served as prose in
+#: the tool description -- duplicating, on every request, what the schema already carries.
 _LAYOUT = """
-Under ``/results/<campaign_id>/``:
-  _config/              scenario.osc, <name>.vast, run files, notebooks
-  _execution/           outcome.json (why it ended), execution.yaml, controller.log,
-                        postprocessing.log
-  _transient/           configurations.yaml, entrypoint.sh, postprocessing.yaml
-  _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log
-  <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
-  <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, capture/, *.webm (a
-                        recorded camera; videos.csv lists them with their timing)
+    Under ``/results/<campaign_id>/``:
+      _config/              scenario.osc, <name>.vast, run files, notebooks
+      _execution/           outcome.json (why it ended), execution.yaml, controller.log,
+                            postprocessing.log
+      _transient/           configurations.yaml, entrypoint.sh, postprocessing.yaml
+      _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log
+      <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
+      <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, capture/, *.webm (a
+                            recorded camera; videos.csv lists them with their timing)
 
-Under ``/sources/<workspace_id>/``: whatever the project author wrote.
+    Under ``/sources/<workspace_id>/``: whatever the project author wrote.
 """
 
 
@@ -204,7 +208,8 @@ def delete_file(address: str) -> dict:
         return {"error": str(e)}
 
 
-list_files.__doc__ = f"{list_files.__doc__}\n{_LAYOUT}"
+list_files.__doc__ = list_files.__doc__.replace(
+    "    Args:\n", f"{_LAYOUT}\n    Args:\n", 1)
 
 
 # -- Plugin class ------------------------------------------------------------

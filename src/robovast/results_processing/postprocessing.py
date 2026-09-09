@@ -29,7 +29,7 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.plugin_ref import is_file_ref, load_ref
-from robovast.common.results_utils import find_campaign_vast_file
+from robovast.common.results_utils import campaign_vast_or_none, find_campaign_vast_file
 from robovast.results_processing.metadata import generate_campaign_metadata
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
@@ -648,11 +648,8 @@ def campaign_defines_postprocessing(campaign_dir: str) -> bool:
     no ``results_processing.postprocessing`` entries yields the minimal data even
     though the run still reaches ``finished``.
     """
-    config_dir = os.path.join(campaign_dir, "_config")
-    if not os.path.isdir(config_dir):
-        return False
-    vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast"))
-    return bool(vasts) and bool(get_postprocessing_commands(vasts[0]))
+    found = campaign_vast_or_none(campaign_dir)
+    return found is not None and bool(get_postprocessing_commands(str(found)))
 
 
 def is_postprocessing_needed(
@@ -792,12 +789,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output(f"Using override config: {vast_path}")
     else:
         config_dir = os.path.join(campaign_dir, "_config")
-        vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast")) \
-            if os.path.isdir(config_dir) else []
-        if not vasts:
+        found = campaign_vast_or_none(campaign_dir)
+        if found is None:
             return False, (f"No .vast file in {config_dir}. "
                            f"Is {campaign!r} a valid campaign under {results_dir}?")
-        vast_path = vasts[0]
+        vast_path = str(found)
         output(f"Using config from campaign {campaign}: {vast_path}")
 
     # Everything below operates on this campaign only — the plugins scan its tree

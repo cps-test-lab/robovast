@@ -695,6 +695,27 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 _SURFACE_TOKEN_BUDGET = 15_500
 
 
+def test_no_tool_description_carries_its_own_args_or_returns_section():
+    """Those belong to the parameter schema, which is sent alongside; in the description
+    they are a duplicate paid for on every request.
+
+    They get there by accident, not by authorship: a shared paragraph spliced into several
+    docstrings at column 0 leaves the docstring with no common indent, and the parser then
+    stops recognising ``Args:``/``Returns:`` as sections and serves them as prose. The
+    tool still works and its description reads almost right, so nothing else notices.
+    """
+    import asyncio
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    leaked = [t.name for t in asyncio.run(_tools())
+              if any(marker in (t.description or "")
+                     for marker in ("\n    Args:", "\n    Returns:"))]
+    assert not leaked, (f"{leaked} serve their Args/Returns as description text -- check "
+                        "the indentation of anything spliced into their docstrings.")
+
+
 def test_the_tool_surface_stays_within_its_token_budget():
     import asyncio
     import json

@@ -636,6 +636,18 @@ def _node_labels(pairs, flag):
               envvar='ROBOVAST_STORE_SIZE',
               help='Size of the object store PVC (default: 500Gi). Needs --store-class: '
                    'without one the store is a directory on the node, bounded by that disk.')
+@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
+              envvar='ROBOVAST_INDEX_CLASS',
+              help='Back the campaign index with a PVC from this StorageClass. Only for a '
+                   'provider whose campaigns live in a bucket: where the store is a volume '
+                   'this deployment places, --store-class already backs the index beside it, '
+                   'and naming a second class would separate an index from the campaigns it '
+                   'was ingested from.')
+@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_INDEX_SIZE',
+              help='Size of the campaign index PVC (default: 20Gi). Needs --index-class: '
+                   'without one the index is a directory on the node and there is no volume '
+                   'to size.')
 @click.option('--workspaces-path', default='', metavar='PATH',
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
@@ -710,6 +722,16 @@ def _node_labels(pairs, flag):
                    '(managed Kubernetes does) is WARNED about and setup continues. Naming '
                    'the flag makes that refusal an error instead. '
                    '--no-performance-governor skips it and leaves the hosts alone.')
+@click.option('--tailnet/--no-tailnet', 'tailnet', default=False,
+              help='Publish the service on a WireGuard tailnet instead of an Ingress: a '
+                   'node beside it dials OUT to a coordination server and answers under a '
+                   'stable name, so nothing listens on the internet and users need no '
+                   'kubeconfig. OFF by default. The coordination server and pre-auth key '
+                   'come from the environment (ROBOVAST_TAILNET_LOGIN_SERVER / '
+                   '_AUTHKEY), so a key does not land in shell history -- but WHICH '
+                   'cluster is on a tailnet is decided here, because one .env and two '
+                   'contexts would otherwise publish whichever was current. Written on '
+                   'every setup: omitting it removes a node a previous setup deployed.')
 @click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
               help='Confine campaign job pods to nodes carrying this label; repeatable. '
                    'The admission controller counts free capacity only on matching nodes '
@@ -732,11 +754,12 @@ def _node_labels(pairs, flag):
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           data_root, store_path, store_class, store_size,
+          index_storage_class, index_storage_size,
           workspaces_path, workspaces_class,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, performance_governor,
+          buildkit_cache_reserved, performance_governor, tailnet,
           jobs_node_label,
           control_node_label,
           cluster_config):
@@ -815,6 +838,14 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    # Outside `stated` because the index has no path of its own: it is placed beside the
+    # object store it was ingested from, derived rather than stated. Only the class is a
+    # separate question, and only where the store is a bucket -- which is what makes this
+    # one check rather than another tenant.
+    if index_storage_size and not index_storage_class:
+        click.echo("Error: --index-size sizes a claim nothing will create. Pass "
+                   "--index-class, or drop it.", err=True)
+        sys.exit(1)
     placements = data_paths.resolve(stated, data_root=data_root)
 
     service_kwargs = {
@@ -830,6 +861,8 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'store_storage_class': placements['store'].storage_class,
         'store_storage_path': placements['store'].path,
         'store_storage_size': store_size,
+        'index_storage_class': index_storage_class,
+        'index_storage_size': index_storage_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
@@ -856,6 +889,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  control_node_labels=_node_labels(control_node_label,
                                                                   '--control-node-label'),
                                  cpu_governor=performance_governor,
+                                 tailnet=tailnet,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -1023,7 +1057,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     missed migration.
 
     ``--no-restart`` reconciles just that part — RBAC, the registry
-    ingress route — and stops before the Deployment is touched. All three are picked up by
+    ingress route, the optional tailnet node — and stops before the Deployment is touched. All three are picked up by
     the *running* pod (the API server evaluates RBAC per request, and
     workload, a route is the gateway's own state), so a permission the running version is
     missing can be granted without a version change and without the API blip. That is the
@@ -1069,7 +1103,8 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     Campaign data lives in the object store and survives both.
     """
     from .cluster_setup import apply_controller_rbac
-    from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
+    from .service_deploy import (deploy_service, ensure_registry_htpasswd, published_url,
+                                 read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  verify_store_pod_infrastructure, wait_for_rollout,
                                  wait_for_service_ready)
@@ -1106,6 +1141,29 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  pointed the Ingress' /v2 route at the registry")
+        # Only one that already exists. `setup --tailnet` decides whether a cluster is on
+        # a tailnet; this carries a rotated key or a changed serve config into one that
+        # already is. Creating here would let an operator upgrading two clusters from one
+        # shell publish the second by accident, which is the whole reason the decision is a
+        # flag rather than an environment variable.
+        #
+        # Above the --no-restart line with the other two, and for the same reason: this is
+        # a Deployment of its own, so the service pod does not have to roll for it.
+        from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+        from .service_deploy import SERVICE_NAME, SERVICE_PORT  # noqa: PLC0415
+        try:
+            tailnet = tailnet_deploy.reconcile_existing(
+                namespace=namespace, kube_context=kube_context,
+                service_host=f"{SERVICE_NAME}.{namespace}.svc", service_port=SERVICE_PORT)
+            if tailnet:
+                click.echo(f"  tailnet node '{tailnet}' reconciled")
+        except ValueError as exc:
+            # Half a tailnet is an argument error and stops the upgrade before it rolls
+            # anything; anything else is an optional route failing to come up, which must
+            # not fail an upgrade that is otherwise fine.
+            raise click.ClickException(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - see above
+            click.echo(f"  could not reconcile the tailnet node: {exc}", err=True)
         # --no-restart stops here, and everything above this line is why it can: RBAC is
         # evaluated by the API server per request, and
         # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
@@ -1144,9 +1202,20 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             # so a script that did not pass --yes fails loudly instead of rolling over a
             # campaign nobody was watching.
             click.confirm("  roll anyway?", abort=True)
+        # Recovered (or minted, on a deployment that has none yet) exactly as `cluster setup`
+        # does, and for the same reason: the push Secret is rendered from host AND password
+        # and replaced on conflict, so upgrading with the host alone rewrites it without the
+        # built-in registry's entry. The registry goes on demanding the password its htpasswd
+        # still holds, and the next experiment-image build pushes anonymously and gets a 401
+        # naming a registry -- with the upgrade that removed the credential well behind it.
+        # `ensure_registry_htpasswd` is also what keeps the two halves in step: it reads the
+        # password back from this same Secret, so it cannot recover one after an upgrade has
+        # dropped it.
+        registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
-                       registry_host=ingress_host, public_origin=public_origin)
+                       registry_host=ingress_host, registry_password=registry_password,
+                       public_origin=public_origin)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #
@@ -1264,10 +1333,19 @@ def cluster_token(namespace, kube_context, quiet):
 
         url = published_url(namespace, kube_context)
         if not url:
-            # Reachable but unpublished is a real state (no --ingress-host), and the
-            # token is still the right answer -- just not one a user can use yet.
-            click.echo("The service has no Ingress, so there is no URL to give out. "
-                       "Re-run setup with --ingress-host to publish it.")
+            # An Ingress is not the only way a deployment is reachable. A tailnet node
+            # publishes it under a name too, and answering "there is no URL" over one would
+            # send an operator to re-publish something already published.
+            from . import tailnet_deploy  # pylint: disable=import-outside-toplevel
+            tailnet = tailnet_deploy.published_hostname(namespace, kube_context)
+            if tailnet:
+                url = f"http://{tailnet}"
+        if not url:
+            # Reachable but unpublished is a real state (no --ingress-host, no tailnet), and
+            # the token is still the right answer -- just not one a user can use yet.
+            click.echo("The service has no Ingress and no tailnet node, so there is no URL "
+                       "to give out. Re-run setup with --ingress-host to publish it, or "
+                       "with --tailnet to reach it over a tailnet.")
             click.echo(f"\nAccess token: {token}")
             return
 

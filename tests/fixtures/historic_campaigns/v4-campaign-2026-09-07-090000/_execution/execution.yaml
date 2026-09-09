@@ -1,0 +1,10 @@
+execution_time: '2026-08-25T12:00:00'
+robovast_version: 2.1.0
+runs: 2
+execution_type: local
+image: ghcr.io/cps-test-lab/robovast:latest
+image_revision: ghcr.io/cps-test-lab/robovast@sha256:3333333333333333333333333333333333333333333333333333333333333333
+images:
+  scenario: ghcr.io/cps-test-lab/robovast:latest
+image_revisions:
+  scenario: ghcr.io/cps-test-lab/robovast@sha256:3333333333333333333333333333333333333333333333333333333333333333

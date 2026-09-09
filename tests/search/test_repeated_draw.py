@@ -66,7 +66,7 @@ def test_the_collapse_is_reported(caplog):
 
 
 BASE_VAST = textwrap.dedent("""\
-    version: 3
+    version: 4
     execution:
       containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
       runs: 1

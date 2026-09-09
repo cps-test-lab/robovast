@@ -1,6 +1,6 @@
 # Historic campaign fixtures
 
-Three complete campaign directories, frozen at the config versions robovast has actually
+Four complete campaign directories, frozen at the config versions robovast has actually
 shipped, kept so that "an old campaign is still readable and re-runnable" is a property
 CI checks rather than a claim someone made once.
 
@@ -20,6 +20,7 @@ helpfully upgraded.
 | `v1-campaign-2025-03-04-101500` | 1 | the format before `execution.containers`: `execution.image`, `resources`, and `secondary_containers` in the sibling spelling every real campaign used |
 | `v2-campaign-2026-03-04-152130` | 2 | the format on `main` when the ladder was introduced; also carries no provenance records, like every campaign predating them |
 | `v3-campaign-2026-08-25-120000` | 3 | `execution.timeout` as the whole job's budget, `bt_log`/`log_topics` gone, `shm_size` defaulted. Declares the keys v3 changed, and packs runs, so a later step that reasons about per-run versus per-job budgets meets a fixture where the two actually differ |
+| `v4-campaign-2026-09-07-090000` | 4 | a configuration's fixed values under `parameters:`, grouped by channel, plus a `configuration_presets:` block a configuration composes with `use:`. Declares both, so a later step meets the preset block and not only the entries |
 
 None of them carries `plugins.yaml` or `providers.yaml`, on purpose: a campaign from before those
 records existed must report `unknown` and still be re-runnable. Recording them here would
