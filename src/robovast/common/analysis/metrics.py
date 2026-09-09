@@ -119,8 +119,15 @@ def pose_time_base(df: pd.DataFrame) -> str:
     20/20/20/20/10, and the constant 0.24 m/s it was driving at read as an alternating 0.21/0.43.
 
     ``stamp`` is the publisher's own header stamp -- when the pose was true -- so it is what a
-    derivative must use. Absent (an older campaign, a producer that cannot state one) the arrival
-    time is all there is, and saying so in ``time_base`` is better than pretending otherwise.
+    derivative must use. Absent, ``timestamp`` is all there is, and saying so in ``time_base`` is
+    better than pretending otherwise.
+
+    ``time_base: timestamp`` therefore covers two cases that are not equally good, and the returned
+    label alone does not separate them: a simulator-written table (``sim_poses``) whose
+    ``timestamp`` IS the measurement clock and is exact, and a transport-derived table too old to
+    carry a ``stamp``, whose ``timestamp`` is an arrival time and quantized. The table the frame
+    came from is what tells them apart. On the first, prefer the ``twist.*`` columns over any
+    derivative at all -- the simulator reports velocity directly, with no interval to get wrong.
     """
     if 'stamp' in df.columns and df['stamp'].notna().any():
         return 'stamp'
