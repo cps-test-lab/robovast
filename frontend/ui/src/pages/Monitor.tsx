@@ -1142,6 +1142,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
             newest={newest}
             quotaCpu={usage.data?.cpu_capacity ?? null}
             postprocessed={!!summary.postprocessed}
+            resultsBytes={summary.results_bytes}
             onStopJob={onStopJob}
             stoppingJob={stopJob.isPending ? (stopJob.variables?.jobName ?? null) : null}
           />
