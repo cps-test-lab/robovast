@@ -338,6 +338,7 @@ export function DetailsBox({
   campaignId,
   quotaCpu,
   postprocessed = false,
+  resultsBytes,
   selected = true,
 }: {
   campaignId: string
@@ -349,6 +350,13 @@ export function DetailsBox({
    *  appear minutes later. Without this the first answer -- correctly "not postprocessed" -- was
    *  cached for the session and the columns never filled in. */
   postprocessed?: boolean
+  /** Total bytes the campaign's results occupy, measured once when the campaign ended and
+   *  carried on its summary. Passed in rather than queried: this panel's rule is that an open
+   *  tab costs queries, and a figure that was computed once and cannot change should not cost
+   *  one at all. `null`/omitted means NOT RECORDED -- a campaign still running, or one that
+   *  ended before this was measured -- and the stat is then omitted, because a campaign whose
+   *  size is unknown and one that produced nothing must not read the same. */
+  resultsBytes?: number | null
   /** Whether the Details tab is the one showing. This panel has no frame of its own any more --
    *  the tab IS its open state -- so the gate a frame would provide is this prop instead: the
    *  queries below include one that scans every 1 Hz sample of every run,
@@ -485,6 +493,19 @@ export function DetailsBox({
                   ) : null}
                   {model.multiBatch ? (
                     <Stat value={String(model.totals.batches)} label="batches" />
+                  ) : null}
+                  {/* Only when it was recorded, like every other optional stat here. */}
+                  {resultsBytes != null ? (
+                    <Stat
+                      value={formatBytes(resultsBytes)}
+                      label="results"
+                      tip={
+                        'What this campaign occupies in storage, measured once when it ' +
+                        'ended — on the local lane the results tree, on a cluster the ' +
+                        'object store. Recorded at the end, so a campaign that is still ' +
+                        'running shows none.'
+                      }
+                    />
                   ) : null}
                   {/* Only when it happened, like every other optional stat here — but then
                       always, because a short dataset that looks complete is the failure this

@@ -2036,6 +2036,8 @@ export interface components {
              * @default
              */
             postprocessing_error: string;
+            /** Results Bytes */
+            results_bytes: number | null;
             /**
              * Share Error
              * @default
@@ -3834,6 +3836,8 @@ export interface components {
             progress_deadline_s: number | null;
             /** Progress Since */
             progress_since: number;
+            /** Results Bytes */
+            results_bytes: number | null;
             runs: components["schemas"]["RunProgress"];
             /** Search Since */
             search_since: number | null;
