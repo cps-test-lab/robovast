@@ -804,12 +804,15 @@ def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict,
 
 
 #: Notes for a table that follows the POSE CONTRACT (see ``docs/results_processing.rst``).
-#: Keyed on the column, and attached to any table carrying a ``stamp`` column rather than to
-#: a list of table names -- the contract is what a table *has*, not what it is called, so a
-#: new producer's table is annotated without registering it here.
+#: Keyed on the column, and attached by what a table *has* rather than by a list of table
+#: names, so a new producer's table is annotated without registering it here.
 #:
-#: These three are exactly where an agent writing SQL against a pose table goes wrong.
-_POSE_CONTRACT_NOTES = {
+#: Split by clock shape, because the contract has two and the advice inverts between them: a
+#: table converted from a transport (``poses``, from /tf) has an arrival clock that must not
+#: be differenced and a ``stamp`` that must, while a table the simulator wrote itself
+#: (``sim_poses``) has one exact clock and no ``stamp`` at all. Annotating the second with the
+#: first's notes would point a reader at a column that is not there.
+_POSE_TRANSPORT_CLOCK_NOTES = {
     "timestamp": (
         "ARRIVAL time, and the join key every other table in this campaign shares -- use it "
         "to read poses against costmaps, behaviors and run_log, and to place a row on the "
@@ -822,6 +825,26 @@ _POSE_CONTRACT_NOTES = {
         "too, since ordering by `timestamp` leaves rows within one arrival tick in arbitrary "
         "order. NULL where the producer could not state one (a latched /tf_static "
         "transform)."),
+}
+
+#: The same two columns for a pose table the SIMULATOR wrote: no transport sat between the pose
+#: and the row, so there is nothing to correct for and no `stamp` to point at.
+_POSE_NATIVE_CLOCK_NOTES = {
+    "timestamp": (
+        "SIMULATED seconds, taken inside the simulator at the moment the pose was true -- this "
+        "is the exact quantity the `poses` table's `stamp` is, not the arrival time that "
+        "table's `timestamp` is. Difference it freely. Better still, do not: twist.linear.* "
+        "and twist.angular.* are the true velocities, with no interval to get wrong."),
+    "wall_time": (
+        "Unix epoch seconds for the same sample, so a row can be placed against anything "
+        "stamped in wall time -- run_log, resource_usage, a container's own log. It is the "
+        "only bridge those have to this table on a run with no rosbag. Do NOT difference it "
+        "or join poses on it: it advances with the host, which under a simulator that does "
+        "not run in real time is not the run's clock. Use `timestamp` for both."),
+}
+
+#: Attached wherever a quaternion was ingested, which is every pose table regardless of clock.
+_POSE_ORIENTATION_NOTES = {
     "orientation.yaw": (
         "DERIVED at ingest from orientation.x/y/z/w, and a planar projection: correct for a "
         "body in the plane, insufficient for one that pitches or rolls (a drone, a tilting "
@@ -842,6 +865,21 @@ _STATIC_COLUMN_NOTES: dict = {
         "summed RSS, so pages shared between a process and its forks are counted more than "
         "once. An upper bound -- read it as a trend, not as an absolute footprint."),
 }
+
+
+def pose_notes_for(columns) -> dict:
+    """The pose-contract notes that apply to a table holding *columns*; ``{}`` if it holds no pose.
+
+    Pure, and separate from :func:`record_column_notes`, because which notes a table earns is the
+    part with a decision in it -- and a decision that silently annotates nothing (the case a
+    simulator-written table used to fall into) is one worth asserting without a database.
+    """
+    if "position.x" not in columns:
+        return {}
+    clock_notes = (_POSE_TRANSPORT_CLOCK_NOTES if "stamp" in columns
+                   else _POSE_NATIVE_CLOCK_NOTES)
+    return {column: note for column, note in {**clock_notes, **_POSE_ORIENTATION_NOTES}.items()
+            if column in columns}
 
 
 def record_column_notes(conn, tables) -> int:
@@ -867,17 +905,11 @@ def record_column_notes(conn, tables) -> int:
                 index_schema.record_note(conn, table, column, note,
                                          kind=index_schema.NOTE_DOC)
                 written += 1
-        # What marks a table as following the pose contract: a measurement clock AND a
-        # position. `stamp` alone is not enough -- rosout carries one too, and would collect
-        # notes that talk about poses. Without `stamp`, the `timestamp` note would point at
-        # a column that is not there.
-        if not {"stamp", "position.x"} <= columns:
-            continue
-        for column, note in _POSE_CONTRACT_NOTES.items():
-            if column in columns:
-                index_schema.record_note(conn, table, column, note,
-                                         kind=index_schema.NOTE_DOC)
-                written += 1
+        # What marks a table as following the pose contract, and which clock notes it earns,
+        # is decided in `pose_notes_for`.
+        for column, note in pose_notes_for(columns).items():
+            index_schema.record_note(conn, table, column, note, kind=index_schema.NOTE_DOC)
+            written += 1
     return written
 
 

@@ -259,16 +259,22 @@ _POSE_CLOCKS_TRANSPORT = (
     "WINDOW w AS (ORDER BY stamp)) WHERE ps IS NOT NULL AND stamp > ps. "
 )
 
-#: For a pose table the SIMULATOR wrote itself. One clock, and it is the true one -- so the warning
-#: above does not apply here and would be actively wrong: there is no `stamp` column to point at,
-#: and this `timestamp` is exactly the quantity the other table's `stamp` is.
+#: For a pose table the SIMULATOR wrote itself. One MEASUREMENT clock, and it is the true one -- so
+#: the warning above does not apply here and would be actively wrong: there is no `stamp` column to
+#: point at, and this `timestamp` is exactly the quantity the other table's `stamp` is. `wall_time`
+#: rides along and is named here rather than left out: a reader who sees two time columns and is
+#: told the table has one clock concludes the description is stale, not that the second is a bridge.
 _POSE_CLOCKS_NATIVE = (
-    "ONE CLOCK, and it is the honest one: `timestamp` is exact simulated seconds, taken inside the "
-    "simulator when the pose was true, so unlike the `poses` table there is no arrival/measurement "
-    "split and no `stamp` column -- difference this one freely. Better still, do not difference at "
-    "all: twist.linear.* / twist.angular.* are the TRUE world-frame velocities read straight from "
-    "the physics solver, so a speed is SQRT(POWER(\"twist.linear.x\",2)+POWER(\"twist.linear.y\",2)) "
-    "with no window function and no interval to get wrong. "
+    "ONE MEASUREMENT CLOCK, and it is the honest one: `timestamp` is exact simulated seconds, taken "
+    "inside the simulator when the pose was true, so unlike the `poses` table there is no "
+    "arrival/measurement split and no `stamp` column -- difference and ORDER BY this one freely. "
+    "Better still, do not difference at all: twist.linear.* / twist.angular.* are the TRUE "
+    "world-frame velocities read straight from the physics solver, so a speed is "
+    "SQRT(POWER(\"twist.linear.x\",2)+POWER(\"twist.linear.y\",2)) with no window function and no "
+    "interval to get wrong. The second time column, `wall_time`, is NOT a second measurement of the "
+    "pose: it is Unix epoch seconds for the same sample, there to join this table to whatever is "
+    "stamped in wall time (run_log, resource_usage) on a run that has no rosbag to relate them "
+    "otherwise. Never difference it -- it advances with the host, not with the simulation. "
 )
 
 #: Also shared: what the orientation columns are, and which one is a projection.

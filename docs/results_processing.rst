@@ -297,10 +297,19 @@ that wants both writes one ``UNION ALL``.
      - The named entity, in the producer's own vocabulary: a TF child frame, a MuJoCo body, a
        motion-capture rigid body.
    * - ``timestamp``
-     - **Arrival** time, and the join key described above. Never re-key it.
+     - The join key described above, and never re-keyed. What it *measures* depends on the
+       producer: **arrival** time for a table converted from a transport, which no derivative may
+       be taken from; the **exact simulated** time for one the simulator wrote itself.
    * - ``stamp``
      - **Measurement** time: when the pose was true, from the producer itself. NULL when it cannot
-       state one (a latched ``/tf_static`` transform).
+       state one (a latched ``/tf_static`` transform). Present only where ``timestamp`` is an
+       arrival time — a producer whose ``timestamp`` is already the measurement omits the column
+       rather than duplicating it.
+   * - ``wall_time``
+     - Unix epoch seconds for the same sample, where the producer can state one. Not a pose clock:
+       it exists to join this table to what is stamped in wall time (``run_log``,
+       ``resource_usage``) on a run with no rosbag to relate them otherwise, and it advances with
+       the host rather than with the simulation.
    * - ``position.x/y/z``
      - Meters.
    * - ``orientation.x/y/z/w``
@@ -325,8 +334,10 @@ one campaign: a ground-truth pose published every 18 ms onto a 10 ms grid arrive
 0.214 / 0.428 m/s — the displacement between samples was identical in every bucket, and only the
 denominator was wrong. Making the grid divide the period removes that systematic alias but not the
 delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks the base for
-you and reports which it used in ``time_base``, so a cross-simulator comparison can assert both
-sides used the same one instead of quietly comparing an exact base against a quantized one.
+you and reports which it used in ``time_base``, so a comparison can assert both sides took their
+derivative from the same column. Read that column together with the table it came from: ``time_base: timestamp``
+is the *exact* base on a simulator-written table and the *degraded* one on a transport-derived
+table that carries no ``stamp``, and the two are not comparable despite the identical label.
 
 **Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
 the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
@@ -577,6 +588,34 @@ stopped. That is what the run view's :ref:`shutdown toggle <shutdown-toggle>` an
 success while the harness failed, or the reverse. A NULL row is a run that reached no verdict —
 killed by its deadline, say — and is left untrimmed rather than trimmed to a guess.
 
+``rosbag_attempts`` — the run recorded more than once
+"""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+A recorder that restarts mid-trial writes a second bag beside the first, because
+``ros2 bag record``'s default name carries a timestamp. **The last attempt is the run**:
+everything else in the directory exists once — one run log, one verdict, one set of videos,
+all of it the last attempt's — so converting an earlier bag would put a different attempt's
+trajectory under this run's outcome, and no table would say so. Only one attempt can be
+converted at all, because every output name is derived from the run directory.
+
+So the last attempt is converted, the earlier ones are not, and this table is the record:
+one row per attempt, with ``role`` ``converted`` or ``superseded``, and the start time each
+was dated by. It exists only for a run that recorded more than once, which is why the
+question is a query rather than a search through a postprocessing log::
+
+   SELECT config_name, run_id, bag FROM rosbag_attempts WHERE role <> 'converted'
+
+The attempts are ordered by the start time in each bag's own sidecar, and by the timestamp
+in its name only when a sidecar is missing — never by a mix of the two, since one is epoch
+and the other the recorder's local clock. An attempt with neither — a bag whose name carries
+no timestamp and whose sidecar was never written — leaves them unordered:
+nothing is converted from that directory, every row says ``unordered``, and the step's log
+names the directory to clear. Picking one anyway would be data that looks right.
+
+One run's ambiguity is never the campaign's: every other run converts, and a bag the last
+attempt never finalized is reported as unreadable in the usual way (see
+:ref:`its rosbag is unreadable <results-unreadable-rosbag>`).
+
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
 
@@ -621,6 +660,8 @@ and ``get_campaign_summary``, its own tally in the web UI's Details panel, and
 ``failure_message`` on a killed run names the surface that stopped it and the reason its
 operator gave (``manually stopped via webui: stuck in nav recovery``), which is the only
 record of *why* — so it is worth giving one.
+
+.. _results-unreadable-rosbag:
 
 Its rosbag is unreadable, and that is not a failure
 """""""""""""""""""""""""""""""""""""""""""""""""""
