@@ -645,6 +645,11 @@ class ClusterContainerRunner:
         directory around it can be a volume. Without this the scene build failed on the
         cluster, at the one moment it is least diagnosable -- the run view asking for
         geometry -- while working on the local lane, where a bind mount does not care.
+
+        A *host_path* outside the workspace is copied into it first (:meth:`_stage_into`), so
+        the single transport is a property of this method rather than of every caller's
+        discipline. A local ``docker`` runner bind-mounts whatever it is handed, so nothing
+        there ever needed the tree to be in one particular place.
         """
         container_path = str(container_path)
         if container_path not in AUX_MOUNTABLE_PATHS \
@@ -654,7 +659,35 @@ class ClusterContainerRunner:
                 f"{list(AUX_MOUNTABLE_PATHS)}, or at a file directly inside one of them, "
                 f"not {container_path!r}; a new path has to be added to "
                 f"AUX_MOUNTABLE_PATHS so the Pod declares a volume for it.")
-        self._exposed[container_path] = str(host_path)
+        self._exposed[container_path] = self._stage_into(str(host_path), container_path)
+
+    def _stage_into(self, source: str, container_path: str) -> str:
+        """*source* if the mirror already carries it, otherwise a copy inside the workspace.
+
+        Only ``workspace`` travels, so a tree anywhere else on this host is a path the
+        container does not have: :meth:`_place_exposed` copies *inside* the container, and a
+        source that never arrived fails there with a host path in the message and nothing to
+        say why. Copying it in is what makes the exposure a mirror of something that exists
+        on both sides.
+
+        The copy is named after the mount rather than after the source, so the same exposure
+        repeated overwrites its own tree instead of accumulating one per call, and two
+        exposures cannot collide.
+        """
+        workspace = os.path.abspath(self.workspace)
+        absolute = os.path.abspath(source)
+        if absolute == workspace or absolute.startswith(workspace + os.sep):
+            return absolute
+        holder = os.path.join(workspace, "exposed",
+                             re.sub(r"[^A-Za-z0-9]+", "-", container_path).strip("-") or "aux")
+        if os.path.isdir(absolute):
+            shutil.rmtree(holder, ignore_errors=True)
+            shutil.copytree(absolute, holder)
+            return holder
+        os.makedirs(holder, exist_ok=True)
+        staged = os.path.join(holder, os.path.basename(absolute))
+        shutil.copy2(absolute, staged)
+        return staged
 
     def _client(self):
         if self._core_v1 is None:

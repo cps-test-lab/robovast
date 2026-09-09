@@ -342,9 +342,12 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     Until this existed, a world extending another *campaign* file staged only the YAML: the
     run then failed in the container on a parent that never travelled, after the image pull.
 
-    Paths outside the campaign directory are dropped rather than staged. They are the ones
-    that arrived with the image (a packaged world's meshes), and copying them would put a
-    second, diverging copy of an installed asset into the campaign.
+    The answer comes back in the CONTAINER's paths, and is translated: the campaign tree is
+    exposed at :data:`CONFIG_MOUNT`, which is also where the command named the world, so
+    everything the campaign owns is rooted there and nothing under it exists on this host.
+    A path that is neither under the mount nor under the campaign directory arrived with the
+    image (a packaged world's meshes) and is dropped rather than staged, because copying it
+    would put a second, diverging copy of an installed asset into the campaign.
     """
     runner = _make_container_runner(query.spec, image_project=image_project,
                                     image_project_tag=image_project_tag,
@@ -374,12 +377,24 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     if payload.get("packaged"):
         return []
 
+    from robovast.common.simulators import \
+        CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+
     root = os.path.abspath(vast_dir)
+    # Both roots are accepted because both are true of some runner: one that mirrors the tree
+    # into a fixed mount answers in the mount's paths, one that can place it at the identical
+    # absolute path answers in the campaign's. Neither is a guess about which ran -- a path
+    # can only be under one of them.
+    mount = CONFIG_MOUNT.rstrip("/")
     relative = []
     for path in payload.get("inputs") or []:
-        absolute = os.path.abspath(str(path))
-        if absolute.startswith(root + os.sep):
-            relative.append(os.path.relpath(absolute, root))
+        text = str(path)
+        for base in (mount, root):
+            if text.startswith(base + os.sep):
+                rel = os.path.relpath(text, base)
+                if rel not in relative:
+                    relative.append(rel)
+                break
     return relative
 
 

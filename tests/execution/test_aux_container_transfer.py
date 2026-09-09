@@ -495,6 +495,96 @@ def test_a_runner_refuses_a_path_the_pod_never_mounted():
         runner.expose("/tmp/staged", "/somewhere-else")
 
 
+def test_a_tree_outside_the_workspace_is_staged_into_it(tmp_path):
+    """Only the workspace travels, so exposing a path elsewhere on this host cannot work.
+
+    The copy that fills the mount runs INSIDE the container, against a source the mirror
+    put there. Handed a project directory of the service's own -- which is what the
+    simulator's query for a world's inputs asks for -- the container had no such path and
+    the copy failed with a host path in its message. Staged here instead, so the single
+    transport holds without every caller knowing it has to.
+    """
+    project = tmp_path / "project"
+    (project / "world").mkdir(parents=True)
+    (project / "world" / "child.yaml").write_text("extends: parent.yaml\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+
+    runner.expose(str(project), "/config")
+
+    staged = runner._exposed["/config"]
+    assert staged.startswith(runner.workspace + os.sep), staged
+    assert os.path.isfile(os.path.join(staged, "world", "child.yaml"))
+
+
+def test_the_copy_inside_the_container_names_a_path_the_mirror_carries(tmp_path):
+    """The defect this closes, at the level it showed up: the script, not the bookkeeping.
+
+    ``_place_exposed`` runs in the container, so its source has to be a path the mirror put
+    there. Handed a directory of the service's own it named that host path, and the copy
+    exited 1 -- taking a campaign's composition with it, with a host path as the whole
+    message.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "child.yaml").write_text("extends: parent.yaml\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+    scripts = []
+    runner._retrying_exec = lambda command, **kwargs: scripts.append(command[-1])
+
+    runner.expose(str(project), "/config")
+    runner._place_exposed()
+
+    assert len(scripts) == 1
+    source = scripts[0].split("cp -R '")[1].split("'")[0]
+    assert source.startswith(runner.workspace + os.sep), source
+    assert str(project) not in scripts[0]
+
+
+def test_a_tree_already_in_the_workspace_is_not_copied_again(tmp_path):
+    """What a variation plugin does: stage into the workspace, then expose the staged tree.
+
+    Copying it a second time would double the bytes the mirror carries for no reason.
+    """
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    inside = os.path.join(runner.workspace, "in", "0", "tree")
+    os.makedirs(inside)
+
+    runner.expose(inside, "/config")
+
+    assert runner._exposed["/config"] == inside
+
+
+def test_a_single_exposed_file_keeps_its_name(tmp_path):
+    """A file target names the exact path a command was written for, filename included.
+
+    Staged under a holder rather than as one, because the copy in the container is
+    ``cp -R <staged> /aux/name.yaml`` -- a directory there would nest.
+    """
+    document = tmp_path / "overrides.yaml"
+    document.write_text("a: 1\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+
+    runner.expose(str(document), "/aux/overrides.yaml")
+
+    staged = runner._exposed["/aux/overrides.yaml"]
+    assert os.path.basename(staged) == "overrides.yaml"
+    assert os.path.isfile(staged) and staged.startswith(runner.workspace + os.sep)
+
+
 def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch):
     """``cp -a`` sets attributes on the destination too, and that inode is the mount point.
 
