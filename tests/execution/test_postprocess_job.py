@@ -1689,3 +1689,67 @@ def test_stage_container_carries_the_campaigns_own_disk_request():
     assert to_bytes(asked) > 100 * gib
     # and the guard on what staging may hold in memory is unchanged by it
     assert containers["stage"]["resources"]["requests"]["memory"] == "1Gi"
+
+
+class _ListingStore:
+    """A store that records which prefix it was asked to enumerate."""
+
+    def __init__(self, objects=()):
+        self.listed = []
+        self._objects = list(objects)
+
+    def list_entries(self, bucket, prefix):
+        self.listed.append(prefix)
+        return self._objects, []
+
+
+def _with_store(monkeypatch, store):
+    from robovast.execution.cluster_execution import in_pod_storage
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: store)
+
+
+def test_a_per_batch_job_sizes_only_its_own_batch(monkeypatch):
+    """A search creates one of these per batch, while the campaign is still growing.
+
+    Listing the whole prefix each time would re-enumerate every earlier batch, so the cost
+    of sizing would grow with the square of the search. `_jobs/` is where the bags are and
+    the only part the include rule narrows.
+    """
+    store = _ListingStore([("camp/_jobs/batch-3/j/rosbag2/b.mcap", 4096)])
+    _with_store(monkeypatch, store)
+
+    total = pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False,
+                            batch_jobs="batch-3")
+
+    assert store.listed == ["camp/_jobs/batch-3"]
+    assert total == 4096
+
+
+def test_a_whole_campaign_job_sizes_the_whole_prefix(monkeypatch):
+    store = _ListingStore([("camp/cfg/0/rosbag2/b.mcap", 8192)])
+    _with_store(monkeypatch, store)
+
+    total = pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False, batch_jobs="")
+
+    assert store.listed == ["camp/"]
+    assert total == 8192
+
+
+def test_bags_are_not_reserved_for_when_the_pod_will_not_stage_them(monkeypatch):
+    """No conversion container means no bag is staged, so none is reserved for."""
+    store = _ListingStore([("camp/cfg/0/rosbag2/b.mcap", 8192),
+                           ("camp/cfg/0/out.csv", 512)])
+    _with_store(monkeypatch, store)
+
+    assert pj._stage_bytes(object(), "bucket", "camp/", skip_bags=True, batch_jobs="") == 512
+
+
+def test_a_store_that_cannot_be_listed_leaves_the_floor_standing(monkeypatch):
+    """Sizing is advisory: it must never be why a campaign is not postprocessed."""
+    class _Broken:
+        def list_entries(self, bucket, prefix):
+            raise RuntimeError("store is down")
+
+    _with_store(monkeypatch, _Broken())
+
+    assert pj._stage_bytes(object(), "bucket", "camp/", skip_bags=False, batch_jobs="") is None

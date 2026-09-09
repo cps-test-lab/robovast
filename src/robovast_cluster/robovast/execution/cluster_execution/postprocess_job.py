@@ -178,6 +178,13 @@ def _stage_bytes(cluster_config, bucket: str, prefix: str, skip_bags: bool,
     describes what that step downloads: a campaign whose pod opens no bag does not stage
     them, and a per-batch Job stages one batch's job artifacts.
 
+    **A per-batch Job lists only its own batch.** Its Job is created once per batch while the
+    campaign is still growing, so listing the whole prefix each time would cost a pass over
+    every earlier batch as well -- work that grows with the square of the search. ``_jobs/``
+    is where the bags are and the only part ``build_include`` narrows; what is left is a run
+    directory's verdict and parameters, kilobytes against a batch of bags, and the floor
+    already covers more than that.
+
     One metadata-only listing, on a path that is already creating a Job. ``None`` on any
     store failure, deliberately: a sizing hint is not worth refusing to postprocess over,
     and the floor it falls back to is what this step asked for unconditionally before.
@@ -185,11 +192,12 @@ def _stage_bytes(cluster_config, bucket: str, prefix: str, skip_bags: bool,
     from . import in_pod_storage  # noqa: PLC0415
     from .postprocess_stage import build_include  # noqa: PLC0415
 
+    listed = f"{prefix.rstrip('/')}/_jobs/{batch_jobs.strip('/')}" if batch_jobs else prefix
     try:
         storage = in_pod_storage.storage_client_for(cluster_config)
-        objects, _ = storage.list_entries(bucket, prefix)
+        objects, _ = storage.list_entries(bucket, listed)
     except Exception as e:  # noqa: BLE001 - advisory; the floor covers a store that cannot answer
-        logger.debug("could not size the staged tree of s3://%s/%s: %s", bucket, prefix, e)
+        logger.debug("could not size the staged tree of s3://%s/%s: %s", bucket, listed, e)
         return None
 
     clean = prefix.rstrip("/")
