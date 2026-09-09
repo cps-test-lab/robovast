@@ -233,6 +233,13 @@ sliced the same way (see :ref:`per-run-resource-usage`). They live here, rather 
 the job artifacts they were built from, because a run is what they describe — and because
 the ingest that turns data files into tables globs run directories.
 
+Every file a ``rosbags_*`` step derives from this run's bag lands here too, for the same
+reason — ``poses.csv``, one ``action_<name>_feedback.csv`` and ``action_<name>_status.csv``
+per converted action, ``nav2_behavior_tree.csv``, the costmap and per-topic CSVs. They are
+the same on both lanes, so a downloaded campaign carries them whether it ran locally or on
+a cluster. Each is named, with what it was derived from, in
+``_transient/postprocessing.yaml``.
+
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
 recorded topics and message counts). It is present only when the scenario

@@ -77,11 +77,14 @@ NOT_CAMPAIGN_DATA = frozenset({".robovast_rosbags_process_cache"})
 def _snapshot(root: str) -> dict:
     """Map every file under *root* to ``(size, mtime_ns)``.
 
-    Taken before the host stage runs, which is enough to identify what it derived: this
-    container starts only once both initContainers have finished, so everything already on
-    disk came from the store or from the conversion, and any file that appears or changes
-    afterwards is this stage's output. That is what keeps the upload proportional to what
-    was produced rather than to the campaign that was staged.
+    Taken before the host stage runs, so a file that appears or changes afterwards is this
+    stage's output. That is what keeps the upload proportional to what was produced rather
+    than to the campaign that was staged.
+
+    It cannot identify the CONVERSION's output, though: that container finishes before this
+    one starts, so its CSVs are already on disk when this is taken and read as staged data.
+    :func:`_conversion_outputs` is the other half of the answer, and the two are what
+    :func:`_upload_derived` uploads.
 
     Broken symlinks are skipped -- an interrupted campaign can leave a ``job`` link whose
     target was never produced, and ``os.walk`` reports it as a file.
@@ -98,15 +101,41 @@ def _snapshot(root: str) -> dict:
     return seen
 
 
+def _conversion_outputs(campaign_root: str) -> set:
+    """Campaign-relative paths the conversion container derived from the bags.
+
+    These have to be named rather than diffed. The conversion runs as an initContainer, so
+    it has already written its CSVs by the time this container takes its snapshot -- while
+    the store has never held them, because that container carries no credentials and uploads
+    nothing. Diffed alone, every one of them reads as staged data and stays in a pod that is
+    about to be deleted: ``poses.csv``, the per-action feedback and status tables, the
+    costmaps and the raw behaviour-tree transitions were ingested into the index and then
+    dropped, so a campaign's own download held none of the tables its analysis reads.
+
+    Read from the record the conversion writes for this purpose, at
+    :data:`~robovast.results_processing.postprocessing.STAGED_PROVENANCE`, whose ``output``
+    paths are relative to the campaign root -- the same base the upload keys on. Empty when
+    there was no conversion (a campaign with no bags, or a per-batch Job), which is a
+    campaign for which the diff alone is the whole answer.
+    """
+    from robovast.results_processing.postprocessing import \
+        _staged_provenance_entries  # noqa: PLC0415
+
+    return {entry["output"] for entry in _staged_provenance_entries(campaign_root)
+            if entry.get("output")}
+
+
 def _upload_derived(cluster_config, campaign_id: str, campaign_root: str,
                     before: dict) -> int:
     """Send this stage's outputs back to the campaign's durable home; return the count.
 
     ``_execution/`` goes wholesale, because it is the campaign's account of itself: the
     POSTPROCESSING section of the campaign log *is* ``_execution/postprocessing.log`` in the
-    store, so until this has run the account exists nowhere a reader can see it. Everything
-    else is uploaded only where it differs from the snapshot, so the staged run data is not
-    written back over itself.
+    store, so until this has run the account exists nowhere a reader can see it.
+
+    Everything else goes up if it differs from the snapshot **or** the conversion named it
+    (:func:`_conversion_outputs`) -- those two together being what this Job derived, and
+    nothing else, so the staged run data is not written back over itself.
 
     What went up is then named in :data:`~.postprocess_job.OUTPUT_MANIFEST`, **written here
     because this is the only place that knows it**: the service fetches these objects back
@@ -122,13 +151,16 @@ def _upload_derived(cluster_config, campaign_id: str, campaign_root: str,
     bucket, prefix = in_pod_storage.campaign_storage_location(cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
     execution_dir = os.path.join(campaign_root, "_execution")
+    converted = _conversion_outputs(campaign_root)
     sent = []
     for path, stamp in _snapshot(campaign_root).items():
-        if path.startswith(execution_dir + os.sep) or before.get(path) == stamp:
+        rel = os.path.relpath(path, campaign_root).replace(os.sep, "/")
+        if path.startswith(execution_dir + os.sep):
+            continue
+        if before.get(path) == stamp and rel not in converted:
             continue
         if os.path.basename(path) in NOT_CAMPAIGN_DATA:
             continue
-        rel = os.path.relpath(path, campaign_root).replace(os.sep, "/")
         storage.upload_file(path, bucket, f"{prefix}{rel}")
         sent.append(rel)
     _publish_manifest(storage, bucket, prefix, campaign_root, sent)
