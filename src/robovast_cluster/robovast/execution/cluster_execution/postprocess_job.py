@@ -161,8 +161,22 @@ _DEFAULT_TIMEOUT = 3 * 60 * 60
 #: ceiling near the reservation would fail a large campaign that never held that much at once,
 #: while a reservation near the ceiling would price every postprocessing pod at a disk figure
 #: almost none of them reach.
-POSTPROCESS_EPHEMERAL_REQUEST = "20Gi"
-POSTPROCESS_EPHEMERAL_LIMIT = "200Gi"
+#: The smallest disk a postprocessing step asks for, and what a step asks for when its need
+#: is not known. Not "the request": the stage step derives its own from what it will fetch.
+POSTPROCESS_EPHEMERAL_FLOOR = "20Gi"
+
+#: The most disk one postprocessing pod may claim on a node it shares with trials. Caps the
+#: stage step's derived figure, and is the ceiling every step is held to.
+#:
+#: **Disk is the one resource here whose request and ceiling are deliberately not equal**,
+#: unlike cpu and memory (see :func:`step_resources`). What a step *downloads* is ours to
+#: know and is what the request describes; what it *writes* into the shared mount is the
+#: campaign's, declared in its ``.vast`` -- a conversion may emit a few CSVs or encode video
+#: of every run, and a ``command:`` step may write anything at all. Holding a pod to a
+#: reservation that cannot account for that would evict campaigns for declaring the
+#: postprocessing they are entitled to declare. Same reason ``POSTPROCESS_HOST_FLOOR`` is
+#: raised by a campaign's own figure and never lowered by it.
+POSTPROCESS_EPHEMERAL_CAP = "200Gi"
 
 #: Headroom over the bytes the stage step will fetch, for what lands in the same mount but is
 #: not an object it downloaded: the conversion's own outputs, and the filesystem's per-file
@@ -226,8 +240,8 @@ def stage_ephemeral_request(stage_bytes) -> str:
     ``None`` means the size could not be read; the floor then stands, which is the behaviour
     of a deployment whose store cannot be listed at submission time.
     """
-    floor = to_bytes(POSTPROCESS_EPHEMERAL_REQUEST)
-    ceiling = to_bytes(POSTPROCESS_EPHEMERAL_LIMIT)
+    floor = to_bytes(POSTPROCESS_EPHEMERAL_FLOOR)
+    ceiling = to_bytes(POSTPROCESS_EPHEMERAL_CAP)
     want = floor if not stage_bytes else int(stage_bytes * STAGE_EPHEMERAL_HEADROOM)
     gib = 1 << 30
     return f"{max(floor, min(want, ceiling)) // gib}Gi"
@@ -245,12 +259,17 @@ def step_resources(cpu, memory, ephemeral: str = "") -> dict:
 
     Nothing here is under test, so the throughput given up is real and the measurement it
     protects is worth more.
+
+    **Disk is stated as a pair instead**, and the asymmetry is not an oversight: see
+    :data:`POSTPROCESS_EPHEMERAL_CAP`. A step's reservation describes what RoboVAST will
+    download, which it knows; its ceiling has to cover what the campaign's own declared
+    postprocessing writes beside it, which it does not.
     """
     quantities = {"cpu": str(cpu), "memory": str(memory)}
-    request = ephemeral or POSTPROCESS_EPHEMERAL_REQUEST
+    request = ephemeral or POSTPROCESS_EPHEMERAL_FLOOR
     return {
         "requests": dict(quantities, **{"ephemeral-storage": request}),
-        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_LIMIT}),
+        "limits": dict(quantities, **{"ephemeral-storage": POSTPROCESS_EPHEMERAL_CAP}),
     }
 
 

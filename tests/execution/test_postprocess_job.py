@@ -1666,8 +1666,8 @@ def test_stage_ephemeral_request_scales_with_the_campaign():
     postprocessing rather than the excess.
     """
     gib = 1 << 30
-    floor = to_bytes(pj.POSTPROCESS_EPHEMERAL_REQUEST)
-    ceiling = to_bytes(pj.POSTPROCESS_EPHEMERAL_LIMIT)
+    floor = to_bytes(pj.POSTPROCESS_EPHEMERAL_FLOOR)
+    ceiling = to_bytes(pj.POSTPROCESS_EPHEMERAL_CAP)
 
     # A campaign smaller than the floor still asks for the floor.
     assert to_bytes(pj.stage_ephemeral_request(1 * gib)) == floor
