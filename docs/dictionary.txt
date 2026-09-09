@@ -364,6 +364,7 @@ Skylake
 snapshotter
 SNI
 Sobol
+spawner
 sqlite
 stderr
 stdin
