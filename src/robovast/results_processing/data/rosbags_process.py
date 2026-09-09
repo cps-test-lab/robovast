@@ -81,10 +81,11 @@ import rosbag2_py
 import yaml
 from rclpy.serialization import deserialize_message
 from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
-                            DEFAULT_CLOCK_TOLERANCE_S, UNREADABLE, BagResult, ClockDecimator,
-                            available_cpus, failing_bag_output, find_rosbags, gen_msg_values,
+                            DEFAULT_CLOCK_TOLERANCE_S, UNREADABLE, BagAttempts, BagResult,
+                            ClockDecimator, available_cpus, bag_attempts_note,
+                            failing_bag_output, find_rosbags, gen_msg_values,
                             handler_error_pointer, is_under_tolerated_root, register_video,
-                            resolve_tolerated_roots, unreadable_bag_note,
+                            resolve_tolerated_roots, unreadable_bag_note, write_bag_attempts,
                             write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
@@ -1368,11 +1369,42 @@ def main() -> int:
         print(f"Error: unknown handler type(s): {unknown}. Available: {list(HANDLER_REGISTRY)}")
         return 1
 
+    input_root = os.path.abspath(args.input)
+
+    def _out_dir_for_run(run_dir: str) -> Optional[str]:
+        """Mirror a run directory under --output-root, or None (write beside the bag)."""
+        if not args.output_root:
+            return None
+        rel = os.path.relpath(os.path.abspath(run_dir), input_root)
+        return os.path.join(os.path.abspath(args.output_root), rel)
+
+    def _out_dir_for(bag_path: str) -> Optional[str]:
+        """Mirror the bag's location under --output-root, or None (beside the bag)."""
+        return _out_dir_for_run(os.path.dirname(os.path.abspath(bag_path)))
+
     print(f"Scanning for rosbags ({args.bag_dir})...", end="", flush=True)
     _t_scan = time.time()
+    # A run whose recorder restarted mid-trial holds the abandoned attempt's bag as well as
+    # the trial's own. The scan converts the last attempt (see resolve_bag_attempts); what
+    # was left out is recorded per run, in the run's own data, so a reader of the tables
+    # meets it there instead of inferring it from a shorter trajectory than expected.
+    repeat_attempts: List[BagAttempts] = []
     rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir,
-                                skip_names=args.skip_dir)
+                                skip_names=args.skip_dir,
+                                on_multiple_attempts=repeat_attempts.extend)
     print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
+    out_base = os.path.abspath(args.output_root) if args.output_root else input_root
+    for attempts in repeat_attempts:
+        print(f"NOTE: {bag_attempts_note(attempts, input_root)}")
+        record = write_bag_attempts(_out_dir_for_run(attempts.run_dir) or attempts.run_dir,
+                                    attempts)
+        sources = ([attempts.converted] if attempts.converted else []) + attempts.superseded
+        write_provenance_entry(
+            args.provenance_file,
+            os.path.relpath(record, out_base),
+            [os.path.relpath(bag, input_root) for bag in sources],
+            "rosbags_process/bag_attempts",
+        )
     if not rosbag_paths:
         return 0
 
@@ -1385,7 +1417,6 @@ def main() -> int:
         json.dumps(plugin_configs, sort_keys=True).encode()
     ).hexdigest()
     n_bags = len(rosbag_paths)
-    input_root = os.path.abspath(args.input)
 
     # Bags whose failure to open is expected: their job was killed by hand mid-write (see
     # --tolerate-under). The predicate lives in rosbags_common so it is testable on the
@@ -1394,13 +1425,6 @@ def main() -> int:
 
     def _is_tolerated(bag_path: str) -> bool:
         return is_under_tolerated_root(bag_path, _tolerated_roots)
-
-    def _out_dir_for(bag_path: str) -> Optional[str]:
-        """Mirror the bag's location under --output-root, or None (beside the bag)."""
-        if not args.output_root:
-            return None
-        rel = os.path.relpath(os.path.dirname(os.path.abspath(bag_path)), input_root)
-        return os.path.join(os.path.abspath(args.output_root), rel)
 
     process_args = [
         (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash,
