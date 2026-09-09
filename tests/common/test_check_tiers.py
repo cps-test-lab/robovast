@@ -170,6 +170,23 @@ def test_no_runner_and_no_docker_refuses_naming_what_wanted_it(monkeypatch):
     assert "not a defect in the file" in excinfo.value.next_step
 
 
+def test_a_family_ref_is_named_after_its_member(monkeypatch):
+    """``family:<member>`` read as an ordinary reference has ``member`` as its TAG.
+
+    Stripping the tag then left every family ref called ``aux-family``: two specs naming
+    different members deduplicated onto one container -- the aux pod would hold one and the
+    second spec's commands would run in the wrong image -- and a refusal could not say which
+    image it wanted.
+    """
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    assert ContainerSpec(image="family:robovast-roqsim").container_name() == \
+        "aux-robovast-roqsim"
+    names = {ContainerSpec(image=f"family:{m}").container_name()
+             for m in ("robovast-roqsim", "robovast-sidecar")}
+    assert len(names) == 2, names
+
+
 def test_local_docker_still_serves_the_fallback(monkeypatch):
     """The working case: a host with docker previews a container-backed variation."""
     from robovast.common.config_generation import _make_container_runner

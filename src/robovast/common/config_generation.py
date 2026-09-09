@@ -37,7 +37,7 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_c
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
-from .errors import missing_input_error
+from .errors import AuxContainerUnavailable, missing_input_error
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
@@ -155,8 +155,6 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
         # container: the alternative is `docker run` in a Popen that raises a bare
         # FileNotFoundError deep in the variation, which reads as a broken .vast. Conditional
         # on docker being genuinely absent, so a local host that has it is untouched.
-        from robovast.common.errors import \
-            AuxContainerUnavailable  # pylint: disable=import-outside-toplevel
         who = purpose or "a variation"
         raise AuxContainerUnavailable(
             f"{who} requires the auxiliary container '{spec.container_name()}' "
@@ -301,12 +299,19 @@ def _backend_run_files(vast_dir, parameters):
         backend = resolve_backend(name, vast_dir)
         cfg = _backend_cfg(backend, execution, name)
         declared = backend.input_files(cfg, execution, vast_dir)
-        if isinstance(declared, ContainerQuery):
-            return _run_input_files_query(declared, vast_dir)
-        return [str(p) for p in (declared or [])]
     except Exception as exc:  # noqa: BLE001 - reported by validation, not here
         logger.debug("simulator backend declared no input files: %s", exc)
         return []
+    # Past here the backend has ANSWERED, and the swallow above no longer applies. What it
+    # answered may be a question only the simulator's own image can settle, and every way
+    # asking can fail -- nothing arranged a runner, the aux pod never came up, this cluster
+    # cannot pull the image, the query printed no JSON -- propagates. Dropping an unanswered
+    # question instead stages a world without the parent it extends, so the run pulls its
+    # image, schedules its pod and dies on a file that never travelled: the failure the query
+    # exists to prevent, and indistinguishable from a world that genuinely is one file.
+    if isinstance(declared, ContainerQuery):
+        return _run_input_files_query(declared, vast_dir)
+    return [str(p) for p in (declared or [])]
 
 
 def _stage_query_documents(runner, query, expose):
@@ -342,7 +347,8 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     second, diverging copy of an installed asset into the campaign.
     """
     runner = _make_container_runner(query.spec, image_project=image_project,
-                                    image_project_tag=image_project_tag)
+                                    image_project_tag=image_project_tag,
+                                    purpose="the simulator's input-files query")
     if runner is None:
         return []
     lines = []
@@ -576,7 +582,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable(
             f"this campaign's world is described by its own built image ({image}), which does "
             "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(query.spec)
+    runner = _make_container_runner(query.spec, purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
@@ -926,14 +932,32 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         if resolved not in seen_blocks:
             seen_blocks.append(resolved)
 
-    for block in seen_blocks:
+    # True when the failure happened *inside* the query rather than while resolving the
+    # backend around it -- the same line `_backend_run_files` draws, drawn from in here
+    # because `sim_input_files` owns both halves. Nothing between the two catches, so the
+    # exception the caller re-raises is the original, with whatever next_step it carries.
+    query_failed = []
+
+    def ask(query):
         try:
-            declared = sim_input_files(
-                execution, block, vast_dir,
-                run_query=lambda query: _run_input_files_query(
-                    query, vast_dir, image_project=image_project,
-                    image_project_tag=image_project_tag))
+            return _run_input_files_query(
+                query, vast_dir, image_project=image_project,
+                image_project_tag=image_project_tag)
+        except BaseException:
+            query_failed.append(True)
+            raise
+
+    for block in seen_blocks:
+        query_failed.clear()
+        try:
+            declared = sim_input_files(execution, block, vast_dir, run_query=ask)
         except Exception as exc:  # noqa: BLE001 - as above
+            if query_failed:
+                # Raised whether or not the campaign writes the channel: what a world is made
+                # of is not a matter of taste a campaign can decline, and an incomplete answer
+                # reads exactly like a complete one until the run opens a file that never
+                # travelled.
+                raise
             if uses_channel:
                 raise
             logger.debug("simulator backend declared no input files: %s", exc)
