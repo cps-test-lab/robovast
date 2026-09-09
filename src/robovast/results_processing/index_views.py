@@ -53,6 +53,7 @@ import logging
 
 from psycopg import errors
 
+from robovast.common import store
 from robovast.results_processing import index_schema, index_scope
 
 logger = logging.getLogger(__name__)
@@ -187,9 +188,12 @@ def campaign_view_sql(conn) -> dict:
                     if "channels_json" in _columns_in(conn, index_schema.CAMPAIGN_SCHEMA,
                                                       "unit")
                     else "NULL AS channels_json")
-        # A composition-failed unit has no run rows, so the join alone drops it -- and with
-        # it the only record that the draw was attempted. Added back as one run-less row,
-        # or a search campaign silently reports only the draws that happened to work.
+        # A unit with no run rows is dropped by the join alone -- and with it the only
+        # record that the cell was part of the design. Added back as one run-less row each,
+        # or a campaign silently reports the cells that happened to work as its whole shape:
+        # the draws a search could not compose, and the configurations a sweep declared and
+        # never got back.
+        runless = ", ".join(f"'{status}'" for status in store.RUNLESS_UNIT_STATUSES)
         views["run_view"] = f"""
             SELECT r.campaign_id, u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,
@@ -208,7 +212,7 @@ def campaign_view_sql(conn) -> dict:
                    NULL AS job_dir, NULL AS sysinfo_json
             FROM {_c('unit')} u
             {bjoin}
-            WHERE u.status = 'composition_failed'
+            WHERE u.status IN ({runless})
         """
 
     if "container_failure" in have:

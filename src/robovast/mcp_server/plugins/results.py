@@ -176,6 +176,14 @@ def get_campaign_summary(campaign_id: str) -> dict:
         ``start_campaign(from_campaign=…)``: a ``blocking`` axis names what is missing,
         and ``unknown`` means the campaign predates that record, not that it failed.
 
+        ``num_configs`` is the configurations the campaign was **composed with**, not the
+        ones that came back: a declared configuration that produced no runs is counted
+        here and named in ``missing_configs``, with ``num_missing_configs`` and a ``note``
+        saying the design is short. Without that a lost cell is indistinguishable from a
+        smaller campaign that ran perfectly, and every aggregate below is over a partial
+        design while looking complete. ``num_runs`` counts runs, so those cells add
+        nothing to it.
+
         ``num_killed`` counts runs an operator stopped by hand (``stop_job``). They are
         **not** in ``num_failed``: nobody learned anything about the system under test
         from them, so they are missing measurements rather than negative results, and a
@@ -196,14 +204,21 @@ def get_campaign_summary(campaign_id: str) -> dict:
         Empty when there is nothing worth saying. Each item carries a plain-text ``title``
         and ``detail``, so it can be reported as-is without knowing its ``kind``.
     """
+    # COUNT(run_id), not COUNT(*): run_view carries one run-less row for each cell that
+    # produced nothing, so that a declared configuration is in the record whether or not it
+    # ran. Counting rows would report those as runs and hide the very shortfall they exist
+    # to show.
     per_config = data_access.rows(campaign_id, """
         SELECT config_name,
-               COUNT(*)                                        AS num_runs,
+               COUNT(run_id)                                   AS num_runs,
                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS success,
                SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed,
                SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) AS unknown,
                SUM(CASE WHEN status = 'killed' THEN 1 ELSE 0 END) AS killed,
-               SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) AS invalid
+               SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) AS invalid,
+               SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END) AS missing,
+               SUM(CASE WHEN status = 'composition_failed' THEN 1 ELSE 0 END)
+                                                               AS composition_failed
         FROM run_view GROUP BY config_name ORDER BY config_name
     """)
     container_failures = _container_failures(campaign_id)
@@ -232,6 +247,8 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "unknown": _int(c.get("unknown")),
         **({"killed": _int(c.get("killed"))} if _int(c.get("killed")) else {}),
         **({"invalid": _int(c.get("invalid"))} if _int(c.get("invalid")) else {}),
+        **({"missing": True} if _int(c.get("missing")) else {}),
+        **({"composition_failed": True} if _int(c.get("composition_failed")) else {}),
     } for c in per_config]
 
     result: dict[str, Any] = {
@@ -255,6 +272,18 @@ def get_campaign_summary(campaign_id: str) -> dict:
     num_invalid = sum(c.get("invalid", 0) for c in configs_info)
     if num_invalid:
         result["num_invalid"] = num_invalid
+    # Named as a shortfall rather than left for the reader to notice that a count is
+    # smaller than the design: the two look identical from here, and only one of them is
+    # a campaign to re-run.
+    missing = [c["name"] for c in configs_info if c.get("missing")]
+    if missing:
+        result["num_missing_configs"] = len(missing)
+        result["missing_configs"] = missing[:20]
+        result["note"] = (
+            f"{len(missing)} of {len(configs_info)} declared configurations produced no "
+            "runs at all. They were composed with the campaign and never reached the "
+            "results tree, so every measurement here is over a partial design. "
+            "SELECT config_name FROM run_view WHERE status = 'missing' lists them.")
     if container_failures:
         result["num_container_failures"] = len(container_failures)
         result["container_failures"] = container_failures

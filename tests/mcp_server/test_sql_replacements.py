@@ -458,3 +458,54 @@ def test_campaign_summary_omits_num_killed_when_nothing_was_killed(monkeypatch):
                         lambda _rows: {})
 
     assert "num_killed" not in results.get_campaign_summary("campaign-x")
+
+
+def test_campaign_summary_reports_a_shortfall_as_a_shortfall(monkeypatch):
+    """A declared configuration that produced nothing is counted, named, and said out loud.
+
+    Before this the summary counted the configurations it found runs for, so a sweep that
+    lost cells reported the smaller number as its whole design -- 521 configurations and
+    521 runs for a 600-configuration sweep, with nothing anywhere marked missing. Every
+    aggregate underneath was then over a partial design while reading as complete, which is
+    the one failure a summary must not have: it is what a reader consults INSTEAD of
+    checking.
+    """
+    from robovast.mcp_server import data_access
+    from robovast.mcp_server.plugins import results
+
+    per_config = [
+        {"config_name": "cfg-a", "num_runs": 2, "success": 2, "failed": 0,
+         "unknown": 0, "killed": 0, "missing": 0},
+        # Declared, composed, and never seen again: one run-less row in run_view.
+        {"config_name": "cfg-b", "num_runs": 0, "success": 0, "failed": 0,
+         "unknown": 0, "killed": 0, "missing": 1},
+    ]
+    monkeypatch.setattr(data_access, "rows",
+                        lambda cid, sql: per_config if "GROUP BY config_name" in sql else [])
+    monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
+                        lambda _rows: {})
+
+    summary = results.get_campaign_summary("campaign-x")
+
+    assert summary["num_configs"] == 2, "the design, not what came back"
+    assert summary["num_runs"] == 2, "a cell that produced no run adds none"
+    assert summary["num_missing_configs"] == 1
+    assert summary["missing_configs"] == ["cfg-b"]
+    assert "note" in summary and "cfg-b" not in summary["note"]
+
+
+def test_campaign_summary_says_nothing_about_missing_when_nothing_is(monkeypatch):
+    """A complete campaign carries no shortfall keys, like every other optional field."""
+    from robovast.mcp_server import data_access
+    from robovast.mcp_server.plugins import results
+
+    monkeypatch.setattr(
+        data_access, "rows",
+        lambda cid, sql: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
+                            "failed": 0, "unknown": 0, "killed": 0, "missing": 0}]
+                          if "GROUP BY config_name" in sql else []))
+    monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
+                        lambda _rows: {})
+
+    summary = results.get_campaign_summary("campaign-x")
+    assert "num_missing_configs" not in summary and "note" not in summary
