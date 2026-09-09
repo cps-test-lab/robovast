@@ -25,10 +25,19 @@ runs the plugin's commands inside it via the Kubernetes ``pods/exec`` subresourc
 with the driver would satisfy the plugin contract's "workspace visible at the same
 absolute path on both sides" for free. It is not available: the driver runs inside
 the long-lived ``robovast-service`` pod, and a pod's container set is immutable, so
-a *campaign-specific* sidecar of it is impossible. Instead each campaign gets its
-own aux Pod, and this module **emulates
+a *campaign-specific* sidecar of it is impossible. Instead each aux container gets
+its own Pod, created the first time something asks for it, and this module **emulates
 the shared workspace** by mirroring it into the pod before every ``run()`` and
 copying the results back afterwards, at the *same absolute path*.
+
+**Created on demand, never predicted.** :class:`AuxPodSession` is entered for a span
+knowing nothing about what that span will need, and builds a pod when the factory is
+first called for a spec. Three kinds of thing ask -- a variation plugin, an
+``execution.generate`` input generator, and the simulator backend's query that resolves
+what a world is made of -- and the list is open. Deciding in advance instead, by reading
+the ``.vast``, is a second implementation of an enumeration composition already performs:
+whatever it does not cover is a campaign that fails while composing, on a container it
+declared. Asking is the only enumeration that cannot be incomplete.
 
 **How the workspace is mirrored.** Through the **object store**, the same transport a
 campaign Job, an image-build context and the container-exec lane use: the service
@@ -60,9 +69,9 @@ Consequences to know:
 * Aux compute is scheduled by Kubernetes as its own pod, so it never competes
   with the service (the control plane) for resources.
 
-Lifecycle: the pod is labeled with its campaign, owned by the service pod (so
+Lifecycle: each pod is labeled with its campaign, owned by the service pod (so
 Kubernetes garbage-collects it if the service is replaced), carries an
-``activeDeadlineSeconds`` backstop, and is deleted when the campaign ends.
+``activeDeadlineSeconds`` backstop, and is deleted when the span that created it ends.
 """
 
 import contextlib
@@ -72,6 +81,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -93,7 +103,7 @@ AUX_EXEC_LIMIT_S = 2 * 60 * 60
 #: normally ends a held pod; this is the backstop for a service that dies holding one.
 AUX_HOLD_LIMIT_S = AUX_EXEC_LIMIT_S
 
-#: Label selector identifying every aux pod (one per campaign that needs one).
+#: Label selector identifying every aux pod (one per aux container a span asked for).
 AUX_LABEL = "app=robovast-aux"
 
 #: Key prefix every mirrored aux workspace lives under, inside the deployment's bucket.
@@ -161,185 +171,35 @@ def mc_host_env(endpoint: str, access_key: str, secret_key: str) -> dict:
             f"{parts.scheme}://{creds}@{parts.netloc}{parts.path}".rstrip("/")}
 
 
-def aux_pod_name(campaign_id: str) -> str:
-    """Deterministic aux-pod name for *campaign_id*."""
+def aux_pod_name(campaign_id: str, container: str = "") -> str:
+    """Deterministic pod name for *campaign_id*'s aux container.
+
+    One pod per aux *container*, because a pod's container set is fixed when it is
+    created and nothing knows the set in advance -- see the module docstring. *container*
+    is a spec's :meth:`~robovast.common.variation.container_runner.ContainerSpec.container_name`
+    and is appended (its ``aux-`` prefix dropped, already in the name); omitted, this is
+    the campaign's base name, which is what a caller sweeping by name uses.
+
+    Deterministic so a retried span addresses the pod its predecessor left behind rather
+    than accumulating one per attempt; the collision that name causes is handled where the
+    pod is created.
+    """
     from .cluster_execution import _label_safe_campaign
-    return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
-
-
-class AuxDiscoveryError(RuntimeError):
-    """Aux-container discovery could not determine what a campaign needs.
-
-    Raised instead of silently returning an empty spec list, so a campaign that
-    requires a helper image aborts before dispatch rather than launching with no
-    aux pod. An *empty* result is only ever "this campaign declares no aux
-    container", never "we could not tell".
-    """
-
-
-def required_container_specs(config_path):
-    """Collect the distinct auxiliary ContainerSpecs a campaign needs while it composes.
-
-    Asks each declared variation **and each ``execution.generate`` input generator** (via
-    ``get_required_container``) whether it needs a helper image while it runs, and returns
-    a list of ``ContainerSpec`` deduplicated by container name. An empty list means the
-    campaign genuinely declares no aux container. Discovery never *silently* yields an
-    empty list: any failure to load the ``.vast``, resolve a variation or generator, or
-    run the discovery subprocess propagates, so a launch that needs a helper image fails
-    loudly instead of running without it.
-
-    When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
-    present), the variation names resolve only through the plugin's entry points, and
-    those must be imported to call ``get_required_container``. Importing plugin code
-    in this long-lived service is forbidden (its pinned deps — e.g. a forked
-    ``rdflib`` — would win over the service's), so discovery for that case runs in a
-    fresh subprocess (parity with ``config_generation._compose_isolated``). A pure
-    built-in ``.vast`` needs no plugin import and is resolved in-process.
-    """
-    from robovast.common.common import load_config
-    from robovast.common.config_plugins import PLUGIN_DIRNAME
-
-    vast_dir = os.path.dirname(os.path.abspath(config_path))
-    parameters = load_config(config_path)
-
-    needs_plugins = bool(parameters.get("plugins")) or \
-        os.path.isdir(os.path.join(vast_dir, PLUGIN_DIRNAME))
-    if needs_plugins:
-        return _discover_specs_subprocess(config_path)
-    return _discover_specs(config_path)
-
-
-def _discover_specs(config_path):
-    """Resolve the campaign's aux ContainerSpecs in the current process.
-
-    Prepends any declared/staged variation plugins to ``sys.path`` first, so plugin
-    variation names resolve via their entry points. Only safe to call in-process for
-    a built-in-only ``.vast`` (see :func:`required_container_specs`); otherwise it is
-    the body run inside the discovery subprocess (``aux_discovery_worker``).
-    """
-    from robovast.common.common import load_config
-    from robovast.common.config_generation import _get_variation_classes
-    from robovast.common.config_plugins import ensure_workspace_plugins
-
-    vast_dir = os.path.dirname(os.path.abspath(config_path))
-    parameters = load_config(config_path)
-
-    # Put the .vast's variation plugins on sys.path (no-op for a built-in-only .vast:
-    # no ``plugins:`` and no staged dir). A matching ``.installed`` marker makes this
-    # sys.path-only — no pip, no network.
-    ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
-
-    # Batch campaigns declare variations under top-level ``configuration`` blocks;
-    # search campaigns declare them once as ``search.variations`` (compose expands
-    # that template into configuration blocks per generation). Inspect both so the
-    # aux pod is created regardless of campaign type. Unsubstituted ``$name`` search
-    # markers in the template are harmless: get_required_container ignores values.
-    blocks = list(parameters.get("configuration", []) or [])
-    search_variations = (parameters.get("search", {}) or {}).get("variations")
-    if search_variations:
-        blocks.append({"variations": search_variations})
-
-    # A failure to resolve a variation or compute its container requirement aborts
-    # discovery (propagates): we cannot know whether the campaign needs a helper
-    # image, so we must not proceed as if it needs none.
-    specs = {}
-    for config_block in blocks:
-        classes = _get_variation_classes(config_block, vast_dir)
-        for variation_class, variation_parameters in classes:
-            spec = variation_class.get_required_container(variation_parameters)
-            if spec is not None:
-                specs.setdefault(spec.container_name(), spec)
-
-    # ``execution.generate`` asks for a helper image the same way a variation does, and for the
-    # same reason: a generator's tool is routinely absent from the process composing the campaign,
-    # which is the whole point of naming an image there. Omitting these left the caller creating no
-    # aux pod and installing no runner factory, so the campaign failed while composing -- on the
-    # very container it had declared.
-    for spec in _generator_container_specs(parameters, vast_dir):
-        specs.setdefault(spec.container_name(), spec)
-    return list(specs.values())
-
-
-def _generator_container_specs(parameters, vast_dir):
-    """ContainerSpecs the campaign's ``execution.generate`` entries declare.
-
-    Resolution mirrors ``run_input_generators``: the same entry parsing, the same registry, and
-    the same ``./path.py:Class`` file references -- so a generator that will need a container at
-    composition time is the one discovered here. A generator that names no ``image`` returns None
-    and contributes nothing, which is the common case.
-
-    Called from :func:`_discover_specs`, so it inherits that function's process: in the subprocess
-    when the ``.vast`` declares ``plugins:``, in-process otherwise. That is the same treatment a
-    ``./path.py:Class`` VARIATION already gets, and the gate is deliberate -- what may not be
-    imported into the long-lived service is a packaged plugin, whose pinned dependencies would win
-    over the service's own.
-    """
-    from robovast.common.input_generation import (load_input_generators,
-                                                  parse_generate_entry,
-                                                  resolve_input_generator)
-
-    entries = (parameters.get("execution", {}) or {}).get("generate") or []
-    if not entries:
-        return []
-    generators = load_input_generators()
-    specs = []
-    for index, entry in enumerate(entries):
-        name, params = parse_generate_entry(entry, index)
-        generator_class = resolve_input_generator(name, vast_dir, generators)
-        spec = generator_class.get_required_container(params)
-        if spec is not None:
-            specs.append(spec)
-    return specs
-
-
-def _discover_specs_subprocess(config_path):
-    """Run :func:`_discover_specs` in a fresh subprocess and rebuild the specs.
-
-    Isolates plugin imports from the long-lived service. If the worker cannot start,
-    exits non-zero, or yields no readable result, that is raised as
-    :class:`AuxDiscoveryError` — the campaign then fails loudly instead of launching
-    with no aux pod. The worker's captured traceback is included so the real plugin
-    error is visible at the failure site, not deferred to compose time.
-    """
-    import json
-    import sys
-
-    with tempfile.TemporaryDirectory(prefix="robovast_aux_discovery_") as jobdir:
-        result_path = os.path.join(jobdir, "result.json")
-        job_path = os.path.join(jobdir, "job.json")
-        with open(job_path, "w", encoding="utf-8") as f:
-            json.dump({"config_path": os.path.abspath(config_path),
-                       "result_path": result_path}, f)
-
-        cmd = [sys.executable, "-m",
-               "robovast.execution.cluster_execution.aux_discovery_worker", job_path]
-        try:
-            # nosec B603 - fixed module, config-derived job file
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        except Exception as exc:
-            raise AuxDiscoveryError(
-                f"aux-container discovery subprocess could not start: {exc}") from exc
-        if proc.returncode != 0:
-            tail = (proc.stdout + proc.stderr)[-2000:]
-            raise AuxDiscoveryError(
-                f"aux-container discovery failed (exit {proc.returncode}):\n{tail}")
-        try:
-            with open(result_path, encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise AuxDiscoveryError(
-                f"aux-container discovery produced no readable result: {exc}") from exc
-
-    from robovast.common.variation.container_runner import ContainerSpec
-    return [ContainerSpec(**spec) for spec in raw]
+    base = f"robovast-aux-{_label_safe_campaign(campaign_id)}"
+    if not container:
+        return base
+    suffix = container[len("aux-"):] if container.startswith("aux-") else container
+    return f"{base}-{suffix}" if suffix else base
 
 
 def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     """Delete aux pods (label ``app=robovast-aux``). Best-effort.
 
-    With *campaign* given, deletes only that campaign's aux pod so concurrent
-    campaigns are left untouched; otherwise deletes every aux pod. Backs
-    ``vast cluster jobs-cleanup`` (the successor to the controller-pod reap).
+    With *campaign* given, deletes only that campaign's aux pods so concurrent
+    campaigns are left untouched; otherwise deletes every aux pod. Selected by the
+    campaign LABEL rather than by name, so it catches every pod a span created whatever
+    each is called. Backs ``vast cluster jobs-cleanup`` (the successor to the
+    controller-pod reap).
     """
     from kubernetes import client
 
@@ -393,12 +253,14 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     every ``run()`` pays only the exec setup (no per-call create or image re-pull).
 
     Two spans build one manifest here, which is the point: a *campaign*'s pod (named after
-    the campaign, deleted when it ends) and a *held* one owned by the service's exec
-    manager (named after its slot, reaped on idleness). *pod_name*, *container_names* and
-    *extra_labels* are what the second needs — its name and container have to be the ones
-    the exec lane already addresses and sweeps by, and everything else about an aux pod is
-    identical. Forking a second builder for that would have put the ``mc`` init container,
-    the mountable emptyDirs and the pull secret in two places.
+    the campaign and the container it holds, deleted when the span ends) and a *held* one
+    owned by the service's exec manager (named after its slot, reaped on idleness).
+    *pod_name*, *container_names* and *extra_labels* are how each says which — a held pod's
+    name and container have to be the ones the exec lane already addresses and sweeps by —
+    and everything else about an aux pod is identical. Forking a second builder for that
+    would have put the ``mc`` init container, the mountable emptyDirs and the pull secret in
+    two places. The campaign label is set either way, so a sweep by campaign finds every
+    pod a span created whatever each is named.
 
     *container_names* maps a spec's ``container_name()`` to the name to use instead;
     unnamed specs keep their own.
@@ -536,23 +398,37 @@ def service_pod_owner_reference(core_v1, namespace):
 
 
 class AuxPodSession:
-    """Creates a campaign's aux Pod, yields a runner factory, deletes it after.
+    """Provides a span's auxiliary containers on demand, and deletes them after.
 
-    Used as a context manager by the service's per-campaign worker thread, so the
-    pod's lifetime is exactly the campaign's and the runner factory it installs is
-    scoped to that worker (see ``config_generation.set_container_runner_factory``).
-    A campaign with no aux specs creates nothing.
+    Used as a context manager by the service's per-campaign worker thread, so a pod's
+    lifetime is exactly the span's and the runner factory it installs is scoped to that
+    worker (see ``config_generation.set_container_runner_factory``).
+
+    **Nothing is created on entry.** The factory builds a pod the first time it is asked
+    for a spec, and a span that asks for none creates nothing -- so a campaign pays for a
+    helper image exactly when something reaches for one, and no caller has to state in
+    advance what a composition will want (see the module docstring).
+
+    One pod per spec, because a pod's container set is fixed when it is created and the
+    second spec is not known when the first arrives.
+
+    **Not the exec manager's hold**, which provides the same thing on demand for the preview
+    span and owns its lifetime already. Its held containers are a bounded pool
+    (:data:`~robovast.service.container_exec.QUERY_POOL_MAX`), so a concurrent preview can
+    evict a slot -- acceptable for a question that can be asked again, not for a campaign
+    that is midway through composing against the container. A campaign's pod is therefore
+    span-scoped and outside the pool. What the two must not diverge on is the pod itself:
+    both build it through :func:`build_aux_pod_manifest`, and both delete one that never
+    became ready rather than leaving it to the deadline.
     """
 
-    def __init__(self, campaign_id, specs, namespace, core_v1=None,
+    def __init__(self, campaign_id, namespace, core_v1=None,
                  ready_timeout: float = 300.0, pull_secret: str = "",
                  storage=None, bucket: str = "", s3: tuple | None = None,
                  kube_context: str | None = None, on_pending=None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
-        self.specs = list(specs or [])
         self.namespace = namespace
-        self.pod_name = aux_pod_name(campaign_id)
         self._core_v1 = core_v1
         # Only consulted when no client was handed in. It must still be the *service's*
         # context: falling back to the kubeconfig's current one puts this campaign's aux
@@ -563,7 +439,20 @@ class AuxPodSession:
         # Reported on every poll of the ready wait, so a caller with somebody watching can name
         # what the pod is stuck on rather than only what it timed out on. See `wait_pod_ready`.
         self._on_pending = on_pending
-        self._created = False
+        #: Container name -> the READY pod serving it. The memo that keeps a second command
+        #: in the same span from paying a second create and image pull, so only a pod that
+        #: can be exec'd into belongs here: a second ask after a failed create must repeat
+        #: the create rather than be handed a name that never came up.
+        self._pods: dict = {}
+        #: Every pod name this session created, ready or not -- the delete list, kept apart
+        #: from the memo for that reason. A pod whose image this cluster cannot pull exists
+        #: and holds a node's capacity while it backs off, so the span still owns its death;
+        #: leaving it to the deadline backstop is minutes of nothing waiting for it.
+        self._created: set = set()
+        # A variation and a generator compose in the same thread today, but nothing in the
+        # contract says two runners cannot be asked for at once -- and two creates of the
+        # same pod name is a 409 that would be handled as a leftover from a previous span.
+        self._lock = threading.Lock()
         # All three or none: a pod built with ``mc`` but no client to stage through (or
         # the reverse) fails at the first ``run()``, deep inside a plugin, instead of
         # here where the cause is legible.
@@ -585,53 +474,94 @@ class AuxPodSession:
         return self._core_v1
 
     def __enter__(self):
-        if not self.specs:
-            return self
+        return self
+
+    def runner_factory(self):
+        """A ``factory(spec) -> ClusterContainerRunner`` over this span's pods.
+
+        Creating the pod is part of *answering*, not of arranging: the factory blocks on
+        the pull and the ready wait the first time a spec is asked for, and returns the
+        runner when there is a container to exec into. A caller that never calls this never
+        waits for anything.
+        """
+        def factory(spec):
+            return ClusterContainerRunner(
+                spec, self._pod_for(spec), self.namespace, self._client(),
+                storage=self._storage, bucket=self._bucket,
+                owner_id=self.campaign_id, kube_context=self._kube_context)
+        return factory
+
+    def provision(self, spec):
+        """Create *spec*'s pod now, and return its name.
+
+        For a caller that already holds the spec — the scene cache builds one known image —
+        so the pull and the schedule happen where it can report them rather than inside the
+        first command. Idempotent, and the same pod the factory would have made: a caller
+        that skips this loses nothing but the timing.
+
+        This is not the prediction the module docstring warns about. The difference is who
+        knows: a caller naming the spec it is about to use, against a caller reading a
+        ``.vast`` to guess what a composition will ask for.
+        """
+        return self._pod_for(spec)
+
+    def _pod_for(self, spec):
+        """The name of the running pod holding *spec*'s container, creating it if needed."""
+        name = spec.container_name()
+        with self._lock:
+            existing = self._pods.get(name)
+            if existing:
+                return existing
+            pod_name = self._create_pod(spec, aux_pod_name(self.campaign_id, name))
+            self._pods[name] = pod_name
+            return pod_name
+
+    def _record_created(self, pod_name):
+        """Note that *pod_name* now exists, before anything asks whether it works.
+
+        Called between the create and the ready wait, so a pod that never becomes Running is
+        deleted with the span rather than left to the deadline. Under ``_lock`` already, via
+        the one caller.
+        """
+        self._created.add(pod_name)
+
+    def _create_pod(self, spec, pod_name):
+        """Create *pod_name* holding *spec*'s container and wait for it to be ready."""
         from kubernetes.client.rest import ApiException
 
         from .kube_client import wait_pod_gone, wait_pod_ready
         core = self._client()
         manifest = build_aux_pod_manifest(
-            self.campaign_id, self.specs, self.namespace,
+            self.campaign_id, [spec], self.namespace,
             owner_ref=service_pod_owner_reference(core, self.namespace),
-            pull_secret=self.pull_secret, s3=self._s3)
+            pull_secret=self.pull_secret, s3=self._s3, pod_name=pod_name)
         try:
             core.create_namespaced_pod(self.namespace, manifest)
         except ApiException as e:
             if e.status != 409:
                 raise RuntimeError(
-                    f"could not create aux pod {self.pod_name}: {e.reason}") from e
+                    f"could not create aux pod {pod_name}: {e.reason}") from e
             # A 409 is not "already exists → reuse it". The name is derived from the
             # campaign id, so the pod it collides with is this campaign's previous one —
             # usually still Terminating, and a Terminating pod never becomes Running
             # again. Adopting it means waiting out the full ready timeout for a corpse.
             # Wait for the delete to land, then create ours.
             logger.info("Aux pod %s still exists; waiting for it to go before recreating",
-                        self.pod_name)
+                        pod_name)
             with contextlib.suppress(ApiException):
-                core.delete_namespaced_pod(self.pod_name, self.namespace,
+                core.delete_namespaced_pod(pod_name, self.namespace,
                                            grace_period_seconds=0)
-            wait_pod_gone(core, self.namespace, self.pod_name,
-                          timeout_s=self._ready_timeout)
+            wait_pod_gone(core, self.namespace, pod_name, timeout_s=self._ready_timeout)
             core.create_namespaced_pod(self.namespace, manifest)
-        self._created = True
-        logger.info("Aux pod %s created (%d container(s)) for campaign %s",
-                    self.pod_name, len(self.specs), self.campaign_id)
+        self._record_created(pod_name)
+        logger.info("Aux pod %s created for %s of campaign %s",
+                    pod_name, spec.container_name(), self.campaign_id)
         # Shared with the container-exec lane so a stuck pod names its reason
         # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
         # which matters now that a spec may name the campaign's own private image.
-        wait_pod_ready(core, self.namespace, self.pod_name,
+        wait_pod_ready(core, self.namespace, pod_name,
                        timeout_s=self._ready_timeout, on_pending=self._on_pending)
-        return self
-
-    def runner_factory(self):
-        """A ``factory(spec) -> ClusterContainerRunner`` bound to this campaign's pod."""
-        def factory(spec):
-            return ClusterContainerRunner(
-                spec, self.pod_name, self.namespace, self._client(),
-                storage=self._storage, bucket=self._bucket,
-                owner_id=self.campaign_id, kube_context=self._kube_context)
-        return factory
+        return pod_name
 
     def _sweep_workspaces(self) -> None:
         """Drop anything this campaign's runners mirrored.
@@ -657,11 +587,12 @@ class AuxPodSession:
     def __exit__(self, exc_type, exc, tb):
         if not self._created:
             return False
-        try:
-            self._client().delete_namespaced_pod(self.pod_name, self.namespace)
-            logger.info("Aux pod %s deleted", self.pod_name)
-        except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
-            logger.warning("Could not delete aux pod %s: %s", self.pod_name, e)
+        for pod_name in sorted(self._created):
+            try:
+                self._client().delete_namespaced_pod(pod_name, self.namespace)
+                logger.info("Aux pod %s deleted", pod_name)
+            except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
+                logger.warning("Could not delete aux pod %s: %s", pod_name, e)
         self._sweep_workspaces()
         return False
 

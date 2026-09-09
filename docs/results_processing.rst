@@ -577,6 +577,34 @@ stopped. That is what the run view's :ref:`shutdown toggle <shutdown-toggle>` an
 success while the harness failed, or the reverse. A NULL row is a run that reached no verdict —
 killed by its deadline, say — and is left untrimmed rather than trimmed to a guess.
 
+``rosbag_attempts`` — the run recorded more than once
+"""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+A recorder that restarts mid-trial writes a second bag beside the first, because
+``ros2 bag record``'s default name carries a timestamp. **The last attempt is the run**:
+everything else in the directory exists once — one run log, one verdict, one set of videos,
+all of it the last attempt's — so converting an earlier bag would put a different attempt's
+trajectory under this run's outcome, and no table would say so. Only one attempt can be
+converted at all, because every output name is derived from the run directory.
+
+So the last attempt is converted, the earlier ones are not, and this table is the record:
+one row per attempt, with ``role`` ``converted`` or ``superseded``, and the start time each
+was dated by. It exists only for a run that recorded more than once, which is why the
+question is a query rather than a search through a postprocessing log::
+
+   SELECT config_name, run_id, bag FROM rosbag_attempts WHERE role <> 'converted'
+
+The attempts are ordered by the start time in each bag's own sidecar, and by the timestamp
+in its name only when a sidecar is missing — never by a mix of the two, since one is epoch
+and the other the recorder's local clock. An attempt with neither — a bag whose name carries
+no timestamp and whose sidecar was never written — leaves them unordered:
+nothing is converted from that directory, every row says ``unordered``, and the step's log
+names the directory to clear. Picking one anyway would be data that looks right.
+
+One run's ambiguity is never the campaign's: every other run converts, and a bag the last
+attempt never finalized is reported as unreadable in the usual way (see
+:ref:`its rosbag is unreadable <results-unreadable-rosbag>`).
+
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
 
@@ -621,6 +649,8 @@ and ``get_campaign_summary``, its own tally in the web UI's Details panel, and
 ``failure_message`` on a killed run names the surface that stopped it and the reason its
 operator gave (``manually stopped via webui: stuck in nav recovery``), which is the only
 record of *why* — so it is worth giving one.
+
+.. _results-unreadable-rosbag:
 
 Its rosbag is unreadable, and that is not a failure
 """""""""""""""""""""""""""""""""""""""""""""""""""

@@ -624,3 +624,76 @@ def test_a_campaigns_own_scenario_flags_survive_the_probe(monkeypatch):
     main = probe["spec"]["template"]["spec"]["containers"][0]
     value = next(e["value"] for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
     assert TICK_LOG_FLAG in value and "-t" in value
+
+
+def _stepped_with_baked_default(world="worlds/default.yaml"):
+    """A stepped execution block as composition leaves it.
+
+    ``_backend_env`` is what ``apply_backend`` bakes in: the backend's contribution computed
+    ONCE, from the campaign's own ``sim:`` block. Present here because it is the thing a
+    per-configuration axis has to win over -- without it in the fixture, a test cannot tell
+    a delivered cell world from an absent one.
+    """
+    return {"mode": "base", "_backend_env": {"ROQSIM_WORLD": f"/config/{world}"},
+            **_STEPPED_SHAPE}
+
+
+def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatch):
+    """The delivery check, not the composition one.
+
+    Under the stepped shape there is no simulation sidecar: the simulator runs in the main
+    container, and the backend hands it the cell's world through the environment rather than
+    argv. So the main container's env is the only place a per-configuration ``sim:`` axis can
+    arrive, and this asserts it arrives there -- distinct per cell, and beating the
+    campaign-level default baked in at composition.
+
+    Everything upstream of this was already correct and tested: the resolved override
+    document, the per-job overlay, the recorded ``sim.config``. That is exactly why the gap
+    survived -- a sweep whose cells all ran the campaign's default world reported success at
+    every layer a caller can read.
+    """
+    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}},
+               {"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}}]
+    r = _runner(monkeypatch, execution=_stepped_with_baked_default(), configs=configs)
+
+    worlds = {}
+    for job in r._build_jobs():
+        manifest = r.create_job_manifest(job, total_jobs=2)
+        spec = manifest["spec"]["template"]["spec"]
+        # The premise of the shape: no separate simulator container to deliver it to.
+        assert [c["name"] for c in spec["containers"]][1:] == []
+        env = _env_dict(_main_of(manifest))
+        worlds[job.items[0].config_name] = env["ROQSIM_WORLD"]
+
+    assert worlds == {"depot": "/config/worlds/depot.yaml",
+                      "warehouse": "/config/worlds/warehouse.yaml"}
+
+
+def test_the_stepped_worlds_env_is_stated_once_per_name(monkeypatch):
+    """One entry per name in the rendered manifest.
+
+    The campaign-level contribution names ``ROQSIM_WORLD`` too, with the campaign's default.
+    Appending the cell's value would leave two entries and let ordering decide, which is
+    fragile and unreadable in `kubectl get job -o yaml` -- and this lane has emitted
+    duplicate keys before (see ``scenario_env``).
+    """
+    configs = [{"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}}]
+    r = _runner(monkeypatch, execution=_stepped_with_baked_default(), configs=configs)
+    job = r._build_jobs()[0]
+    env = _main_of(r.create_job_manifest(job, total_jobs=1))["env"]
+    assert [e["name"] for e in env].count("ROQSIM_WORLD") == 1
+
+
+def test_a_ros_shape_leaves_the_main_containers_world_alone(monkeypatch):
+    """The other half of the condition: with a simulation sidecar, the world belongs there.
+
+    The sidecar path already delivered correctly, so this pins that the fix did not reach
+    across and start writing a simulator's world into the scenario container as well.
+    """
+    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}}]
+    execution = {"_backend_env": {"ROQSIM_WORLD": "/config/worlds/default.yaml"}, **_ROS_SHAPE}
+    r = _runner(monkeypatch, execution=execution, configs=configs)
+    job = r._build_jobs()[0]
+    manifest = r.create_job_manifest(job, total_jobs=1)
+    main = _env_dict(_main_of(manifest))
+    assert main["ROQSIM_WORLD"] == "/config/worlds/default.yaml"

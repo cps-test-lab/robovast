@@ -220,6 +220,25 @@ def _run_output_dir_env(job) -> tuple:
     return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
 
 
+def _merge_env(entries: list, values: dict) -> None:
+    """Set each of *values* on a container's ``env`` list, replacing any entry of that name.
+
+    Not an append: a name already on the list would then appear twice, and which one the
+    kubelet applies is left to ordering rather than stated. Replacing in place gives the
+    manifest one entry per name, which is also what a reader of `kubectl get job -o yaml`
+    needs in order to tell what the container will actually see.
+    """
+    by_name = {e.get('name'): e for e in entries if isinstance(e, dict)}
+    for name, val in values.items():
+        name = str(name)
+        if name in by_name:
+            by_name[name]['value'] = str(val)
+        else:
+            entry = {'name': name, 'value': str(val)}
+            by_name[name] = entry
+            entries.append(entry)
+
+
 def probe_tag(node_id: str) -> str:
     """The file/tag stem for a node's calibration probe.
 
@@ -1043,6 +1062,16 @@ class BatchJobRunner:
             # same helper the local lane and container-exec use.
             for name, val in scenario_env(self.campaign_data).items():
                 containers[0]['env'].append({'name': name, 'value': str(val)})
+
+            # With no simulation sidecar the simulator runs in THIS container (the stepped
+            # shape), so the job's own resolved simulator environment belongs here. It goes
+            # after `scenario_env` deliberately: that carries the backend's contribution
+            # computed once for the campaign, from the campaign's own `sim:` block, and a
+            # per-configuration `sim:` axis is exactly what has to win over it. Without this
+            # the axis is composed, staged and reported correctly and then never reaches the
+            # simulator, so every cell of the sweep runs the campaign's default world.
+            if not any(sc.name == SIMULATION_CONTAINER for sc in self.plan.sidecars):
+                _merge_env(containers[0]['env'], (sim_overlay or {}).get('env') or {})
 
             for k, v in extra_main_env:
                 containers[0]['env'].append({'name': k, 'value': v})
