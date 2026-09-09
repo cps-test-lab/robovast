@@ -256,7 +256,7 @@ def gen_msg_values(msg, prefix=""):
         yield prefix, msg
 
 
-def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
+def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=(), *, on_conflict=None):
     """Find all rosbag directories using parallel directory scanning (IO-bound).
 
     Uses a BFS with a ThreadPoolExecutor so that large result trees (e.g. 50k
@@ -284,11 +284,20 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
     Returns:
         Sorted list of found rosbag directory paths.
 
+    Args (continued):
+        on_conflict: called once with ``{parent: [bag names]}`` when any directory holds
+            more than one matching bag. Those bags are left OUT of the result -- handlers
+            derive their output path from the bag's parent, so two bags there would write
+            the same CSV, and which one survived would be decided by a worker pool.
+            Ambiguity stays the user's to resolve; what changed is that it is now one
+            run's problem. With no handler this raises instead, which is the older
+            behaviour and still the right default for a caller that has nowhere to report:
+            a scan that quietly returned fewer bags than the tree holds would be a silent
+            loss of data.
+
     Raises:
-        ValueError: if one directory holds more than one matching bag. Handlers derive
-            their output path from the bag's parent, so two bags there would write the
-            same CSV -- and since bags are processed by a worker pool, which one survived
-            would be nondeterministic. Ambiguity is the user's to resolve.
+        ValueError: if a directory holds more than one matching bag and no *on_conflict*
+            was given.
     """
     parts = bag_dir_name.split("/")
     prune_top = parts[0]
@@ -300,7 +309,7 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
     skip = set(skip_names or ())
 
     def _scan(path: str):
-        """Return (bag_paths, subdirs_to_recurse) for one directory."""
+        """Return (bag_paths, subdirs_to_recurse, conflicts) for one directory."""
         bags: List[str] = []
         subdirs: List[str] = []
         try:
@@ -326,21 +335,23 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
                         subdirs.append(entry.path)
         except OSError:
             pass
-        # Two bags sharing a parent directory would share an output CSV (see Raises).
+        # Two bags sharing a parent directory would share an output CSV. Reported rather
+        # than raised: this runs inside a worker pool, so raising here propagates out of
+        # `fut.result()` and ends the WHOLE walk -- one run left with a second bag by a
+        # restart mid-record then skipped extraction for every other run in the campaign.
+        # The conflicting parent's bags are dropped from the result and named to the
+        # caller; every unambiguous run still converts.
         by_parent: Dict[str, List[str]] = {}
         for bag in bags:
             by_parent.setdefault(os.path.dirname(bag), []).append(bag)
+        conflicts: Dict[str, List[str]] = {}
+        keep: List[str] = []
         for parent, siblings in by_parent.items():
             if len(siblings) > 1:
-                raise ValueError(
-                    f"Ambiguous rosbag layout: {parent} holds {len(siblings)} "
-                    f"'{bag_dir_name}' bags "
-                    f"({', '.join(sorted(os.path.basename(b) for b in siblings))}). "
-                    f"Postprocessing writes one CSV per bag parent, so these would "
-                    f"overwrite each other. Keep one bag per run directory, or point "
-                    f"--bag-dir at the one you want."
-                )
-        return bags, subdirs
+                conflicts[parent] = sorted(os.path.basename(b) for b in siblings)
+            else:
+                keep.extend(siblings)
+        return keep, subdirs, conflicts
 
     # Threads, not processes, and the work is a directory walk -- so this is deliberately a
     # multiple of the CPU budget rather than equal to it: a scan blocks on the store far more
@@ -348,14 +359,30 @@ def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
     # reads than a store answers well.
     n_workers = min(32, available_cpus() * 4)
     pending = [directory]
+    conflicts: Dict[str, List[str]] = {}
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         while pending:
             futures = {executor.submit(_scan, p): p for p in pending}
             pending = []
             for fut in as_completed(futures):
-                bags, subdirs = fut.result()
+                bags, subdirs, found_conflicts = fut.result()
                 found.extend(bags)
+                conflicts.update(found_conflicts)
                 pending.extend(subdirs)
+
+    if conflicts:
+        if on_conflict is None:
+            first = sorted(conflicts)[0]
+            raise ValueError(
+                f"Ambiguous rosbag layout: {first} holds {len(conflicts[first])} "
+                f"'{bag_dir_name}' bags ({', '.join(conflicts[first])})"
+                + (f", and {len(conflicts) - 1} other directory/-ies do too"
+                   if len(conflicts) > 1 else "")
+                + ". Postprocessing writes one CSV per bag parent, so these would "
+                "overwrite each other. Keep one bag per run directory, or point "
+                "--bag-dir at the one you want."
+            )
+        on_conflict(conflicts)
 
     return sorted(found)
 #: The manifest every video producer writes beside its file, one row per video. Read by the

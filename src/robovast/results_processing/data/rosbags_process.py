@@ -1370,9 +1370,20 @@ def main() -> int:
 
     print(f"Scanning for rosbags ({args.bag_dir})...", end="", flush=True)
     _t_scan = time.time()
+    # A run left holding two bags -- a container restarted mid-record -- is that run's
+    # problem, not the campaign's. Named here so the skip is in this step's log rather
+    # than inferred later from a missing table.
+    skipped_conflicts: dict = {}
     rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir,
-                                skip_names=args.skip_dir)
+                                skip_names=args.skip_dir,
+                                on_conflict=skipped_conflicts.update)
     print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
+    for parent in sorted(skipped_conflicts):
+        print(f"Warning: skipping {parent}: it holds {len(skipped_conflicts[parent])} "
+              f"'{args.bag_dir}' bags ({', '.join(skipped_conflicts[parent])}) and "
+              f"postprocessing writes one CSV per bag parent, so they would overwrite "
+              f"each other. Every other run is converted. Keep one bag per run directory "
+              f"to convert this one too.")
     if not rosbag_paths:
         return 0
 
