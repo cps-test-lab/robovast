@@ -521,6 +521,22 @@ def test_staging_is_cleaned_up_and_survives_a_held_container():
     assert not os.path.exists(staging), "the held container's /config leaked"
 
 
+def test_a_result_names_the_image_it_ran_even_without_a_held_container():
+    # The usual image check is a one-shot, and a project resolved from a stale checkout
+    # produces output indistinguishable from a current one. The identity is the only thing
+    # that separates them, so it cannot depend on --keep-alive.
+    spec, _data, _limit, _src = _staged("minimal", "ls")
+    spec.image_identity = "build:exp@abc123"
+    try:
+        result = ce.result_from((0, "", "", False), spec=spec, limit_s=300,
+                                limit_source=ce.LIMIT_SOURCE_COMMAND, duration_s=0.1,
+                                container=None)
+        assert result.container.image == "build:exp@abc123"
+        assert result.container.kept is False
+    finally:
+        spec.close()
+
+
 def test_a_one_shot_cleans_up_its_own_staging():
     spec, _data, _limit, _src = _staged("minimal", "ls")
     staging = spec._staging_dir
