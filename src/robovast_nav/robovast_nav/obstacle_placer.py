@@ -28,11 +28,43 @@ import numpy as np
 from .data_model import Orientation, Pose, Position, StaticObject
 from .map_loader import load_map
 
+#: Shapes :func:`footprint_radius` knows. A shape absent from here has no radius, so a caller
+#: gets ``None`` and falls back to the robot-derived floor rather than a made-up number.
+_FOOTPRINT_RADIUS = {
+    # Half the diagonal of the footprint rectangle: obstacles are placed at a RANDOM yaw, so the
+    # circle that contains the box at every yaw is the only separation an unrotated half-extent
+    # would not cover.
+    'box': lambda size: math.hypot(size[0] / 2.0, size[1] / 2.0),
+}
+
+
+def footprint_radius(shape: str, size) -> float | None:
+    """The radius of the disc that contains this obstacle's footprint at any yaw.
+
+    Two obstacles whose centres are closer than the sum of their radii INTERSECT. That is the
+    separation an obstacle population needs, and it is a fact about the obstacles -- not about the
+    robot that has to drive between them, which is what the placer used to test against.
+
+    ``None`` when the campaign declared no extents, or a shape this does not know: the placer then
+    keeps its robot-derived floor, because a placement rule invented from no geometry would be a
+    worse answer than the one that was already there.
+    """
+    if not size or len(size) < 2:
+        return None
+    fn = _FOOTPRINT_RADIUS.get(shape)
+    return None if fn is None else float(fn(size))
+
 logger = logging.getLogger(__name__)
 
 
 class ObstaclePlacer:
     """Class for placing obstacles near navigation paths."""
+
+    #: Gap left between two obstacles' footprint circles, beyond merely not intersecting. Touching
+    #: is not a placement anyone means, and it leaves the run's geometry on the wrong side of every
+    #: rounding: a lidar reads two obstacles in contact as one, and a planner's inflation closes the
+    #: seam. Small on purpose -- it is a tie-break, not a clearance rule.
+    OBSTACLE_MARGIN_M = 0.05
 
     def place_obstacles(
         self,
@@ -45,6 +77,8 @@ class ObstaclePlacer:
         waypoints: List[Pose] = None,
         min_arc_length: float = 0.0,
         entity_prefix: str = "obstacle",
+        obstacle_radius: float = None,
+        keepout: List[tuple] = None,
     ) -> List[tuple]:
         """Place obstacles near a navigation path as StaticObject instances.
 
@@ -62,6 +96,14 @@ class ObstaclePlacer:
                 placing more than one population needs distinct stems: the names travel to a
                 simulator that COMPILES the placement, where two populations both called
                 ``obstacle_0`` are a duplicate-name model-compilation failure.
+            obstacle_radius: Footprint radius of what is being placed
+                (:func:`footprint_radius`), so two obstacles are separated by their own extents
+                rather than by a number derived from the robot. ``None`` keeps the robot-derived
+                floor, which is all a campaign declaring no ``size`` supports.
+            keepout: ``(Position, radius_or_None)`` per obstacle ALREADY placed for this
+                configuration -- including by an earlier variation. Distinct populations are
+                placed by separate calls near the SAME path, so without this each one is blind to
+                the others and can put its obstacle inside one of theirs.
 
         Returns:
             List of (StaticObject, path_point) tuples where path_point is the
@@ -115,14 +157,18 @@ class ObstaclePlacer:
             obstacle_pos = self._generate_obstacle_position(
                 path_point, segment["start"], segment["end"], max_distance
             )
-            # Check if obstacle is too close to waypoints
-            existing_positions = [obj.spawn_pose.position for obj, _ in obstacle_objects]
+            # Check if obstacle is too close to waypoints, to what this call has already placed,
+            # or to what an earlier variation placed near the same path.
+            existing_circles = list(keepout or []) + [
+                (obj.spawn_pose.position, obstacle_radius) for obj, _ in obstacle_objects
+            ]
             if self._is_valid_obstacle_position(
                 obstacle_pos,
                 waypoint_positions,
                 waypoint_clearance,
-                existing_positions,
+                existing_circles,
                 robot_diameter,
+                obstacle_radius,
             ):
                 # Generate random yaw angle (rotation) for the obstacle
                 yaw = random.uniform(
@@ -149,6 +195,8 @@ class ObstaclePlacer:
         robot_diameter: float = 0.354,
         waypoints: List[Pose] = None,
         entity_prefix: str = "obstacle",
+        obstacle_radius: float = None,
+        keepout: List[tuple] = None,
     ) -> List[StaticObject]:
         """Place obstacles randomly on the map as StaticObject instances.
 
@@ -159,6 +207,10 @@ class ObstaclePlacer:
             xacro_arguments: Optional xacro arguments string for the model
             robot_diameter: Diameter of the robot in meters (default: 0.354m for TurtleBot4)
             waypoints: List of Pose objects to avoid placing obstacles near (e.g., start/goal poses)
+            obstacle_radius: Footprint radius of what is being placed, so two obstacles are
+                separated by their own extents (:meth:`_is_valid_obstacle_position`)
+            keepout: ``(Position, radius_or_None)`` per obstacle already placed for this
+                configuration, including by an earlier variation
 
         Returns:
             List of StaticObject instances for obstacles
@@ -208,8 +260,10 @@ class ObstaclePlacer:
                 obstacle_pos,
                 waypoint_positions,
                 waypoint_clearance,
-                [obj.spawn_pose.position for obj in obstacle_objects],
+                list(keepout or [])
+                + [(obj.spawn_pose.position, obstacle_radius) for obj in obstacle_objects],
                 robot_diameter,
+                obstacle_radius,
             ):
                 # Generate random yaw angle (rotation) for the obstacle
                 yaw = np.random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
@@ -362,17 +416,34 @@ class ObstaclePlacer:
         obstacle_pos: Position,
         waypoints: List[Position],
         waypoint_clearance: float,
-        existing_obstacles: List[Position],
+        existing_obstacles: List[tuple],
         robot_diameter: float,
+        obstacle_radius: float = None,
     ) -> bool:
-        """Check if an obstacle position is valid (not too close to waypoints or other obstacles).
+        """Is this a position the obstacle can go, given the waypoints and what is already placed?
+
+        Two separations, answering two different questions.
+
+        *waypoint_clearance* keeps an obstacle off the start and the goal -- a trial that begins or
+        ends inside one measures nothing.
+
+        The obstacle-to-obstacle separation keeps two obstacles from INTERSECTING, which is a fact
+        about their extents: ``r_a + r_b`` is where they touch. ``robot_diameter * 1.5`` remains
+        the floor, so a population the robot cannot pass between is still refused and a campaign
+        that declared no ``size`` behaves exactly as before -- but it is a floor, not the rule.
+        Using it AS the rule is how a 0.5 m box population came to be placed 0.1 m apart: the
+        number is derived from the robot, and says nothing about how big the obstacles are.
 
         Args:
             obstacle_pos: Position to validate
             waypoints: List of waypoint positions to avoid
             waypoint_clearance: Minimum distance from waypoints
-            existing_obstacles: List of already placed obstacles
+            existing_obstacles: ``(Position, radius_or_None)`` per obstacle already placed --
+                including ones placed by an earlier variation, which is why this takes circles
+                rather than reading them back off this call's own results
             robot_diameter: Diameter of the robot
+            obstacle_radius: Footprint radius of the obstacle being placed, or ``None`` when the
+                campaign declared no extents
 
         Returns:
             True if position is valid, False otherwise
@@ -383,11 +454,12 @@ class ObstaclePlacer:
                 return False
 
         # Check distance from existing obstacles (prevent overlap)
-        min_obstacle_distance = (
-            robot_diameter * 1.5
-        )  # 1.5x robot diameter between obstacles
-        for existing in existing_obstacles:
-            if self._distance(obstacle_pos, existing) < min_obstacle_distance:
+        floor = robot_diameter * 1.5  # the robot still has to get between them
+        for existing, existing_radius in existing_obstacles:
+            required = floor
+            if obstacle_radius is not None and existing_radius is not None:
+                required = max(floor, obstacle_radius + existing_radius + self.OBSTACLE_MARGIN_M)
+            if self._distance(obstacle_pos, existing) < required:
                 return False
 
         return True

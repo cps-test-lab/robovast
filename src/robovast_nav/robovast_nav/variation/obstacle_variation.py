@@ -28,7 +28,7 @@ from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation.base_variation import (DestinationConfig, ProvContribution,
                                                       VariationInfeasibleError)
 
-from ..obstacle_placer import ObstaclePlacer
+from ..obstacle_placer import ObstaclePlacer, footprint_radius
 from ..path_generator import PathGenerator
 from .. import config_view
 from .nav_base_variation import NavVariation
@@ -256,11 +256,13 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> l
     """The placement as *geometry*: what a list-valued placement plugin compiles.
 
     *motion* is written per instance when the placement is not what the simulator would assume.
-    roqsim's placement plugins default to ``motion: physics`` -- a body the solver owns -- which
-    is right for an obstacle a trial teleports in and wrong for scenery it only drives around: a
+    roqsim's placement plugins default to ``motion: physics`` -- a body the solver owns from the
+    next step -- and an obstacle's pose is the campaign's variable, not the solver's output: a
     pushable obstacle can be nudged off the placement the campaign chose, and the run then
-    measures a layout nobody selected. Left ``None`` the instance says nothing and takes the
-    default, because restating a default is noise that goes stale when the default moves.
+    measures a layout nobody selected. So a population states ``static`` (welded scenery) or
+    ``driven`` (placeable and immovable, for one a trial teleports in) rather than taking it.
+    Left ``None`` the instance says nothing and takes the default, because restating a default is
+    noise that goes stale when the default moves.
 
     Otherwise deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
     model reference and spawner arguments -- one simulator's spawning vocabulary -- while what
@@ -457,12 +459,20 @@ class ObstacleVariation(NavVariation):
         # than read back off them: a spawn object holds a model reference and spawner
         # arguments, which is a different question from what shape exists at that pose.
         obstacle_geometry = []  # List[(shape, size)]
+        # Every obstacle already standing in this configuration, as (Position, footprint radius) --
+        # including the ones an EARLIER variation placed, which arrive on `_placed_obstacles`. Each
+        # variation places its own population near the same path with its own placer, so without
+        # this each is blind to the others: a dynamic obstacle then lands inside a static one, both
+        # populations report the layout the campaign asked for, and only the simulator disagrees.
+        keepout = list(config.get('_placed_obstacles') or [])
         for i, obstacle_config in enumerate(obstacle_configs):
             effective_amount = obstacle_config.resolve_amount(path_length)
             if effective_amount > 0:
                 max_attempts = 10
                 attempt = 0
                 navigable_config_found = False
+                last_failure = 'unplaced'
+                placed_count = 0
 
                 while (
                     attempt < max_attempts
@@ -481,6 +491,9 @@ class ObstacleVariation(NavVariation):
                             robot_diameter=self.parameters.robot_diameter,
                             waypoints=waypoints,
                             min_arc_length=self._min_arc_length_for_config(i),
+                            obstacle_radius=footprint_radius(
+                                obstacle_config.shape, obstacle_config.size),
+                            keepout=keepout,
                         )
                     except Exception as e:
                         self.progress_update(f"Error placing obstacles: {e}")
@@ -515,11 +528,20 @@ class ObstacleVariation(NavVariation):
                                     obstacle_geometry.extend(
                                         [(obstacle_config.shape, obstacle_config.size)]
                                         * len(placed_obstacles))
+                                    # Only once ACCEPTED: a rejected attempt is re-placed, and a
+                                    # keepout carrying the positions it was rejected at would
+                                    # shrink the free space with obstacles that do not exist.
+                                    radius = footprint_radius(
+                                        obstacle_config.shape, obstacle_config.size)
+                                    keepout.extend(
+                                        (obj.spawn_pose.position, radius)
+                                        for obj in placed_obstacles)
                                     navigable_config_found = True
                                     self.progress_update(
                                         f"Successfully placed {obstacle_config.amount} obstacles for config"
                                     )
                                 else:
+                                    last_failure = 'blocked'
                                     self.progress_update(
                                         f"Attempt {attempt}/{max_attempts}: obstacles block navigation, retrying..."
                                     )
@@ -531,6 +553,12 @@ class ObstacleVariation(NavVariation):
                         else:
                             raise FileNotFoundError(f"Map file not found: {map_file_path}")
                     else:
+                        # Which of the two failures this was, kept for the diagnostic below: the
+                        # placer ran out of positions that clear the waypoints and everything
+                        # already standing. Naming it matters because the fix is a different key
+                        # from the one a blocked path asks for.
+                        last_failure = 'unplaced'
+                        placed_count = len(placed_obstacles)
                         self.progress_update(
                             f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)
                                                                              }/{effective_amount} obstacles, retrying..."
@@ -538,17 +566,34 @@ class ObstacleVariation(NavVariation):
 
                 # If we couldn't find a navigable configuration after all attempts
                 if not navigable_config_found:
-                    self.progress_update(
-                        f"Warning: Could not place {effective_amount} obstacles while maintaining navigation"
-                    )
                     # `path_length` above is only resolved when an `amount_per_m` config needs
                     # it; `_path_length` is set by a preceding path variation (e.g.
                     # PathVariationRandom) whenever one ran, regardless of which obstacle_config
                     # style is in use, so prefer it here for an accurate diagnostic.
                     reported_path_length = config.get('_path_length', path_length)
+                    # The two failures ask for DIFFERENT keys, so they are reported apart. Saying
+                    # "while maintaining navigation" for a placement that never found room sends
+                    # the reader to widen a corridor that was never the constraint -- and a
+                    # placement that has to clear the obstacles already standing runs out of room
+                    # long before the path runs out of width.
+                    if last_failure == 'blocked':
+                        detail = (
+                            f"every placement blocked the path (placed {effective_amount}, but no "
+                            f"route from start to goal survived). Fewer obstacles, or a wider "
+                            f"'max_distance' so they sit further off the path")
+                    else:
+                        radius = footprint_radius(obstacle_config.shape, obstacle_config.size)
+                        extents = "" if radius is None else f" of footprint radius {radius:.2f} m"
+                        detail = (
+                            f"only {placed_count} of {effective_amount} could be placed{extents} "
+                            f"clear of the {len(keepout)} obstacle(s) already standing and of the "
+                            f"start/goal. A larger 'max_distance' gives the placer more room off "
+                            f"the path; fewer or smaller obstacles need less of it")
+                    self.progress_update(f"Warning: {detail}")
                     raise VariationInfeasibleError(
-                        f"Could not place {effective_amount} obstacles while maintaining navigation "
-                        f"after {max_attempts} attempts (path_length={reported_path_length:.2f}, "
+                        f"Could not place {effective_amount} obstacles after {max_attempts} "
+                        f"attempts: {detail} "
+                        f"(path_length={reported_path_length:.2f}, "
                         f"max_distance={obstacle_config.max_distance})"
                     )
 
@@ -568,7 +613,12 @@ class ObstacleVariation(NavVariation):
                 obstacle_objects, obstacle_geometry, motion=self.SIM_INSTANCES_MOTION)
         result_config = self.update_slots(
             config, values,
+            # `_placed_obstacles` travels the same private channel as `_path`, and for the same
+            # reason: it is what a LATER variation in the chain has to know and cannot recompute.
+            # A population's own slot value states poses in the trial's vocabulary; this states
+            # occupied circles, which is the question a placer asks.
             other_values={'_map_file': map_file_path, '_path': path,
+                          '_placed_obstacles': keepout,
                           '_objects_parameter_name': objects_parameter_name})
 
         resulting_configs.append(result_config)

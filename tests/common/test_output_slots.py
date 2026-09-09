@@ -807,15 +807,20 @@ def test_the_trigger_point_states_the_height_the_obstacle_stands_at():
     assert resting_z(None) == 0.0
 
 
-def test_the_triggered_obstacle_keeps_the_movable_default():
-    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported.
-    SetEntityState refuses an entity with no free joint, so this is the one placement that must
-    NOT be welded -- while a plain placed obstacle is scenery and must be."""
+def test_the_triggered_obstacle_is_placeable_but_not_owned_by_the_solver():
+    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported --
+    so it cannot be welded, which has no pose to write.
+
+    `driven` and not `physics`: both take a pose, and only one KEEPS it. A free body is the
+    solver's from the next step, so the robot that reaches the obstacle pushes it off the
+    placement the search selected, and a placement overlapping other geometry is answered by
+    ejecting it. The obstacle's pose is the campaign's variable; neither of those is a result.
+    """
     from robovast_nav.variation.obstacle_variation import ObstacleVariation
     from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
         ObstacleVariationWithDistanceTrigger)
 
-    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION is None
+    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION == "driven"
     assert ObstacleVariation.SIM_INSTANCES_MOTION == "static"
 
 

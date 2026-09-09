@@ -163,12 +163,16 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
 
-    #: None: this obstacle is REVEALED partway through the run -- parked out of the
-    #: way and teleported in when the robot comes within the trigger distance -- so
-    #: it is the one placement that must keep the simulator's movable default.
-    #: SetEntityState refuses an entity with no free joint, so welding it here would
-    #: fail the trial on its first call.
-    SIM_INSTANCES_MOTION = None
+    #: ``driven``: this obstacle is REVEALED partway through the run -- parked out of the way and
+    #: teleported in when the robot comes within the trigger distance -- so it needs a pose the
+    #: trial can write, which welded scenery has not. ``driven`` is that and nothing more: the
+    #: body has no degrees of freedom, so the solver never owns its pose.
+    #:
+    #: Not ``physics``, whose free body IS owned by the solver from the next step. The pose is the
+    #: campaign's variable here, and a solver-owned obstacle stops holding it in two ways: the
+    #: robot that reaches it pushes it off the placement the search selected, and a placement that
+    #: overlaps other geometry is answered by ejecting it at speed. Those look like results.
+    SIM_INSTANCES_MOTION = "driven"
 
     @classmethod
     def config_view_data(cls, config, base_path):
