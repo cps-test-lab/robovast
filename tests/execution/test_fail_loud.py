@@ -6,6 +6,8 @@ Each case pins a spot that could silently degrade (swallow an error and proceed
 with a quietly-wrong configuration) and asserts it fails loudly instead.
 """
 
+import json
+import os
 from unittest import mock
 
 import pytest
@@ -93,6 +95,48 @@ def test_an_unresolvable_backend_is_still_swallowed():
     with mock.patch("robovast.common.simulators.resolve_backend",
                     side_effect=RuntimeError("no such backend")):
         assert _backend_run_files("/tmp", parameters) == []
+
+
+def test_the_worlds_the_simulator_named_become_campaign_inputs(tmp_path):
+    """A world's parent has to end up in `run_files`, or the query bought nothing.
+
+    The simulator answers in the paths it was asked in -- the campaign tree is exposed at
+    `/config` and the command names the world there -- so an answer read as this host's paths
+    matches nothing and the campaign stages neither the world nor its parent. What it opens
+    then depends on a `run_files` glob happening to cover them.
+    """
+    from robovast.common.config_generation import _run_input_files_query
+    from robovast.common.simulators import ContainerQuery
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    (tmp_path / "world").mkdir()
+
+    class _Runner:
+        workspace = str(tmp_path / "ws")
+
+        def run(self, _command, progress_update_callback=None):
+            # What `roqsim scenes inputs` prints: absolute, in the container, one JSON line.
+            # The mesh is the packaged case -- it arrives with the image and must not be copied.
+            progress_update_callback(json.dumps({
+                "world": "/config/world/child.yaml",
+                "packaged": False,
+                "inputs": ["/config/world/child.yaml", "/config/world/parent.yaml",
+                           "/opt/roqsim/scenes/empty_room/floor.stl"]}))
+
+        def expose(self, _host_path, _container_path):
+            pass
+
+        def close(self):
+            pass
+
+    query = ContainerQuery(ContainerSpec(image="family:robovast-roqsim"),
+                           ["roqsim", "scenes", "inputs", "/config/world/child.yaml"])
+    with mock.patch("robovast.common.config_generation._make_container_runner",
+                    return_value=_Runner()):
+        declared = _run_input_files_query(query, str(tmp_path))
+
+    assert declared == [os.path.join("world", "child.yaml"),
+                        os.path.join("world", "parent.yaml")], declared
 
 
 def test_a_configuration_s_world_is_enumerated_or_the_composition_fails(tmp_path):

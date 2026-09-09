@@ -294,6 +294,37 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
     assert response.aux_containers == ["aux-builder"]
 
 
+def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
+    """Validation composes too, so it is a place a runner has to be arranged.
+
+    It counts a sweep's cells by composing the file, which reaches whatever that composition
+    asks for a container -- so on a lane with no ``docker`` to fall back on, a project whose
+    world only the simulator can enumerate was reported invalid for a property of where the
+    check ran. It shares preview's tag: the two are the same authoring loop over the same
+    file, and one warm container serves both.
+    """
+    from robovast.service.local_transport import LocalTransport, _preview_tag
+
+    entered = []
+
+    @contextlib.contextmanager
+    def _record(self, tag, project, *, hold=False):
+        entered.append((tag, hold))
+        yield
+
+    monkeypatch.setattr(LocalTransport, "_aux_runner_context", _record)
+    monkeypatch.setattr(LocalTransport, "_resolve_project",
+                        lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
+    monkeypatch.setattr("robovast.common.config_validation.validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+
+    LocalTransport.validate_project(LocalTransport.__new__(LocalTransport), "ws-1", "x.vast",
+                                    check_world=False)
+
+    assert entered == [(_preview_tag("ws-1", "x.vast"), True)]
+
+
 def test_the_preview_tag_is_stable_per_project_and_name_safe():
     """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
     from robovast.service.local_transport import _preview_tag

@@ -4577,10 +4577,22 @@ class LocalTransport(RobovastInterface):
 
     def validate_project(self, workspace_id: str, path: str = "",
                          check_world: bool = True) -> ValidationReport:
+        """See the interface.
+
+        Composed inside the lane's aux-runner context, and *held*, exactly as
+        :meth:`preview_configurations` is: validation composes the file to count its cells, so
+        it reaches whatever that composition asks for a container -- a variation's helper
+        image, a generator's, the simulator's query for what a world is made of. A lane that
+        composes without arranging one refuses the campaign for a property of where it ran.
+        Held rather than per-call because validating is an authoring loop, and it shares the
+        tag with preview so the two reuse one warm container.
+        """
         from robovast.common.config_validation import validate_project_file
         try:
             project = self._resolve_project(workspace_id, path)
-            result = validate_project_file(project.config_path)
+            with self._aux_runner_context(_preview_tag(workspace_id, path), project,
+                                          hold=True):
+                result = validate_project_file(project.config_path)
         except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
             return ValidationReport(
                 valid=False, world_checked=False if check_world else None,
