@@ -1231,13 +1231,16 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     scenario, detached); what does bring-up look like (add ``keep_alive``, ``show_gui``).
 
     **The source you name decides which image, and they answer different questions.** A
-    ``workspace_id`` runs what that project would build *now* — and never builds implicitly, so
+    ``workspace_id`` runs what that project builds *now, from the serve host's sources* — a
+    stale checkout, a stale image — and never builds implicitly, so
     ``build_experiment_image`` first and wait for it. A ``campaign_id`` runs the exact image that
     campaign recorded, so it answers "what did that run actually see?" even after the workspace
-    has moved on. A refusal over an unbuilt image hands back the ``next_step`` for its state.
+    has moved on. A refusal over an unbuilt image hands back its ``next_step``.
+    ``container.image`` names the ``build:<tag>@<hash>`` that ran: read it before taking a
+    result here as "the new image is in".
 
     **At most one container exists at a time**, so ``reused: false`` means a fresh one and
-    anything the previous was running is gone; ``stop_container`` ends it. A started scenario logs
+    whatever the previous ran is gone; ``stop_container`` ends it. A started scenario logs
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
     ``command="tail -200 <log_path>"``.
 
@@ -1252,16 +1255,15 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             Asking for one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
         show_gui: Show the simulator's window on the serve host's display — **local ``vast
-            serve`` on local Docker only** (see ``start_campaign`` for whose screen). Changing
-            it between calls **replaces** the container, so ``reused`` is false and whatever
-            the old one was running is gone.
+            serve`` on local Docker only**. Changing it between calls **replaces** the
+            container.
         tail: Lines kept per stream.
 
     Returns:
         ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
         log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` — ``command``
-        (fixed cap), ``execution.timeout``, or ``default`` (the project set none) — makes a
-        ``timed_out`` result name its own remedy.
+        (fixed cap), ``execution.timeout`` or ``default`` — names a ``timed_out``
+        result's remedy.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415

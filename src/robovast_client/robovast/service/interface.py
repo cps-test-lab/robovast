@@ -293,6 +293,8 @@ class ExecContainerState(BaseModel):
     #: anything running in it, is gone. Load-bearing: an agent that assumed its stack
     #: survived would misread every later observation.
     reused: bool = False
+    #: The ``build:<tag>@<hash>`` this call ran, held container or not — what "which image
+    #: answered?" is read from, and the only image form that may cross the API boundary.
     image: str = ""
     config: str = ""                 # staged config name; "" for a bare-image container
     #: Seconds until the idle reap. Counts only while no process this tool started is

@@ -842,7 +842,10 @@ def result_from(exec_out: tuple[int, str, str, bool], *, spec: ExecSpec,
         exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out,
         duration_s=round(duration_s, 3), limit_s=limit_s, limit_source=limit_source,
         log_path=spec.log_path,
-        container=container or ExecContainerState())
+        # A one-shot holds nothing, but it still ran an image, and "which one?" is the
+        # question a check of the image is asking. Reporting it only for a held container
+        # would answer it in the one case the caller did not need it.
+        container=container or ExecContainerState(image=spec.image_identity))
 
 
 __all__ = [
