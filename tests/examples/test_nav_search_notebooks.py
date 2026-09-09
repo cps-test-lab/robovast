@@ -50,11 +50,36 @@ CREATE TABLE unit (id INTEGER PRIMARY KEY, batch_id INTEGER, paramset_id TEXT,
 """
 
 
-def _notebooks():
+def _declared_notebook(vast):
+    """The campaign-scope notebook a ``.vast`` declares, or None.
+
+    Resolved from the file rather than guessed from the stem, because a notebook is declared
+    by path and two campaigns may legitimately share one -- the six-factor pair does, since
+    the view depends on the search space and not on which sampler explored it. Matching stems
+    would forbid that, and would also miss a declared path that points at nothing.
+    """
+    doc = yaml.safe_load(vast.read_text()) or {}
+    books = (((doc.get("visualization") or {}).get("results") or {})
+             .get("explorer") or {}).get("notebooks") or []
+    for entry in books:
+        for scopes in (entry or {}).values():
+            path = (scopes or {}).get("campaign")
+            if path:
+                return EXAMPLE / path
+    return None
+
+
+def _search_vasts():
+    """Every campaign in the example that runs a SEARCH; the batch grid has no search_space."""
     if not EXAMPLE.is_dir():
         return []
-    return sorted(v for v in EXAMPLE.glob("nav_search_*.vast")
-                  if (EXAMPLE / "analysis" / f"{v.stem}.ipynb").exists())
+    return sorted(v for v in EXAMPLE.glob("*.vast")
+                  if (yaml.safe_load(v.read_text()) or {}).get("search"))
+
+
+def _notebooks():
+    return [v for v in _search_vasts()
+            if (_declared_notebook(v) or pathlib.Path("/nonexistent")).exists()]
 
 
 def _sample(spec, rnd):
@@ -111,8 +136,12 @@ ANSWERS = {
     "nav_search_cmaes": ["how FEW evaluations found it", "best crossing found"],
     "nav_search_qd": ["how many KINDS of trouble exist", "distinct failure modes found"],
     "nav_search_boundary": ["WHERE it starts failing", "cells within +-0.05 of the boundary"],
-    "nav_search_adaptive_reps": ["the same answer for FEWER runs", "repetitions per cell"],
+    "nav_search_adaptive_reps": ["what one budget buys", "repetitions per cell"],
     "nav_search_minimax": ["which TUNING survives the worst", "tunings evaluated"],
+    # The six-factor pair shares one view, so both campaigns are checked against the same
+    # phrases -- what differs between them is the sampler, not the question.
+    "nav_search_random_6d": ["what six factors cost this sampler", "runs to reach"],
+    "nav_search_tpe_6d": ["what six factors cost this sampler", "runs to reach"],
 }
 
 
@@ -122,7 +151,7 @@ def test_the_notebook_executes_and_draws_something(vast, tmp_path):
     assert space, f"{vast.name} declares no search_space; the fixture would have no columns"
     _campaign_db(tmp_path / "campaign.db", space)
 
-    nb = nbformat.read(EXAMPLE / "analysis" / f"{vast.stem}.ipynb", as_version=4)
+    nb = nbformat.read(_declared_notebook(vast), as_version=4)
     for cell in nb.cells:
         if cell.cell_type == "code":
             # Exactly the substitution the service performs for the node being viewed.
@@ -154,12 +183,25 @@ def test_the_notebook_executes_and_draws_something(vast, tmp_path):
         f"extractor no longer produces under that name")
 
 
-def test_every_search_vast_has_a_notebook():
+def test_every_campaign_declares_a_notebook_that_exists():
     """A campaign without a notebook has no analysis, and this is where that is noticed
     rather than when someone goes looking for it after the campaign is spent. Each notebook
-    is a standalone artifact -- there is no generator to regenerate a missing one from."""
-    vasts = {v.stem for v in EXAMPLE.glob("nav_search_*.vast")}
-    books = {n.stem for n in (EXAMPLE / "analysis").glob("nav_search_*.ipynb")}
-    assert vasts and vasts == books, f"missing notebooks: {sorted(vasts - books)}"
-    assert vasts == set(ANSWERS), (
-        f"ANSWERS is out of step with the campaigns: {sorted(vasts ^ set(ANSWERS))}")
+    is a standalone artifact -- there is no generator to regenerate a missing one from.
+
+    Checked against what each file DECLARES, over every campaign in the example rather than
+    the ``nav_search_*`` ones alone. Matching a notebook to a ``.vast`` by stem tested a
+    convention instead of the invariant: it missed the batch grid entirely, whose name does
+    not carry the prefix and which for a long time had no view at all, and it could not tell
+    a declared path pointing at nothing from a missing file."""
+    vasts = sorted(EXAMPLE.glob("*.vast"))
+    assert vasts, "no campaigns found in the example"
+    missing = [v.name for v in vasts if _declared_notebook(v) is None]
+    assert not missing, f"campaigns declaring no campaign-scope notebook: {missing}"
+    dangling = [f"{v.name} -> {_declared_notebook(v)}"
+                for v in vasts if not _declared_notebook(v).exists()]
+    assert not dangling, f"declared notebooks that do not exist: {dangling}"
+    # ANSWERS covers the SEARCH campaigns, which are the ones executed above; the batch grid
+    # has no search_space for the fixture to build from and is checked for its view only.
+    searched = {v.stem for v in _search_vasts()}
+    assert searched == set(ANSWERS), (
+        f"ANSWERS is out of step with the campaigns: {sorted(searched ^ set(ANSWERS))}")
