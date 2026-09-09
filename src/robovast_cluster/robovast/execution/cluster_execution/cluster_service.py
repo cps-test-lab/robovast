@@ -93,6 +93,30 @@ _IMAGE_WAIT_REASONS = ("ContainerCreating", "PodInitializing", "ErrImagePull", "
                       "ImageInspectError", "ErrImageNeverPull", "RegistryUnavailable")
 
 
+def _aux_pending_logger(tag):
+    """Say what a composition's aux pod is waiting on, while it is still waiting.
+
+    An on-demand pod pays its schedule and its image pull inside the first command that asks
+    for one, so a campaign can sit for minutes in the middle of composing with nothing said.
+    The scene build reports that to a caller watching a build; a campaign has no such caller,
+    and its worker thread's log is the channel — which is where the reason belongs anyway,
+    since it outlives the run.
+
+    Only a *change* is logged: ``wait_pod_ready`` polls every two seconds, and a repeated
+    line is how a log stops being read.
+    """
+    last = []
+
+    def report(reason: str) -> None:
+        current = reason or "pending"
+        if last and last[0] == current:
+            return
+        last[:] = [current]
+        logger.info("Aux pod for %s is not ready yet: %s", tag, current)
+
+    return report
+
+
 def _pod_wait_reporter(on_wait):
     """Turn a scene build's ``on_wait`` into an :class:`AuxPodSession` pending callback.
 
@@ -1087,6 +1111,7 @@ class ClusterService(LocalTransport):
         with AuxPodSession(tag, self.namespace, core_v1=self._k8s(),
                            kube_context=self.kube_context,
                            pull_secret=self._registry_pull_secret(),
+                           on_pending=_aux_pending_logger(tag),
                            **self._aux_store_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
             try:
@@ -1118,19 +1143,25 @@ class ClusterService(LocalTransport):
         from .kube_exec_lane import HELD_CONTAINER
         store = self._aux_store_kwargs()
         slots = {}
+        # For the reason ``AuxPodSession`` takes one: nothing in the contract says two
+        # runners cannot be asked for at once, and two holds of one identity is a second
+        # pod started over the first.
+        lock = threading.Lock()
 
         def hold(spec):
             name = spec.container_name()
-            if name not in slots:
-                # The image is what makes the pod worth reusing, and the project is what
-                # keeps two of them apart; the pod holds nothing else that could differ.
-                identity = ("aux", tag, name, spec.image)
-                held = ExecSpec(image=spec.image, command="",
-                                config_dir=tempfile.mkdtemp(prefix="robovast_aux_hold_"),
-                                env=dict(spec.env or {}), config_name=str(tag),
-                                image_identity=spec.image, aux_spec=spec)
-                slots[name] = self._exec_manager.hold(held, identity, AUX_HOLD_LIMIT_S)
-            return slots[name]
+            with lock:
+                if name not in slots:
+                    # The image is what makes the pod worth reusing, and the project is
+                    # what keeps two of them apart; the pod holds nothing else that could
+                    # differ.
+                    identity = ("aux", tag, name, spec.image)
+                    held = ExecSpec(image=spec.image, command="",
+                                    config_dir=tempfile.mkdtemp(prefix="robovast_aux_hold_"),
+                                    env=dict(spec.env or {}), config_name=str(tag),
+                                    image_identity=spec.image, aux_spec=spec)
+                    slots[name] = self._exec_manager.hold(held, identity, AUX_HOLD_LIMIT_S)
+                return slots[name]
 
         try:
             def factory(spec):

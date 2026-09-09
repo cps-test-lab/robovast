@@ -49,6 +49,52 @@ def test_an_unanswerable_input_files_query_is_not_swallowed_into_an_empty_list()
             _backend_run_files("/tmp", parameters)
 
 
+def test_a_query_that_could_not_be_asked_at_all_is_not_swallowed_either():
+    """Not having a runner is one way of failing to ask; it stopped being the likely one.
+
+    On the cluster lane a runner factory is now installed unconditionally, so
+    ``AuxContainerUnavailable`` cannot be raised there at all -- what happens instead is that
+    the factory builds the aux pod and the pod does not come up, or the query runs and prints
+    nothing a caller can read. Those must propagate for exactly the reason the missing runner
+    does: the difference between "this world is one file" and "nobody could ask" is invisible
+    until the run opens a parent that never travelled.
+    """
+    from robovast.common.config_generation import _backend_run_files
+    from robovast.common.simulators import ContainerQuery
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    query = ContainerQuery(ContainerSpec(image="family:robovast-roqsim"), ["enumerate"])
+    parameters = {"execution": {"containers": {"simulation": {"backend": "stub"}}}}
+
+    class _Backend:
+        CONFIG_CLASS = None
+
+        @staticmethod
+        def input_files(_cfg, _execution, _vast_dir):
+            return query
+
+    with mock.patch("robovast.common.simulators.resolve_backend", return_value=_Backend()), \
+            mock.patch("robovast.common.config_generation._backend_cfg", return_value=object()), \
+            mock.patch("robovast.common.config_generation._run_input_files_query",
+                       side_effect=RuntimeError("aux pod never became ready")):
+        with pytest.raises(RuntimeError, match="never became ready"):
+            _backend_run_files("/tmp", parameters)
+
+
+def test_an_unresolvable_backend_is_still_swallowed():
+    """The other half of the same line, so the fix above cannot quietly widen.
+
+    A campaign that never mentions a simulator must not fail composition because a backend
+    it does not use cannot be imported; validation reports that where it can be acted on.
+    """
+    from robovast.common.config_generation import _backend_run_files
+
+    parameters = {"execution": {"containers": {"simulation": {"backend": "stub"}}}}
+    with mock.patch("robovast.common.simulators.resolve_backend",
+                    side_effect=RuntimeError("no such backend")):
+        assert _backend_run_files("/tmp", parameters) == []
+
+
 def test_a_configuration_s_world_is_enumerated_or_the_composition_fails(tmp_path):
     """The same contract per configuration, and there without the `sim:` channel either.
 

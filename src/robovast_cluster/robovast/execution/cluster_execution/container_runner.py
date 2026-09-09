@@ -411,6 +411,15 @@ class AuxPodSession:
 
     One pod per spec, because a pod's container set is fixed when it is created and the
     second spec is not known when the first arrives.
+
+    **Not the exec manager's hold**, which provides the same thing on demand for the preview
+    span and owns its lifetime already. Its held containers are a bounded pool
+    (:data:`~robovast.service.container_exec.QUERY_POOL_MAX`), so a concurrent preview can
+    evict a slot -- acceptable for a question that can be asked again, not for a campaign
+    that is midway through composing against the container. A campaign's pod is therefore
+    span-scoped and outside the pool. What the two must not diverge on is the pod itself:
+    both build it through :func:`build_aux_pod_manifest`, and both delete one that never
+    became ready rather than leaving it to the deadline.
     """
 
     def __init__(self, campaign_id, namespace, core_v1=None,
@@ -430,10 +439,16 @@ class AuxPodSession:
         # Reported on every poll of the ready wait, so a caller with somebody watching can name
         # what the pod is stuck on rather than only what it timed out on. See `wait_pod_ready`.
         self._on_pending = on_pending
-        #: Container name -> the pod created for it. The record of what has to be deleted,
-        #: and the memo that keeps a second command in the same span from paying a second
-        #: create and image pull.
+        #: Container name -> the READY pod serving it. The memo that keeps a second command
+        #: in the same span from paying a second create and image pull, so only a pod that
+        #: can be exec'd into belongs here: a second ask after a failed create must repeat
+        #: the create rather than be handed a name that never came up.
         self._pods: dict = {}
+        #: Every pod name this session created, ready or not -- the delete list, kept apart
+        #: from the memo for that reason. A pod whose image this cluster cannot pull exists
+        #: and holds a node's capacity while it backs off, so the span still owns its death;
+        #: leaving it to the deadline backstop is minutes of nothing waiting for it.
+        self._created: set = set()
         # A variation and a generator compose in the same thread today, but nothing in the
         # contract says two runners cannot be asked for at once -- and two creates of the
         # same pod name is a 409 that would be handled as a leftover from a previous span.
@@ -501,6 +516,15 @@ class AuxPodSession:
             self._pods[name] = pod_name
             return pod_name
 
+    def _record_created(self, pod_name):
+        """Note that *pod_name* now exists, before anything asks whether it works.
+
+        Called between the create and the ready wait, so a pod that never becomes Running is
+        deleted with the span rather than left to the deadline. Under ``_lock`` already, via
+        the one caller.
+        """
+        self._created.add(pod_name)
+
     def _create_pod(self, spec, pod_name):
         """Create *pod_name* holding *spec*'s container and wait for it to be ready."""
         from kubernetes.client.rest import ApiException
@@ -529,6 +553,7 @@ class AuxPodSession:
                                            grace_period_seconds=0)
             wait_pod_gone(core, self.namespace, pod_name, timeout_s=self._ready_timeout)
             core.create_namespaced_pod(self.namespace, manifest)
+        self._record_created(pod_name)
         logger.info("Aux pod %s created for %s of campaign %s",
                     pod_name, spec.container_name(), self.campaign_id)
         # Shared with the container-exec lane so a stuck pod names its reason
@@ -560,9 +585,9 @@ class AuxPodSession:
                         removed, self.campaign_id)
 
     def __exit__(self, exc_type, exc, tb):
-        if not self._pods:
+        if not self._created:
             return False
-        for pod_name in self._pods.values():
+        for pod_name in sorted(self._created):
             try:
                 self._client().delete_namespaced_pod(pod_name, self.namespace)
                 logger.info("Aux pod %s deleted", pod_name)

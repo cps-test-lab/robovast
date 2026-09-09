@@ -257,7 +257,9 @@ def test_the_session_sweeps_what_a_crashed_runner_left(monkeypatch):
     store = _FakeStore()
     session = AuxPodSession("c-2026-08-06-000000", "ns", core_v1=object(),
                             storage=store, bucket="b", s3=_S3)
-    session._pods = {"aux-img": aux_pod_name("c-2026-08-06-000000", "aux-img")}
+    pod = aux_pod_name("c-2026-08-06-000000", "aux-img")
+    session._created = {pod}
+    session._pods = {"aux-img": pod}
     monkeypatch.setattr(session, "_client",
                         lambda: type("C", (), {
                             "delete_namespaced_pod": lambda *a, **k: None})())

@@ -150,6 +150,56 @@ def test_every_pod_it_created_is_deleted_on_the_way_out(kube):
     assert deleted == created
 
 
+def test_a_pod_that_never_came_up_is_still_deleted(kube, monkeypatch):
+    """On-demand moved the ready wait inside the span, and the delete has to follow it.
+
+    An image this cluster cannot pull leaves a pod backing off on a node for the whole ready
+    timeout. Recording it only once it is *ready* means the span ends with nothing to delete,
+    and the only thing left to reap it is the deadline baked into the pod -- minutes of a
+    node's capacity held by a pod nothing is waiting for.
+    """
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.wait_pod_ready",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ImagePullBackOff")))
+
+    spec = ContainerSpec(image="ghcr.io/example/unpullable:1")
+    with pytest.raises(RuntimeError, match="ImagePullBackOff"):
+        with _session(kube) as session:
+            session.runner_factory()(spec)
+
+    created = {name for kind, name in kube.events if kind == "create"}
+    deleted = {name for kind, name in kube.events if kind == "delete"}
+    assert created and deleted == created, kube.events
+
+
+def test_a_failed_create_is_not_memoised_as_a_working_pod(kube, monkeypatch):
+    """The delete list and the memo are different questions about the same pod.
+
+    A composition that carries on past one failure -- a sweep resolving the next
+    configuration's world -- must ask again and get a fresh create, not the name of the pod
+    that never came up handed back without a wait.
+    """
+    fail = [True]
+
+    def flaky(*_a, **_k):
+        if fail[0]:
+            fail[0] = False
+            raise RuntimeError("ImagePullBackOff")
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.wait_pod_ready", flaky)
+
+    spec = ContainerSpec(image="ghcr.io/example/slow:1")
+    with _session(kube) as session:
+        with pytest.raises(RuntimeError):
+            session.runner_factory()(spec)
+        runner = session.runner_factory()(spec)
+        try:
+            assert len([e for e in kube.events if e[0] == "create"]) == 2, kube.events
+        finally:
+            runner.close()
+
+
 def test_a_caller_holding_the_spec_may_create_it_up_front(kube):
     """``provision`` is not the prediction: a scene build knows the one image it compiles.
 
