@@ -410,7 +410,12 @@ def _build_vast_config(vast_config, campaign_ns):
 
             logical_scen.setdefault("variations", []).append(var_config[_ID])
             variations.append(var_config)
-            configs.append(logical_scen)
+        # Once per configuration, and outside the loop above: a LogicalScenario exists
+        # because the `.vast` declares the configuration, not because it varies
+        # something. A configuration that varies nothing is still named by the `.vast`
+        # collection's `hadMember` and by its cells' `wasDerivedFrom`, so it needs a node
+        # for those edges to reach.
+        configs.append(logical_scen)
 
     return configs, variations
 
@@ -653,8 +658,13 @@ def generate_prov_metadata(
             "specializationOf": {_ID: abstract_scenario[_ID]},
             "atLocation": campaign_ns[config_path+"_config/scenario.config"],
             "generatedAtTime": config_md.get("created_at"),
-            "wasDerivedFrom": config_md.get("derived_from"),
         }
+        # The authored `.vast` configuration this cell was expanded from. `derived_from`
+        # names it; the IRI is the one `_build_vast_config` gives that LogicalScenario, so
+        # naming it here joins the two nodes instead of adding a dangling literal.
+        derived_from = config_md.get("derived_from")
+        if derived_from:
+            scenario_node["wasDerivedFrom"] = campaign_ns[derived_from]
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
             _TYPE: [PROV["Location"]]

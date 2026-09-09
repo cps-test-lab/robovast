@@ -989,7 +989,7 @@ automatically generated after postprocessing completes.  It aggregates
 structural and domain-specific metadata about the entire campaign into a
 single file.
 
-The file is produced by a three-phase pipeline:
+The file is produced by a four-phase pipeline:
 
 1. **Generic metadata** — collected by ``MetadataGenerator``
    (``robovast.common.metadata``).  This includes configurations, test
@@ -1010,6 +1010,12 @@ The file is produced by a three-phase pipeline:
    the ``robovast.metadata_processing`` entry-point group and configured
    in the ``.vast`` file (see below).
 
+4. **Derivation** — each configuration entry gets a ``derived_from`` field
+   naming the ``.vast`` configuration it was expanded from, which is also the
+   ``prov:wasDerivedFrom`` edge from the cell to that configuration in
+   ``metadata.prov.json``.  A configuration that records no parent carries no
+   such field.
+
 Example structure of ``metadata.yaml``:
 
 .. code-block:: yaml
@@ -1021,6 +1027,7 @@ Example structure of ``metadata.yaml``:
          initial_population: 100
        config_files: []
        created_at: '2026-03-04T16:15:03.212496'
+       derived_from: config
        variations:
          - name: FloorplanGeneration
            started_at: '2026-03-04T16:14:55.123456+00:00'

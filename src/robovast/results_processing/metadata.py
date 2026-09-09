@@ -23,9 +23,9 @@ This module provides:
 - ``MetadataProcessor`` — abstract base class for user-defined metadata
   processing plugins registered via the ``robovast.metadata_processing``
   entry-point group.
-- ``generate_campaign_metadata`` — orchestrates the three-phase metadata
-  pipeline (generic → variation hooks → user-defined processors) and writes
-  ``metadata.yaml`` into each campaign directory.
+- ``generate_campaign_metadata`` — orchestrates the four-phase metadata
+  pipeline (generic → variation hooks → user-defined processors → derivation)
+  and writes ``metadata.yaml`` into each campaign directory.
 """
 
 import logging
@@ -46,6 +46,13 @@ from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 
 logger = logging.getLogger(__name__)
+
+#: Internal (``_``-prefixed) configuration fields a later phase still consumes, and so
+#: the only ones that outlive phase 1. Each is read and replaced by a public field there:
+#: ``_variations`` becomes ``variations`` and drives the metadata hooks,
+#: ``_config_name`` becomes ``derived_from``. A field left out of this set is gone before
+#: the phase that wants it runs, which is silent -- the public field is simply empty.
+_INTERNAL_FIELDS_LATER_PHASES_READ = ("_variations", "_config_name")
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +162,12 @@ class MetadataGenerator:
                     config_yaml_content = yaml.safe_load(f) or {}
                 config_entry.update(config_yaml_content)
 
-        # Strip internal fields (keys starting with "_"), preserving
-        # _variations for the metadata hooks phase.
+        # Strip internal fields (keys starting with "_"), keeping the ones a later
+        # phase reads.
         for config_entry in metadata["configurations"]:
             keys_to_remove = [
                 k for k in config_entry
-                if k.startswith("_") and k != "_variations"
+                if k.startswith("_") and k not in _INTERNAL_FIELDS_LATER_PHASES_READ
             ]
             for k in keys_to_remove:
                 config_entry.pop(k)
@@ -431,8 +438,8 @@ def generate_campaign_metadata(
                 metadata, campaign_dir, metadata_processing_commands, metadata_plugins
             )
 
-            # Phase 4: Add explicit derivation from scenario family
-            _apply_derivation_metadata(metadata, campaign_dir)
+            # Phase 4: Add explicit derivation from the authored .vast configuration
+            _apply_derivation_metadata(metadata)
 
             # Write metadata.yaml
             output_path = campaign_dir / "metadata.yaml"
@@ -587,15 +594,17 @@ def _get_metadata_processing_commands(
     data_config = load_config(vast_path, subsection="results_processing", allow_missing=True)
     return data_config.get("metadata_processing", [])
 
-def _apply_derivation_metadata(
-        metadata: dict,
-        campaign_dir: Path,
-) -> None:
-    """Call variation-plugin metadata hooks and merge results."""
+def _apply_derivation_metadata(metadata: dict) -> None:
+    """Record which authored ``.vast`` configuration each cell was expanded from.
+
+    Read and consume ``_config_name``, expose as public ``derived_from``. A cell that
+    records no parent gets no key rather than an empty one, so a reader can tell "not
+    generated from a ``.vast`` configuration" from "generated from nothing".
+    """
     for config_entry in metadata.get("configurations", []):
-        # Read and consume _config_name, expose as public "derived_from"
-        derivation = config_entry.pop("_config_name", [])
-        config_entry["derived_from"] = derivation
+        derivation = config_entry.pop("_config_name", None)
+        if derivation:
+            config_entry["derived_from"] = derivation
 
 def _apply_variation_metadata(
     metadata: dict,
