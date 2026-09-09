@@ -376,7 +376,6 @@ campaigns against each other is `analysis/compare.py`, above.
   nothing: `SELECT status, count(*) FROM unit GROUP BY status`. Re-running postprocessing
   afterwards recovers the per-run metrics, but **not the search** -- the proposals were made
   blind and cannot be un-made.
-
 - **`rosbags_to_csv` writes `rosbag2_<topic>.csv`**, not `<topic>.csv`.
 - **The ground-truth arrival radius is not nav2's `xy_goal_tolerance`.** nav2 declares
   success against its estimated pose at the instant it stops; the metric measures ground
