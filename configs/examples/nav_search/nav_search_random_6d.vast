@@ -1,0 +1,193 @@
+version: 3
+metadata:
+  name: nav_search_random_6d
+  title: Uniform random over six factors (the control arm)
+  description: |
+    Uniform draws over the two environment factors. It assumes nothing and covers
+    everything badly -- which is exactly the point: it is the reference every other
+    strategy here has to beat, and the number it reports (what fraction of the space
+    fails, with an interval) is the one the others are read against.
+  keywords: [robotics, navigation, ROS2, roqsim, nav2, search, coverage]
+
+search:
+  strategy: random
+  search_space:
+  # SIX dimensions, against the two the campaigns beside this one search. That is the ONLY
+  # difference from them -- same world, same scenario, same extractor, same objective, same
+  # repetitions and the same runs: budget -- so a difference in the result is attributable to
+  # the dimension count and to nothing else.
+  #
+  # Two of the two-dimensional campaigns are the control: at 2 factors, uniform random found
+  # a deeper worst crossing than TPE did, for fewer runs. The explanation on offer is that
+  # ~60 uniform samples very nearly saturate a smooth 2-D square, leaving a surrogate model
+  # nothing to exploit. That explanation predicts the advantage returns once the space is
+  # too large to saturate, and this file is what tests the prediction rather than asserting it.
+    gap_width:        {type: float, low: 0.4,  high: 1.6}
+    walker_dwell:     {type: float, low: 0.0,  high: 8.0}
+    # The walker's speed, not just its phase: how fast it crosses decides how long the robot
+    # has to react, which the phase alone does not say.
+    walker_speed:     {type: float, low: 0.4,  high: 1.6}
+    # SENSING. The world declares this knob and leaves it fixed; a campaign that means to
+    # search it says so. Degraded ranging is what makes the unmapped barrier hard to see in
+    # time, so it belongs with the geometry rather than beside it.
+    lidar_noise:      {type: float, low: 0.0,  high: 0.12}
+    # THE STACK, on the sut: channel. Two tuning knobs against four environment factors, so
+    # this is a mixed environment-and-configuration space rather than a pure world sweep.
+    inflation_radius: {type: float, low: 0.20, high: 0.80}
+    max_speed:        {type: float, low: 0.10, high: 0.50}
+  variations:
+  - variations/doorway.py:DoorwayVariation:
+      sim: {instances: components.barrier.instances}
+      gap_width: $gap_width
+  - ParameterVariationList:
+      sim: components.pedestrian.dwell
+      values: [$walker_dwell]
+  - ParameterVariationList:
+      sim: components.pedestrian.speed
+      values: [$walker_speed]
+  - ParameterVariationList:
+      sim: components.robot.lidar.range_stddev
+      values: [$lidar_noise]
+  # Both costmaps inflate by the same figure -- one factor, two destinations, one value.
+  # ParameterVariationList pairs destinations with values POSITIONALLY and does not broadcast,
+  # so the marker is repeated once per destination; a single scalar against two destinations
+  # is refused.
+  - ParameterVariationList:
+      sut:
+      - nav2.global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius
+      - nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius
+      values: [[$inflation_radius, $inflation_radius]]
+  # nav2 takes a velocity triple; the search varies its linear component and the rest stays
+  # what nav2_params.yaml declares.
+  - ParameterVariationList:
+      sut: nav2.velocity_smoother.ros__parameters.max_velocity
+      values: [[$max_speed, 0.0, 2.0]]
+  # ARMS THE sut: REWRITE, and the campaign does not work without it. Staging gives each
+  # configuration its own rewritten nav2_params.yaml and drops the original from run_files, so
+  # exactly one copy exists; what connects the trial to that copy is a scenario parameter whose
+  # value is the source's declared path. Left at its .osc default, nothing is rewritten and
+  # every run launches a params file that is no longer there -- burning its full init_nav2
+  # timeout waiting for a localizer that never activates.
+  - ParameterVariationList:
+      scenario: params_file
+      values: ['files/nav2_params.yaml']
+  postprocessing:
+  # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
+  # each batch is scored, while results_processing runs once the campaign is over. Without
+  # it the extractor reads a poses.csv that does not exist yet and refuses the batch.
+  #
+  # Written exactly as results_processing below, because it is now dispatched the same way:
+  # the commands that need the campaign's own image go to an in-cluster conversion Job and
+  # the rest run in the controller. Before that, everything ran in the controller and the
+  # converters failed there, so the extractor refused every batch.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - search/nav_metrics.py:NavMetrics
+  extract:
+    plugin: search/nav_extract.py:NavExtract
+    params: {aggregate: worst, timeout: 120.0}
+  objectives:
+  - {name: robustness, direction: minimize}
+  per_batch: 8
+  # Bounded by RUNS, not batches: that is what makes this and nav_search_halton a fair
+  # contest. Two strategies given the same number of batches are not given the same
+  # amount of simulator, once repetitions stop being constant.
+  budget:
+  # 240 and 8 repetitions, matching nav_search_tpe_6d.vast exactly rather than the 150/3 this
+  # file's two-dimensional original uses. That original is a COVERAGE campaign, sized to
+  # estimate a fraction from many cheap cells; this one is the control arm of a sampler
+  # contest, and a control that spent its budget differently would answer a different question.
+  - runs: 240
+  seed: 1
+
+visualization:
+  results:
+    explorer:
+      notebooks:
+      # One campaign view per strategy: four cells, one figure, and headline numbers
+      # computed from the campaign rather than written into the prose -- so a notebook
+      # cannot claim a finding its own data does not support.
+      - Analysis:
+          campaign: analysis/nav_search_6d.ipynb
+
+execution:
+  containers:
+    # roqsim, from the deployment's project. Nothing here names an image: which registry it
+    # comes from is ROBOVAST_PROJECT's business, and naming one pins the example to a site.
+    simulation:
+      backend: roqsim
+      config: world/empty_room.yaml
+      resources: {cpu: 2.0, cpu_limit: 4, memory: 640Mi}
+    # The system under test, kept vanilla. No `system_packages`: the TB4 description this
+    # needs is already in the image, and declaring it anyway is not free -- any package key
+    # makes RoboVAST build a derived image, so it costs an apt cycle per campaign to install
+    # what is there.
+    sut:
+      image: family:robovast
+      resources: {cpu: 3, memory: 640Mi}
+      # What the `sut:` channel addresses. Declaring the file is what lets a destination be
+      # checked against it before the campaign spends anything -- a misspelled key is refused
+      # here rather than discovered by a run that launched with defaults.
+      config_files:
+        nav2: files/nav2_params.yaml
+    scenario:
+      resources: {cpu: 0.85, cpu_limit: 2, memory: 512Mi}
+  # Measured per node rather than declared: the same trial costs ~1.6x more CPU on the
+  # slowest machine of a mixed cluster than on the fastest, so one declared figure is right on
+  # none of them. `resources` above then states where measuring STARTS -- what the probe and
+  # every not-yet-measured node run at -- and the ceiling a measurement may not exceed, so it
+  # has to sit ABOVE demand rather than at it: a container capped under what it wants throttles
+  # against the cap, its probe is refused as having measured the ceiling instead of the demand,
+  # and no node is calibrated at all. simulation is 2.0 for exactly that reason; probes measure
+  # it between 0.5 and 1.1 cores depending on the node.
+  sizing: calibrated
+  mode: ros2
+  # 3, deliberately, where the adversarial campaigns use 8. This campaign estimates a
+  # FRACTION OVER CELLS, and the precision of a fraction comes from the number of cells, not
+  # from how well each one is pinned down -- a cell's own error averages out across the
+  # sample, where for a search that must rank cells it does not. Same runs, more cells.
+  runs: 8
+  # Declared, unlike every other example in this repo. Without it `stalled` is null, no
+  # verdict about a wedged run is possible, and `vast campaign wait` cannot exit on one.
+  # The trial bounds itself at 120 s; this is the outer backstop for a run that wedges
+  # before its own timeout arms.
+  #
+  # 600 and not 300 in a SEARCH: this is a no-progress deadline, and in a search loop a
+  # batch is followed by an in-cluster bag conversion before anything is scored. Progress
+  # legitimately pauses for the length of that Job, and at 300 the stall verdict fired
+  # while it was working -- reporting a wedge that was not one. The batch-mode grid keeps
+  # 300, because its conversion runs after the campaign rather than inside it.
+  timeout: 600
+  scenario_file: scenario_roqsim.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also sweeps
+  # __pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbs it.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+results_processing:
+  # nav2's own operating-rate metric, graded per run into the `run_health` table.
+  # Declared rather than discovered: a health check that ran everywhere would grade
+  # campaigns it knows nothing about -- this one finds no misses in a non-nav2 stack and
+  # would write "ok" for every run of it, a clean bill for a stack that was never there.
+  health_checks:
+  - nav2_control_loop_rate
+  postprocessing:
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - search/nav_metrics.py:NavMetrics

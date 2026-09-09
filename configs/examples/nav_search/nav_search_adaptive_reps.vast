@@ -60,12 +60,16 @@ search:
   - {name: robustness, direction: minimize}
   per_batch: 8
   budget:
-  # FEWER runs than the 180 tpe and cmaes spend, which is the whole claim: adaptive
-  # repetitions are meant to reach the same conclusion for less simulator by not re-running
-  # cells that were never in doubt. Given an equal budget there is nothing to demonstrate --
-  # and given `min: 1, max: 6`, whose mean allocation sits above the fixed 3 it is compared
-  # against, an equal budget cannot even be spent the same way.
-  - runs: 160
+  # EQUAL to nav_search_tpe.vast, which is what makes this file a test rather than a
+  # demonstration. Given a smaller budget, an adaptive policy spends fewer runs whatever it
+  # does, so a shallower worst case cannot be attributed to the policy rather than to the
+  # missing third of the money -- and that is the one thing the comparison exists to decide.
+  #
+  # At an equal budget the claim becomes checkable in the direction it is actually made:
+  # a policy that avoids re-running settled cells should evaluate MORE cells for the same
+  # spend, and reach a worst case at least as deep. Both numbers are reported together,
+  # because either alone can be bought with the other.
+  - runs: 240
   seed: 1
 
 visualization:
