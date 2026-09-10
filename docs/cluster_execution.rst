@@ -373,9 +373,20 @@ Flag                          Environment                     Default
 ``--buildkit-size``           ``ROBOVAST_BUILDKIT_SIZE``      ``200Gi`` (needs a class)
 ============================  ==============================  =================================
 
+.. _cluster-env-defaults:
+
 Every one reads an environment variable, so a ``.env`` — or ``~/.config/robovast/env``, for
 what is true of the machine rather than of a project — sets them once instead of on every
-``setup``.
+``setup``. The build daemon's size is set the same way, and is the one group that ``vast
+service upgrade`` reads too, because it is changed on a deployment that already exists:
+
+============================  ==================================  =========================
+Flag                          Environment                         Default
+============================  ==================================  =========================
+``--buildkit-memory``         ``ROBOVAST_BUILDKIT_MEMORY``        ``16Gi``
+``--buildkit-cpu``            ``ROBOVAST_BUILDKIT_CPU``           ``8``
+``--buildkit-parallelism``    ``ROBOVAST_BUILDKIT_PARALLELISM``   ``4``
+============================  ==================================  =========================
 
 **Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
 derived data must not be separated from its source. The campaign results sit beside the
@@ -1153,6 +1164,43 @@ whose size you do not know, a percentage (``70%``) is accepted for any of the th
 All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
 are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
 re-size a store somebody had bounded on purpose.
+
+How big one build may be
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The daemon is where the compiling happens — the build Job is only a client that streams its
+context — so the daemon's ceilings are one build's ceilings. A build that needs more memory
+than is there is not rejected: the kernel kills the toolchain part-way through, and the
+service reports that as a ``resource`` failure whose ``fixable_by`` is ``infra``, rather than
+as a missing build dependency. That distinction only helps if the operator it names can act,
+so the size is a deployment setting like the cache's:
+
+.. code-block:: bash
+
+   vast cluster setup rke2 --buildkit-memory 48Gi   # when the deployment is described
+   vast service upgrade --buildkit-memory 48Gi      # afterwards, on a deployment that has one
+   vast service upgrade --buildkit-parallelism 2    # ...or the same ceiling, spent by fewer steps
+
+``--buildkit-parallelism`` is the half that works on nodes that cannot be given more: peak
+memory is roughly the concurrent steps times the heaviest compile, so halving it fits a build
+under a ceiling that cannot move. All three are recovered from the running daemon like the
+storage and the GC budget, so an upgrade that says nothing never hands back a ceiling raised
+because a build did not fit under it. Each also has an environment variable
+(:ref:`below <cluster-env-defaults>`), which is where a deployment's own value belongs: a
+``.vast`` cannot say how big its build is, so the number is the cluster's rather than one
+operator's shell history.
+
+Requests and limits are deliberately far apart: the daemon reserves little, because admission
+subtracts every request from what campaigns may run, and bursts into whatever the node has
+idle. Lowering a ceiling below the reservation lowers the reservation with it — Kubernetes
+refuses a request above its own limit, and a smaller node is not the moment to learn about a
+second knob. A ceiling *above* what any node has allocatable is accepted: limits are not
+scheduled against, so it is simply never reached — the node runs out first and the kubelet
+kills the pod, which is the same build failure one layer further out.
+
+Changing any of them replaces the daemon pod, with the consequence the next section opens on.
+``--no-restart`` therefore refuses them rather than accepting a ceiling it returns too early
+to apply.
 
 Three consequences worth knowing before they surprise you:
 
