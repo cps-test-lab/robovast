@@ -38,6 +38,7 @@ correct, and each was invisible on the local lane:
 import logging
 
 from robovast.service.container_exec import SLOT_USER, POD_LABEL, ExecSpec, container_name
+from robovast.execution.cluster_execution.kubernetes_backend import pull_policy_for
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +463,13 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
             }],
             "containers": [{
                 "name": HELD_CONTAINER, "image": spec.image,
-                "imagePullPolicy": "IfNotPresent",
+                # Resolved from the ref, exactly as a run's pods resolve it: a digest names
+                # its bytes and cannot go stale, a tag can be re-pushed under us. Hard-coded
+                # `IfNotPresent` made this the one place a floating tag was never re-checked,
+                # so a republished image reached every campaign and never reached the check
+                # people run to see whether it had -- which reported the node's cached copy
+                # with no way to tell.
+                "imagePullPolicy": pull_policy_for(spec.image),
                 # Idle PID 1, so exec'd commands run against a stable container and
                 # anything backgrounded has something to reparent to.
                 "command": ["/bin/bash", "-c", f"exec sleep {int(deadline_s)}"],

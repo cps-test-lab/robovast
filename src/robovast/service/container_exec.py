@@ -595,7 +595,8 @@ class ContainerExecManager:
     # -- the two operations ----------------------------------------------
 
     def run(self, spec: ExecSpec, limit_s: int, *, keep_alive: bool,
-            identity: tuple, query: bool = False) -> tuple[int, str, str, bool]:
+            identity: tuple, query: bool = False,
+            fresh: bool = False) -> tuple[int, str, str, bool]:
         """Run *spec*, holding the container afterwards when asked.
 
         Takes ownership of *spec*'s staging directory: a held container bind-mounts it
@@ -606,9 +607,16 @@ class ContainerExecManager:
         is a read-only introspection of the image, it is always held (a one-shot would
         throw away the only thing worth keeping), and it never touches
         :data:`SLOT_USER`'s container.
+
+        *fresh* stops this call joining a container that is already held, so one is
+        created and the image is fetched under the lane's pull policy. It is deliberately
+        not part of *identity*: the caller is replacing what that identity addresses, not
+        addressing something else, so the next ordinary call reuses what this one made.
         """
         if query:
             slot = query_slot(identity)
+            if fresh:
+                self.stop(slot)
             self._evict_query_over_cap(keep=slot)
             reused = self._ensure_held(spec, limit_s, identity, slot)
             with self._lock:
@@ -620,6 +628,7 @@ class ContainerExecManager:
 
         if not keep_alive:
             # One-shot means a clean container, so a previously held one goes first —
+            # which is `fresh` already, and why it takes no separate branch here.
             # otherwise "one-shot" would quietly inherit whatever state was left there.
             # Scoped to this slot: it must not reach into the query pool, whose whole
             # purpose is to survive calls like this one.
@@ -629,6 +638,8 @@ class ContainerExecManager:
             finally:
                 spec.close()
 
+        if fresh:
+            self.stop(SLOT_USER)
         reused = self._ensure_held(spec, limit_s, identity, SLOT_USER)
         with self._lock:
             if SLOT_USER in self._held:

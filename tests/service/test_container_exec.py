@@ -331,6 +331,58 @@ def test_the_same_source_reuses_the_container():
     assert len(lane.starts) == 1
 
 
+def test_fresh_replaces_a_container_the_same_source_would_have_reused():
+    """The question reuse cannot answer: have the bytes behind this tag changed?
+
+    Identity keys on the image REF, and a floating tag does not change when what it
+    points at does. So a caller checking whether a republished image has landed is
+    answered from the copy the held container already has -- correctly, by the rules,
+    and uselessly. Creating a container is what fetches the image, so `fresh` asks for
+    exactly that and nothing else.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
+
+    assert mgr.state().reused is False, "a replaced container is not a reused one"
+    assert len(lane.starts) == 2
+
+
+def test_fresh_is_not_part_of_the_identity():
+    """It replaces what an identity addresses; it does not address something else.
+
+    Were it folded into the identity, the container a `fresh` call created would be
+    unreachable by every ordinary call after it -- so each check would strand a
+    container, and the next plain call would build a third.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+
+    assert mgr.state().reused is True, "the container a fresh call made is reusable"
+    assert len(lane.starts) == 1
+
+
+def test_fresh_replaces_a_query_pool_container_too():
+    """The pool is where an image check actually lands, so it is the case that matters.
+
+    A query is held for minutes precisely so repeating it is cheap; that is what makes
+    it the wrong instrument for asking whether the image moved, unless it can be told
+    to start over.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
+    starts_after_first = len(lane.starts)
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
+    assert len(lane.starts) == starts_after_first, "a repeated query reuses the pool"
+
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True, fresh=True)
+    assert len(lane.starts) == starts_after_first + 1
+
+
 def test_a_different_source_replaces_an_idle_container_and_says_so():
     lane = FakeLane()
     mgr = ce.ContainerExecManager(lane)

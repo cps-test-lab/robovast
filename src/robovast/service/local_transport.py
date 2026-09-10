@@ -2735,7 +2735,8 @@ class LocalTransport(RobovastInterface):
         query = bool(getattr(request, "query", False))
         out = self._exec_manager.run(spec, limit_s,
                                     keep_alive=request.keep_alive,
-                                    identity=identity, query=query)
+                                    identity=identity, query=query,
+                                    fresh=bool(getattr(request, "fresh", False)))
         # Report the slot this call actually used. Reporting the user's for a query would
         # tell a caller their container had been replaced when it had not been touched.
         slot = query_slot(identity) if query else SLOT_USER
