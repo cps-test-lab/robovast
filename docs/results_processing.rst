@@ -697,6 +697,31 @@ several runs (``runs_per_job`` > 1), where the earlier ones routinely finish bef
 stops the job — their results are measurement and are never overwritten.
 
 
+A configuration that produced nothing: ``missing``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every status above belongs to a run. ``missing`` belongs to a *configuration*: the campaign
+was composed with it and its results never reached the tree -- never dispatched, or lost
+between the lane and the results root. It appears in ``run_view`` as one row with
+``run_id`` NULL, exactly as ``composition_failed`` does for a search draw that could not be
+built, because a join through ``run`` would otherwise drop it.
+
+**This is what makes a shortfall visible at all.** The results tree states what came back;
+only the composition record (``_transient/configurations.yaml``) states what was asked for,
+and without comparing the two a sweep that lost a seventh of its cells is indistinguishable
+from a smaller sweep that ran perfectly. ``get_campaign_summary`` therefore counts
+``num_configs`` over the *declared* set and reports ``num_missing_configs``,
+``missing_configs`` and a note when they differ; the aggregates beside them are over a
+partial design, which is the one thing a summary must not leave unsaid.
+
+::
+
+   SELECT config_name FROM run_view WHERE status = 'missing'
+
+A campaign whose archive has no ``_transient`` cannot be checked this way, and says so in
+the log rather than reporting a complete design it cannot vouch for.
+
+
 A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
