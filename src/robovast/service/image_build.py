@@ -255,13 +255,22 @@ def _ros_entry(entry) -> dict:
     A spec is built from a validated config on one path and from a raw mapping on another
     (the pre-flight reads an unvalidated document on purpose), so both are normalized here
     rather than at each of the four sites that read one.
+
+    An omitted ``packages`` stays omitted, and an ill-formed one is passed through unchanged:
+    both are what :func:`~robovast.common.config_validation.ros_packages_problems` reads, and
+    it distinguishes "build every package the repository contains" from an empty list that
+    would mean none. Normalizing either into a list of strings here would answer that question
+    before the check that asks it.
     """
     if not isinstance(entry, dict):
         entry = entry.model_dump() if hasattr(entry, "model_dump") else dict(entry)
-    packages = entry.get("packages") or []
-    return {"git": str(entry.get("git") or "").strip(),
-            "ref": str(entry.get("ref") or "").strip(),
-            "packages": [str(name).strip() for name in packages]}
+    normalized = {"git": str(entry.get("git") or "").strip(),
+                  "ref": str(entry.get("ref") or "").strip()}
+    packages = entry.get("packages")
+    if packages is not None:
+        normalized["packages"] = ([str(name).strip() for name in packages]
+                                  if isinstance(packages, list) else packages)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
