@@ -35,7 +35,8 @@ from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest, FileListing,
+                                        CreateWorkspaceRequest, EditFileRequest,
+                                        ERROR_CODE_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
@@ -105,7 +106,12 @@ class HTTPTransport(RobovastInterface):
             detail = (resp.text or "").strip()[:500]
         raise ServiceError(resp.status_code,
                            detail or f"{resp.status_code} {resp.reason}",
-                           resp.url)
+                           resp.url,
+                           # The class of the refusal, where the service named one: the
+                           # exception type itself cannot cross this boundary, and a client
+                           # that has to act on which failure this was would otherwise have
+                           # to match on the sentence.
+                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip())
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file

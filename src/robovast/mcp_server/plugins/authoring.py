@@ -400,7 +400,10 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
             _resolve_workspace_id(client, workspace_id), rel_path, targets, entities, backend)
         return described.model_dump()
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: this answer comes from a container, so
+        # a deployment that cannot run one is one of the failures it may carry, and that is
+        # stated once there rather than per tool.
+        return service_access.error_result(e)
 
 
 def _resolved_request(address: str):
@@ -471,7 +474,10 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
             request.model_copy(update={"container": "scenario"})).image
         return {**payload, "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: this answer comes from a container, so
+        # a deployment that cannot run one is one of the failures it may carry, and that is
+        # stated once there rather than per tool.
+        return service_access.error_result(e)
 
 
 def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
@@ -498,7 +504,10 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
             request.model_copy(update={"container": "simulation"})).image
         return {"bodies": payload.get("body_tree") or [], "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: this answer comes from a container, so
+        # a deployment that cannot run one is one of the failures it may carry, and that is
+        # stated once there rather than per tool.
+        return service_access.error_result(e)
 
 
 for _fn in (validate_project, preview_configurations, describe_world):

@@ -313,6 +313,28 @@ def test_a_world_that_could_not_be_asked_is_an_advisory_not_a_pass(tmp_path, mon
     assert "was NOT checked" in problems[0]["message"]
 
 
+def test_a_deployment_that_cannot_exec_is_not_reported_as_an_image_problem(
+        tmp_path, monkeypatch):
+    """The other lane's advisories name the image or the lane as what would settle it, and
+    neither is what is wrong here: nothing on this deployment can run a command in a
+    container, so the world was not checked and the campaign is not the reason."""
+    from robovast.common import config_generation
+    from robovast.common.errors import ExecPathUnavailable
+    from robovast.service.world_query import world_problems
+
+    def _refuse(*a, **k):
+        raise ExecPathUnavailable("no command can run in a container on this deployment")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
+    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert [p["severity"] for p in problems] == ["unchecked"]
+    message = problems[0]["message"]
+    assert "was NOT checked" in message
+    assert "no command can run in a container" in message
+    assert "build the image" not in message, "the image is fine; building it changes nothing"
+
+
 def test_a_clean_world_says_nothing_at_all(tmp_path, monkeypatch):
     from robovast.common import config_generation
     from robovast.service.world_query import world_problems

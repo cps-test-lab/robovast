@@ -139,6 +139,7 @@ def scenario_problems(exec_call, *, workspace_id: str, config_path: str,
     could not be asked comes back as ``unchecked`` naming what would settle it. Silence
     never stands for a pass.
     """
+    from robovast.common.errors import ExecPathUnavailable
     from robovast.service.interface import ExecRequest
 
     container_path = f"/sources/{workspace_id}/{scenario_path.lstrip('/')}"
@@ -153,6 +154,17 @@ def scenario_problems(exec_call, *, workspace_id: str, config_path: str,
             # The held pool: a read-only question, cheap to repeat, and it must not
             # disturb a container the caller is holding.
             query=True))
+    except ExecPathUnavailable as exc:
+        # Before the arm below, whose remedy is a service log and a bug report: an exec path
+        # that does not stream is a property of the deployment, there is no traceback to
+        # read, and pointing at the service log sends a caller to look for a defect that is
+        # not there.
+        logger.warning("the scenario check did not run: %s", exc)
+        return [_problem(
+            f"this campaign's scenario was NOT parsed: {exc}. Next: nothing about the "
+            ".vast changes this -- the scenario can only be parsed where a command can run "
+            "in a container.",
+            severity="unchecked")]
     except Exception as exc:  # noqa: BLE001 - the check crashing is not a bad campaign
         logger.warning("the scenario check did not run: %s", exc)
         return [_problem(

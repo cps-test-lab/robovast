@@ -2138,12 +2138,32 @@ class ServiceError(OSError):
     working unchanged.
     """
 
-    def __init__(self, status: int, detail: str, url: str = ""):
+    def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
         self.status = status
         self.detail = detail
         self.url = url
+        #: The refusal's class, from :data:`ERROR_CODE_HEADER`; ``""`` when the service
+        #: named none. What a caller branches on, the detail being what it prints.
+        self.code = code
         super().__init__(detail)
 
+
+#: Header naming the CLASS of a refusal, for the few whose class a caller must act on
+#: rather than print. The message says what happened and is written for a person; a client
+#: that has to *behave* differently -- degrade to "unchecked", report the deployment rather
+#: than the image -- cannot get that from prose without matching on it, and a message
+#: matched on by a client is one nobody may reword.
+#:
+#: A header rather than a field in the body: the body is FastAPI's ``{"detail": ...}`` for
+#: every refusal the service composes, and one shape for all of them is worth more than a
+#: second shape for the handful that carry a code.
+ERROR_CODE_HEADER = "x-robovast-error"
+
+#: No command can be run in a container on this deployment --
+#: :class:`~robovast.common.errors.ExecPathUnavailable` crossing HTTP. Every code is a fact
+#: a client acts on; there is no code for "something went wrong", which is what the status
+#: and the detail already say.
+EXEC_PATH_UNAVAILABLE = "exec_path_unavailable"
 
 API_VERSION = "0"
 

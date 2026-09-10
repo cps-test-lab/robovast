@@ -145,6 +145,50 @@ def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
             {"config": "roqsim_scenes:depot"}, ".", targets="*")
 
 
+def test_a_deployment_that_cannot_exec_is_passed_through_unwrapped(monkeypatch):
+    """Wrapped, it becomes "could not describe this world in <image>" -- a claim about a
+    world and an image that are both fine, and one the callers above cannot tell apart from
+    a real one. The type is what they branch on, so it has to survive this function."""
+    from robovast.common import config_generation
+    from robovast.common.errors import ExecPathUnavailable
+
+    class _Runner:
+        def run(self, command, sink):
+            del command, sink
+            raise ExecPathUnavailable("no command can run in a container on this deployment")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda spec, **kwargs: _Runner())
+    with pytest.raises(ExecPathUnavailable):
+        describe_world_payload(
+            {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
+                                                           "image": "img:1"}}},
+            {"config": "roqsim_scenes:depot"}, ".", targets="*")
+
+
+def test_the_pre_check_stays_advisory_when_nothing_can_exec(caplog, monkeypatch):
+    """It is advisory by design (a wrong override is still refused in the container), so an
+    exec path that does not stream must not turn a campaign that would have run into one
+    that is refused before it starts."""
+    from robovast.common import config_generation
+    from robovast.common.config_generation import _check_sim_against_world
+    from robovast.common.errors import ExecPathUnavailable
+
+    def _unavailable(*_a, **_kw):
+        raise ExecPathUnavailable("no command can run in a container on this deployment")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _unavailable)
+    with caplog.at_level(logging.WARNING):
+        _check_sim_against_world(
+            {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
+            [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
+    assert "were not pre-checked" in caplog.text
+    assert "no command can run in a container" in caplog.text
+
+
 def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch):
     """A world whose model does not compile here can still say which plugin keys it has.
 

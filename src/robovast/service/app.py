@@ -48,7 +48,9 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         CampaignVisualizationsResponse, CleanupDataRequest,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
-                                        EditFileRequest, ExecRequest, ExecResult, ExecStopResult,
+                                        EditFileRequest, ERROR_CODE_HEADER,
+                                        EXEC_PATH_UNAVAILABLE,
+                                        ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
@@ -388,8 +390,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         unhandled exception becomes. Recorded here, exactly those were missing from the
         record, which is to say the ones nobody could otherwise reconstruct.
         """
-        from robovast.common.errors import \
-            ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
+        from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
+            ExecPathUnavailable, ObjectStoreUnreachableError)
         try:
             return fn()
         except ValueError as e:            # bad input / not-initialized
@@ -399,6 +401,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             # detail is not delivered wrapped in stray quotes.
             detail = e.args[0] if e.args else str(e)
             raise HTTPException(status_code=404, detail=str(detail)) from e
+        except ExecPathUnavailable as e:
+            # 503 like its sibling below: a deployment that cannot exec is unavailable
+            # rather than in conflict with anything. The code is the point -- the clients
+            # that must degrade instead of blaming the image (the MCP's image catalogs,
+            # ``describe_world``) need the exception's CLASS, and it is the one thing an
+            # HTTP boundary drops.
+            logger.warning("%s", e)
+            raise HTTPException(status_code=503, detail=str(e),
+                                headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
         except ObjectStoreUnreachableError as e:
             # Before the RuntimeError arm it subclasses: nothing about an unanswering
             # store is a conflict, and a 503 tells a client the call is worth retrying.
