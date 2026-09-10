@@ -65,7 +65,8 @@ class _FakeAuthoringClient:
         return ListWorkspacesResponse(
             workspaces=[WorkspaceInfo(workspace_id="ws-ab12", name="demo")])
 
-    def validate_project(self, workspace_id, path="", check_world=True):
+    def validate_project(self, workspace_id, path="", check_world=True,
+                         check_scenario=True):
         from robovast.service.interface import ValidationReport
         self.calls.append(("validate_project", workspace_id, path))
         return ValidationReport(valid=True, configs=3, runs_per_config=2,
@@ -915,6 +916,31 @@ def test_a_campaign_with_no_world_is_not_marked_unchecked(
                         lambda _path: {"valid": True, "problems": [], "configs": 1,
                                        "runs_per_config": 1, "total_trials": 1})
     monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
-    report = authoring.validate_project(str(tmp_path / "x.vast"))
+    # The scenario check is a separate question and this test is not about it; asked for,
+    # it would report its own unchecked problem on this lane (see the test below).
+    report = authoring.validate_project(str(tmp_path / "x.vast"), check_scenario=False)
     assert report["valid"] is True
     assert report["world_checked"] is None
+
+
+def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
+                                                     authoring_service):
+    """The local-file lane has no image, so it cannot answer the question that matters.
+
+    Every campaign has a scenario, and whether it parses depends on what is installed
+    where it runs. Reporting a plain pass here would tell a caller the one thing this lane
+    cannot know -- and it is exactly the failure that otherwise survives to every trial.
+    """
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
+    report = authoring.validate_project(str(tmp_path / "x.vast"))
+
+    assert report["valid"] is False, "a check that did not run is not a pass"
+    assert report["scenario_checked"] is False
+    problem = next(p for p in report["problems"] if p["stage"] == "scenario")
+    assert problem["severity"] == "unchecked"
+    assert "/sources/" in problem["message"], "it must name what would settle it"

@@ -166,9 +166,11 @@ Then check it, and run it:
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
 
 ``validate`` prints each problem with its severity and exits non-zero unless every check it
-covers ran and passed — including the world check, which needs a container. So a lane that
-cannot start one is reported as ``unchecked`` rather than counted as a pass; use
-``--no-world-check`` to ask for the narrower verdict on the file alone.
+covers ran and passed — including the two that need a container: the world check, and parsing
+the scenario in the image that would run it (the only check that sees an ``import
+osc.<library>`` that image lacks). So a lane that cannot start one is reported as ``unchecked``
+rather than counted as a pass; ``--no-world-check`` / ``--no-scenario-check`` ask for the
+narrower verdict on the file alone.
 
 Omit the path when the workspace holds exactly one ``.vast`` and the service will resolve
 it, naming the candidates if there are several. ``--push DIR`` does the push and the launch

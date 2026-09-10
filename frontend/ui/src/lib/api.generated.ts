@@ -1742,6 +1742,11 @@ export interface components {
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
             /**
+             * Check Scenario
+             * @default true
+             */
+            check_scenario: boolean;
+            /**
              * Check World
              * @default true
              */
@@ -4091,9 +4096,10 @@ export interface components {
          *     not look" and "it is fine" are different answers, and a caller that reads only
          *     ``valid`` must not be handed the second when the first is true.
          *
-         *     ``world_checked`` is the three-state answer for the one check that needs a
-         *     container: ``True`` it ran and the world loads and compiles, ``False`` it was asked
-         *     for and could not run, ``None`` it was not asked for (``check_world=False``).
+         *     ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks
+         *     that need a container: ``True`` it ran and passed, ``False`` it was asked for and
+         *     could not run, ``None`` it was not asked for (``check_world`` / ``check_scenario``
+         *     false, or -- for the scenario -- no scenario file to parse).
          */
         ValidationReport: {
             /**
@@ -4108,6 +4114,8 @@ export interface components {
              * @default 0
              */
             runs_per_config: number;
+            /** Scenario Checked */
+            scenario_checked: boolean | null;
             /**
              * Total Trials
              * @default 0

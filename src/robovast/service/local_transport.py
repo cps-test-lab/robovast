@@ -4576,7 +4576,8 @@ class LocalTransport(RobovastInterface):
     # -- validation / preview / authoring help (config editor) --------------
 
     def validate_project(self, workspace_id: str, path: str = "",
-                         check_world: bool = True) -> ValidationReport:
+                         check_world: bool = True,
+                         check_scenario: bool = True) -> ValidationReport:
         """See the interface.
 
         Composed inside the lane's aux-runner context, and *held*, exactly as
@@ -4596,6 +4597,7 @@ class LocalTransport(RobovastInterface):
         except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
             return ValidationReport(
                 valid=False, world_checked=False if check_world else None,
+                scenario_checked=False if check_scenario else None,
                 problems=[ValidationProblem(stage="error", message=str(e))])
         # Only once the cheap checks pass. Compiling a world for a file with a schema
         # error spends a container to report something already in the reply, and the world
@@ -4606,7 +4608,55 @@ class LocalTransport(RobovastInterface):
             # Asked for and not performed, so it is False rather than None: the caller's
             # question was "and does the world load?", and this reply does not answer it.
             result = {**result, "world_checked": False}
+        # Gated on the CHEAP checks, not on the world's verdict: a campaign whose world
+        # does not load still wants to hear that its scenario does not parse either, and
+        # both are fixed in the same edit.
+        if check_scenario:
+            result = self._with_scenario_check(workspace_id, path, project, result)
         return ValidationReport.model_validate(result)
+
+    def _with_scenario_check(self, workspace_id: str, path: str, project,
+                             result: dict) -> dict:
+        """*result* plus the verdict on parsing the scenario in the image that runs it.
+
+        The failure this catches is invisible to every cheap check and fatal to every
+        trial: an ``import osc.<library>`` resolves against what is installed in the
+        scenario image, so a scenario that parses on the service's host can die at its
+        first line in the container -- once per run, after the pull and the schedule, with
+        the campaign reporting finished.
+
+        Like the world check, it is held (a repeat validation costs an exec, not a
+        container start) and its own failure is an ``unchecked`` problem rather than a
+        pass: ``valid`` covers it, so a scenario nobody could parse must not read as one
+        that parses.
+        """
+        from robovast.common.common import load_config
+        from robovast.service.scenario_query import scenario_problems
+        try:
+            declared = ((load_config(project.config_path) or {})
+                        .get("execution") or {}).get("scenario_file")
+            # Relative to the workspace ROOT, which is what the exec lane mounts; the
+            # .vast declares it relative to itself.
+            scenario_path = os.path.normpath(
+                os.path.join(os.path.dirname(path), str(declared))) if declared else ""
+        except Exception as e:  # noqa: BLE001 - an unreadable .vast is already a problem
+            logger.warning("could not resolve the scenario file to check: %s", e)
+            scenario_path = ""
+        if not scenario_path or scenario_path.startswith(".."):
+            # No scenario named, or one outside the workspace: the cheap checks already
+            # report that, and there is nothing here to parse.
+            return {**result, "scenario_checked": None}
+        problems = scenario_problems(
+            self.exec_in_container,
+            workspace_id=self.store.registry.require(workspace_id)["workspace_id"],
+            config_path=path, scenario_path=scenario_path)
+        if not problems:
+            return {**result, "scenario_checked": True}
+        unchecked = [p for p in problems if p.get("severity") == "unchecked"]
+        return {**result,
+                "scenario_checked": not unchecked,
+                "valid": bool(result.get("valid")) and not problems,
+                "problems": list(result.get("problems") or []) + problems}
 
     def _with_world_check(self, workspace_id: str, path: str, project,
                           result: dict) -> dict:
