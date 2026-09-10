@@ -28,7 +28,8 @@ from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation.base_variation import (DestinationConfig, ProvContribution,
                                                       VariationInfeasibleError)
 
-from ..obstacle_placer import ObstaclePlacer, footprint_radius
+from ..map_loader import load_map
+from ..obstacle_placer import ObstaclePlacer, footprint_of
 from ..path_generator import PathGenerator
 from .. import config_view
 from .nav_base_variation import NavVariation
@@ -459,12 +460,16 @@ class ObstacleVariation(NavVariation):
         # than read back off them: a spawn object holds a model reference and spawner
         # arguments, which is a different question from what shape exists at that pose.
         obstacle_geometry = []  # List[(shape, size)]
-        # Every obstacle already standing in this configuration, as (Position, footprint radius) --
+        # Every obstacle already standing in this configuration, as its posed OUTLINE --
         # including the ones an EARLIER variation placed, which arrive on `_placed_obstacles`. Each
         # variation places its own population near the same path with its own placer, so without
         # this each is blind to the others: a dynamic obstacle then lands inside a static one, both
         # populations report the layout the campaign asked for, and only the simulator disagrees.
         keepout = list(config.get('_placed_obstacles') or [])
+        # The world an obstacle has to FIT IN, loaded once for every placement in this
+        # configuration. The same grid the planner uses, so "free" means what it means to the
+        # stack under test rather than to a second notion of the room.
+        placement_map = load_map(map_file_path) if os.path.exists(map_file_path) else None
         for i, obstacle_config in enumerate(obstacle_configs):
             effective_amount = obstacle_config.resolve_amount(path_length)
             if effective_amount > 0:
@@ -491,9 +496,10 @@ class ObstacleVariation(NavVariation):
                             robot_diameter=self.parameters.robot_diameter,
                             waypoints=waypoints,
                             min_arc_length=self._min_arc_length_for_config(i),
-                            obstacle_radius=footprint_radius(
-                                obstacle_config.shape, obstacle_config.size),
+                            shape=obstacle_config.shape,
+                            size=obstacle_config.size,
                             keepout=keepout,
+                            map_obj=placement_map,
                         )
                     except Exception as e:
                         self.progress_update(f"Error placing obstacles: {e}")
@@ -531,10 +537,14 @@ class ObstacleVariation(NavVariation):
                                     # Only once ACCEPTED: a rejected attempt is re-placed, and a
                                     # keepout carrying the positions it was rejected at would
                                     # shrink the free space with obstacles that do not exist.
-                                    radius = footprint_radius(
-                                        obstacle_config.shape, obstacle_config.size)
+                                    # The OUTLINE at the yaw it was placed at, so the next
+                                    # population is separated from the obstacle that is really
+                                    # there rather than from the circle around it.
                                     keepout.extend(
-                                        (obj.spawn_pose.position, radius)
+                                        footprint_of(obstacle_config.shape, obstacle_config.size,
+                                                     obj.spawn_pose.position,
+                                                     obj.spawn_pose.orientation.yaw)
+                                        or obj.spawn_pose.position
                                         for obj in placed_obstacles)
                                     navigable_config_found = True
                                     self.progress_update(
@@ -582,13 +592,14 @@ class ObstacleVariation(NavVariation):
                             f"route from start to goal survived). Fewer obstacles, or a wider "
                             f"'max_distance' so they sit further off the path")
                     else:
-                        radius = footprint_radius(obstacle_config.shape, obstacle_config.size)
-                        extents = "" if radius is None else f" of footprint radius {radius:.2f} m"
+                        size = obstacle_config.size
+                        extents = "" if not size else f" of size {size[0]:g} x {size[1]:g} m"
                         detail = (
                             f"only {placed_count} of {effective_amount} could be placed{extents} "
-                            f"clear of the {len(keepout)} obstacle(s) already standing and of the "
-                            f"start/goal. A larger 'max_distance' gives the placer more room off "
-                            f"the path; fewer or smaller obstacles need less of it")
+                            f"so that it fits: clear of the world's own geometry, of the "
+                            f"{len(keepout)} obstacle(s) already standing, and of the start/goal. "
+                            f"A larger 'max_distance' gives the placer more room off the path; "
+                            f"fewer or smaller obstacles need less of it")
                     self.progress_update(f"Warning: {detail}")
                     raise VariationInfeasibleError(
                         f"Could not place {effective_amount} obstacles after {max_attempts} "

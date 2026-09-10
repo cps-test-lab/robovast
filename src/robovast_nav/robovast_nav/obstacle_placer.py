@@ -21,6 +21,7 @@ Obstacle placement module for generating obstacle positions near navigation path
 import logging
 import math
 import random
+from dataclasses import dataclass
 from typing import List
 
 import numpy as np
@@ -28,33 +29,137 @@ import numpy as np
 from .data_model import Orientation, Pose, Position, StaticObject
 from .map_loader import load_map
 
-#: Shapes :func:`footprint_radius` knows. A shape absent from here has no radius, so a caller
+#: Shapes :func:`footprint_of` knows. A shape absent from here has no outline, so a caller
 #: gets ``None`` and falls back to the robot-derived floor rather than a made-up number.
-_FOOTPRINT_RADIUS = {
-    # Half the diagonal of the footprint rectangle: obstacles are placed at a RANDOM yaw, so the
-    # circle that contains the box at every yaw is the only separation an unrotated half-extent
-    # would not cover.
-    'box': lambda size: math.hypot(size[0] / 2.0, size[1] / 2.0),
+logger = logging.getLogger(__name__)
+
+#: Shapes :func:`footprint_of` knows, as a function from ``size`` to plan-view half-extents.
+#: A shape absent from here has no footprint, so a caller gets ``None`` and falls back to the
+#: robot-derived floor rather than a made-up outline.
+_HALF_EXTENTS = {
+    'box': lambda size: (size[0] / 2.0, size[1] / 2.0),
 }
 
 
-def footprint_radius(shape: str, size) -> float | None:
-    """The radius of the disc that contains this obstacle's footprint at any yaw.
+@dataclass(frozen=True)
+class Footprint:
+    """An obstacle's plan-view outline AT A POSE: the thing that actually has to fit.
 
-    Two obstacles whose centres are closer than the sum of their radii INTERSECT. That is the
-    separation an obstacle population needs, and it is a fact about the obstacles -- not about the
-    robot that has to drive between them, which is what the placer used to test against.
+    A rectangle at a yaw, not the circle around it. The circle is easy and wrong in the direction
+    that costs the most: two 0.5 m boxes side by side occupy 0.5 m of corridor, while the circles
+    containing them demand 0.71 m. In a corridor that is the difference between a layout the
+    campaign asked for and one the placer could not find, and every rejected sample is a
+    configuration the search does not get to try.
 
-    ``None`` when the campaign declared no extents, or a shape this does not know: the placer then
-    keeps its robot-derived floor, because a placement rule invented from no geometry would be a
-    worse answer than the one that was already there.
+    The pose is part of the footprint because the yaw is part of the answer: the same two boxes
+    are 0.5 m apart when aligned and 0.71 m apart corner-to-corner, and only a posed outline can
+    tell those apart.
+    """
+
+    x: float
+    y: float
+    yaw: float
+    half_x: float
+    half_y: float
+
+    @property
+    def radius(self) -> float:
+        """The circle that contains it. Only a cheap pre-filter now, never the rule."""
+        return math.hypot(self.half_x, self.half_y)
+
+    def _axes(self):
+        """The rectangle's own two unit axes: the only directions that can separate rectangles."""
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        return (c, s), (-s, c)
+
+    def corners(self, grow: float = 0.0):
+        """The four corners, optionally with the outline grown by *grow* on every side."""
+        (ux, uy), (vx, vy) = self._axes()
+        hx, hy = self.half_x + grow, self.half_y + grow
+        return [
+            (self.x + sx * hx * ux + sy * hy * vx, self.y + sx * hx * uy + sy * hy * vy)
+            for sx, sy in ((1, 1), (1, -1), (-1, -1), (-1, 1))
+        ]
+
+    def overlaps(self, other: "Footprint", margin: float = 0.0) -> bool:
+        """Do the two outlines touch, with *margin* of clear space required between them?
+
+        Separating-axis test. Two convex shapes are apart exactly when some axis separates their
+        projections, and for rectangles only the four edge normals can be that axis -- so this is
+        exact, not a bound. The margin is applied by growing each outline by half of it, which is
+        slightly strict at a corner and simple everywhere.
+        """
+        grow = margin / 2.0
+        mine, theirs = self.corners(grow), other.corners(grow)
+        for axis in (*self._axes(), *other._axes()):
+            a = [px * axis[0] + py * axis[1] for px, py in mine]
+            b = [px * axis[0] + py * axis[1] for px, py in theirs]
+            # `<=`: outlines that exactly abut are separated, not overlapping. The gap between
+            # them is the margin's job to enforce, and leaving the boundary to this test would
+            # decide a placement on the last bit of a float.
+            if max(a) <= min(b) or max(b) <= min(a):
+                return False  # this axis separates them, so they do not overlap
+        return True
+
+    def fits(self, map_obj) -> bool:
+        """Does this outline stand entirely in free space on *map_obj*?
+
+        The other half of "an obstacle goes where it fits". Separation from the obstacles a
+        campaign placed is not enough on its own: the path a placement is offset from was planned
+        for the ROBOT's radius, so a wider obstacle pushed far enough sideways reaches into a wall
+        that nothing else here would notice.
+
+        Occupancy is the same grid the planner uses, so "free" means what it means to the stack
+        under test. **Off the map counts as not fitting**: an obstacle outside the surveyed area
+        is not known to be clear, and reading unknown as free is how a placement ends up somewhere
+        the map cannot vouch for.
+        """
+        if map_obj is None:
+            return True
+
+        res = map_obj.resolution
+        xs = [c[0] for c in self.corners()]
+        ys = [c[1] for c in self.corners()]
+        # Grid indices spanned by the outline's bounding box, via the map's own conversion so the
+        # y-flip is applied in exactly one place.
+        gx0, gy0 = map_obj.world_to_grid(min(xs), max(ys))
+        gx1, gy1 = map_obj.world_to_grid(max(xs), min(ys))
+        if not (0 <= gx0 and gx1 < map_obj.width and 0 <= gy0 and gy1 < map_obj.height):
+            return False
+
+        window = map_obj.occupancy_grid[gy0 : gy1 + 1, gx0 : gx1 + 1]
+        if not window.any():
+            return True  # nothing occupied anywhere near it
+
+        # Which of those cells the outline actually covers. A cell is a square of side `res`, so
+        # testing its CENTRE against the outline grown by the cell's own reach along each of the
+        # outline's axes counts every cell the rectangle clips, not only those it swallows.
+        rows, cols = np.nonzero(window)
+        world = [map_obj.grid_to_world(int(gx0 + c), int(gy0 + r)) for r, c in zip(rows, cols)]
+        (ux, uy), (vx, vy) = self._axes()
+        reach = (res / 2.0) * (abs(math.cos(self.yaw)) + abs(math.sin(self.yaw)))
+        for wx, wy in world:
+            dx, dy = wx - self.x, wy - self.y
+            if (abs(dx * ux + dy * uy) <= self.half_x + reach
+                    and abs(dx * vx + dy * vy) <= self.half_y + reach):
+                return False
+        return True
+
+
+def footprint_of(shape: str, size, position: Position, yaw: float = 0.0):
+    """The posed outline of an obstacle, or ``None`` when the campaign declared no extents.
+
+    ``None`` is not a failure: ``size`` is optional, and a placement rule invented from no
+    geometry would be a worse answer than the robot-derived floor that was already there.
     """
     if not size or len(size) < 2:
         return None
-    fn = _FOOTPRINT_RADIUS.get(shape)
-    return None if fn is None else float(fn(size))
-
-logger = logging.getLogger(__name__)
+    half = _HALF_EXTENTS.get(shape)
+    if half is None:
+        return None
+    half_x, half_y = half(size)
+    return Footprint(x=position.x, y=position.y, yaw=float(yaw),
+                     half_x=float(half_x), half_y=float(half_y))
 
 
 class ObstaclePlacer:
@@ -77,8 +182,10 @@ class ObstaclePlacer:
         waypoints: List[Pose] = None,
         min_arc_length: float = 0.0,
         entity_prefix: str = "obstacle",
-        obstacle_radius: float = None,
-        keepout: List[tuple] = None,
+        shape: str = 'box',
+        size=None,
+        keepout: List = None,
+        map_obj=None,
     ) -> List[tuple]:
         """Place obstacles near a navigation path as StaticObject instances.
 
@@ -96,14 +203,17 @@ class ObstaclePlacer:
                 placing more than one population needs distinct stems: the names travel to a
                 simulator that COMPILES the placement, where two populations both called
                 ``obstacle_0`` are a duplicate-name model-compilation failure.
-            obstacle_radius: Footprint radius of what is being placed
-                (:func:`footprint_radius`), so two obstacles are separated by their own extents
-                rather than by a number derived from the robot. ``None`` keeps the robot-derived
-                floor, which is all a campaign declaring no ``size`` supports.
-            keepout: ``(Position, radius_or_None)`` per obstacle ALREADY placed for this
-                configuration -- including by an earlier variation. Distinct populations are
-                placed by separate calls near the SAME path, so without this each one is blind to
-                the others and can put its obstacle inside one of theirs.
+            shape: What is being placed, for its outline (:func:`footprint_of`).
+            size: Its extents in meters, so obstacles are separated by their real outlines at the
+                yaw they are placed at rather than by a number derived from the robot. ``None``
+                keeps the robot-derived floor, which is all a campaign declaring no size supports.
+            keepout: Per obstacle ALREADY placed for this configuration -- including by an
+                earlier variation -- a :class:`Footprint`, or a ``Position`` where no extents
+                were declared. Distinct populations are placed by separate calls near the SAME
+                path, so without this each is blind to the others and can put its obstacle
+                inside one of theirs.
+            map_obj: The world's occupancy, so an obstacle is placed only where its outline fits
+                (:meth:`Footprint.fits`). ``None`` skips that check.
 
         Returns:
             List of (StaticObject, path_point) tuples where path_point is the
@@ -118,6 +228,9 @@ class ObstaclePlacer:
             return []
 
         obstacle_objects: List[tuple] = []  # List of (StaticObject, path_point)
+        # The outlines of what this call has placed, kept beside the results rather than rebuilt
+        # from them each attempt: the return shape is the caller's contract and stays as it was.
+        placed_footprints: List = []
         # Define minimum clearance around waypoints (robot diameter + safety
         # margin)
         waypoint_clearance = robot_diameter * 2.0  # 2x robot diameter for safety
@@ -157,23 +270,24 @@ class ObstaclePlacer:
             obstacle_pos = self._generate_obstacle_position(
                 path_point, segment["start"], segment["end"], max_distance
             )
-            # Check if obstacle is too close to waypoints, to what this call has already placed,
-            # or to what an earlier variation placed near the same path.
-            existing_circles = list(keepout or []) + [
-                (obj.spawn_pose.position, obstacle_radius) for obj, _ in obstacle_objects
-            ]
+            # The yaw is drawn BEFORE the check, because it is part of what is being checked:
+            # two boxes are 0.5 m apart aligned and 0.71 m apart corner-to-corner, so a validity
+            # test run before the rotation is known can only answer for the worst case.
+            yaw = random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
+            footprint = footprint_of(shape, size, obstacle_pos, yaw)
+
+            # Everything already standing in this configuration: what an earlier variation
+            # placed near the same path, plus what this call has placed so far.
+            standing = list(keepout or []) + placed_footprints
             if self._is_valid_obstacle_position(
                 obstacle_pos,
                 waypoint_positions,
                 waypoint_clearance,
-                existing_circles,
+                standing,
                 robot_diameter,
-                obstacle_radius,
+                footprint,
+                map_obj,
             ):
-                # Generate random yaw angle (rotation) for the obstacle
-                yaw = random.uniform(
-                    -math.pi, math.pi
-                )  # Random rotation from -180° to +180°
                 name = f"{entity_prefix}_{len(obstacle_objects)}"
 
                 obstacle = StaticObject(
@@ -184,6 +298,7 @@ class ObstaclePlacer:
                 )
 
                 obstacle_objects.append((obstacle, path_point))
+                placed_footprints.append(footprint if footprint is not None else obstacle_pos)
         return obstacle_objects
 
     def place_obstacles_random(
@@ -195,8 +310,9 @@ class ObstaclePlacer:
         robot_diameter: float = 0.354,
         waypoints: List[Pose] = None,
         entity_prefix: str = "obstacle",
-        obstacle_radius: float = None,
-        keepout: List[tuple] = None,
+        shape: str = 'box',
+        size=None,
+        keepout: List = None,
     ) -> List[StaticObject]:
         """Place obstacles randomly on the map as StaticObject instances.
 
@@ -207,10 +323,11 @@ class ObstaclePlacer:
             xacro_arguments: Optional xacro arguments string for the model
             robot_diameter: Diameter of the robot in meters (default: 0.354m for TurtleBot4)
             waypoints: List of Pose objects to avoid placing obstacles near (e.g., start/goal poses)
-            obstacle_radius: Footprint radius of what is being placed, so two obstacles are
-                separated by their own extents (:meth:`_is_valid_obstacle_position`)
-            keepout: ``(Position, radius_or_None)`` per obstacle already placed for this
-                configuration, including by an earlier variation
+            shape: What is being placed, for its outline (:func:`footprint_of`)
+            size: Its extents in meters, so obstacles are separated by their real outlines at the
+                yaw they are placed at (:meth:`_is_valid_obstacle_position`)
+            keepout: Per obstacle already placed for this configuration, including by an earlier
+                variation: a :class:`Footprint`, or a ``Position`` where no extents were declared
 
         Returns:
             List of StaticObject instances for obstacles
@@ -230,6 +347,7 @@ class ObstaclePlacer:
             return []
 
         obstacle_objects: List[StaticObject] = []
+        placed_footprints: List = []
         waypoint_clearance = robot_diameter * 2.0  # 2x robot diameter for safety
 
         if waypoints is None:
@@ -256,17 +374,21 @@ class ObstaclePlacer:
             obstacle_pos = Position(x=world_x, y=world_y)
 
             # Check if obstacle position is valid
+            # Drawn before the check, because the yaw is part of what is being checked.
+            yaw = np.random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
+            footprint = footprint_of(shape, size, obstacle_pos, yaw)
+
             if self._is_valid_obstacle_position(
                 obstacle_pos,
                 waypoint_positions,
                 waypoint_clearance,
-                list(keepout or [])
-                + [(obj.spawn_pose.position, obstacle_radius) for obj in obstacle_objects],
+                list(keepout or []) + placed_footprints,
                 robot_diameter,
-                obstacle_radius,
+                footprint,
+                # It sampled a FREE CELL, which says the obstacle's centre is clear and nothing
+                # about its extents; the outline still has to fit around that centre.
+                map_obj,
             ):
-                # Generate random yaw angle (rotation) for the obstacle
-                yaw = np.random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
                 name = f"{entity_prefix}_{len(obstacle_objects)}"
 
                 obstacle = StaticObject(
@@ -277,6 +399,7 @@ class ObstaclePlacer:
                 )
 
                 obstacle_objects.append(obstacle)
+                placed_footprints.append(footprint if footprint is not None else obstacle_pos)
 
         return obstacle_objects
 
@@ -416,50 +539,66 @@ class ObstaclePlacer:
         obstacle_pos: Position,
         waypoints: List[Position],
         waypoint_clearance: float,
-        existing_obstacles: List[tuple],
+        existing_obstacles: List,
         robot_diameter: float,
-        obstacle_radius: float = None,
+        footprint=None,
+        map_obj=None,
     ) -> bool:
-        """Is this a position the obstacle can go, given the waypoints and what is already placed?
+        """Can the obstacle go here, given the world, the waypoints and what already stands?
 
-        Two separations, answering two different questions.
+        Three constraints, answering three different questions.
 
-        *waypoint_clearance* keeps an obstacle off the start and the goal -- a trial that begins or
-        ends inside one measures nothing.
+        *map_obj* is the world: the outline must stand in free space. The path a placement is
+        offset from was planned for the ROBOT's radius, so a wider obstacle pushed far enough
+        sideways reaches into a wall nothing else here would notice.
 
-        The obstacle-to-obstacle separation keeps two obstacles from INTERSECTING, which is a fact
-        about their extents: ``r_a + r_b`` is where they touch. ``robot_diameter * 1.5`` remains
-        the floor, so a population the robot cannot pass between is still refused and a campaign
-        that declared no ``size`` behaves exactly as before -- but it is a floor, not the rule.
-        Using it AS the rule is how a 0.5 m box population came to be placed 0.1 m apart: the
-        number is derived from the robot, and says nothing about how big the obstacles are.
+        *waypoint_clearance* keeps an obstacle off the start and the goal -- a trial that begins
+        or ends inside one measures nothing.
+
+        Obstacle against obstacle is the two OUTLINES not touching, with a small margin. Not
+        centre distance and not their circles: two boxes side by side occupy the width of two
+        boxes, while the circles containing them demand forty percent more, and refusing that
+        placement costs the search a configuration it was asked to try.
+
+        ``robot_diameter * 1.5`` between centres remains the rule only where there is no outline
+        to use -- a campaign that declared no ``size`` -- so such a campaign behaves exactly as
+        it always has. It is not applied on top of the outline test: whether the robot can get
+        between two obstacles is decided by the navigability check the caller already runs with
+        the whole population in place, which answers it about the real layout rather than by
+        proxy.
 
         Args:
             obstacle_pos: Position to validate
             waypoints: List of waypoint positions to avoid
             waypoint_clearance: Minimum distance from waypoints
-            existing_obstacles: ``(Position, radius_or_None)`` per obstacle already placed --
-                including ones placed by an earlier variation, which is why this takes circles
-                rather than reading them back off this call's own results
+            existing_obstacles: Per obstacle already placed, a :class:`Footprint` or, where the
+                campaign declared no extents, a ``Position``
             robot_diameter: Diameter of the robot
-            obstacle_radius: Footprint radius of the obstacle being placed, or ``None`` when the
-                campaign declared no extents
+            footprint: The posed outline being placed, or ``None`` when no extents were declared
+            map_obj: Occupancy the outline must stand clear of, or ``None`` not to check it
 
         Returns:
             True if position is valid, False otherwise
         """
-        # Check distance from waypoints
+        # Cheapest first, and the one a corridor rejects most often.
+        if footprint is not None and not footprint.fits(map_obj):
+            return False
+
         for waypoint in waypoints:
             if self._distance(obstacle_pos, waypoint) < waypoint_clearance:
                 return False
 
-        # Check distance from existing obstacles (prevent overlap)
-        floor = robot_diameter * 1.5  # the robot still has to get between them
-        for existing, existing_radius in existing_obstacles:
-            required = floor
-            if obstacle_radius is not None and existing_radius is not None:
-                required = max(floor, obstacle_radius + existing_radius + self.OBSTACLE_MARGIN_M)
-            if self._distance(obstacle_pos, existing) < required:
+        floor = robot_diameter * 1.5
+        for existing in existing_obstacles:
+            if isinstance(existing, Footprint) and footprint is not None:
+                if footprint.overlaps(existing, self.OBSTACLE_MARGIN_M):
+                    return False
+                continue
+            # One side or the other has no outline: fall back to centres, which is all that can
+            # be compared, and to the separation that was the rule before outlines existed.
+            other = existing if isinstance(existing, Position) else Position(
+                x=existing.x, y=existing.y)
+            if self._distance(obstacle_pos, other) < floor:
                 return False
 
         return True
