@@ -66,6 +66,7 @@ def _index(monkeypatch, tmp_path):
     db.execute("INSERT INTO batch VALUES (1, 1, 0)")
     db.execute("INSERT INTO unit VALUES (1, 1, 'goal-1', 'ps-1', '{}', 0.5, 'evaluated')")
     db.execute("INSERT INTO unit VALUES (2, 1, '', 'ps-2', '{}', NULL, 'composition_failed')")
+    db.execute("INSERT INTO unit VALUES (3, 1, 'goal-2', 'goal-2', '{}', NULL, 'missing')")
     db.execute("INSERT INTO job VALUES (1, 1, '_jobs/job-0', '{}')")
     db.execute("INSERT INTO run VALUES (1, 1, 0, 'passed', 1, 9.5, 0, 0, 1, 't', NULL, 1)")
     db.commit()
@@ -155,16 +156,20 @@ def test_run_view_joins_the_config_name_onto_every_run(index):
                                "batch": 0, "job_dir": "_jobs/job-0"}]
 
 
-def test_run_view_keeps_a_draw_that_never_ran(index):
-    """A composition-failed unit has no run rows, so the join alone drops it.
+def test_run_view_keeps_a_cell_that_never_ran(index):
+    """A unit with no run rows is dropped by the join alone, whatever kept it from running.
 
-    Without the UNION ALL a search campaign silently reports only the draws that worked.
+    Without the UNION ALL a search reports only the draws it could build and a sweep only
+    the configurations that came back -- in both cases as if that had been the design.
     """
     result = index_query.query_index(
-        "SELECT config_name, run_id, status FROM run_view WHERE run_id IS NULL")
+        "SELECT config_name, run_id, status FROM run_view WHERE run_id IS NULL "
+        "ORDER BY config_name")
 
-    assert result["rows"] == [{"config_name": "ps-2", "run_id": None,
-                               "status": "composition_failed"}]
+    assert result["rows"] == [
+        {"config_name": "goal-2", "run_id": None, "status": "missing"},
+        {"config_name": "ps-2", "run_id": None, "status": "composition_failed"},
+    ]
 
 
 def test_run_view_carries_the_campaign_so_it_can_span_them(index):

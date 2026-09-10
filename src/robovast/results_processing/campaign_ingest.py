@@ -63,6 +63,7 @@ import yaml
 from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
 from robovast.common.quantity import to_bytes
+from robovast.common.store import RUNLESS_UNIT_STATUSES
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
                                          index_scope, index_views, resource_usage,
                                          run_health)
@@ -384,7 +385,11 @@ def _clock_map_info(campaign_path: Path, config_name: str, run_id: int):
 
 
 def _read_units(store_path: Path) -> tuple:
-    """``(params, channels, objectives, composition_failed)`` by config, from ``campaign.db``.
+    """``(params, channels, objectives, runless)`` by config, from ``campaign.db``.
+
+    ``runless`` is the units that produced no run -- ``(identity, status, params)`` each --
+    kept apart from the rest because they have no runs to be joined to and would otherwise
+    leave the index describing a smaller campaign than the one that was declared.
 
     ``params`` is the scenario channel -- the configuration's ``config`` block, or on a search
     campaign the parameter set the strategy proposed. The ``sim`` and ``sut`` channels come
@@ -399,7 +404,7 @@ def _read_units(store_path: Path) -> tuple:
     params_by_config: dict = {}
     channels_by_config: dict = {}
     objective_by_config: dict = {}
-    composition_failed: list = []
+    runless: list = []
     store = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
     try:
         try:
@@ -427,11 +432,12 @@ def _read_units(store_path: Path) -> tuple:
                 channels = {}
             if not isinstance(channels, dict):
                 channels = {}
-            if status == "composition_failed":
-                # No config_name and no directory on disk: ``paramset_id`` is the only
-                # identity such a draw has. Same rule as ``index_views.run_view``'s
-                # UNION arm, which adds these units back for the same reason.
-                composition_failed.append((config_name or str(paramset_id), params))
+            if status in RUNLESS_UNIT_STATUSES:
+                # No directory on disk, and for a search draw no ``config_name`` either:
+                # ``paramset_id`` is then the only identity it has. Same rule as
+                # ``index_views.run_view``'s UNION arm, which adds these units back for the
+                # same reason.
+                runless.append((config_name or str(paramset_id), status, params))
                 continue
             if not config_name:
                 continue
@@ -445,7 +451,7 @@ def _read_units(store_path: Path) -> tuple:
                        store_path, exc)
     finally:
         store.close()
-    return params_by_config, channels_by_config, objective_by_config, composition_failed
+    return params_by_config, channels_by_config, objective_by_config, runless
 
 
 def _read_outcomes(store_path: Path) -> dict:
@@ -622,11 +628,11 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     params_by_config: dict = {}
     channels_by_config: dict = {}
     objective_by_config: dict = {}
-    composition_failed: list = []
+    runless: list = []
     outcomes: dict = {}
     if store_path.is_file():
         (params_by_config, channels_by_config, objective_by_config,
-         composition_failed) = _read_units(store_path)
+         runless) = _read_units(store_path)
         outcomes = _read_outcomes(store_path)
 
     # A factor is a column whichever channel it was written on. The sim and sut values are
@@ -651,7 +657,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     # Every unit's keys, so a run whose params differ from its siblings still gets every
     # sibling's column, NULL where it has no value -- the table is one shape for the whole
     # campaign. A key whose ``param_`` name would collide with a fixed column is skipped.
-    param_sources = [*params_by_config.values(), *(p for _, p in composition_failed)]
+    param_sources = [*params_by_config.values(), *(p for _, _, p in runless)]
     param_keys = sorted({k for p in param_sources for k in p
                          if f"param_{k}" not in fixed
                          and f"param_{k}" not in dict(index_schema.CONTEXT_COLUMNS)})
@@ -702,15 +708,15 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
         rows.append(row)
         advance()
 
-    # The draws that never became a configuration. One row each, ``run_id`` NULL (there is
-    # no run to number) and every run-derived column NULL -- the parameters are the whole
-    # point: they are what the search proposed and what turned out to be unrealizable. A
-    # campaign that could not build half of what it proposed must not read as one that
-    # proposed less.
-    for identity, params in composition_failed:
+    # The cells that never became runs. One row each, ``run_id`` NULL (there is no run to
+    # number) and every run-derived column NULL -- what they carry is their identity and,
+    # for a search draw, the parameters that turned out to be unrealizable. A campaign that
+    # could not build half of what it proposed, or got half of what it declared back, must
+    # not read as one that asked for less.
+    for identity, status, params in runless:
         row = {c: None for c in types}
         row.update({"config_name": identity, "run_id": None,
-                    "status": "composition_failed", "passed": 0, "probed": 0})
+                    "status": status, "passed": 0, "probed": 0})
         row.update({f"param_{k}": params.get(k) for k in param_keys})
         rows.append(row)
 
