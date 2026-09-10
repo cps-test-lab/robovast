@@ -29,8 +29,6 @@ import numpy as np
 from .data_model import Orientation, Pose, Position, StaticObject
 from .map_loader import load_map
 
-#: Shapes :func:`footprint_of` knows. A shape absent from here has no outline, so a caller
-#: gets ``None`` and falls back to the robot-derived floor rather than a made-up number.
 logger = logging.getLogger(__name__)
 
 #: Shapes :func:`footprint_of` knows, as a function from ``size`` to plan-view half-extents.
@@ -80,6 +78,22 @@ class Footprint:
             (self.x + sx * hx * ux + sy * hy * vx, self.y + sx * hx * uy + sy * hy * vy)
             for sx, sy in ((1, 1), (1, -1), (-1, -1), (-1, 1))
         ]
+
+    def clearance_to(self, point: Position) -> float:
+        """How much room is left between *point* and this outline. ``0.0`` when inside it.
+
+        The distance to the RECTANGLE, not to its centre. A centre distance answers a question
+        about where the obstacle was placed; what a waypoint needs to know is how much floor is
+        left beside the obstacle, and those differ by the extents -- by half a metre for a wide
+        one, which is the whole margin a start pose has.
+        """
+        (ux, uy), (vx, vy) = self._axes()
+        dx, dy = point.x - self.x, point.y - self.y
+        # In the rectangle's own frame, the nearest point on it is the offset clamped to the
+        # half-extents, so what is left over on each axis is the gap.
+        gap_u = max(abs(dx * ux + dy * uy) - self.half_x, 0.0)
+        gap_v = max(abs(dx * vx + dy * vy) - self.half_y, 0.0)
+        return math.hypot(gap_u, gap_v)
 
     def overlaps(self, other: "Footprint", margin: float = 0.0) -> bool:
         """Do the two outlines touch, with *margin* of clear space required between them?
@@ -553,7 +567,9 @@ class ObstaclePlacer:
         sideways reaches into a wall nothing else here would notice.
 
         *waypoint_clearance* keeps an obstacle off the start and the goal -- a trial that begins
-        or ends inside one measures nothing.
+        or ends inside one measures nothing. Measured from the obstacle's OUTLINE where there is
+        one: as a centre distance it ignores the extents, so an obstacle wide enough to cover the
+        start pose passes it, and the trial then fails on a collision before it has begun.
 
         Obstacle against obstacle is the two OUTLINES not touching, with a small margin. Not
         centre distance and not their circles: two boxes side by side occupy the width of two
@@ -585,7 +601,17 @@ class ObstaclePlacer:
             return False
 
         for waypoint in waypoints:
-            if self._distance(obstacle_pos, waypoint) < waypoint_clearance:
+            if footprint is not None:
+                # The room left BESIDE the obstacle, which is what a robot at the waypoint needs.
+                # A centre distance says where the obstacle was PUT and nothing about how far it
+                # reaches, so a wide one swallows a start pose while passing that test.
+                #
+                # Half the centre-distance rule, because that rule was two robot diameters between
+                # centres and this one is measured from the outline: one whole diameter of floor,
+                # which is the robot standing there plus its own width again to turn and leave.
+                if footprint.clearance_to(waypoint) < waypoint_clearance / 2.0:
+                    return False
+            elif self._distance(obstacle_pos, waypoint) < waypoint_clearance:
                 return False
 
         floor = robot_diameter * 1.5
