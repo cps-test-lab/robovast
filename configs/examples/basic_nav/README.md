@@ -28,9 +28,10 @@ analysis/              # the three Results-explorer notebooks, shared by both ha
 
 ```bash
 # from the repo root, with the RoboVAST tooling available (`make venv`)
-robovast validate configs/examples/basic_nav/basic_nav_roqsim.vast
-robovast start    configs/examples/basic_nav/basic_nav_roqsim.vast     # MuJoCo backend
-robovast start    configs/examples/basic_nav/basic_nav_gazebo.vast  # Gazebo backend
+vast workspace init configs/examples/basic_nav --name basic_nav
+vast workspace validate basic_nav basic_nav_roqsim.vast
+vast workspace run      basic_nav basic_nav_roqsim.vast --description "roqsim half"
+vast workspace run      basic_nav basic_nav_gazebo.vast --description "Gazebo half"
 ```
 
 5 goals × 5 runs = 25 trials per half. Nothing is built first: roqsim runs from its own published

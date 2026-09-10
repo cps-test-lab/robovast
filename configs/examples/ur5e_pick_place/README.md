@@ -8,7 +8,7 @@ The single factor is `object_detector.position_stddev`: the noise on the *report
 campaign asks how accurate perception has to be before the task stops working.
 
 ```bash
-vast run configs/examples/ur5e_pick_place/ur5e_pick_place.vast
+vast workspace run ur5e_pick_place ur5e_pick_place.vast --push configs/examples/ur5e_pick_place
 ```
 
 4 noise levels × 5 repetitions = 20 trials, about two and a half minutes on an idle cluster lane.
