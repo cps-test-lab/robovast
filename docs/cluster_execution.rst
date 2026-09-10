@@ -1716,6 +1716,14 @@ batch 1 and batch 50, and a system under test that changes underneath a sweep in
 the comparison the sweep exists to make. ``_execution/execution.yaml`` then records what
 ran rather than what was asked for.
 
+The pin covers the pods a batch creates. A composition's **auxiliary pod** is created
+before there is a batch to pin, so its image is the ref the spec names -- resolved if it
+is a ``family:`` member -- and it carries the policy that ref implies, ``Always`` for a
+tag. It therefore runs the bytes the tag names when the composition asks for them, which
+is what a campaign's own pods pin moments later; a tag re-pushed inside that window is the
+one case where the container that described the world and the ones that run it differ.
+Pin ``ROBOVAST_PROJECT_TAG`` for a campaign that must not depend on that.
+
 Resolution is **fail-soft**. An unreachable registry, a ref this deployment holds no
 credential for, or a registry that omits the digest header leaves the ref exactly as it
 was — which is what would have run anyway — and it keeps ``Always``, correct for a name
