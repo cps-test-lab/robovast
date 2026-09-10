@@ -208,3 +208,57 @@ def test_a_placed_obstacle_reports_the_yaw_it_was_validated_at():
     assert isinstance(
         footprint_of('box', BOX, obstacle.spawn_pose.position,
                      obstacle.spawn_pose.orientation.yaw), Footprint)
+
+
+# -- clearing the start and the goal ------------------------------------------------------------
+
+def test_clearance_is_measured_from_the_outline_not_the_centre():
+    here = Position(x=0.0, y=0.0)
+    assert _box(1.0, 0.0).clearance_to(here) == pytest.approx(0.75)      # 1.0 - half-extent
+    assert _box(1.0, 0.0, size=[2.0, 0.5, 1.0]).clearance_to(here) == pytest.approx(0.0)
+    # Inside the outline is no clearance at all, not a negative number.
+    assert _box(0.1, 0.0).clearance_to(here) == 0.0
+
+
+def test_clearance_follows_the_yaw():
+    """A plank end-on leaves room; the same plank turned across does not."""
+    here = Position(x=0.0, y=0.0)
+    plank = [2.0, 0.3, 1.0]
+    assert _box(1.2, 0.0, yaw=math.pi / 2, size=plank).clearance_to(here) == pytest.approx(1.05)
+    assert _box(1.2, 0.0, yaw=0.0, size=plank).clearance_to(here) == pytest.approx(0.2)
+
+
+def _valid_near(placer, footprint, waypoint, robot_diameter=0.35):
+    return placer._is_valid_obstacle_position(
+        Position(x=footprint.x, y=footprint.y), [waypoint], robot_diameter * 2.0, [],
+        robot_diameter, footprint)
+
+
+def test_a_wide_obstacle_cannot_swallow_a_waypoint():
+    """What the centre-distance rule let through.
+
+    Centre 0.75 m from the start clears `robot_diameter * 2` (0.70 m), so this placement was
+    accepted -- while a 2 m wide obstacle centred there covers the start pose outright. The trial
+    then fails on a collision before it has begun, which is not a result about navigation.
+    """
+    placer = ObstaclePlacer()
+    start = Position(x=0.0, y=0.0)
+    wide = _box(0.75, 0.0, size=[2.0, 0.5, 1.0])
+    assert placer._distance(Position(x=wide.x, y=wide.y), start) > 0.35 * 2.0  # old rule passed it
+    assert not _valid_near(placer, wide, start)
+
+
+def test_a_small_obstacle_a_robot_width_clear_is_accepted():
+    placer = ObstaclePlacer()
+    start = Position(x=0.0, y=0.0)
+    assert _valid_near(placer, _box(0.7, 0.0), start)          # outline 0.45 m clear
+    assert not _valid_near(placer, _box(0.5, 0.0), start)      # outline 0.25 m clear
+
+
+def test_a_campaign_declaring_no_size_keeps_the_centre_distance_rule():
+    """Nothing to measure an outline with, so the waypoint rule is the one that was always there."""
+    placer = ObstaclePlacer()
+    start = Position(x=0.0, y=0.0)
+    common = ([start], 0.35 * 2.0, [], 0.35, None)
+    assert not placer._is_valid_obstacle_position(Position(x=0.6, y=0.0), *common)
+    assert placer._is_valid_obstacle_position(Position(x=0.8, y=0.0), *common)
