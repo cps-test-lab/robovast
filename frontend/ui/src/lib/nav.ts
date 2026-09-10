@@ -1,6 +1,6 @@
 // Cross-page navigation, for the cases that cross pages: a campaign card jumping into a Results
-// view, one Results view handing its selected node to another, or a card opening its own frozen
-// config.  Everything else navigates through App's own `select`.
+// view, one Results view handing its selected node to another, or either of those opening a
+// campaign's frozen config.  Everything else navigates through App's own `select`.
 //
 // The hash grammar is hashNav's (App parses it and owns the Nav state); these only write one, and
 // App's existing `hashchange` listener picks it up. Assigning `location.hash` *pushes* a history

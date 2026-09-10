@@ -27,8 +27,9 @@ import {
   type ResultsTreeItem,
 } from '@/lib/resultsTree'
 import { LOG_TAB_SLUG, type ResultsSel } from '@/lib/hashNav'
-import { openResultsView } from '@/lib/nav'
-import { RunViewIcon } from '@/components/viewIcons'
+import { openCampaignConfig, openResultsView } from '@/lib/nav'
+import { mayHaveStagedConfig } from '@/lib/campaignConfig'
+import { ConfigIcon, RunViewIcon } from '@/components/viewIcons'
 import { PreviewChip } from '@/lib/preview/PreviewChip'
 import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree, runsQuery } from './ResultsTree'
@@ -200,6 +201,7 @@ export function ExplorerView({
             tab={tab}
             onTab={(next) => commit(resolved.sel, next)}
             canReplay={!!campaign && hasRecordedRuns(campaign)}
+            canConfig={!!campaign && mayHaveStagedConfig(campaign.phase)}
             preview={!!campaign && isPreviewable(campaign)}
           />
         </Box>
@@ -215,6 +217,7 @@ function SelectionDetail(
     tab: string
     onTab: (tab: string) => void
     canReplay: boolean
+    canConfig: boolean
     preview: boolean
   },
 ) {
@@ -274,11 +277,13 @@ function NotebookPanel({
   tab,
   onTab,
   canReplay,
+  canConfig,
   preview,
 }: NodeProps & {
   tab: string
   onTab: (tab: string) => void
   canReplay: boolean
+  canConfig: boolean
   preview: boolean
 }) {
   // The selection's levels are the backend's level names, so this needs no translation — a
@@ -324,9 +329,9 @@ function NotebookPanel({
           {(vis.error as Error).message}
         </Alert>
       ) : null}
-      {/* The tabs scroll; the jump to the Run view is pinned to the right of them, so it stays
-          reachable however many workloads a campaign declares. Same icon and gate as the campaign
-          card's shortcut, because it is the same destination. */}
+      {/* The tabs scroll; the jumps out of this view are pinned to the right of them, so they stay
+          reachable however many workloads a campaign declares. Same icons and gates as the campaign
+          card's shortcuts, because they are the same destinations. */}
       <Stack direction="row" alignItems="center" sx={{ flexShrink: 0 }}>
         <Tabs
           value={tab}
@@ -343,6 +348,20 @@ function NotebookPanel({
         {/* Beside the tabs, where the reader is looking when they wonder why there is only one:
             the chip carries the reason. */}
         {preview ? <PreviewChip /> : null}
+        {/* The campaign this selection belongs to, whatever node is picked: the frozen `_config/`
+            is the campaign's, so unlike the jump beside it this one is not a run-level shortcut. */}
+        {canConfig ? (
+          <Tooltip title="Open this campaign's configuration">
+            <IconButton
+              size="small"
+              aria-label="open configuration"
+              sx={{ flexShrink: 0 }}
+              onClick={() => openCampaignConfig(campaignId)}
+            >
+              <ConfigIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {sel.level === 'run' && canReplay ? (
           <Tooltip title="Replay this run in the Run view">
             <IconButton

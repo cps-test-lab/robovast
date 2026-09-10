@@ -43,8 +43,9 @@ import {
   type ResultsTreeItem,
 } from '@/lib/resultsTree'
 import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
-import { openResultsView } from '@/lib/nav'
-import { ExplorerIcon } from '@/components/viewIcons'
+import { openCampaignConfig, openResultsView } from '@/lib/nav'
+import { mayHaveStagedConfig } from '@/lib/campaignConfig'
+import { ConfigIcon, ExplorerIcon } from '@/components/viewIcons'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider } from '@/lib/panels/dataProvider'
 import { parsePanels } from '@/lib/panels/parsePanels'
@@ -548,9 +549,22 @@ export function RunView({
         {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
         <Box sx={{ flexGrow: 1 }} />
-        {/* The mirror of the Explorer's jump into here: same icon as the campaign card's shortcut,
-            because it is the same destination, and it carries the run on screen so the tree opens on
-            it. Left of the gear -- the gear governs the view, this leaves it. */}
+        {/* The two jumps out of this view, left of the gear -- the gear governs the view, these
+            leave it. Same icons as the campaign card's shortcuts, because they are the same
+            destinations. The configuration is the campaign's, so it needs no run on screen. */}
+        {summary && mayHaveStagedConfig(summary.phase) ? (
+          <Tooltip title="Open this campaign's configuration">
+            <IconButton
+              size="small"
+              aria-label="open configuration"
+              onClick={() => openCampaignConfig(campaignId)}
+            >
+              <ConfigIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
+        {/* The mirror of the Explorer's jump into here, carrying the run on screen so the tree
+            opens on it. */}
         {run ? (
           <Tooltip title="Open this run in the results Explorer">
             <IconButton
