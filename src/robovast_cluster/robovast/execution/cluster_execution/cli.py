@@ -573,6 +573,26 @@ def _node_labels(pairs, flag):
     return labels or None
 
 
+def _quantity(kind):
+    """A click callback rejecting a value that is not a Kubernetes ``kind`` quantity.
+
+    At parse time rather than at apply time, and against the same checker the manifest uses:
+    a bad quantity otherwise reaches the API server, which answers 422 quoting the manifest --
+    on ``setup``, after the service is already up. ``UsageError`` rather than
+    ``BadParameter`` because the checker's message names the flag itself, and click would
+    print that name twice.
+    """
+    def check(ctx, param, value):  # noqa: ARG001 - click's callback signature
+        if not value:
+            return value
+        from .buildkitd_deploy import checked_quantity  # pylint: disable=import-outside-toplevel
+        try:
+            return checked_quantity(value, kind=kind, flag=param.opts[-1])
+        except ValueError as e:
+            raise click.UsageError(str(e)) from e
+    return check
+
+
 @click.command()
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
@@ -714,6 +734,26 @@ def _node_labels(pairs, flag):
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')
+@click.option('--buildkit-memory', 'buildkit_memory', default='', metavar='SIZE',
+              envvar='ROBOVAST_BUILDKIT_MEMORY', callback=_quantity('memory'),
+              help='Memory ceiling for the build daemon, e.g. 32Gi (default: 16Gi). This is '
+                   'the number a compile that gets killed mid-build ran into: the toolchain '
+                   'is stopped by the kernel, and no package list can make it fit. Raise it '
+                   'where the nodes have the room, and see --buildkit-parallelism where they '
+                   'do not. Changeable later with '
+                   "'vast service upgrade --buildkit-memory'.")
+@click.option('--buildkit-cpu', 'buildkit_cpu', default='', metavar='CORES',
+              envvar='ROBOVAST_BUILDKIT_CPU', callback=_quantity('cpu'),
+              help='CPU ceiling for the build daemon (default: 8). A ceiling, not a '
+                   'reservation: the daemon reserves little and bursts into whatever the '
+                   'node has idle, so this bounds how much of a node one build can take '
+                   'from the campaigns sharing it.')
+@click.option('--buildkit-parallelism', 'buildkit_parallelism', default=None, metavar='N',
+              envvar='ROBOVAST_BUILDKIT_PARALLELISM', type=click.IntRange(min=1),
+              help='Concurrent build steps across the whole daemon (default: 4). The other '
+                   'half of the memory answer, and the one that works on a node that cannot '
+                   'be given more: peak memory is roughly this many of the heaviest compile '
+                   'at once, so halving it fits a build under a ceiling that cannot move.')
 @click.option('--performance-governor/--no-performance-governor', 'performance_governor',
               default=None,
               help="Set the nodes' CPU governor to 'performance'. ON by default, because a "
@@ -761,7 +801,8 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, performance_governor, tailnet,
+          buildkit_cache_reserved, buildkit_memory, buildkit_cpu, buildkit_parallelism,
+          performance_governor, tailnet,
           jobs_node_label,
           control_node_label,
           cluster_config):
@@ -876,6 +917,9 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'gc_max_used': buildkit_cache_max,
         'gc_min_free': buildkit_cache_min_free,
         'gc_reserved': buildkit_cache_reserved,
+        'memory_limit': buildkit_memory,
+        'cpu_limit': buildkit_cpu,
+        'max_parallelism': buildkit_parallelism or 0,
     }
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's
@@ -1025,6 +1069,20 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
               help='Change the free space kept on the cache filesystem. See setup.')
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Change the cache kept even when old. See setup.')
+@click.option('--buildkit-memory', 'buildkit_memory', default='', metavar='SIZE',
+              envvar='ROBOVAST_BUILDKIT_MEMORY', callback=_quantity('memory'),
+              help='Raise the memory ceiling one build may use, e.g. 48Gi. This is the '
+                   'number a compile killed mid-build ran into: the kernel stops the '
+                   'toolchain, and no package list can make it fit. Without this -- and '
+                   'without ROBOVAST_BUILDKIT_MEMORY in the environment -- the daemon keeps '
+                   'whatever it was set up with.')
+@click.option('--buildkit-cpu', 'buildkit_cpu', default='', metavar='CORES',
+              envvar='ROBOVAST_BUILDKIT_CPU', callback=_quantity('cpu'),
+              help='Change the CPU ceiling one build may use. See setup.')
+@click.option('--buildkit-parallelism', 'buildkit_parallelism', default=None, metavar='N',
+              envvar='ROBOVAST_BUILDKIT_PARALLELISM', type=click.IntRange(min=1),
+              help='Change how many build steps run at once. The half of the memory answer '
+                   'that works on nodes that cannot be given more. See setup.')
 @click.option('--no-restart', is_flag=True, default=False,
               help='Reconcile only what does not need the pod rolled -- RBAC, the '
                    'queues, the registry ingress route -- then stop. For granting a '
@@ -1034,7 +1092,8 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
               help='Do not ask before rolling over live campaigns. For scripts; without it '
                    'a non-interactive run aborts rather than rolling silently.')
 def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
-            buildkit_cache_min_free, buildkit_cache_reserved, no_restart, yes):
+            buildkit_cache_min_free, buildkit_cache_reserved, buildkit_memory,
+            buildkit_cpu, buildkit_parallelism, no_restart, yes):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1110,6 +1169,21 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  verify_store_pod_infrastructure, wait_for_rollout,
                                  wait_for_service_ready)
+
+    # The build daemon is converged below the --no-restart return, because converging it
+    # replaces its pod. So a --buildkit-* flag typed alongside --no-restart would be read,
+    # accepted and then dropped -- an upgrade reporting success while the ceiling somebody
+    # came to raise is still the old one. Named on the command line only: a value that
+    # arrives from the environment is the deployment's standing configuration and is not
+    # something this run asked for.
+    ctx = click.get_current_context()
+    typed = [param for param in ctx.params if param.startswith("buildkit_")
+             and ctx.get_parameter_source(param) == click.core.ParameterSource.COMMANDLINE]
+    if no_restart and typed:
+        raise click.UsageError(
+            "--no-restart reconciles only what the running pod picks up, and the build "
+            "daemon is not that: " + ", ".join(f"--{p.replace('_', '-')}" for p in typed)
+            + " would be ignored. Run the upgrade without --no-restart.")
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1230,14 +1304,19 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         from .buildkitd_deploy import (apply_buildkitd,  # pylint: disable=import-outside-toplevel
                                        buildkitd_storage_from_cluster)
         settings = buildkitd_storage_from_cluster(namespace, kube_context)
-        # An explicitly passed budget wins over the recovered one -- otherwise the setting
-        # would be write-once at setup, changeable only by tearing the daemon down. Recovery
-        # is the default, not a lock: it exists so an upgrade that says nothing changes
-        # nothing, which is a different thing from an upgrade that cannot change it.
+        # A budget or a ceiling given here wins over the recovered one -- otherwise the
+        # setting would be write-once at setup, changeable only by tearing the daemon down.
+        # Recovery is the default, not a lock: it exists so an upgrade that says nothing
+        # changes nothing, which is a different thing from an upgrade that cannot change it.
+        # `--buildkit-memory` and its two neighbours are how a build that no longer fits in
+        # the builder is given room, and this is the command that applies them.
         settings.update({k: v for k, v in (
             ("gc_max_used", buildkit_cache_max),
             ("gc_min_free", buildkit_cache_min_free),
-            ("gc_reserved", buildkit_cache_reserved)) if v})
+            ("gc_reserved", buildkit_cache_reserved),
+            ("memory_limit", buildkit_memory),
+            ("cpu_limit", buildkit_cpu),
+            ("max_parallelism", buildkit_parallelism)) if v})
         apply_buildkitd(namespace, kube_context=kube_context, **settings)
         click.echo("  converged the shared build daemon")
         wait_for_service_ready(namespace=namespace, kube_context=kube_context,

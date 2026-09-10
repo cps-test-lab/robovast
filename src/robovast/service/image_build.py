@@ -1199,8 +1199,11 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
             return ImageBuildError(
                 phase="resource", fixable_by="infra", entry=failed,
                 message=f"the builder ran out of memory while compiling {failed}: the toolchain "
-                        "was killed, not the source rejected. No package list changes this -- the "
-                        "build needs more memory, or fewer parallel compile jobs",
+                        "was killed, not the source rejected. No package list changes this -- "
+                        "the builder needs a bigger ceiling or fewer parallel steps, which on "
+                        "a cluster is 'vast service upgrade --buildkit-memory / "
+                        "--buildkit-parallelism' and on a local service is the docker "
+                        "daemon's own memory",
                 log_tail=tail)
         return ImageBuildError(
             phase="source-build", fixable_by="agent", entry=failed,
@@ -1251,7 +1254,9 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     if "no space left on device" in low or "killed" in low or "oomkilled" in low:
         return ImageBuildError(
             phase="resource", fixable_by="infra",
-            message="the builder ran out of resources (disk/memory)",
+            message="the builder ran out of resources (disk/memory). On a cluster, "
+                    "'vast service upgrade --buildkit-memory' moves what memory one build "
+                    "may use; disk is the build cache's, bounded by the daemon's GC budget",
             log_tail=tail)
     if "pip install" in low or "error: subprocess-exited-with-error" in low:
         return ImageBuildError(
