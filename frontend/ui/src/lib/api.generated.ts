@@ -2357,6 +2357,11 @@ export interface components {
              */
             container: string;
             /**
+             * Fresh
+             * @default false
+             */
+            fresh: boolean;
+            /**
              * Keep Alive
              * @default false
              */

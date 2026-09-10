@@ -1220,50 +1220,47 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
                       keep_alive: bool = False, show_gui: bool = False,
-                      tail: int = 200, container: str = "") -> dict:
+                      tail: int = 200, container: str = "",
+                      fresh: bool = False) -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
-    **Produces no campaign data** — nothing durable, no provenance, no repetitions. To run the
-    experiment use ``start_campaign``; to see inside a running job, ``get_job_state``.
+    **Produces no campaign data** — nothing durable, no provenance, no repetitions. Run the
+    experiment with ``start_campaign``; see inside a running job with ``get_job_state``.
 
-    Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``, file
-    checks); does one config run (name a ``config_name``; an empty ``command`` starts its
-    scenario, detached); what does bring-up look like (add ``keep_alive``, ``show_gui``).
+    Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``,
+    file checks); does one config run (name a ``config_name``; empty ``command`` starts its
+    scenario, detached); what does bring-up look like (``keep_alive``, ``show_gui``).
 
-    **The source you name decides which image, and they answer different questions.** A
-    ``workspace_id`` runs what that project builds *now, from the serve host's sources* — a
-    stale checkout, a stale image — and never builds implicitly, so
-    ``build_experiment_image`` first and wait for it. A ``campaign_id`` runs the exact image that
-    campaign recorded, so it answers "what did that run actually see?" even after the workspace
-    has moved on. A refusal over an unbuilt image hands back its ``next_step``.
-    ``container.image`` names the ``build:<tag>@<hash>`` that ran: read it before taking a
-    result here as "the new image is in".
+    **The source you name decides which image.** ``workspace_id`` runs what that project
+    builds *now* from the serve host's sources — possibly stale — and never builds
+    implicitly, so ``build_experiment_image`` first. ``campaign_id`` runs the image that
+    campaign recorded: "what did that run actually see?". ``container.image`` names what ran.
 
     **At most one container exists at a time**, so ``reused: false`` means a fresh one and
     whatever the previous ran is gone; ``stop_container`` ends it. A started scenario logs
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
-    ``command="tail -200 <log_path>"``.
+    ``command="tail -200 <log_path>"``. Reuse keys on the image *ref*, which does not change
+    when a floating tag is re-pushed — so ``fresh`` is how you ask whether new bytes landed.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
         workspace_id, config_path: A workspace and which ``.vast`` in it.
-        campaign_id: Use an existing campaign's ``_config/`` as the project instead — exactly
-            one source, this or ``workspace_id``. A *running* campaign's container is never
-            touched; to inspect a live stack, start it here.
+        campaign_id: An existing campaign's ``_config/`` as the project — exactly one
+            source, this or ``workspace_id``. A running campaign's container is never touched.
         config_name: Stage this config. Omitted always means the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
-            Asking for one this campaign lacks lists the ones it has.
+            Naming one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
+        fresh: Replace the container rather than join a held one, so the image is
+            re-fetched. Discards whatever that container held.
         show_gui: Show the simulator's window on the serve host's display — **local ``vast
-            serve`` on local Docker only**. Changing it between calls **replaces** the
-            container.
+            serve`` on local Docker only**. Changing it between calls replaces the container.
         tail: Lines kept per stream.
 
     Returns:
         ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
-        log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` — ``command``
-        (fixed cap), ``execution.timeout`` or ``default`` — names a ``timed_out``
-        result's remedy.
+        log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` (``command``,
+        ``execution.timeout``, ``default``) names a ``timed_out`` result's remedy.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415
@@ -1275,7 +1272,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
             keep_alive=keep_alive, show_gui=show_gui,
-            container=container))
+            container=container, fresh=fresh))
     except Exception as e:  # noqa: BLE001
         return error_result(e)
     out = result.model_dump()

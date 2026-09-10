@@ -128,7 +128,7 @@ def test_editing_a_workspace_is_a_different_container(local, monkeypatch):
     calls = []
 
     class _Mgr:
-        def run(self, spec, limit_s, *, keep_alive, identity, query=False):
+        def run(self, spec, limit_s, *, keep_alive, identity, query=False, fresh=False):
             calls.append(identity)
             return (0, "", "", False)
 
@@ -169,7 +169,7 @@ def test_an_untouched_workspace_still_reuses_its_container(local, monkeypatch):
     calls = []
 
     class _Mgr:
-        def run(self, spec, limit_s, *, keep_alive, identity, query=False):
+        def run(self, spec, limit_s, *, keep_alive, identity, query=False, fresh=False):
             calls.append(identity)
             return (0, "", "", False)
 
