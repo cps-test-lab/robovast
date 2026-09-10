@@ -218,7 +218,8 @@ def test_validating_reads_the_whole_report_without_the_core(without_core, monkey
         def list_workspaces(self):
             return SimpleNamespace(workspaces=[_Ws()])
 
-        def validate_project(self, _workspace_id, path="", check_world=True):
+        def validate_project(self, _workspace_id, path="", check_world=True,
+                             check_scenario=True):
             return ValidationReport(
                 valid=False, world_checked=False, configs=2, runs_per_config=3,
                 total_trials=6,

@@ -264,6 +264,11 @@
       },
       "Body_validate_project_workspaces__workspace_id__validate_post": {
         "properties": {
+          "check_scenario": {
+            "default": true,
+            "title": "Check Scenario",
+            "type": "boolean"
+          },
           "check_world": {
             "default": true,
             "title": "Check World",
@@ -276,6 +281,7 @@
           }
         },
         "required": [
+          "check_scenario",
           "check_world",
           "path"
         ],
@@ -3971,7 +3977,7 @@
         "type": "object"
       },
       "ValidationReport": {
-        "description": "Collect-all validation result (mirrors ``validate_project_file``).\n\n``valid`` means every check this report covers ran **and** passed, so a caller may\nact on that one boolean \u2014 which is the only thing a boolean is good for. A check\nthat could not run makes it false and appears as an ``unchecked`` problem: \"I could\nnot look\" and \"it is fine\" are different answers, and a caller that reads only\n``valid`` must not be handed the second when the first is true.\n\n``world_checked`` is the three-state answer for the one check that needs a\ncontainer: ``True`` it ran and the world loads and compiles, ``False`` it was asked\nfor and could not run, ``None`` it was not asked for (``check_world=False``).",
+        "description": "Collect-all validation result (mirrors ``validate_project_file``).\n\n``valid`` means every check this report covers ran **and** passed, so a caller may\nact on that one boolean \u2014 which is the only thing a boolean is good for. A check\nthat could not run makes it false and appears as an ``unchecked`` problem: \"I could\nnot look\" and \"it is fine\" are different answers, and a caller that reads only\n``valid`` must not be handed the second when the first is true.\n\n``world_checked`` and ``scenario_checked`` are three-state answers for the two checks\nthat need a container: ``True`` it ran and passed, ``False`` it was asked for and\ncould not run, ``None`` it was not asked for (``check_world`` / ``check_scenario``\nfalse, or -- for the scenario -- no scenario file to parse).",
         "properties": {
           "configs": {
             "default": 0,
@@ -3989,6 +3995,17 @@
             "default": 0,
             "title": "Runs Per Config",
             "type": "integer"
+          },
+          "scenario_checked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Checked"
           },
           "total_trials": {
             "default": 0,
@@ -4016,6 +4033,7 @@
           "configs",
           "problems",
           "runs_per_config",
+          "scenario_checked",
           "total_trials",
           "valid",
           "world_checked"
