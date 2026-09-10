@@ -352,14 +352,16 @@ def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
     seen = []
     monkeypatch.setattr(
         LocalTransport, "_aux_runner_context",
-        lambda self, tag, project, *, hold=False: (
-            seen.append((tag, hold)) or contextlib.nullcontext()))
+        lambda self, tag, project, *, hold=False, should_stop=None: (
+            seen.append((tag, hold, should_stop)) or contextlib.nullcontext()))
+    stop = object()
     with LocalTransport._campaign_context(
-            LocalTransport.__new__(LocalTransport), "camp-7", None):
+            LocalTransport.__new__(LocalTransport), "camp-7", None, should_stop=stop):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
-    # lets per-campaign cleanup find it.
-    assert seen == [("camp-7", False)]
+    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits a
+    # lane's span makes that are long enough for an operator to give up on.
+    assert seen == [("camp-7", False, stop)]
 
 
 def test_composition_reports_the_aux_container_it_used():

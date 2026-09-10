@@ -425,7 +425,8 @@ class AuxPodSession:
     def __init__(self, campaign_id, namespace, core_v1=None,
                  ready_timeout: float = 300.0, pull_secret: str = "",
                  storage=None, bucket: str = "", s3: tuple | None = None,
-                 kube_context: str | None = None, on_pending=None):
+                 kube_context: str | None = None, on_pending=None,
+                 should_stop=None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
         self.namespace = namespace
@@ -439,6 +440,10 @@ class AuxPodSession:
         # Reported on every poll of the ready wait, so a caller with somebody watching can name
         # what the pod is stuck on rather than only what it timed out on. See `wait_pod_ready`.
         self._on_pending = on_pending
+        # Polled by the same wait. A pull this span is waiting out is the one stretch of a
+        # composition long enough for an operator to stop the campaign in, and a stop that
+        # is answered only when the pull ends is one nothing distinguishes from a hang.
+        self._should_stop = should_stop
         #: Container name -> the READY pod serving it. The memo that keeps a second command
         #: in the same span from paying a second create and image pull, so only a pod that
         #: can be exec'd into belongs here: a second ask after a failed create must repeat
@@ -560,7 +565,8 @@ class AuxPodSession:
         # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
         # which matters now that a spec may name the campaign's own private image.
         wait_pod_ready(core, self.namespace, pod_name,
-                       timeout_s=self._ready_timeout, on_pending=self._on_pending)
+                       timeout_s=self._ready_timeout, on_pending=self._on_pending,
+                       should_stop=self._should_stop)
         return pod_name
 
     def _sweep_workspaces(self) -> None:

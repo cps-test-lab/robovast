@@ -1889,7 +1889,7 @@ class LocalTransport(RobovastInterface):
                           image_project=getattr(request, "image_project", "") or None,
                           image_project_tag=getattr(request, "image_project_tag", "") or None)
 
-    def _campaign_context(self, campaign_id: str, project):
+    def _campaign_context(self, campaign_id: str, project, should_stop=None):
         """Per-campaign setup entered *inside* the worker thread.
 
         A context manager, so anything thread-scoped is established where the composition
@@ -1897,10 +1897,15 @@ class LocalTransport(RobovastInterface):
         aux-container runner, which is why this delegates: a campaign is one *span* over
         which a lane provides one, not the only span. Anything genuinely per-campaign
         belongs here rather than in :meth:`_aux_runner_context`, which preview also enters.
-        """
-        return self._aux_runner_context(campaign_id, project)
 
-    def _aux_runner_context(self, tag: str, project, *, hold: bool = False):
+        *should_stop* is the campaign's own stop flag as a predicate, for the waits inside
+        the span that are long enough for an operator to give up on — a helper image being
+        pulled, most of all. A preview has no campaign and passes none.
+        """
+        return self._aux_runner_context(campaign_id, project, should_stop=should_stop)
+
+    def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
+                            should_stop=None):
         """How this lane provides a variation's auxiliary container, for one span.
 
         A context manager: entered in the thread that composes, because the factory it
@@ -1920,8 +1925,11 @@ class LocalTransport(RobovastInterface):
         host, which is what a local service — and the CLI, which has no transport at all —
         already wants, and where holding would buy about a second. The cluster lane
         overrides this, having no ``docker`` in the pod and a pull to amortize.
+
+        *should_stop*, when a campaign passes one, is polled by whatever this lane waits
+        for. Nothing here waits, so nothing reads it.
         """
-        del tag, project, hold
+        del tag, project, hold, should_stop
         return contextlib.nullcontext()
 
     def _postprocess_in_process(self) -> bool:
@@ -2327,7 +2335,8 @@ class LocalTransport(RobovastInterface):
                 self._record_launch(campaign_id, results_dir, request,
                                     images=options.images)
                 state.set_phase(Phase.STARTING)
-                with self._campaign_context(campaign_id, target):
+                with self._campaign_context(campaign_id, target,
+                                            should_stop=lambda: state.stop_requested):
                     backend = self._build_backend(state)
                     if is_search:
                         run_search_campaign(

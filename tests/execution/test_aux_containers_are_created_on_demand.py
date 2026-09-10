@@ -279,3 +279,48 @@ def test_the_lane_does_not_read_the_project_to_decide():
         "while composing for whatever it does not cover; the session creates a pod on demand "
         "instead."
     )
+
+
+def test_the_lane_hands_a_campaigns_stop_flag_to_its_session(monkeypatch):
+    """The other end of the same thread: the span's pod waits are the campaign's to end."""
+    built = {}
+
+    @contextlib.contextmanager
+    def _session(*_args, **kwargs):
+        built.update(kwargs)
+        yield SimpleNamespace(runner_factory=lambda: (lambda _spec: None))
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.container_runner.AuxPodSession", _session)
+
+    def stop():
+        return False
+
+    service = _service()
+    project = SimpleNamespace(config_path="/nonexistent/campaign.vast")
+    with service._aux_runner_context("c-2026-09-08-120000", project, should_stop=stop):
+        pass
+
+    assert built["should_stop"] is stop
+
+
+def test_the_ready_wait_is_given_the_campaigns_stop_flag(kube, monkeypatch):
+    """The pull happens inside this wait, so this is where a stop has to be seen.
+
+    Nothing else in a composition blocks for minutes, and a stop answered only when the
+    image lands is one an operator cannot tell from a hung campaign.
+    """
+    seen = {}
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.wait_pod_ready",
+        lambda *a, **k: seen.update(k))
+
+    def stop():
+        return False
+
+    with AuxPodSession("c-2026-09-08-120000", "ns", core_v1=kube.core,
+                       should_stop=stop) as session:
+        runner = session.runner_factory()(ContainerSpec(image="family:robovast-roqsim"))
+        runner.close()
+
+    assert seen["should_stop"] is stop

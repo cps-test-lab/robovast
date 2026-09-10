@@ -1889,8 +1889,10 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
 
     res = cs.stop("camp-1")
     assert res.ok and flagged.get("scope") == STOP_RUNS
-    # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup).
-    assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
+    # Scoped to this campaign, in this namespace/context (reuses jobs-cleanup), and
+    # without its aux pods -- see test_stop_leaves_the_aux_pod_its_own_composition_holds.
+    assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None,
+                     "aux": False}
 
 
 def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
@@ -2014,6 +2016,50 @@ def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
 
     assert [c["campaign"] for c in calls] == ["camp-a"]
     assert calls[0]["namespace"] == "ns1"
+
+
+def test_a_long_aux_wait_keeps_saying_how_long_it_has_waited(monkeypatch, caplog):
+    """A reason logged once, seconds in, is what made a slow pull read as a hang.
+
+    ``wait_pod_ready`` polls every two seconds, so every poll must not be logged either.
+    What separates the two cases is the elapsed figure on a repeat.
+    """
+    import logging
+
+    from robovast.execution.cluster_execution import cluster_service as cs_mod
+
+    clock = [0.0]
+    monkeypatch.setattr(cs_mod.time, "monotonic", lambda: clock[0])
+    report = cs_mod._aux_pending_logger("camp-a")
+
+    with caplog.at_level(logging.INFO, logger=cs_mod.logger.name):
+        report("PodInitializing: init container mc-tools is still running")
+        clock[0] = 2.0
+        report("PodInitializing: init container mc-tools is still running")
+        clock[0] = 200.0
+        report("PodInitializing: init container mc-tools is still running")
+
+    said = [r.getMessage() for r in caplog.records]
+    assert len(said) == 2  # the poll two seconds later says nothing new
+    assert "after 0s" in said[0]
+    assert "after 200s" in said[1]
+
+
+def test_stop_leaves_the_aux_pod_its_own_composition_holds(cs, monkeypatch):
+    """The driver is in this process, and its composition span owns that pod.
+
+    Reaping it here removes a pod the span is exec'ing into: every exec then fails with a
+    404 on the ``pods/exec`` subresource, and a campaign that was merely stopped reports a
+    simulator that could not be asked about its world.
+    """
+    calls = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: calls.append(kw))
+
+    cs._teardown_campaign_jobs("camp-a")
+
+    assert calls[0]["aux"] is False
 
 
 # -- the launch record reaches the store before anything can fail -----------

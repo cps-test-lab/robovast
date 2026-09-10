@@ -104,8 +104,15 @@ campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly. The deletions are label-scoped to the one campaign, so other
-queued/running campaigns are untouched. **Service shutdown** is deliberately *not*
-the same thing. Whether exiting tears a campaign down is a property of the lane, asked
+queued/running campaigns are untouched, and to its Jobs: a campaign's aux pod belongs to
+the composition span that created it and is deleted when that span ends, so a stop leaves
+it alone and only a reaper (``jobs-cleanup``, a campaign being deleted) collects one.
+Composition itself is stop-checked in two places, because it is long enough to give up
+in: the pod's ready wait ends as soon as the flag is set, and a campaign stopped while
+composing raises rather than submitting the sweep it has just composed.
+
+**Service shutdown** is deliberately *not* the same thing. Whether exiting tears a
+campaign down is a property of the lane, asked
 as ``_adopts_on_restart``: the local backend answers no and kills its scenario
 container, because nothing comes back for it; the cluster lane answers yes and leaves
 its Jobs running, because they outlive any one service process and the next one adopts
