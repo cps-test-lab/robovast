@@ -19,7 +19,7 @@ from robovast.common.config_validation import validate_project_file
 from robovast.common.containers import (containers_without_a_resolvable_image, plan_containers,
                                         ros_repo_name)
 from robovast.common.execution import IMAGE_TIER_BUILT, image_provenance_tier
-from robovast.service.image_build import extract_build_specs
+from robovast.service.image_build import extract_build_specs, validate_build_spec
 from robovast.service.retrigger import _builds_an_image
 
 PX4_MSGS = {"git": "https://github.com/PX4/px4_msgs.git",
@@ -136,6 +136,20 @@ def test_an_empty_packages_list_is_refused():
     with pytest.raises(ValueError, match="omit it"):
         validate_config(_cfg(scenario={"image": "b:1",
                                        "ros_packages": [{**PX4_MSGS, "packages": []}]}))
+
+
+def test_an_omitted_packages_list_survives_the_build_spec(tmp_path):
+    """The check that requests a build applies the config validator's rules to the spec.
+
+    So the spec must carry the same distinction those rules test: an omitted ``packages``
+    means every package the repository contains, and only an empty list means none.
+    Collapsing the one into the other refuses the declaration by the rule that tells the
+    author to write it, on the build path alone -- which no offline validation reaches.
+    """
+    c = validate_config(_cfg(scenario={"image": "base:1", "ros_packages": [PX4_MSGS]}))
+    spec = extract_build_specs(c)["scenario"]
+    assert validate_build_spec(spec, tmp_path) == []
+    assert "packages" not in spec.ros_packages[0]
 
 
 def test_a_plain_cmake_project_is_as_declarable_as_an_ament_one(tmp_path):

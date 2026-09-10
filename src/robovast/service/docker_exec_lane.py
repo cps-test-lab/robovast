@@ -15,9 +15,19 @@ from robovast.service.container_exec import CONTAINER_NAME, SLOT_USER, ExecSpec,
 
 logger = logging.getLogger(__name__)
 
-#: Timeout for the short bookkeeping commands (run -d / top / rm). Generous, because
-#: a slow daemon should surface as an error rather than as a false "nothing there".
+#: Timeout for the short bookkeeping commands (top / rm). Generous, because a slow daemon
+#: should surface as an error rather than as a false "nothing there".
 _PROBE_TIMEOUT_S = 40
+
+#: Timeout for STARTING a container, which is a different kind of command. ``docker run``
+#: pulls the image when the host does not have it, so on a host that has never seen this
+#: campaign's image the call is a multi-hundred-megabyte download and not bookkeeping at
+#: all. Under the bookkeeping budget the first check on a fresh host timed out and was
+#: reported as a check that could not run -- with the daemon's own message nowhere in it,
+#: because the pull was still going fine when the clock ran out. Matched to the client's
+#: own COMMAND_LIMIT_S rather than set larger: past it the caller has already given up, so
+#: a longer budget here would only hold a container nobody is waiting for.
+_START_TIMEOUT_S = 300
 
 
 class DockerExecLane:
@@ -47,7 +57,7 @@ class DockerExecLane:
         cmd += ["--entrypoint", "/bin/bash", spec.image,
                 "-c", f"exec sleep {int(deadline_s)}"]
         done = subprocess.run(cmd, capture_output=True, text=True,  # noqa: S603
-                              timeout=_PROBE_TIMEOUT_S, check=False)
+                              timeout=_START_TIMEOUT_S, check=False)
         if done.returncode != 0:
             raise RuntimeError(
                 f"could not start exec container: {done.stderr.strip() or done.stdout.strip()}")

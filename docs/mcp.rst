@@ -186,12 +186,18 @@ Note what the table does *not* say. ``validate_project`` composes too (it has to
 backend's*: on the cluster lane that is the campaign's aux pod, on the local lane ``docker``
 on the service host — which is why ``start_campaign`` is the boundary rather than "the cluster".
 
-The world column is the one place ``validate_project`` runs a container, and it is a
+The world column is where ``validate_project`` runs a container, and it is a
 **different** container from the backend context in the last column: a held, read-only query
 container from the exec lane's pool (``ExecRequest.query``, ``service/world_query.py``), not a
 variation's auxiliary one. That is why it can be the cheap tier and still settle the world —
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
+
+``check_scenario`` is the second such check, on the same pool but in the **scenario** container
+(``service/scenario_query.py``): does the scenario parse there, imports resolved? Only that
+image can answer — ``import osc.<library>`` resolves against the
+``scenario_execution.osc_libraries`` installed where the scenario runs — so it is the one check
+that sees a library the image lacks, which otherwise kills every trial at its first line.
 
 **A check that did not run is not a pass.** ``valid`` covers every check the reply reports on,
 so a world nobody could look at makes it ``false``; ``world_checked`` says which of the three
