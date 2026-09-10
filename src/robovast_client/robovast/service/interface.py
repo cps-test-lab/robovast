@@ -276,6 +276,13 @@ class ExecRequest(BaseModel):
     #: and idle-reaped, and ``keep_alive`` does not apply. See ``container_exec``'s module
     #: docstring for why the two are separate at all.
     query: bool = False
+    #: Replace this call's container instead of joining one that is already held, so the
+    #: image is pulled again on the way in. For the question a held container cannot
+    #: answer: *has the image behind this tag changed?* -- reuse keys on the tag, and the
+    #: tag is what moved. An action rather than part of the container's identity, so the
+    #: next ordinary call reuses whatever this one created. ``reused: false`` in the
+    #: result is the confirmation.
+    fresh: bool = False
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.

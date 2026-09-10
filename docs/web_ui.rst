@@ -1253,8 +1253,10 @@ learn rather than two.
 **Both views use it, and share it.** Pick a run in the Explorer and switch to the Run view and
 that run is what plays; each has an icon button that hands its node to the other — at the right
 of the Explorer's tab row, and left of the Run view's gear, both carrying the icon of where they
-lead. The Data browser is campaign-scoped, so it carries no node: stepping through it and back
-returns to the campaign.
+lead. Beside it in each sits a second one, **Open configuration**, on the campaign the selection
+belongs to (see :ref:`web-ui-campaign-config`) — the campaign's, so it needs no run selected. The
+Data browser is campaign-scoped, so it carries no node: stepping through it and back returns to
+the campaign.
 
 Two things stay out of the path deliberately. The **notebook tab** is a lens on a node rather
 than part of its address, so it is a query parameter (``?tab=``; the built-in Log tab is
@@ -1285,13 +1287,14 @@ real step, so Back returns to the view you left.
 Reading the configuration a campaign ran
 ----------------------------------------
 
-**Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
-frozen ``_config/`` — the configuration it was actually staged with — at
-``#/config/campaign/<campaign_id>``. It appears once the campaign can have that snapshot at
+**Open configuration** opens **Config** on a campaign's frozen ``_config/`` — the configuration
+it was actually staged with — at ``#/config/campaign/<campaign_id>``. It is offered from a
+campaign card's actions menu, and as an icon button in the Explorer and the Run view on the
+campaign whose result is on screen. It appears once the campaign can have that snapshot at
 all and stays for the rest of its life, so the configuration of a campaign that is still
 running can be read while it runs.
 
-Two phases are before that point and the entry is hidden through both. A run stages
+Two phases are before that point and every route to it is hidden through both. A run stages
 ``_config/`` when its **first batch is prepared**; a campaign taken in from an archive has it
 once the bytes land, and is listed at ``importing`` from before the first of them arrives —
 its campaign directory does not exist yet. The run's gate is one-way: the controller advances
@@ -1302,7 +1305,7 @@ from a listing, and only the campaign's phase separates them.
 
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
-write route at all), and the card's link is the only way to it: clicking **Config** in the
+write route at all), and those links are the only way to it: clicking **Config** in the
 sidebar always returns to your workspaces. Where a workspace has its picker, the header
 names what is on screen — ``<campaign_id>/<file>.vast (read-only)`` — and the editor takes
 no cursor at all: a caret blinking in a YAML buffer is an invitation to type an edit that

@@ -781,6 +781,25 @@ def test_a_failed_colcon_build_names_the_package_and_stays_agent_fixable():
     assert "push" not in err.message
 
 
+def test_a_compiler_the_kernel_killed_is_infra_not_a_missing_dependency():
+    """The same misdiagnosis as above, one branch further on.
+
+    Adding the colcon check ahead of the registry heuristics stopped an OOM being reported as a
+    rejected push credential -- and started it being reported as a missing build dependency, which
+    sends the author to `system_packages` where no entry can make a compile fit into memory the
+    builder does not have. The package colcon stopped on is still named; the owner is not.
+    """
+    log = (_COLCON_LOG
+           + "#12 251.8 c++: fatal error: Killed signal terminated program cc1plus\n"
+             "#12 251.8 Failed   <<< nav2_amcl [3min 17s, exited with code 2]\n")
+    err = classify_build_error(log)
+    assert err.phase == "resource"
+    assert err.fixable_by == "infra"
+    assert "nav2_amcl" in err.entry, "still say where it stopped"
+    assert "memory" in err.message
+    assert "system_packages" not in err.message, "no package list fixes an OOM"
+
+
 def test_a_registry_failure_is_only_claimed_when_the_build_got_that_far():
     """A push failure is a statement that the image WAS built, so it needs that to be true."""
     err = classify_build_error(
