@@ -1088,6 +1088,12 @@ _CACHE_CHATTER = re.compile(r"^.*(?:cache manifest|registry cache (?:importer|ex
 #: has to act on instead of the RUN line every ``ros_packages`` build shares.
 _COLCON_FAILED = re.compile(r"^.*?Failed\s+<<<\s+(\S+)", re.MULTILINE)
 
+# A toolchain the kernel killed is not code the compiler rejected, and the difference decides who
+# can fix it: no entry in a package list makes a build fit into memory it does not have. Matched on
+# the toolchain's own wording, never on the bare word "killed", which appears in unrelated chatter.
+_BUILD_OOM = re.compile(r"killed signal terminated program|virtual memory exhausted|oomkilled",
+                        re.IGNORECASE)
+
 
 def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBuildError:
     """Map raw builder output to a structured, actionable error.
@@ -1187,6 +1193,15 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     # source build reaching the registry at all is the exception.
     if _COLCON_FAILED.search(log):
         failed = ", ".join(dict.fromkeys(_COLCON_FAILED.findall(log)))
+        # Which package colcon stopped on is still worth naming, but an OOM names the wrong owner
+        # and the wrong repair: it sends the author to `system_packages`, where nothing helps.
+        if _BUILD_OOM.search(log):
+            return ImageBuildError(
+                phase="resource", fixable_by="infra", entry=failed,
+                message=f"the builder ran out of memory while compiling {failed}: the toolchain "
+                        "was killed, not the source rejected. No package list changes this -- the "
+                        "build needs more memory, or fewer parallel compile jobs",
+                log_tail=tail)
         return ImageBuildError(
             phase="source-build", fixable_by="agent", entry=failed,
             message=f"the colcon build of ros_packages failed on: {failed}. `ros_packages` "
