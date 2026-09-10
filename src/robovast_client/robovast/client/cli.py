@@ -512,18 +512,22 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 @click.argument('workspace', metavar='WORKSPACE')
 @click.argument('vast_path', metavar='[VAST]', required=False, default='')
 @click.option('--no-world-check', is_flag=True,
-              help='Skip the world check, which builds the model in a container. Faster, '
-                   'and the only part of validation that costs more than a moment.')
+              help='Skip the world check, which builds the model in a container.')
+@click.option('--no-scenario-check', is_flag=True,
+              help='Skip parsing the scenario in the image that would run it. That is '
+                   'the only check that sees an import the image does not carry.')
 @target_options
-def workspace_validate(workspace, vast_path, no_world_check, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_validate(workspace, vast_path, no_world_check, no_scenario_check,  # pylint: disable=redefined-outer-name
+                       namespace, context):
     """Check a project before spending any compute on it.
 
     Reports **every** problem at once rather than the first, because they fail
     independently and fixing them one launch at a time is the expensive way to find out.
 
-    Computed service-side: the checks need the config schema, the scenario parser and
-    (unless ``--no-world-check``) the simulator, none of which a client install has. So
-    this works the same whether the service is local or remote.
+    Computed service-side: the checks need the config schema, the scenario image's own
+    parser and (unless ``--no-world-check``) the simulator, none of which a client install
+    has. So this works the same whether the service is local or remote. The two container
+    checks are what cost more than a moment; each has a flag to skip it.
     """
     try:
         from robovast.service.project_push import \
@@ -533,7 +537,8 @@ def workspace_validate(workspace, vast_path, no_world_check, namespace, context)
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             report = client.validate_project(
-                workspace_id, path=vast_path, check_world=not no_world_check)
+                workspace_id, path=vast_path, check_world=not no_world_check,
+                check_scenario=not no_scenario_check)
 
             for problem in report.problems:
                 where = " ".join(p for p in (problem.config, problem.field) if p)
@@ -554,7 +559,7 @@ def workspace_validate(workspace, vast_path, no_world_check, namespace, context)
                 raise click.ClickException(
                     f"{len(unchecked)} check(s) could not run here, so this is not a "
                     "pass: fix what they name, or ask for the narrower verdict with "
-                    "--no-world-check.")
+                    "--no-world-check / --no-scenario-check.")
             click.echo(
                 f"✓ valid: {report.configs} configuration(s) × "
                 f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")

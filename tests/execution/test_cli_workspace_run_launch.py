@@ -208,7 +208,8 @@ class _CheckingClient(_Client):
         self.preview = preview
         self.asked = {}
 
-    def validate_project(self, workspace_id, path="", check_world=True):
+    def validate_project(self, workspace_id, path="", check_world=True,
+                         check_scenario=True):
         self.asked = {"workspace_id": workspace_id, "path": path,
                       "check_world": check_world}
         return self.report

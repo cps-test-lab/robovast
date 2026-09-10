@@ -1659,13 +1659,19 @@ class ValidationReport(BaseModel):
     not look" and "it is fine" are different answers, and a caller that reads only
     ``valid`` must not be handed the second when the first is true.
 
-    ``world_checked`` is the three-state answer for the one check that needs a
-    container: ``True`` it ran and the world loads and compiles, ``False`` it was asked
-    for and could not run, ``None`` it was not asked for (``check_world=False``).
+    ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks
+    that need a container: ``True`` it ran and passed, ``False`` it was asked for and
+    could not run, ``None`` it was not asked for (``check_world`` / ``check_scenario``
+    false, or -- for the scenario -- no scenario file to parse).
     """
 
     valid: bool = False
     world_checked: Optional[bool] = None
+    #: Did the scenario parse in the image that would run it, imports and all? The
+    #: question has no answer off the image: ``import osc.<library>`` resolves against
+    #: what is installed there, so a scenario that parses on the service's host can die
+    #: at its first line in every trial.
+    scenario_checked: Optional[bool] = None
     problems: list[ValidationProblem] = Field(default_factory=list)
     configs: int = 0
     runs_per_config: int = 0
@@ -3133,7 +3139,8 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def validate_project(self, workspace_id: str, path: str = "",
-                         check_world: bool = True) -> ValidationReport:
+                         check_world: bool = True,
+                         check_scenario: bool = True) -> ValidationReport:
         """Collect-all validation of a workspace ``.vast`` project.
 
         Wraps ``config_validation.validate_project_file``. ``path`` selects which
@@ -3141,12 +3148,20 @@ class RobovastInterface(ABC):
         there are several — pass ``path``). Empty ``workspace_id`` → the CWD project.
         Returns every problem at once (schema, scenario file, plugin refs) + counts.
 
-        ``check_world`` also asks the simulator whether the world(s) this campaign would
-        load actually load and compile — the one check here that runs a container, and the
-        only thing that catches a world which would fail every trial of the sweep. It runs
-        only once the cheap checks pass, and the container is held, so a repeat validation
-        of the same project pays an exec rather than a container start. Pass ``False``
-        while iterating on YAML to keep the call sub-second.
+        Two checks run a container, and each catches a failure that is otherwise
+        per-trial — discovered after the pull and the schedule, once per run.
+
+        ``check_world`` asks the simulator whether the world(s) this campaign would load
+        actually load and compile. It runs only once the cheap checks pass.
+
+        ``check_scenario`` asks the scenario image to parse the scenario, imports and all.
+        That question has no answer off the image: ``import osc.<library>`` resolves
+        against what is installed there, so a scenario that parses on the service's host
+        can die at its first line in every trial while the campaign still reports finished.
+
+        Both containers are held, so a repeat validation of the same project pays an exec
+        rather than a container start. Pass ``False`` while iterating on YAML to keep the
+        call sub-second.
         """
 
     @abstractmethod

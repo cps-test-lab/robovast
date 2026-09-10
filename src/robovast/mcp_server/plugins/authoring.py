@@ -185,43 +185,64 @@ def _unchecked_world_advisory(config_path: str) -> list:
                         "check_world=False for the narrower verdict this lane can give."}]
 
 
-def validate_project(address: str, check_world: bool = True) -> dict:
+def _unchecked_scenario_advisory() -> list:
+    """Advisory for the local-file lane, which has no scenario image to parse in.
+
+    Unconditional where the world advisory is not: every campaign has a scenario, so
+    there is always something that went unparsed.
+    """
+    return [{"stage": "scenario", "config": None, "severity": "unchecked",
+             "field": "execution.scenario_file",
+             "message": "whether this campaign's scenario parses in the image that would "
+                        "run it was NOT checked: `import osc.<library>` resolves against "
+                        "what is installed there, and this address was read as a plain "
+                        "file with no image to ask. Validate through a workspace address "
+                        "(/sources/<workspace_id>/<path>) to have it checked, or pass "
+                        "check_scenario=False for the narrower verdict this lane can "
+                        "give."}]
+
+
+def validate_project(address: str, check_world: bool = True,
+                     check_scenario: bool = True) -> dict:
     """Check a ``.vast`` before running it. Reports **every** problem in one pass.
 
     Covers YAML, schema, the scenario file and its parameter references, and every plugin
     reference (variation types and their parameters, postprocessing commands, the search
-    strategy) — installed entry points and local ``./path.py:Class`` refs alike — each tagged
-    with its config block and field, so the file is fixed in as few iterations as it can be.
+    strategy) — entry points and local ``./path.py:Class`` refs alike — each tagged with its
+    config block and field, so the file is fixed in as few iterations as it can be.
 
-    ``valid: true`` means every check this reports on ran **and** passed: the file is
-    well-formed, every reference resolves, and the world loads and compiles. A check that
-    could not run here makes it ``false`` and arrives as a problem with
-    ``severity: "unchecked"``, so "not verified" never reads as "fine" — ``world_checked``
-    (true / false / null when not requested) says which happened to the one check that needs
-    a container. An ``unchecked`` problem is not a defect in the file: its message names what
-    would settle it, and ``advice`` problems leave ``valid`` true. It does **not** mean a
-    derived image will build — that failure passes validation and then costs a full apt+pip
-    cycle, so if a container adds packages, read
+    ``valid: true`` means every check this reports on ran **and** passed. A check that could
+    not run makes it ``false`` and arrives as a problem with ``severity: "unchecked"``, so
+    "not verified" never reads as "fine" — ``world_checked`` and ``scenario_checked``
+    (true / false / null when not requested) say which happened to the two container
+    checks. ``advice`` problems leave ``valid`` true. It does **not** mean a derived image
+    will build; if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
-    **The world check is the only one here that runs a container**, and the only one catching a
-    world that would fail *every trial* after the image pull. Failures are ``world`` problems
-    carrying the simulator's own message. The container is held: a repeat check is ~1.5–2.5 s, a
-    cold one ~2–3 s local / 7–15 s cluster. ``check_world=False`` skips it.
+    **Two checks run a container**, each catching a failure that is otherwise per-trial —
+    met after the pull, once per run. Both held: a repeat is ~1.5–2.5 s, a cold one ~2–3 s
+    local / 7–15 s cluster.
 
-    **Each problem names what it could not settle and what would**: an uninstalled ``plugins:``
-    spec names ``preview_configurations(limit=1)`` (which composes, and so *installs* them), as
-    does a variation needing an aux container — composing is what runs one; a world only an
-    unbuilt image could describe names
-    ``build_experiment_image``, and says it was **not** checked rather than passing.
+    - ``check_world``: does the world load and its model compile? ``world`` problems carry
+      the simulator's own message.
+    - ``check_scenario``: does the scenario parse in the image that runs it, imports and
+      all? The only check that sees an ``import osc.<library>`` the image lacks — which
+      otherwise kills every trial at its first line while the campaign reports finished.
+      ``scenario`` problems carry the parser's message and position.
+
+    **Each problem names what it could not settle and what would**: an uninstalled
+    ``plugins:`` spec names ``preview_configurations(limit=1)`` (which composes, and so
+    *installs* them), as does a variation needing an aux container; a world only an unbuilt
+    image could describe names ``build_experiment_image``.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
     Returns:
-        ``{valid, world_checked, configs, runs_per_config, total_trials, problems, lane}``,
-        each problem ``{stage, config, field, message, severity}`` with ``severity`` one of
-        ``error`` / ``advice`` / ``unchecked``. A clean campaign returns no world entry.
+        ``{valid, world_checked, scenario_checked, configs, runs_per_config,
+        total_trials, problems, lane}``, each problem ``{stage, config, field, message,
+        severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
+        clean campaign returns no world or scenario entry.
     """
     from robovast.common.config_validation import validate_project_file
     from robovast.service.interface import ValidationReport
@@ -242,15 +263,22 @@ def validate_project(address: str, check_world: bool = True) -> dict:
                           "world_checked": False if advisory else None,
                           "valid": bool(report.get("valid")) and not advisory,
                           "problems": list(report.get("problems") or []) + advisory}
+            if check_scenario:
+                advisory = _unchecked_scenario_advisory()
+                report = {**report, "scenario_checked": False,
+                          "valid": bool(report.get("valid")) and not advisory,
+                          "problems": list(report.get("problems") or []) + advisory}
             return {**ValidationReport.model_validate(report).model_dump(),
                     "lane": "local file"}
         client = service_access.client_or_local()
         workspace_id, rel_path = target
         report = client.validate_project(
-            _resolve_workspace_id(client, workspace_id), rel_path, check_world)
+            _resolve_workspace_id(client, workspace_id), rel_path, check_world,
+            check_scenario)
         return {**report.model_dump(), "lane": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"valid": False, "world_checked": None, "configs": 0,
+        return {"valid": False, "world_checked": None, "scenario_checked": None,
+                "configs": 0,
                 "runs_per_config": 0, "total_trials": 0,
                 "problems": [{"stage": "project", "config": None, "field": None,
                               "severity": "error", "message": str(e)}]}
