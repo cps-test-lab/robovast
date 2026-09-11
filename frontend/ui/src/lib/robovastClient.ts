@@ -385,23 +385,25 @@ export const resultsUrl = (campaignId: string, path: string) =>
 export const sourcesUrl = (workspaceId: string, path: string) =>
   `/sources/${encodeURIComponent(workspaceId)}/${encodePath(path)}`
 
+/** The error a failed response carries: FastAPI's `{detail}`, else the status text. */
+async function errorFrom(res: Response): Promise<RobovastError> {
+  let detail = res.statusText
+  try {
+    const j = (await res.json()) as { detail?: string }
+    if (j?.detail) detail = j.detail
+  } catch {
+    /* non-JSON body */
+  }
+  return new RobovastError(res.status, detail)
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!res.ok) {
-    // FastAPI errors carry {detail}; fall back to the status text.
-    let detail = res.statusText
-    try {
-      const j = (await res.json()) as { detail?: string }
-      if (j?.detail) detail = j.detail
-    } catch {
-      /* non-JSON body */
-    }
-    throw new RobovastError(res.status, detail)
-  }
+  if (!res.ok) throw await errorFrom(res)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
@@ -662,7 +664,7 @@ export const robovast = {
       method: 'PUT',
       body: data,
     })
-    if (!res.ok) throw new RobovastError(res.status, `upload failed: ${res.statusText}`)
+    if (!res.ok) throw await errorFrom(res)
     return (await res.json()) as FileMeta
   },
 
@@ -677,16 +679,7 @@ export const robovast = {
       method: 'PUT',
       body: file,
     })
-    if (!res.ok) {
-      let detail = res.statusText
-      try {
-        const j = (await res.json()) as { detail?: string }
-        if (j?.detail) detail = j.detail
-      } catch {
-        /* non-JSON body */
-      }
-      throw new RobovastError(res.status, detail)
-    }
+    if (!res.ok) throw await errorFrom(res)
     return (await res.json()) as StagedArchive
   },
 
@@ -847,16 +840,7 @@ export const robovast = {
     const res = await fetch(
       `${BASE}/campaigns/${encodeURIComponent(campaignId)}/notebook?${params.toString()}`,
     )
-    if (!res.ok) {
-      let detail = res.statusText
-      try {
-        const j = (await res.json()) as { detail?: string }
-        if (j?.detail) detail = j.detail
-      } catch {
-        /* non-JSON body */
-      }
-      throw new RobovastError(res.status, detail)
-    }
+    if (!res.ok) throw await errorFrom(res)
     return res.text()
   },
 

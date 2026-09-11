@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
+from robovast.common.errors import STORAGE_FULL_DETAIL, is_storage_full
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
@@ -111,6 +112,21 @@ def _sse_pull_limiter():
 
 
 _SSE_PULL_LIMITER = _sse_pull_limiter()
+
+
+def _refusal_record_limiter():
+    """Worker-thread budget for writing refusal records, apart from the shared default.
+
+    A refusal is recorded before it is answered, so a record that waits for a worker waits
+    in front of the caller. Kept off the pool the sync routes use, a burst of slow routes
+    cannot delay a refusal, and a stalled record store cannot take the routes' threads.
+    Small, because most refusals are repeats that return before touching the store.
+    """
+    import anyio  # pylint: disable=import-outside-toplevel
+    return anyio.CapacityLimiter(2)
+
+
+_REFUSAL_RECORD_LIMITER = _refusal_record_limiter()
 
 #: Routes FastAPI registers for itself. Real, but they describe FastAPI, not this service.
 FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -393,7 +409,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
             ExecPathUnavailable, ObjectStoreUnreachableError)
         try:
-            return fn()
+            try:
+                return fn()
+            except Exception as e:
+                # Ahead of every class-based arm below: a full disk is not bad input, an
+                # unknown id or a conflict, even when a layer beneath translated it into one.
+                if is_storage_full(e):
+                    logger.warning("storage full: %s", e)
+                    raise HTTPException(status_code=507, detail=STORAGE_FULL_DETAIL) from e
+                raise
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
@@ -509,16 +533,31 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         http_exception_handler, request_validation_exception_handler)
     from fastapi.exceptions import \
         RequestValidationError  # pylint: disable=import-outside-toplevel
-    from fastapi.responses import \
-        PlainTextResponse  # pylint: disable=import-outside-toplevel
+    from fastapi.responses import (  # pylint: disable=import-outside-toplevel
+        JSONResponse, PlainTextResponse)
     from starlette.exceptions import \
         HTTPException as StarletteHTTPException  # pylint: disable=import-outside-toplevel
+
+    async def _record_refusal_off_loop(status: int, detail, request: Request) -> None:
+        """:func:`_record_refusal`, on a worker thread rather than the event loop.
+
+        The record is a SQLite commit that may wait seconds on a busy lock, and a disk that
+        is full or stalled makes every such write slow at once. On the loop, each refusal
+        would freeze every other request -- ``/healthz`` included, which is how a service
+        that is only short of disk gets restarted by its liveness probe.
+        """
+        import functools  # pylint: disable=import-outside-toplevel
+
+        import anyio  # pylint: disable=import-outside-toplevel
+        await anyio.to_thread.run_sync(
+            functools.partial(_record_refusal, status, detail, actor=_actor_of(request),
+                              method=request.method, path=request.url.path),
+            limiter=_REFUSAL_RECORD_LIMITER)
 
     @app.exception_handler(StarletteHTTPException)
     async def _refused_http(request: Request, exc: StarletteHTTPException):
         """Everything ``_guard`` maps, plus every ``HTTPException`` a route raises itself."""
-        _record_refusal(exc.status_code, exc.detail, actor=_actor_of(request),
-                        method=request.method, path=request.url.path)
+        await _record_refusal_off_loop(exc.status_code, exc.detail, request)
         return await http_exception_handler(request, exc)
 
     @app.exception_handler(RequestValidationError)
@@ -535,8 +574,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 for err in exc.errors()) or str(exc)
         except Exception:  # noqa: BLE001 - the record must not depend on the error's shape
             message = str(exc)
-        _record_refusal(422, message, actor=_actor_of(request),
-                        method=request.method, path=request.url.path)
+        await _record_refusal_off_loop(422, message, request)
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
@@ -547,9 +585,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         traceback still reaches the service log, which is where a traceback is readable.
         What belongs in a durable record is the one line that says which call died and how,
         for a restart that has already thrown the log away.
+
+        A full disk is the exception: it is a 507 with the sentence ``_guard`` gives, so a
+        route that wrote outside ``_guard`` tells its caller the same thing one inside does.
         """
-        _record_refusal(500, f"{type(exc).__name__}: {exc}", actor=_actor_of(request),
-                        method=request.method, path=request.url.path)
+        await _record_refusal_off_loop(500, f"{type(exc).__name__}: {exc}", request)
+        if is_storage_full(exc):
+            return JSONResponse({"detail": STORAGE_FULL_DETAIL}, status_code=507)
         return PlainTextResponse("Internal Server Error", status_code=500)
 
     # -- SSE log streaming --------------------------------------------------
@@ -1242,12 +1284,16 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         (``curl -X PUT --data-binary @file``), so run files, notebooks and
         binaries never pass through an LLM's context.
         """
+        import anyio  # pylint: disable=import-outside-toplevel
         body = await req.body()
         redeem = getattr(impl, "redeem_upload", None)
         if redeem is None:
             raise HTTPException(status_code=501,
                                 detail="this service has no workspace store")
-        return _guard(lambda: redeem(token, body))
+        # Write and hash on a worker thread: this route is async to read the body, and a
+        # write on the event loop would stall every other request for as long as the disk
+        # takes to answer.
+        return await anyio.to_thread.run_sync(lambda: _guard(lambda: redeem(token, body)))
 
     # -- taking a campaign in: grant + streamed PUT, then one import op ------
 
@@ -1274,20 +1320,29 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         Stores the bytes and stops there: ``POST /campaigns/import`` is the import, for this
         and every other caller, so the operation has a single implementation.
         """
-        staged = _guard(lambda: impl.redeem_archive_upload(token))
+        # Every file operation on a worker thread: a chunk written on the event loop holds
+        # every other request for as long as the disk takes, and a filling disk takes long.
+        import anyio  # pylint: disable=import-outside-toplevel
+        staged = await anyio.to_thread.run_sync(
+            lambda: _guard(lambda: impl.redeem_archive_upload(token)))
         size = 0
         try:
-            with open(staged, "wb") as fh:
+            async with await anyio.open_file(staged, "wb") as fh:
                 async for chunk in req.stream():
-                    fh.write(chunk)
+                    await fh.write(chunk)
                     size += len(chunk)
         except OSError as e:
-            staged.unlink(missing_ok=True)
-            raise HTTPException(status_code=500,
-                                detail=f"could not store the archive: {e}") from e
+            await anyio.Path(staged).unlink(missing_ok=True)
+            if is_storage_full(e):
+                raise HTTPException(status_code=507, detail=STORAGE_FULL_DETAIL) from e
+            # The reason without the path: where the service stages uploads is nothing the
+            # caller can use.
+            raise HTTPException(
+                status_code=500,
+                detail=f"could not store the archive: {e.strerror or type(e).__name__}") from e
         except Exception:
             # A dropped connection leaves a truncated tarball that would only fail at import.
-            staged.unlink(missing_ok=True)
+            await anyio.Path(staged).unlink(missing_ok=True)
             raise
         return StagedArchive(path=str(staged), size=size)
 
