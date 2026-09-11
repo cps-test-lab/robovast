@@ -105,6 +105,12 @@ _IMAGE_WAIT_REASONS = ("ContainerCreating", "PodInitializing", "ErrImagePull", "
                       "ImageInspectError", "ErrImageNeverPull", "RegistryUnavailable")
 
 
+#: How often :func:`_aux_pending_logger` repeats a reason that has not changed. Long enough
+#: that a pod which comes up normally says its reason once, short enough that a reader
+#: deciding whether to wait or intervene gets a second line before they give up.
+_AUX_WAIT_REPEAT_S = 30.0
+
+
 def _aux_pending_logger(tag):
     """Say what a composition's aux pod is waiting on, while it is still waiting.
 
@@ -114,17 +120,24 @@ def _aux_pending_logger(tag):
     and its worker thread's log is the channel — which is where the reason belongs anyway,
     since it outlives the run.
 
-    Only a *change* is logged: ``wait_pod_ready`` polls every two seconds, and a repeated
-    line is how a log stops being read.
+    A change is logged at once; an unchanged reason is repeated every
+    :data:`_AUX_WAIT_REPEAT_S` with how long the wait has run. ``wait_pod_ready`` polls
+    every two seconds, so logging every poll is how a log stops being read — but logging
+    only changes is what makes a pull of several minutes indistinguishable from a hung
+    campaign, since the reason arrives once, seconds in, and then nothing until it ends.
+    The elapsed figure is the part that separates the two.
     """
-    last = []
+    started = time.monotonic()
+    state = {"reason": "", "said": 0.0}
 
     def report(reason: str) -> None:
         current = reason or "pending"
-        if last and last[0] == current:
+        now = time.monotonic()
+        if current == state["reason"] and now - state["said"] < _AUX_WAIT_REPEAT_S:
             return
-        last[:] = [current]
-        logger.info("Aux pod for %s is not ready yet: %s", tag, current)
+        state.update(reason=current, said=now)
+        logger.info("Aux pod for %s is not ready yet after %ds: %s",
+                    tag, int(now - started), current)
 
     return report
 
@@ -1091,7 +1104,7 @@ class ClusterService(LocalTransport):
         return False
 
     @contextlib.contextmanager
-    def _aux_runner_context(self, tag, project, *, hold=False):
+    def _aux_runner_context(self, tag, project, *, hold=False, should_stop=None):
         """The container-runner factory for this thread, over *tag*'s span.
 
         Entered inside the thread that composes, so the factory (a ContextVar) is scoped to
@@ -1110,6 +1123,11 @@ class ClusterService(LocalTransport):
         The two spans differ only in who owns the container's death — see
         :meth:`LocalTransport._aux_runner_context`. A campaign's pods are deleted here;
         a held one is released to the exec manager's reaper.
+
+        *should_stop* ends the pod's ready wait for a campaign that was stopped while it
+        was waiting. That wait is the longest thing composition does on this lane — a
+        helper image is pulled inside it — so without it a stop is not seen until the pull
+        either finishes or times out, minutes later. A held span has no campaign to stop.
         """
         del project
         from robovast.common.config_generation import set_container_runner_factory
@@ -1129,6 +1147,7 @@ class ClusterService(LocalTransport):
                            kube_context=self.kube_context,
                            pull_secret=self._registry_pull_secret(),
                            on_pending=_aux_pending_logger(tag),
+                           should_stop=should_stop,
                            **self._aux_store_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
             try:
@@ -3168,10 +3187,17 @@ class ClusterService(LocalTransport):
         batch wait loop unblocks. Label-scoped to this campaign's Jobs and pods, and
         nothing cluster-wide is paused for the duration, so a concurrent campaign keeps
         being admitted while this one is torn down.
+
+        ``aux=False``: the driver is in *this* process and its composition span owns the
+        campaign's aux pods, deleting them when it ends. Reaping them here removes a pod
+        the span may be exec'ing into, and the exec then fails with a 404 on the
+        ``pods/exec`` subresource — reported as a simulator that could not be asked about
+        the world, on a campaign that was merely stopped. The reaper keeps that job (it
+        collects a pod whose span is gone); a stop must not do it.
         """
         from .cluster_execution import cleanup_cluster_campaign
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
-                                 context=self.kube_context)
+                                 context=self.kube_context, aux=False)
 
     def _adopts_on_restart(self) -> bool:
         """True: this lane's campaigns outlive the process, and the next one adopts them.
