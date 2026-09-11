@@ -93,6 +93,34 @@ def _flatten(group: str, payload: dict) -> list:
     return payload.get("items", [])
 
 
+def _catalog_json(stdout: str) -> dict:
+    """The JSON document in *stdout*, ignoring whatever else the container printed.
+
+    The catalog command's own output is clean JSON, but it is not the only thing on the
+    stream: an image's entrypoint announces itself there too. That makes a whole-stream
+    parse the wrong reading of the output -- and a silent one, because an entrypoint line
+    opens with ``[``, which is a well-formed array start, so the failure arrives as a JSON
+    error about the second character rather than as anything naming the banner.
+
+    So the document is located rather than assumed: the first offset a complete JSON
+    *object* decodes from. An object and not any value, because both catalogs return one --
+    accepting a bare array would let a bracketed log line win over the real document.
+
+    Raises :class:`ValueError` when the output carries no JSON object at all.
+    """
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stdout):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(stdout, index)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("no JSON object in the output")
+
+
 def _address_to_request_kwargs(address: str) -> dict:
     """``/sources/<workspace_id>/<path>`` -> kwargs for :class:`ExecRequest`, or raise.
 
@@ -164,9 +192,17 @@ def _fetch(group: str, address: str) -> dict:
         detail = (result.stderr or result.stdout or "").strip()[:400]
         return {"error": f"introspecting {group} in {image} failed: {detail or '(no output)'}"}
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        return {"error": f"could not parse {group} catalog output from {image}: {e}"}
+        payload = _catalog_json(result.stdout)
+    except ValueError:
+        # The captured output, not just the decoder's complaint: the command exited 0, so
+        # whatever is on the stream is the only evidence of what happened, and a message
+        # that withholds it leaves the caller with nothing to act on.
+        seen = " ".join((result.stdout or "").split())[:300] or "(no output)"
+        return {"error": (
+            f"no {group} catalog in the output from {image} -- the command exited 0 but "
+            f"printed no JSON object. Run it yourself to see the whole stream: "
+            f"exec_in_container(container={_CATALOG_CONTAINERS[group]!r}, "
+            f"command={_CATALOG_COMMANDS[group]!r}). Output began: {seen}")}
 
     items = _flatten(group, payload)
     with _cache_lock:
