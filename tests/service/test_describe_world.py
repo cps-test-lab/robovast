@@ -169,6 +169,55 @@ def test_a_deployment_that_cannot_exec_is_passed_through_unwrapped(monkeypatch):
             {"config": "roqsim_scenes:depot"}, ".", targets="*")
 
 
+def test_an_image_that_is_not_built_keeps_the_step_that_would_build_it(monkeypatch):
+    """Wrapped, it arrives as "could not describe this world in <image>" with the lane named
+    as the remedy -- and a caller then checks a lane that is working while the one command
+    that would settle it, building the image, has been thrown away."""
+    from robovast.common import config_generation
+    from robovast.common.errors import ImageNotBuilt
+
+    class _Runner:
+        def run(self, command, sink):
+            del command, sink
+            raise ImageNotBuilt("the image for container 'simulation' is not built",
+                                next_step="build_experiment_image(container='simulation')")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda spec, **kwargs: _Runner())
+    with pytest.raises(ImageNotBuilt) as raised:
+        describe_world_payload(
+            {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
+                                                           "image": "img:1"}}},
+            {"config": "roqsim_scenes:depot"}, ".", targets="*")
+    assert raised.value.next_step == "build_experiment_image(container='simulation')"
+
+
+def test_the_pre_check_stays_advisory_when_the_image_is_not_built(caplog, monkeypatch):
+    """Advisory like the arm above, and with no retry: describing the world again without
+    the overrides needs the same image and is refused identically."""
+    from robovast.common import config_generation
+    from robovast.common.config_generation import _check_sim_against_world
+    from robovast.common.errors import ImageNotBuilt
+
+    calls = []
+
+    def _unavailable(*_a, **_kw):
+        calls.append(1)
+        raise ImageNotBuilt("the image for container 'simulation' is not built")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _unavailable)
+    with caplog.at_level(logging.WARNING):
+        _check_sim_against_world(
+            {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
+            [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
+    assert "were not pre-checked" in caplog.text
+    assert "is not built" in caplog.text
+    assert len(calls) == 1, "the second attempt needs the same image and fails the same way"
+
+
 def test_the_pre_check_stays_advisory_when_nothing_can_exec(caplog, monkeypatch):
     """It is advisory by design (a wrong override is still refused in the container), so an
     exec path that does not stream must not turn a campaign that would have run into one

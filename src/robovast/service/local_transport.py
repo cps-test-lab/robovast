@@ -4618,13 +4618,21 @@ class LocalTransport(RobovastInterface):
 
     def _with_scenario_check(self, workspace_id: str, path: str, project,
                              result: dict) -> dict:
-        """*result* plus the verdict on parsing the scenario in the image that runs it.
+        """*result* plus the verdict on parsing and resolving the scenario in the image that
+        runs it.
 
         The failure this catches is invisible to every cheap check and fatal to every
         trial: an ``import osc.<library>`` resolves against what is installed in the
         scenario image, so a scenario that parses on the service's host can die at its
         first line in the container -- once per run, after the pull and the schedule, with
-        the campaign reporting finished.
+        the campaign reporting finished. The same is true of a call the action's own
+        signature refuses, which is why the check goes as far as RESOLVING the model and not
+        merely building it.
+
+        What it still cannot see is whatever the scenario does after its first parameter
+        with no value, because the values are the configuration's and this check has none.
+        Arguments are bound before a parameter's value is needed, so the invocations are
+        reached; a defect that is only expressible in terms of a parameter's value is not.
 
         Like the world check, it is held (a repeat validation costs an exec, not a
         container start) and its own failure is an ``unchecked`` problem rather than a
@@ -4776,6 +4784,7 @@ class LocalTransport(RobovastInterface):
         import yaml
 
         from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
+        from robovast.common.errors import ActionableError
         from robovast.common.simulators import backend_name, campaign_sim_block
         project = self._resolve_project(workspace_id, path)
         with open(project.config_path, encoding="utf-8") as handle:
@@ -4802,6 +4811,14 @@ class LocalTransport(RobovastInterface):
             payload, image = describe_world_payload(
                 execution, block, str(Path(project.config_path).parent),
                 entities=entities, targets=targets)
+        except ActionableError as exc:
+            # Same 400 as the refusal below, and for the same reason -- the caller asked for
+            # a description that cannot be given. Its own arm because ActionableError is not
+            # a RuntimeError: left to escape it is the one refusal here that reaches a client
+            # as a bare 500, and the next step it carries has to travel in the detail to
+            # survive the HTTP boundary at all.
+            raise ValueError(
+                f"{exc} Next: {exc.next_step}" if exc.next_step else str(exc)) from None
         except WorldQueryUnavailable as exc:
             raise ValueError(str(exc)) from None
         finally:
