@@ -30,7 +30,10 @@ container round trip — three reasons this is its own pair, not a mode of the e
   list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in
-this process's memory, keyed by ``(resolved image, group)`` -- a real cache, but scoped to
+this process's memory, keyed by ``(resolved image, group)`` -- and, where a group's list is
+only a summary, one entry's detail by ``(resolved image, group, name)``. The
+first request for a given plugin's detail therefore costs a round trip, which is what a list fat
+enough to carry every plugin's parameters would have charged every caller of the *list* instead -- a real cache, but scoped to
 this MCP server process rather than the (potentially remote, potentially shared-by-many)
 ``robovast-service`` it talks to: every *other* MCP session paying for its own first fetch
 per image is a known, accepted narrowing, not an oversight. Resolving the image is itself a
@@ -40,6 +43,7 @@ starts no container, so a cache hit costs one cheap round trip, not zero.
 
 import json
 import logging
+import re
 import threading
 import time
 
@@ -64,6 +68,20 @@ _CATALOG_COMMANDS = {
     "roqsim_plugins": "python3 -m roqsim.introspection list",
 }
 
+#: How a group answers a request for ONE entry's detail. ``scenario_execution``'s list already
+#: carries every field a detail call returns, so that group is answered from the cached list and
+#: has no entry here. ``roqsim.introspection list`` is a summary -- name, kind, doc, flags,
+#: package -- so a plugin's parameters exist only behind ``describe``, and filtering the list for
+#: them returned an entry with no parameters at all.
+_DETAIL_COMMANDS = {
+    "roqsim_plugins": "python3 -m roqsim.introspection describe",
+}
+
+#: An entry-point name, which is all a detail command is ever given. The name reaches a shell in
+#: the container, so it is checked against this rather than quoted: a name outside it is a
+#: mistake in the call, and refusing is a better answer than escaping it and asking anyway.
+_ENTRY_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+
 #: Which container answers each group. ``roqsim`` lives in the *simulator's* image, not the
 #: scenario's, and asking the default container for it got "roqsim: command not found" on
 #: any project whose simulator image comes from the family.
@@ -75,6 +93,8 @@ _CATALOG_CONTAINERS = {
 _cache_lock = threading.Lock()
 #: (image, group) -> flattened items. Process-lifetime only -- see module docstring.
 _cache: dict[tuple, list] = {}
+#: (image, group, name) -> one entry's full detail, for the group whose list cannot carry it.
+_detail_cache: dict[tuple, dict] = {}
 
 
 def _flatten(group: str, payload: dict) -> list:
@@ -227,7 +247,68 @@ def _list(group: str, address: str, query: str) -> dict:
             "image": fetched["image"], "cache": fetched["cache"]}
 
 
+def _fetch_detail(group: str, address: str, name: str) -> dict:
+    """One entry's full detail, asked of the image BY NAME and cached per name.
+
+    For the group whose list is a summary. Costs a container round trip the first time a given
+    name is asked for, which is what the alternative -- a list fat enough to carry every
+    plugin's parameters -- would have charged every caller of the list instead.
+    """
+    from robovast.service.interface import ExecRequest
+
+    if not _ENTRY_NAME_RE.fullmatch(name):
+        return {"error": f"{name!r} is not an entry-point name"}
+    try:
+        request_kwargs = _address_to_request_kwargs(address)
+    except ValueError as e:
+        return {"error": str(e)}
+    client = service_access.service_client()
+    if client is None:
+        return {"error": NO_SERVICE}
+    try:
+        resolved = client.resolve_image(
+            ExecRequest(**request_kwargs, container=_CATALOG_CONTAINERS[group]))
+    except Exception as e:  # noqa: BLE001
+        return service_access.error_result(e)
+    image = resolved.image
+
+    key = (image, group, name)
+    with _cache_lock:
+        cached = _detail_cache.get(key)
+    if cached is not None:
+        return {"item": cached, "image": image, "cache": {"hit": True, "seconds": 0.0}}
+
+    started = time.monotonic()
+    try:
+        result = client.exec_in_container(ExecRequest(
+            **request_kwargs, command=f"{_DETAIL_COMMANDS[group]} {name}",
+            container=_CATALOG_CONTAINERS[group], query=True))
+    except Exception as e:  # noqa: BLE001
+        return service_access.error_result(e)
+    elapsed = time.monotonic() - started
+
+    # The exit code is not the verdict here: an unknown name exits non-zero AND prints the
+    # reason as JSON, so the output is read first and the code only consulted when it carries
+    # nothing.
+    try:
+        payload = _catalog_json(result.stdout)
+    except ValueError:
+        detail = (result.stderr or result.stdout or "").strip()[:400]
+        return {"error": f"describing {name!r} in {image} failed: {detail or '(no output)'}"}
+    if "error" in payload:
+        return {"error": f"no {group.replace('_', ' ')} entry named {name!r} in {image}"}
+
+    with _cache_lock:
+        _detail_cache[key] = payload
+    return {"item": payload, "image": image, "cache": {"hit": False, "seconds": elapsed}}
+
+
 def _details(group: str, address: str, name: str) -> dict:
+    if group in _DETAIL_COMMANDS:
+        fetched = _fetch_detail(group, address, name)
+        if "error" in fetched:
+            return fetched
+        return {**fetched["item"], "image": fetched["image"], "cache": fetched["cache"]}
     fetched = _fetch(group, address)
     if "error" in fetched:
         return fetched
@@ -256,8 +337,8 @@ def list_roqsim_plugins(address: str, query: str = "") -> dict:
 
 
 def get_roqsim_plugin_details(address: str, name: str) -> dict:
-    """One plugin's detail, parsed from its `Config::` block. Same shape as
-    `get_scenario_action_details`.
+    """One plugin's config keys -- name, example and doc each -- plus a typed schema where the
+    plugin declares one. What a world YAML `components:` entry accepts.
     """
     return _details("roqsim_plugins", address, name)
 

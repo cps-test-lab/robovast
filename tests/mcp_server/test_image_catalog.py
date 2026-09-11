@@ -51,12 +51,41 @@ class _FakeClient:
         return ExecResult(exit_code=0, stdout=json.dumps(self.payload))
 
 
+#: What ``roqsim.introspection describe`` returns: the summary fields the list carries, PLUS
+#: the config keys, which are the whole reason to ask.
+_PLUGIN_DETAIL = {
+    "name": "contact_monitor", "kind": "plugin",
+    "doc": "Observation plugin: report when an entity touches something.",
+    "flags": ["parallel_safe"], "package": "roqsim",
+    "parameters": [
+        {"name": "ignore", "example": "[floor]", "doc": "geoms excluded from the check"},
+        {"name": "min_force", "example": "1.0", "doc": "contacts below this are ignored"},
+    ],
+}
+
+
+class _DescribingClient(_FakeClient):
+    """Answers ``list`` with the summary and ``describe <name>`` with the full entry."""
+
+    def exec_in_container(self, request):
+        self.exec_calls.append(request)
+        if "describe" in request.command:
+            name = request.command.rsplit(" ", 1)[-1]
+            if name != _PLUGIN_DETAIL["name"]:
+                return ExecResult(
+                    exit_code=1, stdout=json.dumps({"error": f"no plugin named {name!r}"}))
+            return ExecResult(exit_code=0, stdout=json.dumps(_PLUGIN_DETAIL))
+        return ExecResult(exit_code=0, stdout=json.dumps(_PLUGINS_PAYLOAD))
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """The catalog cache is module-level and process-lifetime -- reset between tests."""
     image_catalog._cache.clear()
+    image_catalog._detail_cache.clear()
     yield
     image_catalog._cache.clear()
+    image_catalog._detail_cache.clear()
 
 
 @pytest.fixture
@@ -139,7 +168,8 @@ def test_get_details_unknown_name_is_error(service):
 
 
 def test_get_roqsim_plugin_details_full_shape(monkeypatch):
-    fake = _FakeClient(payload=_PLUGINS_PAYLOAD)
+    """The summary fields survive; the config keys they are asked alongside are below."""
+    fake = _DescribingClient()
     monkeypatch.setattr(service_access, "service_client", lambda: fake)
     out = image_catalog.get_roqsim_plugin_details(
         address="/sources/ws-1/w.vast", name="contact_monitor")
@@ -250,3 +280,64 @@ def test_output_carrying_no_json_names_the_command_that_shows_the_stream(monkeyp
     assert "exec_in_container" in out["error"]
     assert "roqsim.introspection" in out["error"]
     assert "entrypoint" in out["error"]
+
+
+# -- a summary list cannot answer a detail request --------------------------------
+
+def test_a_roqsim_plugins_detail_carries_its_config_keys(monkeypatch):
+    """The tool says it reports a plugin's Config:: keys; filtering the summary list never did."""
+    fake = _DescribingClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    out = image_catalog.get_roqsim_plugin_details(
+        address="/sources/ws-1/w.vast", name="contact_monitor")
+    assert "error" not in out
+    assert [p["name"] for p in out["parameters"]] == ["ignore", "min_force"]
+    assert out["image"] == fake.image
+
+
+def test_a_detail_is_asked_for_by_name_not_filtered_from_the_list(monkeypatch):
+    fake = _DescribingClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    image_catalog.get_roqsim_plugin_details(
+        address="/sources/ws-1/w.vast", name="contact_monitor")
+    assert [c.command for c in fake.exec_calls] == [
+        "python3 -m roqsim.introspection describe contact_monitor"]
+
+
+def test_a_second_request_for_the_same_plugin_is_cached(monkeypatch):
+    fake = _DescribingClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    for _ in range(2):
+        out = image_catalog.get_roqsim_plugin_details(
+            address="/sources/ws-1/w.vast", name="contact_monitor")
+    assert len(fake.exec_calls) == 1
+    assert out["cache"]["hit"] is True
+
+
+def test_an_unknown_plugin_is_reported_even_though_describe_exits_nonzero(monkeypatch):
+    """``describe`` says why on stdout and exits 1, so the code is not the verdict."""
+    monkeypatch.setattr(service_access, "service_client", lambda: _DescribingClient())
+    out = image_catalog.get_roqsim_plugin_details(
+        address="/sources/ws-1/w.vast", name="no_such_plugin")
+    assert "no roqsim plugins entry named 'no_such_plugin'" in out["error"]
+
+
+def test_a_name_that_is_not_an_entry_point_name_is_refused_before_the_container(monkeypatch):
+    """The name reaches a shell in the container; anything shell-shaped is a mistake in the call."""
+    fake = _DescribingClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    out = image_catalog.get_roqsim_plugin_details(
+        address="/sources/ws-1/w.vast", name="x; cat /etc/passwd")
+    assert "not an entry-point name" in out["error"]
+    assert fake.exec_calls == []
+
+
+def test_a_scenario_action_detail_still_comes_from_the_list(monkeypatch):
+    """That list already carries every field, so it must not gain a round trip."""
+    fake = _FakeClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    image_catalog.list_scenario_actions(address="/sources/ws-1/a.vast")
+    out = image_catalog.get_scenario_action_details(
+        address="/sources/ws-1/a.vast", name="timeout")
+    assert out["kind"] == "modifier"
+    assert len(fake.exec_calls) == 1
