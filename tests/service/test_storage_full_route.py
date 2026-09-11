@@ -23,6 +23,20 @@ from robovast.service.interface import Routes, ServiceError
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
+def _probe_route(app, path, endpoint) -> None:
+    """Add a probe route AHEAD of the SPA catch-all, so the test can reach it.
+
+    ``build_app`` mounts the built web UI at ``/`` last, deliberately: the real routes are
+    registered first and win, and the mount serves everything else. A route appended after
+    that mount is therefore matched by nothing -- which made these tests pass only on a tree
+    where ``frontend/ui/dist`` had never been built, and fail with a 404 for anyone who had
+    built the UI. The mount is absent when there is no build, so inserting at the front is
+    right either way.
+    """
+    app.add_api_route(path, endpoint)
+    app.routes.insert(0, app.routes.pop())
+
+
 def _full() -> OSError:
     return OSError(errno.ENOSPC, "No space left on device", "/var/lib/somewhere/data.db")
 
@@ -80,7 +94,7 @@ def test_a_full_disk_outside_any_guard_is_a_507_too():
     def _writes_unguarded():
         raise _full()
 
-    app.add_api_route("/test-writes-unguarded", _writes_unguarded)
+    _probe_route(app, "/test-writes-unguarded", _writes_unguarded)
     # Starlette re-raises after the handler has answered, so the traceback still reaches the
     # log; the client is told not to raise it into the test.
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -95,7 +109,7 @@ def test_any_other_unhandled_failure_is_still_a_plain_500():
     def _breaks():
         raise OSError(errno.EACCES, "Permission denied")
 
-    app.add_api_route("/test-breaks", _breaks)
+    _probe_route(app, "/test-breaks", _breaks)
     with TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/test-breaks").status_code == 500
 
