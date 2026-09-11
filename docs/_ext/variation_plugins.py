@@ -104,13 +104,14 @@ def _outputs_lines(cls):
     if inputs:
         lines += [
             "", "**Inputs**", "",
-            "This variation reads values an earlier variation wrote, or the campaign stated in "
-            "its ``parameters:`` block. A campaign says which parameter each one is read from:",
+            "This variation reads values an earlier variation wrote. Where one did, the name "
+            "it bound is inherited and nothing need be said here. Where the campaign sets the "
+            "value in its own ``parameters:`` block instead, ``reads:`` says which parameter "
+            "holds it:",
             "", ".. code-block:: yaml", "",
             "    reads:"]
         lines += [f"      {name}: <the parameter it is read from>" for name in inputs]
-        lines += ["", "Inputs: " + ", ".join(f"``{s}``" for s in inputs) + ".",
-                  "Every input must be bound.", ""]
+        lines += ["", "Inputs: " + ", ".join(f"``{s}``" for s in inputs) + ".", ""]
     return lines
 
 

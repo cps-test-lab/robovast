@@ -41,6 +41,12 @@ SUT_CHANNEL = "sut"             #: the system under test -- checked against the 
 #: fourth surface is one entry here instead of a branch in six places.
 CHANNELS = (SCENARIO_CHANNEL, SIM_CHANNEL, SUT_CHANNEL)
 
+#: Private key carrying ``{slot: scenario parameter}`` for every slot written so far, so a
+#: variation reading a slot an earlier one wrote resolves the campaign's chosen name without
+#: the campaign restating it. On the same channel as ``_path`` and for the same reason: it is
+#: what a later variation has to know and cannot work out for itself.
+SLOT_BINDINGS = "_slot_bindings"
+
 #: The :meth:`Variation.update_config` keyword each channel's values arrive on.
 #: ``scenario`` is positional there and so has no entry.
 _VALUES_KWARG = {SIM_CHANNEL: "sim_values", SUT_CHANNEL: "sut_values"}
@@ -140,15 +146,23 @@ class DestinationConfig(VariationConfig):
     slot puts the name in the ``.vast``, where a reader and a validator can both see it,
     instead of leaving it implied by a positional list whose order has to be remembered.
 
-    **What a variation reads** is bound the same way, under ``reads:``, for the same reason --
-    a consumer that named the parameter itself could not be checked against the producer that
-    wrote it, and disagreed with it silently whenever a campaign chose a name of its own:
+    **What a variation reads** is declared as slots too, and mostly needs no binding at all:
+    the variation that WROTE a slot recorded the name it bound, so a later one reading the same
+    slot inherits it. A campaign renaming the parameter renames it once, where it is written.
 
     .. code-block:: yaml
 
+        - PathVariationRandom:
+            scenario: {start: start_pose, goal: goal_poses}    # binds both slots
         - ObstacleVariation:
-            scenario: {objects: static_objects}                # what it writes
-            reads: {start: start_pose, goal: goal_poses}       # what it reads
+            scenario: {objects: static_objects}                # reads start and goal, silently
+
+    ``reads:`` is for the case with nothing to inherit from -- a configuration that sets the
+    value in its own ``parameters:`` block, where no earlier variation bound the slot::
+
+        - ObstacleVariation:
+            scenario: {objects: static_objects}
+            reads: {start: start_pose, goal: goal_poses}
 
     One channel only, because a variation reads the trial's parameters: the simulator's world
     and the system under test are surfaces it writes to, not ones it reads back.
@@ -273,30 +287,45 @@ class DestinationConfig(VariationConfig):
             raise ValueError(
                 f"{unknown} are not inputs of this variation; its inputs are: "
                 + ", ".join(self.INPUT_SLOTS))
-        missing = [s for s in self.INPUT_SLOTS if s not in given]
-        if missing:
-            raise ValueError(
-                "every input must be bound to the scenario parameter it is read from, as "
-                "'reads: {slot: parameter}'; unbound: " + ", ".join(missing))
+        # No check that every input is bound HERE: a slot an earlier variation wrote is
+        # already bound, by that variation, and restating it would be the campaign copying
+        # one name to two places where they can drift apart. Whether each input resolves at
+        # all is a question about the pipeline, answered where the pipeline is known.
         return self
 
-    def input_binding(self, slot: str) -> str:
-        """The scenario parameter *slot* is read from."""
-        try:
-            return (self.reads or {})[slot]
-        except KeyError:
+    def input_binding(self, slot: str, config=None) -> str:
+        """The scenario parameter *slot* is read from.
+
+        ``reads:`` wins where the campaign stated it -- which is what a configuration setting
+        the value in its own ``parameters:`` block has to do, there being no earlier variation
+        to have bound it. Otherwise the binding is inherited from the variation that WROTE the
+        slot: it chose the name, it recorded it, and a consumer repeating it would only be
+        able to disagree.
+        """
+        if slot not in self.INPUT_SLOTS:
             raise KeyError(
                 f"'{slot}' is not an input of this variation; its inputs are: "
-                + ", ".join(self.INPUT_SLOTS)) from None
+                + ", ".join(self.INPUT_SLOTS))
+        stated = (self.reads or {}).get(slot)
+        if stated:
+            return stated
+        inherited = ((config or {}).get(SLOT_BINDINGS) or {}).get(slot)
+        if inherited:
+            return inherited
+        raise KeyError(
+            f"nothing has written the '{slot}' input, and 'reads:' does not say which "
+            f"parameter to read it from. Either put a variation that writes '{slot}' ahead "
+            f"of this one, or bind it: 'reads: {{{slot}: <parameter>}}'")
 
     def inputs(self) -> dict:
-        """``{channel: [parameter, ...]}`` -- what this variation reads, and from where.
+        """``{slot: parameter or None}`` -- what this variation reads, and where from.
 
-        Shaped like :meth:`outputs` so one validator can walk both. Only ``scenario`` for now:
-        a variation reads the trial's parameters, while the simulator's world and the system
-        under test are surfaces it writes to.
+        ``None`` means *inherited*: read it from wherever the variation that wrote this slot
+        put it. Only the pipeline can resolve that, because only the pipeline knows which
+        variation ran before this one -- so this reports the slots and lets the caller finish
+        the job, rather than answering with names it would have to guess.
         """
-        return {"scenario": [str(v) for v in (self.reads or {}).values()]}
+        return {slot: (self.reads or {}).get(slot) for slot in self.INPUT_SLOTS}
 
     @property
     def channel(self) -> str:
@@ -535,15 +564,24 @@ class Variation():
         the world compiling six obstacles and the trial driving six of them are one fact.
         """
         by_channel: dict = {c: {} for c in CHANNELS}
+        #: Which scenario parameter each slot was written to, for a LATER variation that reads
+        #: the same slot. The name is the campaign's choice, so a consumer cannot know it and
+        #: must not assume it: carrying the resolved destination forward is what lets it read
+        #: `start` without the campaign spelling the parameter out a second time. Accumulated
+        #: across variations rather than replaced -- each adds the slots it wrote.
+        written = dict(config.get(SLOT_BINDINGS) or {})
         for slot, value in values_by_slot.items():
             # Every destination the slot names, so one value wanted on both sides of the
             # compile boundary is written to both from this one call -- which is the whole
             # reason this method exists, applied to a slot rather than to the set of them.
             for channel, destination in self.parameters.bindings(slot):
                 by_channel[channel][destination] = value
+                if channel == SCENARIO_CHANNEL:
+                    written[slot] = destination
         extra = {kwarg: by_channel[channel] for channel, kwarg in _VALUES_KWARG.items()}
+        other = {**(kwargs.pop("other_values", None) or {}), SLOT_BINDINGS: written}
         return self.update_config(
-            config, by_channel[SCENARIO_CHANNEL], **extra, **kwargs)
+            config, by_channel[SCENARIO_CHANNEL], **extra, other_values=other, **kwargs)
 
     @classmethod
     def declared_outputs(cls, parameters) -> dict:
@@ -568,13 +606,14 @@ class Variation():
 
     @classmethod
     def declared_inputs(cls, parameters) -> dict:
-        """``{channel: [parameter, ...]}`` this variation READS, for *parameters*.
+        """``{slot: parameter or None}`` this variation READS, for *parameters*.
 
         The counterpart of :meth:`declared_outputs`, read by the same pre-run check: walking the
         variations in the order the ``.vast`` lists them, a value a variation reads has to have
         been put there by the campaign's own ``parameters:`` block or by a variation before it.
         Nothing else can tell -- ordering is list order and the coupling is otherwise invisible,
-        so an input nobody writes was discovered by the run.
+        so an input nobody writes was discovered by the run. ``None`` for a slot means the same
+        walk resolves its name, from whichever variation wrote that slot.
 
         ``{}`` means *undeclared*, the same escape :meth:`declared_outputs` gives a third-party
         plugin that does not implement it.

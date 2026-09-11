@@ -323,9 +323,10 @@ class ObstacleVariation(NavVariation):
 
     Expected parameters:
 
-    - ``reads``: Which parameter each input is read from, as
-      ``{start: <parameter>, goal: <parameter>}``. The ``goal`` parameter may hold one pose or
-      a list of them, whichever the scenario file declares.
+    - ``reads`` (optional): Which parameter each input is read from, as
+      ``{start: <parameter>, goal: <parameter>}``. Needed only where no earlier variation wrote
+      the slot -- otherwise the name that variation bound is inherited. The ``goal`` parameter
+      may hold one pose or a list of them, whichever the scenario file declares.
     - ``obstacle_configs``: List of obstacle configurations, each containing:
 
       - ``amount``: Number of obstacles to place.  Mutually exclusive with

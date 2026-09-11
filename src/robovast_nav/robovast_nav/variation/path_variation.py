@@ -24,6 +24,7 @@ from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
+                                                      SLOT_BINDINGS,
                                                       DestinationConfig,
                                                       ProvContribution,
                                                       VariationInfeasibleError)
@@ -174,7 +175,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute navigation goal count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
-        goals = config_cfg.get(config_entry.get("_goal_parameter_name"))
+        goals = config_cfg.get((config_entry.get(SLOT_BINDINGS) or {}).get("goal"))
 
         if goals is None:
             return None
@@ -259,9 +260,6 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                         }
                         if not config.get("config", {}).get("map_file"):
                             other_values['_map_file'] = map_file
-                        # The renderer cannot know what the campaign named these, so the
-                        # resolved destination travels with the configuration.
-                        other_values['_goal_parameter_name'] = goal_param
                         new_config = self.update_slots(
                             config,
                             {'start': start_pose, 'goal': formatted_goal_poses},
@@ -685,7 +683,6 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                     else:
@@ -767,7 +764,6 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                         self.progress_update(f"  Generated valid multi-goal path with {len(goal_poses_list)} goals")

@@ -153,9 +153,11 @@ class NavVariation(Variation):
         """The trial's waypoints -- start first, then every goal -- as :class:`Pose` objects.
 
         Read through the ``start`` and ``goal`` input slots, so the parameter names are the ones
-        the campaign bound rather than ones this code assumed. A campaign that binds its path
-        variation to ``scenario: {start: robot_start}`` binds the consumer's ``reads:`` to the
-        same name, and both halves stay one statement in the ``.vast``.
+        the campaign bound rather than ones this code assumed. A campaign binding its path
+        variation to ``scenario: {start: robot_start}`` needs to say that once: the name travels
+        with the configuration and is inherited here. A configuration that states its poses in
+        its own ``parameters:`` block has no earlier variation to inherit from and says where to
+        read them with ``reads:``.
 
         Whichever wrote them, they arrive here as :class:`Pose`: a campaign stating poses in its
         ``parameters:`` block leaves YAML mappings, a variation that generated them leaves the
@@ -171,7 +173,7 @@ class NavVariation(Variation):
         """
         values = {}
         for slot in ("start", "goal"):
-            name = self.parameters.input_binding(slot)
+            name = self.parameters.input_binding(slot, config)
             value = config.get("config", {}).get(name)
             if not value:
                 raise ValueError(

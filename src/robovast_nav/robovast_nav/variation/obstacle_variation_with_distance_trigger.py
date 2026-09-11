@@ -108,7 +108,7 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     Expected parameters:
 
-    - ``reads``: Which parameter each input is read from, as
+    - ``reads`` (optional): Which parameter each input is read from, as
       ``{start: <parameter>, goal: <parameter>}`` -- see :class:`ObstacleVariation`.
     - ``trigger_point`` (slot): receives the obstacle's spawn
       pose position.

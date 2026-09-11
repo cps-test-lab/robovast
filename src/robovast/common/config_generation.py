@@ -461,6 +461,9 @@ def _check_declared_contracts(config, classes_and_parameters, scenario_parameter
     # What a variation could read at this point in the walk: whatever the campaign stated
     # outright, plus what each variation ahead of it writes, added as the walk passes.
     available = set(channel(config, SCENARIO) or {})
+    #: ``{slot: parameter}`` for every slot written so far, so a variation reading a slot
+    #: resolves the name the campaign gave it without restating it.
+    slot_writers: dict = {}
 
     backend = backend_key_checker = None
     sut_destinations: list = []
@@ -483,13 +486,19 @@ def _check_declared_contracts(config, classes_and_parameters, scenario_parameter
         # Reads before writes: a variation cannot read what it writes itself, so checking in
         # that order names the variation that is actually missing an input rather than the one
         # that would have supplied it.
-        unwritten = [n for n in reads.get('scenario', []) if n not in available]
-        if unwritten:
-            raise ValueError(
-                f"Scenario '{config['name']}': {variation_class.__name__} reads {unwritten}, "
-                f"which no earlier variation writes and the 'parameters:' block does not set. "
-                f"Either state the value in 'parameters.scenario', or put a variation that "
-                f"writes it ahead of this one. Available here: {sorted(available)}")
+        for slot, stated in reads.items():
+            name = stated or slot_writers.get(slot)
+            if name is None:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}', "
+                    f"which no earlier variation writes. Either put a variation that writes "
+                    f"'{slot}' ahead of this one, or say which parameter holds it: "
+                    f"'reads: {{{slot}: <parameter>}}'.")
+            if name not in available:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}' "
+                    f"from '{name}', which no earlier variation writes and the 'parameters:' "
+                    f"block does not set. Available here: {sorted(available)}")
 
         unknown = [n for n in declared.get('scenario', []) if n not in valid_names]
         if unknown and valid_names:
@@ -498,6 +507,12 @@ def _check_declared_contracts(config, classes_and_parameters, scenario_parameter
                 f"{unknown}, which the scenario file does not declare. "
                 f"Valid parameters are: {valid_names}")
         available.update(declared.get('scenario', []))
+        # The binding a later variation reading the same slot inherits, recorded here for the
+        # same reason `update_slots` records it at run time: the name is the campaign's, so a
+        # consumer can only know it from whoever wrote it.
+        bound = getattr(validated, 'scenario', None)
+        if isinstance(bound, dict):
+            slot_writers.update({k: v for k, v in bound.items() if isinstance(v, str)})
 
         sut_destinations.extend(declared.get('sut', []))
 
