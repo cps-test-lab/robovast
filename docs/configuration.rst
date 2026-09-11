@@ -529,6 +529,49 @@ two outputs whose contents differ — an obstacle's spawner arguments and its co
 — remain two slots, because they are two values rather than one value in two places.
 
 
+.. _config-variation-reads:
+
+Variations that read what an earlier one produced
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some plugins consume a value rather than only producing one. ``ObstacleVariation`` places
+obstacles along the route the robot drives, so it needs the start and the goals — which
+``PathVariationRandom`` produced a moment earlier, under whatever parameter names this campaign
+chose. It declares those as **input slots**, and normally binds nothing:
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_poses}
+   - ObstacleVariation:
+       scenario: {objects: static_objects}
+
+The name travels with the configuration: the variation that wrote ``start`` recorded the
+parameter it bound, and the one reading ``start`` takes it from there. Rename the parameter and
+you rename it once, on the line that writes it.
+
+A configuration that sets the value **itself** has no earlier variation to inherit from — the
+poses are in its own ``parameters:`` block — so it says where to read them with ``reads:``:
+
+.. code-block:: yaml
+
+   - name: one-fixed-route
+     parameters:
+       scenario:
+         start_pose: {position: {x: -2.0, y: -0.5}}
+         goal_poses: [{position: {x: 2.0, y: 0.5}}]
+     variations:
+     - ObstacleVariation:
+         scenario: {objects: static_objects}
+         reads: {start: start_pose, goal: goal_poses}
+
+There is no conventional name to fall back on: an input that nothing wrote and no ``reads:``
+names is refused before the campaign runs, saying which slot and both ways to satisfy it.
+``reads:`` also wins where it is given, so a configuration can read a parameter other than the
+one a preceding variation wrote. Each plugin's inputs are listed with it under
+:doc:`variation`.
+
+
 .. _sut-channel:
 
 Varying the system under test

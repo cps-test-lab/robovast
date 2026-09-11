@@ -76,6 +76,7 @@ def variation(monkeypatch, tmp_path):
     v = ObstacleVariation.__new__(ObstacleVariation)
     v.parameters = ObstacleVariationConfig(
         scenario={'objects': 'static_objects'},
+        reads={'start': 'start_pose', 'goal': 'goal_poses'},
         sim={'instances': 'components.static_obstacles.instances'},
         obstacle_configs=[{'amount': 1, 'max_distance': 0.7, 'model': 'file:///box.sdf.xacro',
                            'size': BOX}],
@@ -223,6 +224,7 @@ def _narrow(monkeypatch, tmp_path, half_width_m):
     v = ObstacleVariation.__new__(ObstacleVariation)
     v.parameters = ObstacleVariationConfig(
         scenario={'objects': 'static_objects'},
+        reads={'start': 'start_pose', 'goal': 'goal_poses'},
         sim={'instances': 'components.static_obstacles.instances'},
         obstacle_configs=[{'amount': 1, 'max_distance': 0.7, 'model': 'file:///box.sdf.xacro',
                            'size': BOX}],

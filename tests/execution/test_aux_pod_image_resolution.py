@@ -79,3 +79,39 @@ def test_no_pull_secret_means_none_is_declared(project):
     credential must stay absent rather than be invented."""
     manifest = build_aux_pod_manifest("aux-pod", [ContainerSpec(image=FAMILY)], "default")
     assert "imagePullSecrets" not in manifest["spec"]
+
+
+# -- and the policy that decides whether that image is re-checked ---------------------
+
+
+def _policies(manifest):
+    """``{container name: imagePullPolicy}`` over every container in *manifest*."""
+    pod = manifest["spec"]
+    return {c["name"]: c["imagePullPolicy"]
+            for c in list(pod.get("initContainers", [])) + list(pod["containers"])}
+
+
+def test_a_tagged_aux_image_is_re_checked(project):
+    """A tag can be re-pushed under us, and a `family:` member is the deployment's floating one.
+
+    Hard-coded ``IfNotPresent`` made the aux pod run whatever copy its node happened to hold:
+    on a node that had pulled the tag once, a republished image never arrived, and the world
+    query and the override pre-check then answered from a build the campaign's own pods --
+    pinned to a digest before they are written -- were not running.
+    """
+    manifest = build_aux_pod_manifest(
+        "aux-pod", [ContainerSpec(image=FAMILY)], "default",
+        s3=("http://store.example.com", "key", "secret"))
+
+    policies = _policies(manifest)
+    assert policies["aux-robovast-roqsim"] == "Always"
+    # The sidecar carries `mc` into the pod and is resolved the same floating way.
+    assert policies["mc-tools"] == "Always"
+
+
+def test_a_digest_pinned_aux_image_is_not(project):
+    """A digest names its bytes, so "if not present" cannot serve anything stale."""
+    ref = "registry.example.org/team/tool@sha256:" + "0" * 64
+    manifest = build_aux_pod_manifest("aux-pod", [ContainerSpec(image=ref)], "default")
+
+    assert _policies(manifest)[ContainerSpec(image=ref).container_name()] == "IfNotPresent"
