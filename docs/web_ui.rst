@@ -365,20 +365,12 @@ setting somebody adds may well be a credential. If you see one, that is the prom
 describe it in ``robovast.service.settings_report``.
 
 **What it can give back.** The **Service cache** panel — collapsed until you open it, and
-measured only then, because measuring walks every cached file — lists the caches the service
-keeps that it can rebuild from durable data: on a cluster, the campaign files it fetched from
-the object store to serve results, notebooks and plugins; on every lane, the compiled 3D
-worlds. A local service's results directory is not among them — it is the campaigns' durable
-home, not a copy of one. **Clear cache** removes every entry nothing may still be using and
-says what it freed. The button offers that amount rather than the total, and beside each
-entry it keeps is the reason: a running campaign's files, a campaign an operation holds (an
-export to the share), and anything a reader was handed in the last hour, which may still be
-opening files under it. It is the thing to reach for when new work is refused for disk space,
-and that refusal names it when a clear would free at least a gigabyte. ``vast service cache
-[--clear]`` does the same from a terminal. There is deliberately no MCP tool for it, as there
-is none for Upgrade: clearing costs every other user of the service a re-fetch, so it is an
-operator's action rather than an experiment's, and a tool offered on every request for it
-would be paid for by all of them.
+measured when you do — lists what the service keeps that it can rebuild from durable data: on
+a cluster, campaign files fetched from the object store; on every lane, compiled 3D worlds.
+**Clear cache** removes everything not in use and says what it freed; what it keeps is listed
+with the reason — a running campaign, an export to the share, or files read in the last hour.
+It is the thing to reach for when new work is refused for disk space. ``vast service cache
+[--clear]`` does the same from a terminal.
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
 back, which is why several failures in RoboVAST are diagnosable only from a log nobody
@@ -1228,8 +1220,7 @@ hover tooltip spelling the numbers out:
 
 Beneath them, **refusing new work: disk below reserve** appears while either meter has less
 free space than the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see
-:ref:`deployment`); its tooltip is the sentence a refused launch carries. It is the service's
-own verdict on the same reading, not a threshold of the UI's.
+:ref:`deployment`); its tooltip is the sentence a refused launch carries.
 
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a

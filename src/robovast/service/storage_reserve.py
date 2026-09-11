@@ -81,7 +81,6 @@ def storage_refusal(usage) -> Optional[str]:
             continue
         free = max(0, space.capacity_bytes - space.used_bytes)
         if free < reserve * _GB:
-            return (f"New work that writes to disk is refused: {label} has "
-                    f"{free / _GB:.0f} GB free, less than the {reserve:g} GB this service "
-                    f"keeps free ({RESERVE_ENV}). Work already running continues.")
+            return (f"New work is refused: {label} has {free / _GB:.0f} GB free, below the "
+                    f"{reserve:g} GB reserve ({RESERVE_ENV}).")
     return None

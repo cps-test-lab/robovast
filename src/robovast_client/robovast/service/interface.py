@@ -1272,13 +1272,9 @@ class KeptCacheEntry(BaseModel):
 class ServiceCache(BaseModel):
     """The service's caches: copies it can rebuild from durable data, and nothing else.
 
-    Clearing one loses nothing but the time to rebuild what is next asked for -- a campaign's
-    files are fetched from the object store again, a world is compiled again. An entry
-    something may still be using is never removed; ``kept`` names each and why, so a caller
-    can tell "nothing to free" from "in use".
-
-    Reported by ``service_cache`` and, after removing what may go, by ``clear_service_cache``,
-    whose ``freed_bytes`` / ``removed_entries`` say what it did. ``caches`` is what remains.
+    Clearing one loses nothing but the time to rebuild what is next asked for. An entry that
+    may still be in use is never removed; ``kept`` names each and why. After a clear,
+    ``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.
     """
 
     caches: list[CacheSize] = Field(default_factory=list)

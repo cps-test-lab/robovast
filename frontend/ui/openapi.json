@@ -3093,7 +3093,7 @@
         "type": "object"
       },
       "ServiceCache": {
-        "description": "The service's caches: copies it can rebuild from durable data, and nothing else.\n\nClearing one loses nothing but the time to rebuild what is next asked for -- a campaign's\nfiles are fetched from the object store again, a world is compiled again. An entry\nsomething may still be using is never removed; ``kept`` names each and why, so a caller\ncan tell \"nothing to free\" from \"in use\".\n\nReported by ``service_cache`` and, after removing what may go, by ``clear_service_cache``,\nwhose ``freed_bytes`` / ``removed_entries`` say what it did. ``caches`` is what remains.",
+        "description": "The service's caches: copies it can rebuild from durable data, and nothing else.\n\nClearing one loses nothing but the time to rebuild what is next asked for. An entry that\nmay still be in use is never removed; ``kept`` names each and why. After a clear,\n``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.",
         "properties": {
           "caches": {
             "items": {

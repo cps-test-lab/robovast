@@ -175,7 +175,7 @@ def test_a_refusal_suggests_the_cache_when_clearing_it_would_free_enough(transpo
     monkeypatch.setattr(transport, "_clearable_cache_bytes", lambda: 12 * 1000 ** 3)
     with pytest.raises(InsufficientStorageError) as excinfo:
         transport.create_archive_upload()
-    assert "clear the service cache, which can free 12 GB" in str(excinfo.value)
+    assert "Clearing the service cache frees 12 GB" in str(excinfo.value)
     assert excinfo.value.next_step == "vast service cache --clear"
 
 

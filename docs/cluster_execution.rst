@@ -1151,15 +1151,13 @@ by evicting pods, on the node the daemon is pinned to and the service pod may sh
 whose size you do not know, a percentage (``70%``) is accepted for any of the three.
 
 Left unset, ``--buildkit-cache-min-free`` is the service's free-space reserve
-(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), never below ``50GB``: the reserve is the
-margin the service refuses new work to protect, and a cache allowed to fill past it would take
-that margin back one build at a time.
+(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), never below ``50GB``, so the cache never
+fills the margin the service keeps free.
 
 All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
 are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
-re-size a store somebody had bounded on purpose. That includes a ``minFreeSpace`` that was a
-default at setup, so a reserve raised later reaches the cache only when ``upgrade`` is given
-``--buildkit-cache-min-free`` once.
+re-size a store somebody had bounded on purpose. So a reserve raised later reaches the cache
+only when ``upgrade`` is given ``--buildkit-cache-min-free``.
 
 Three consequences worth knowing before they surprise you:
 
