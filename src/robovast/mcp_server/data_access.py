@@ -56,6 +56,17 @@ def service_client():
 _REPORTED = (DataQueryError, ValueError, OSError)
 
 
+def _index_id(campaign: str) -> str | None:
+    """The id the index knows *campaign* by, or ``None`` when it is not one.
+
+    These tools take a campaign id *or* an absolute directory to analyse. Only an id scopes
+    the index; a path has to be resolved to a campaign the way it always was, which is what
+    ``None`` asks the reader to do.
+    """
+    import os  # noqa: PLC0415
+    return None if os.path.isabs(campaign) else (campaign or None)
+
+
 def data_status(campaign_id: str, client=None) -> dict | None:
     """``campaign_data_status`` for a campaign, or ``None`` when it cannot be known.
 
@@ -129,7 +140,9 @@ def describe(campaign_id: str, preflight=None) -> dict:
             result = client.describe_campaign_data(campaign_id).model_dump()
         else:
             campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            result = {"campaign_id": campaign_id, **describe_data_db(campaign_dir)}
+            result = {"campaign_id": campaign_id,
+                      **describe_data_db(campaign_dir,
+                                         campaign_id=_index_id(campaign_id))}
     except _REPORTED as e:
         return {"error": _message(e, client)}
     return _with_fetch(result, campaign_id, client, status, notice)
@@ -167,7 +180,8 @@ def query(campaign_id: str, sql: str, max_rows: int = 500, preflight=None) -> di
         else:
             campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
             result = {"campaign_id": campaign_id,
-                      **query_data_db(campaign_dir, sql, max_rows)}
+                      **query_data_db(campaign_dir, sql, max_rows,
+                                      campaign_id=_index_id(campaign_id))}
     except _REPORTED as e:
         return {"error": _message(e, client)}
     return _with_fetch(result, campaign_id, client, status, notice)

@@ -4218,8 +4218,14 @@ class ClusterService(LocalTransport):
         return CampaignDataStatus(
             campaign_id=campaign_id, source="object-store", fetch_required=False,
             cached=True, transfer="none",
-            note="the campaign's results are in the central index; a query reads them "
-                 "there and transfers nothing from the object store")
+            # States the mechanism, not a finding about this campaign. The earlier
+            # wording -- "the campaign's results are in the central index" -- asserted
+            # that this campaign has results there, which this probe never checks: it is
+            # two metadata lookups about transfers. Read as an assurance, it says every
+            # campaign has data, including one whose runs all failed and which has none.
+            note="a query reads the central index and transfers nothing from the object "
+                 "store, so nothing has to be fetched before one can run; whether this "
+                 "campaign has rows there is what describe_campaign_data answers")
 
     # -- files: the /results namespace, served straight from the object store --------
     #
