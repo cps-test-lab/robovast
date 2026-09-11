@@ -1212,8 +1212,9 @@ Its containers run ``imagePullPolicy: Always`` while every campaign pod runs ``I
 which is deliberately backwards and is the whole reason the DaemonSet earns its place. A floating
 tag is never re-pulled under ``IfNotPresent`` once a node holds bytes for it, and campaign pods
 keep ``IfNotPresent`` precisely so that a sweep does not depend on the registry being reachable
-at every pod start — which leaves this DaemonSet as the only place a re-pushed ``:latest`` can
-reach a node at all. It buys freshness, not reproducibility: a pinned ``ROBOVAST_PROJECT_TAG`` is
+at every pod start — which leaves this DaemonSet as the only place a re-pushed ``:latest``
+reaches a node ahead of the sweep that needs it (a pod whose ref is still a tag, such as a
+composition's auxiliary one, pulls it when it starts). It buys freshness, not reproducibility: a pinned ``ROBOVAST_PROJECT_TAG`` is
 still what makes two runs comparable, and with a floating tag ``Always`` can just as well drift
 new bytes into the middle of a sweep. The pod template carries the same restart annotation the
 service Deployment does, because without it a re-pushed floating tag leaves every field

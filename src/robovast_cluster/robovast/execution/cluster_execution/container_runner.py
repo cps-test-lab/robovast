@@ -269,10 +269,9 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     pod when the service is replaced — the same "dies with its parent" guarantee
     the old controller-pod sidecar had.
 
-    *pull_secret* names an image-pull secret. Aux images were originally public
-    (``ghcr.io/secorolab/scenery_builder``), so none was needed; a spec naming the
-    *campaign's own* image points at a private registry, and ``imagePullPolicy:
-    IfNotPresent`` hides that until the first node that has not cached it.
+    *pull_secret* names an image-pull secret, which a spec naming the *campaign's own*
+    image needs: that one points at a private registry, while an aux image may equally be
+    a public one (``ghcr.io/secorolab/scenery_builder``) that needs none.
 
     *s3* is ``(endpoint, access_key, secret_key)``. Given, the pod gains an init
     container that injects ``mc`` into an ``emptyDir`` and every aux container mounts it,
@@ -284,6 +283,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     from robovast.common.execution import resolve_sidecar_image
 
     from .cluster_execution import _label_safe_campaign
+    from .kubernetes_backend import pull_policy_for
 
     tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
     # One emptyDir per mountable path, on every aux container. Empty unless a runner stages
@@ -297,6 +297,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
 
     containers = []
     for spec in specs:
+        image = _aux_image(spec.image)
         container = {
             "name": (container_names or {}).get(spec.container_name(),
                                                 spec.container_name()),
@@ -308,8 +309,11 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
             # deployment's project and tag. The local lane resolves at runner-creation time
             # instead (config_generation._make_container_runner), which is why a family ref worked
             # there and not here.
-            "image": _aux_image(spec.image),
-            "imagePullPolicy": "IfNotPresent",
+            "image": image,
+            # From the ref, like every other pod this package writes: see
+            # ``pull_policy_for``. A tag is what a spec names in the ordinary case, and it
+            # is the deployment's own floating one whenever the spec is a `family:` member.
+            "imagePullPolicy": pull_policy_for(image),
             "command": list(spec.keep_alive_command),
         }
         env = dict(spec.env or {})
@@ -352,9 +356,10 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         # root, and a spec's ``run_as_user`` means the container that has to write into it
         # may be nobody in particular.
         chmods = " && ".join(f'chmod 0777 {mount["mountPath"]}' for mount in config_mounts)
+        sidecar = resolve_sidecar_image()
         spec["initContainers"] = [{
-            "name": "mc-tools", "image": resolve_sidecar_image(),
-            "imagePullPolicy": "IfNotPresent",
+            "name": "mc-tools", "image": sidecar,
+            "imagePullPolicy": pull_policy_for(sidecar),
             "command": ["sh", "-c",
                         f'cp "$(command -v mc)" {_MC} && chmod 0755 {_MC} && '
                         f'mkdir -p {_MC_CONFIG} && chmod 0777 {_MC_CONFIG}'

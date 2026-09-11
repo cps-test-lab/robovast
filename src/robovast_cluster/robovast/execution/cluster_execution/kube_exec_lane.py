@@ -464,11 +464,10 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
             "containers": [{
                 "name": HELD_CONTAINER, "image": spec.image,
                 # Resolved from the ref, exactly as a run's pods resolve it: a digest names
-                # its bytes and cannot go stale, a tag can be re-pushed under us. Hard-coded
-                # `IfNotPresent` made this the one place a floating tag was never re-checked,
-                # so a republished image reached every campaign and never reached the check
-                # people run to see whether it had -- which reported the node's cached copy
-                # with no way to tell.
+                # its bytes and cannot go stale, a tag can be re-pushed under us. A held
+                # container answers the checks people run to see whether a republished image
+                # is good, so a hard-coded `IfNotPresent` here answers them from the node's
+                # cached copy with no way to tell.
                 "imagePullPolicy": pull_policy_for(spec.image),
                 # Idle PID 1, so exec'd commands run against a stable container and
                 # anything backgrounded has something to reparent to.
