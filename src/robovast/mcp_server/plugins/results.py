@@ -58,6 +58,11 @@ def _summary_to_dict(summary) -> dict:
     ``""``/null: a campaign started without a description has none, which is not the same
     fact as "the description is the empty string".
 
+    ``paused`` and ``priority`` are carried the same way -- only when they are not the
+    default -- because a held campaign is the one case where no progress is not a fault.
+    Without them a campaign somebody parked is indistinguishable here from one that is
+    wedged, and the reasonable next move (diagnose it, or start it again) is the wrong one.
+
     ``mode`` is carried because this listing is the only view an agent has: without it a
     search and a sweep are indistinguishable here, and a search is read with different
     queries (``run_view``'s ``batch``/``objective``/``paramset_id``). ``num_composition_failed``
@@ -80,6 +85,10 @@ def _summary_to_dict(summary) -> dict:
         entry["description"] = summary.description
     if summary.finished_at:
         entry["finished_at"] = summary.finished_at
+    if summary.paused:
+        entry["paused"] = True
+    if summary.priority:
+        entry["priority"] = summary.priority
     return entry
 
 
@@ -119,7 +128,8 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
         mode, started_at, postprocessed, num_runs, num_passed, num_failed,
         num_composition_failed, num_no_sample}`` plus ``description`` and ``finished_at``
-        where recorded — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
+        where recorded, and ``paused``/``priority`` where either is not the default (a
+        held campaign makes no progress on purpose) — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
         read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``).
 
         ``description`` is what its launcher said the run was for, and is usually the
