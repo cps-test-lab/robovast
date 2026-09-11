@@ -1411,7 +1411,7 @@ class BatchJobRunner:
                 self._probe_owner(),
                 [(key, sizing,
                   partial(self._create_probe, base, key, probe_output_dir(node_id)))],
-                started_at=started, priority=1, pin=node_id)
+                started_at=started, priority=1, campaign=self.campaign, pin=node_id)
             logger.info("Batch %s: measuring node %s before placing work on it",
                         self._batch_tag, node_id)
         return calibration
@@ -3908,6 +3908,10 @@ class KubernetesBackend(ExecutionBackend):
         # every node every batch.
         if self._admission is not None:
             self._admission.forget_calibration(campaign_id)
+            # Its standing with the queue ends with it too, and for a plainer reason: ids carry
+            # a timestamp, so nothing would ever ask about this one again -- the entry would
+            # simply accumulate for the life of the process.
+            self._admission.forget_scheduling(campaign_id)
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)

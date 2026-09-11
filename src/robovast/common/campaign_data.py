@@ -1063,10 +1063,17 @@ def read_plugins_record(campaign_dir) -> "dict | None":
 
 _LAUNCH_FILENAME = "launch.yaml"
 
-#: Request fields a **retrigger replays**. ``workspace_id``/``config_path`` are deliberately
-#: absent, and stay absent: a retrigger runs from the campaign's own frozen ``_config/``, so
+#: Request fields a **re-launch replays**. ``workspace_id``/``config_path`` are deliberately
+#: absent, and stay absent: a re-launch runs from the campaign's own frozen ``_config/``, so
 #: replaying a workspace binding would point it at a tree that may have moved on or be gone
 #: (see ``service/retrigger.py``).
+#:
+#: Two callers replay this, and they do not want the same fields. A **retrigger** is a new
+#: campaign, so it names what a repeat needs and starts the rest fresh. A **restart adoption**
+#: is the same campaign coming back (``cluster_execution/campaign_resume.py``), so it must
+#: also restore how the queue was treating it -- a campaign demoted or held before the
+#: restart that came back at the default would quietly take capacity nobody gave it. Each
+#: caller names the fields it wants; this tuple only decides what is written down.
 #:
 #: That is not the same as the fact being unrecorded. Where the configuration *came from* is
 #: kept on the campaign row as ``origin_*`` (see ``common/store.py``) -- a record of the past,
@@ -1075,11 +1082,16 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: The written record carries one field beyond these: the resolved ``images``. See
 #: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
-                  "upload_to_share", "show_gui")
+                  "upload_to_share", "show_gui", "priority", "paused")
 
 
 def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:
-    """Persist how the campaign was **asked for** to ``_execution/launch.yaml``.
+    """Persist what the campaign is **asked to run** to ``_execution/launch.yaml``.
+
+    The campaign's *standing* request, not a frozen record of the moment it was launched:
+    :func:`update_launch_scheduling` rewrites the scheduling fields when an operator changes
+    them, because a restart adoption re-launches from this file and would otherwise undo the
+    change. Every other field here is settled at launch and never rewritten.
 
     ``request`` is a :class:`robovast.service.interface.CreateCampaignRequest`. ``runs`` is
     stored **as requested**, so ``0`` keeps meaning "take the ``.vast``'s ``execution.runs``"
@@ -1147,6 +1159,35 @@ def update_launch_images(campaign_dir: Path, images: dict) -> None:
     path = Path(campaign_dir) / "_execution" / _LAUNCH_FILENAME
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(record, f, default_flow_style=False, sort_keys=False)
+
+
+def update_launch_scheduling(campaign_dir: Path, *, priority=None, paused=None) -> bool:
+    """Rewrite the launch record's scheduling fields. Returns whether anything changed.
+
+    The queue holds the live answer, but it holds it in memory: a service restart adopts the
+    campaign by re-launching it from this file, so a rank or a hold that was never written
+    here would silently revert to what the campaign was launched with -- and the campaign
+    would go back to taking capacity an operator had already taken away from it.
+
+    ``None`` leaves that half alone, so holding a campaign does not disturb the rank it will
+    resume at. A missing record is left missing, for the reason
+    :func:`update_launch_images` records: writing a bare one would produce a launch record
+    with no request in it.
+    """
+    record = read_launch_record(campaign_dir)
+    if record is None:
+        return False
+    wanted = dict(record)
+    if priority is not None:
+        wanted["priority"] = int(priority)
+    if paused is not None:
+        wanted["paused"] = bool(paused)
+    if wanted == record:
+        return False
+    path = Path(campaign_dir) / "_execution" / _LAUNCH_FILENAME
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(wanted, f, default_flow_style=False, sort_keys=False)
+    return True
 
 
 def read_launch_record(campaign_dir: Path) -> dict[str, Any] | None:

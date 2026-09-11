@@ -15,8 +15,8 @@ be decided by which thread won the lock. A search campaign submits its batches o
 another, so ordering by submission makes an older campaign's later batches look younger than
 a newer campaign, and the two end up taking turns instead of the older one finishing first.
 Here the order is a
-property of the queue -- ``(priority, campaign start)`` -- and no thread can change it by
-being quick.
+property of the queue -- ``(campaign rank, priority, campaign start)`` -- and no thread can
+change it by being quick.
 
 **No thread of its own, deliberately.** :meth:`AdmissionController.drain` is called by the
 campaign threads that already exist, and it works the *global* queue rather than the caller's
@@ -88,10 +88,9 @@ def campaign_start_key(campaign_id: str) -> float:
     be looked up: a batch runner deep in the cluster lane can order itself against campaigns
     it has never heard of.
 
-    Parsed **naively**, never through an epoch conversion, for the reason
-    ``campaign_priority_value`` records: this only has to be monotone in the wall-clock label,
-    and going via epoch seconds folds the repeated hour of a DST fall-back onto itself and
-    inverts two campaigns' order.
+    Parsed **naively**, never through an epoch conversion: this only has to be monotone in
+    the wall-clock label, and going via epoch seconds folds the repeated hour of a DST
+    fall-back onto itself and inverts two campaigns' order.
 
     An unparseable id sorts last rather than raising. Ordering is a preference, and refusing to
     run a campaign because its name is unusual would be a much worse failure than running it
@@ -242,6 +241,12 @@ class WorkItem:
     sizing: JobSizing
     create: "Callable[[Optional[str]], None]"
     owner: str = ""
+    #: The campaign this item belongs to, which is what its rank is read against. Distinct
+    #: from *owner*, the cancellation scope: a campaign's probes queue under ``<campaign>#probes``
+    #: so they stay out of its progress counts, and they must still rank with the campaign
+    #: rather than as a stranger. Empty means the owner IS the campaign, which is true of a
+    #: campaign's own trials.
+    campaign: str = ""
     priority: int = 0
     started_at: float = 0.0
     seq: int = 0
@@ -263,6 +268,11 @@ class WorkItem:
     #: so placing it anywhere else answers a question about the wrong node. Everything else
     #: leaves it unset and is placed wherever it fits.
     pin: "str | None" = None
+
+    @property
+    def ranks_under(self) -> str:
+        """The campaign key this item's priority and pause are read from."""
+        return self.campaign or self.owner
 
     def may_use(self, node_id) -> bool:
         if self.pin is not None:
@@ -330,6 +340,14 @@ class AdmissionController:
         self._items: "Dict[str, WorkItem]" = {}
         self._held: "Dict[str, _Held]" = {}
         self._calibrations: dict = {}
+        #: ``campaign -> priority``, absent meaning the default 0. Held here rather than
+        #: copied onto every item so that changing it is one write that reaches the items
+        #: already queued AND the batches a campaign has not submitted yet.
+        self._priorities: "Dict[str, int]" = {}
+        #: Campaigns admitting nothing. A paused campaign's created jobs run to completion --
+        #: pausing orders the queue, exactly as priority does, and never stops work already
+        #: placed.
+        self._paused: "set" = set()
         self._seq = itertools.count()
         self._budget: Optional[Budget] = None
         self._budget_at = 0.0
@@ -350,13 +368,24 @@ class AdmissionController:
 
     def submit(self, owner: str,
                items: "Iterable[Tuple[str, JobSizing, Callable[[Optional[str]], None]]]",
-               *, started_at: float, priority: int = 0, sizing_for_node=None,
-               accepts_node=None, pin=None) -> int:
+               *, started_at: float, priority: int = 0, campaign: str = "",
+               sizing_for_node=None, accepts_node=None, pin=None) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
         batch, and ordering by submission would let a newer campaign overtake an older one
         between its rounds.
+
+        *campaign* is which campaign's rank these items take, and defaults to *owner*, which
+        is what a campaign's own trials submit under. An owner that is a sub-scope of a
+        campaign -- ``<campaign>#probes`` -- must name the campaign, or its work would rank as
+        a stranger to the campaign it belongs to and a demoted campaign's probes would outrank
+        its own runs.
+
+        *priority* stays what it has always been: the ordering WITHIN a campaign, which puts
+        a probe ahead of the work it gates and postprocessing ahead of both. The campaign's
+        own rank (:meth:`set_scheduling`) is the more significant key, so setting one never
+        disturbs the other.
 
         *pin* restricts these items to one node. A calibration probe measures a particular
         machine, so placing it elsewhere answers a question about the wrong one -- and it
@@ -381,8 +410,8 @@ class AdmissionController:
                 if key in self._items:
                     continue  # re-submitting a plan must not double it
                 self._items[key] = WorkItem(key=key, sizing=sizing, create=create, owner=owner,
-                                            priority=priority, started_at=started_at,
-                                            seq=next(self._seq),
+                                            campaign=campaign, priority=priority,
+                                            started_at=started_at, seq=next(self._seq),
                                             sizing_for_node=sizing_for_node,
                                             accepts_node=accepts_node, pin=pin)
                 added += 1
@@ -418,6 +447,7 @@ class AdmissionController:
         """
         created = 0
         with self._lock:
+            self._record_paused_refusals_locked()
             pending = self._pending_in_order()
             if not pending:
                 return 0
@@ -604,6 +634,48 @@ class AdmissionController:
         with self._lock:
             return self._calibrations.pop(owner, None) is not None
 
+    def set_scheduling(self, campaign: str, *, priority=None, paused=None) -> None:
+        """Set how the queue treats *campaign*: its rank, whether it admits at all, or both.
+
+        Takes effect on the next :meth:`drain`, and applies to the items already queued as
+        well as to the batches the campaign has not submitted yet -- which is why the pair is
+        held per campaign here rather than copied onto each item as it is enqueued.
+
+        Neither setting stops work already created. A campaign demoted or paused keeps the
+        jobs it has until they finish, and gives up only the slots they release: the queue
+        orders admission and has never been able to take a running job back, which is what
+        makes both safe to use on a campaign whose results matter.
+
+        ``None`` leaves that half alone, so a pause does not disturb the rank it will come
+        back at.
+        """
+        with self._lock:
+            if priority is not None:
+                self._priorities[campaign] = int(priority)
+            if paused is not None:
+                if paused:
+                    self._paused.add(campaign)
+                else:
+                    self._paused.discard(campaign)
+
+    def scheduling(self, campaign: str) -> "Tuple[int, bool]":
+        """``(priority, paused)`` for *campaign* -- the default ``(0, False)`` when unset."""
+        with self._lock:
+            return self._priorities.get(campaign, 0), campaign in self._paused
+
+    def forget_scheduling(self, campaign: str) -> None:
+        """Drop a campaign's rank and pause, once it is over.
+
+        A campaign's lifetime, like :meth:`forget_calibration` and unlike :meth:`cancel` --
+        the rank has to survive the end of each batch, since a search submits batch after
+        batch under the same campaign and would otherwise come back at the default halfway
+        through. Kept separate from the calibration for the reason recorded there: one call
+        that means two lifetimes is how the probe leak got in.
+        """
+        with self._lock:
+            self._priorities.pop(campaign, None)
+            self._paused.discard(campaign)
+
     def node_ids(self) -> list:
         """The identity of every node that can currently be pinned to.
 
@@ -736,6 +808,22 @@ class AdmissionController:
 
     # -- internals ---------------------------------------------------------------------
 
+    def _record_paused_refusals_locked(self) -> None:
+        """Say *paused* for every owner holding back, rather than letting it read as a wait.
+
+        A paused campaign is filtered out before the placement walk, so it would otherwise
+        keep whatever its last drain said -- "no node has that free" -- and a campaign nobody
+        is admitting would be indistinguishable from a campaign the cluster is too full for.
+        Those need opposite responses: one is waiting for a machine, the other for a person.
+        """
+        for owner in {i.owner for i in self._items.values()
+                      if i.state == PLANNED and i.ranks_under in self._paused}:
+            own = sum(1 for i in self._items.values()
+                      if i.owner == owner and i.state == PLANNED)
+            self._refusals[owner] = (
+                f"paused: {own} job(s) held, and nothing is admitted until it is resumed. "
+                f"Jobs already running are unaffected.")
+
     def _unpinned_outstanding_locked(self) -> int:
         """How many created-but-unplaced unpinned jobs the queue is carrying.
 
@@ -749,14 +837,26 @@ class AdmissionController:
                    if held.node_id is None and key not in counted)
 
     def _pending_in_order(self) -> "List[WorkItem]":
-        """Highest priority first, then oldest campaign, then submission order.
+        """Campaign rank first, then priority within it, then oldest campaign, then submission.
+
+        The campaign's rank leads because it is the only one a person sets, and it has to
+        outrank the queue's own bookkeeping: a campaign moved ahead must take its slots from
+        another campaign's *runs*, not queue behind them because they carry a probe's or a
+        postprocessing job's internal priority. Within one rank the remaining keys are
+        untouched, so at the default -- every campaign at 0 -- this is the order it has always
+        produced.
 
         ``started_at`` before ``seq`` is the whole point: sequence is when this *batch* was
         enqueued, and an older campaign's second batch must still beat a younger campaign's
         first.
+
+        A paused campaign is absent entirely: it is not a low rank but no rank, so nothing of
+        it is created however idle the cluster is.
         """
-        return sorted((i for i in self._items.values() if i.state == PLANNED),
-                      key=lambda i: (-i.priority, i.started_at, i.seq))
+        return sorted((i for i in self._items.values()
+                       if i.state == PLANNED and i.ranks_under not in self._paused),
+                      key=lambda i: (-self._priorities.get(i.ranks_under, 0),
+                                     -i.priority, i.started_at, i.seq))
 
     def _effective_free_locked(self, *, force: bool = False):
         """``([NodeBudget], growable)`` with in-flight reservations already subtracted.

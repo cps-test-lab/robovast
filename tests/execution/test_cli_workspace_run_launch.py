@@ -121,6 +121,18 @@ def test_show_gui_reaches_the_request(client):
     assert client.request.show_gui is True
 
 
+def test_priority_reaches_the_request(client):
+    _invoke('my-experiment', '--priority', '-3')
+    assert client.request.priority == -3
+
+
+def test_a_launch_that_does_not_mention_priority_asks_for_none(client):
+    """The default has to stay launchable on both lanes: a non-zero value is refused by a
+    service on the local Docker lane, which has no queue to order."""
+    _invoke('my-experiment')
+    assert client.request.priority == 0
+
+
 def test_an_over_long_description_is_refused_before_the_launch(client):
     from robovast.service.interface import DESCRIPTION_MAX_LEN
 

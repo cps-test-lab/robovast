@@ -307,17 +307,6 @@ whose lifetime is the campaign's rather than the batch's. An owner-scoped regist
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
 one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
 
-**There is no priority knob.** Ordering is ``(priority, campaign start)``, and ``priority`` is
-non-zero only for calibration probes: no ``.vast`` key, no CLI flag, no environment variable
-sets it. So admission is strict global FIFO by campaign start, with no aging. For one team
-sharing one cluster in sequence that is the intended trade -- an older campaign finishing
-rather than two taking turns. For several users it is head-of-line blocking with no remedy: a
-multi-day search started at 09:00 takes every freed slot ahead of a five-run pilot started at
-09:05, across all of its batches, because ``started_at`` is the campaign's rather than the
-batch's. What is *not* obvious is which knob is right -- a priority class re-invites the
-question of who gets to jump the queue, and aging trades the finishing property away -- which
-is why this is recorded rather than guessed at.
-
 **Three constants are a nav2 trial's dimensions, and should be derived.**
 
 * ``CONTENDED_GRACE_SECONDS = 900`` (``cluster_execution.py``) is documented as "fifteen

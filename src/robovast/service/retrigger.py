@@ -617,6 +617,14 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
         show_gui=False,
         postprocess=bool(launch.get("postprocess", True)),
         upload_to_share=bool(launch.get("upload_to_share", False)),
+        # Replayed for the reason the filter and the run count are: the record says what this
+        # campaign is, and a repeat of a campaign that ran behind everything else should not
+        # come back ahead of it.
+        priority=int(launch.get("priority", 0)),
+        # Not replayed. A hold is a decision about the campaign that was held, and a retrigger
+        # is a new one -- launching it already held would leave it waiting on a resume nobody
+        # knew to give it.
+        paused=False,
         description=description,
     )
 

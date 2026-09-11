@@ -136,6 +136,75 @@ def stop_job(job_name, campaign, reason, namespace, context):
         handle_cli_exception(e)
 
 
+def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
+                    what: str = "") -> None:
+    """Shared body of the three scheduling verbs: one interface call, one line back.
+
+    Three verbs rather than one taking a mode, because that is how every other campaign
+    action reads here -- but one operation behind them, because a rank and a hold are one
+    fact about a campaign and setting either must not disturb the other.
+    """
+    try:
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                click.echo("No running campaign found.")
+                return
+            result = client.set_campaign_scheduling(campaign_id, priority, paused)
+            if result.ok:
+                click.echo(f"{what} '{campaign_id}'. {result.message}")
+            else:
+                click.echo(f"Failed: {result.message}")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@campaign.command()
+@click.argument('value', type=int)
+@click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@target_options
+def priority(value, campaign, namespace, context):
+    """Set which campaign the queue admits first. Higher goes first; 0 is normal.
+
+    For getting a short campaign through while a long one is running: demote the long one
+    (a negative VALUE) or promote the short one. Takes effect on the next admission pass, and
+    applies to the batches the campaign has not submitted yet as well as the jobs queued now.
+
+    Ordering only -- nothing already running stops. The campaign you demote keeps the runs it
+    has and gives up only the slots they release, so no partial run is produced and no results
+    are lost. To end a campaign instead, use ``vast campaign stop``.
+
+    Needs a service whose lane queues campaigns against each other; the local Docker lane runs
+    one at a time and refuses.
+    """
+    _set_scheduling(campaign, namespace, context, priority=value, what="Re-queued")
+
+
+@campaign.command()
+@click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@target_options
+def pause(campaign, namespace, context):
+    """Stop admitting new runs for a campaign; ``resume`` starts them again.
+
+    The runs it has already started finish normally and their results are kept: this holds
+    back what is queued, so the campaign drains rather than stopping, and the cluster is free
+    for something else within one run's length. It keeps the priority it will resume at.
+    """
+    _set_scheduling(campaign, namespace, context, paused=True, what="Paused")
+
+
+@campaign.command()
+@click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@target_options
+def resume(campaign, namespace, context):
+    """Admit runs again for a paused campaign, at the priority it was paused at."""
+    _set_scheduling(campaign, namespace, context, paused=False, what="Resumed")
+
+
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @click.option('--follow', '-f', is_flag=True,

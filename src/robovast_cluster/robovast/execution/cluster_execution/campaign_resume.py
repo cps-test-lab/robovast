@@ -173,6 +173,11 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
         postprocess=launch.get("postprocess", True),
         upload_to_share=launch.get("upload_to_share", False),
         show_gui=False,
+        # Restored, unlike a retrigger's: this is the same campaign coming back, and one that
+        # was demoted or held before the restart would otherwise return at the default and
+        # take capacity an operator had already taken away from it.
+        priority=launch.get("priority", 0),
+        paused=launch.get("paused", False),
         description=_description(campaign_root))
     target = WorkspaceTarget(config_path=str(vast_path), campaign_id=campaign_id,
                              pinned_images=pinned or None)

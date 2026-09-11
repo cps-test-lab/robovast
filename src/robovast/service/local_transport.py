@@ -592,6 +592,26 @@ def _throttled_transfer_log(log, every: float = 0.10):
     return _cb
 
 
+#: Why a rank or a hold is refused. One string, because the launch path and the
+#: set-scheduling operation refuse the same thing and must not describe it differently.
+NO_CAMPAIGN_QUEUE = (
+    "priority and pause need a lane that queues campaigns against each other. This service "
+    "runs the local Docker lane, which executes one campaign at a time, so there is no queue "
+    "to order -- stop the running campaign to start another, or use a cluster service.")
+
+
+def require_scheduling_change(priority, paused) -> None:
+    """Refuse a call that asked for nothing.
+
+    Both halves are optional so that setting one leaves the other alone, which makes neither
+    of them required -- and a call naming neither would be answered "done" having changed
+    nothing, which is the shape of report this interface exists not to give.
+    """
+    if priority is None and paused is None:
+        raise ValueError(
+            "nothing to set: give a priority, a paused state, or both.")
+
+
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
 
@@ -1999,6 +2019,36 @@ class LocalTransport(RobovastInterface):
                 "on a local service.")
         require_host_display(what="show_gui")
 
+    #: Whether this deployment queues campaigns against each other at all. Only a lane that
+    #: runs several at once has an order to set: the local Docker lane is single-flight, so
+    #: there is nothing for a rank to rank or a hold to hold back.
+    #: :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService` flips it.
+    _SUPPORTS_SCHEDULING = False
+
+    def _register_scheduling(self, campaign_id: str, request) -> None:
+        """Tell the queue how to treat this campaign. No-op here: this lane has no queue.
+
+        Paired with :meth:`_admit_scheduling`, which has already refused anything but the
+        default by the time a launch reaches here, so there is nothing for this lane to lose.
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it.
+        """
+
+    def _admit_scheduling(self, request) -> None:
+        """Refuse a rank or a hold at launch, on a lane that has no queue to apply it to.
+
+        Called at request admission, before a campaign directory exists, so a refusal leaves
+        nothing behind. Accepting it would be the worse failure: the campaign would run at the
+        ordinary time and nothing would ever say that the rank it was given did nothing.
+
+        The default asks for nothing and is admitted everywhere, which is what keeps a launch
+        that never mentions scheduling working on both lanes.
+        """
+        if not getattr(request, "priority", 0) and not getattr(request, "paused", False):
+            return
+        if not self._SUPPORTS_SCHEDULING:
+            raise ValueError(NO_CAMPAIGN_QUEUE)
+
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
         from robovast.execution.backends import RunOptions
 
@@ -2072,6 +2122,7 @@ class LocalTransport(RobovastInterface):
         # Before anything is resolved or created: a lane that cannot show a window, or a
         # serve host with no display, must refuse rather than launch a windowless run.
         self._admit_show_gui(request)
+        self._admit_scheduling(request)
         self._admit_storage("start a campaign")
         target = self._resolve_project(request.workspace_id, request.config_path)
         self._admit_image_provenance(target, request)
@@ -2346,6 +2397,10 @@ class LocalTransport(RobovastInterface):
                                created_by=request.created_by,
                                origin=target.origin)
         runs = request.runs if request.runs and request.runs > 0 else None
+        # Before the worker exists, so a campaign launched demoted or held is already ranked
+        # when its first batch reaches the queue -- seeding it later would let one batch be
+        # admitted at the ordinary rank first.
+        self._register_scheduling(campaign_id, request)
         options = self._run_options(request)
         # Who ends the campaign. The builders' finish tail is outermost only when
         # nothing of the campaign happens after it returns — which is exactly the
@@ -3155,6 +3210,16 @@ class LocalTransport(RobovastInterface):
             return
         self._publish_campaign_records(campaign_id, campaign_root)
 
+    def _scheduling_for(self, campaign_id: str, *, live: bool) -> dict:
+        """``{"priority", "paused"}`` for a listing row. The defaults here: no queue.
+
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides it with what its queue actually holds. Reported as a pair so a row that
+        admits nothing says which of the two reasons it is.
+        """
+        del campaign_id, live
+        return {"priority": 0, "paused": False}
+
     def _publish_campaign_records(self, campaign_id: str, campaign_root: Path) -> None:
         """Put the campaign's records where they survive this process. No-op here.
 
@@ -3423,6 +3488,19 @@ class LocalTransport(RobovastInterface):
             text, next_offset = tail.merged.slice_from(offset)
         return LogChunk(text=text, next_offset=next_offset,
                         eof=(not live) or (finished and not grew))
+
+    def set_campaign_scheduling(self, campaign_id: str, priority=None, paused=None) -> ActionResult:
+        """Refuse: this lane runs one campaign at a time, so there is nothing to order.
+
+        Refused even for the default rank, unlike the launch path: a launch that never
+        mentions scheduling is an ordinary launch, whereas *asking* for a rank here is asking
+        for something this lane cannot do, whatever the value.
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        overrides this with the real thing.
+        """
+        del campaign_id
+        require_scheduling_change(priority, paused)
+        raise ValueError(NO_CAMPAIGN_QUEUE)
 
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop and kill the compute so the worker unblocks.
@@ -5808,7 +5886,11 @@ class LocalTransport(RobovastInterface):
             error=(snap.error or "").strip().splitlines()[0] if snap.error else "",
             # From the same snapshot as everything above, so a row cannot show a size that
             # belongs to a different reading of the campaign than its phase does.
-            results_bytes=snap.results_bytes)
+            results_bytes=snap.results_bytes,
+            # The queue's own answer, and only for a campaign it still holds: a finished
+            # campaign has no standing with it, and reporting a rank for one would describe
+            # something nothing can act on.
+            **self._scheduling_for(cid, live=entry is not None))
         if key is not None:
             self._summary_cache[cid] = (key, summary)
         return summary

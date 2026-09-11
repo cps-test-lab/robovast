@@ -586,6 +586,20 @@ export const robovast = {
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
 
+  // How the cluster queue treats a campaign: its rank, its hold, or both. Ordering only —
+  // nothing already running stops, so a campaign demoted or paused keeps the runs it has and
+  // gives up only the slots they release. Omitted halves are left alone, so pausing does not
+  // reset the priority the campaign resumes at.
+  setScheduling: (campaignId: string, opts: { priority?: number; paused?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts.priority !== undefined) params.set('priority', String(opts.priority))
+    if (opts.paused !== undefined) params.set('paused', String(opts.paused))
+    return request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/scheduling?${params.toString()}`,
+    )
+  },
+
   // Kill ONE running job; the campaign keeps going and that run is recorded as `killed`.
   // Refused (409) unless the job is running. `job_name` is a query param because locally it
   // is a "<config>/<run>" id and contains a slash.
