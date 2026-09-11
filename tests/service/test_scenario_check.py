@@ -146,6 +146,22 @@ def test_the_check_crashing_is_reported_as_the_services_defect():
     assert "no lane" in problems[0]["message"]
 
 
+def test_a_deployment_that_cannot_exec_is_not_the_services_defect():
+    """The arm above sends a reader to the service log for a traceback. An exec path that
+    does not stream leaves none there: it is a property of the deployment, and the reader
+    would spend the hour looking for a bug that is not in the code."""
+    from robovast.common.errors import ExecPathUnavailable
+
+    exec_call = _Exec(raises=ExecPathUnavailable(
+        "no command can run in a container on this deployment"))
+
+    problems = _check(exec_call)
+
+    assert problems[0]["severity"] == "unchecked"
+    assert "no command can run in a container" in problems[0]["message"]
+    assert "defect in the service" not in problems[0]["message"]
+
+
 def test_the_probe_is_valid_python_that_reports_rather_than_raises():
     """The script is written here and run by the image's interpreter, so nothing type-checks
     it on the way. Compiling it is the cheapest guard against a probe that dies on a syntax

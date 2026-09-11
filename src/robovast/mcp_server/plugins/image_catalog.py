@@ -155,7 +155,10 @@ def _fetch(group: str, address: str) -> dict:
             # session and anything they had written in it.
             query=True))
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: the catalog is answered by a command
+        # in a container, so "nothing can run one here" is one of the answers, and it is a
+        # fact about the deployment rather than about this image.
+        return service_access.error_result(e)
     elapsed = time.monotonic() - started
     if result.exit_code != 0:
         detail = (result.stderr or result.stdout or "").strip()[:400]

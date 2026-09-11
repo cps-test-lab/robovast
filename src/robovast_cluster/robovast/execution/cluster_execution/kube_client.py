@@ -290,6 +290,18 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
                       stderr=True, stdin=stdin_data is not None, stdout=True,
                       tty=False, _preload_content=False)
     except ApiException as exc:
+        from robovast.common.errors import \
+            ExecPathUnavailable  # noqa: PLC0415 - keeps the import cost local
+        handshake = _handshake_failure(str(getattr(exc, "reason", "") or ""))
+        if handshake:
+            # An upgrade the peer answered with an ordinary response refuses every exec on
+            # this deployment, not this one: raised as the deployment-wide verdict, with the
+            # consequence stated, because the cause alone leaves each caller to conclude on
+            # its own what it can still do -- and they concluded differently.
+            raise ExecPathUnavailable(
+                f"no command can run in a container on this deployment: {handshake}. "
+                "Nothing that has to ask a container a question can be answered here; "
+                "everything that needs none is unaffected") from exc
         # Named here because this is the call that failed. The handshake is the one part of
         # an exec that fails before the command exists, and unlabelled it was reported by
         # whichever wrapper happened to enclose the call -- pointing a caller at an

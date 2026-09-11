@@ -56,6 +56,34 @@ class ClusterUnreachableError(Exception):
     include_traceback = False
 
 
+class ExecPathUnavailable(RuntimeError):
+    """Raised when no command can be run in a container here at all.
+
+    A property of the *deployment*, never of the image, the command or the project: an API
+    server that does not serve the exec subresource as a stream -- or anything between the
+    client and it that answers the upgrade with an ordinary HTTP response -- refuses every
+    exec equally, before the command exists. So the pod and container one attempt named are
+    incidental, and naming them invites a caller to try another.
+
+    Distinct from a command that ran and failed, which is the caller's own question
+    answered, and from :class:`ClusterUnreachableError`, where the API server never answered
+    at all. Here it answers: everything that needs no container keeps working, which is what
+    makes the consequence worth stating rather than leaving to be inferred.
+
+    Its own type because the callers that must degrade rather than mis-attribute recognise
+    it structurally -- the world and scenario checks report *unchecked*, the image catalogs
+    report the deployment instead of the image. Across HTTP the type is carried as the
+    :data:`~robovast.service.interface.EXEC_PATH_UNAVAILABLE` code on the refusal, so a
+    client recognises the same fact without matching on the message.
+
+    A ``RuntimeError`` for the same reason :class:`ObjectStoreUnreachableError` is one: the
+    callers that already catch one keep working; the service maps this subclass to 503
+    rather than 409.
+    """
+
+    include_traceback = False
+
+
 class ObjectStoreUnreachableError(RuntimeError):
     """Raised when the campaign object store did not answer at all.
 

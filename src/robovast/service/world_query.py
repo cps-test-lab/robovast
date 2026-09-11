@@ -322,7 +322,7 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     from robovast.common.config_generation import (WorldQueryUnavailable,
                                                    describe_world_payload,
                                                    set_container_runner_factory)
-    from robovast.common.errors import ActionableError
+    from robovast.common.errors import ActionableError, ExecPathUnavailable
 
     execution = parameters.get("execution", {}) or {}
     blocks = _distinct_blocks(parameters, vast_dir)
@@ -334,6 +334,17 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
         try:
             payload, image = describe_world_payload(
                 execution, block, vast_dir, entities=True)
+        except ExecPathUnavailable as exc:
+            # Before the arms below, and its own answer: they name the image or the lane as
+            # what would settle it, and neither is what is wrong. Unchecked rather than an
+            # error, by the same rule -- a check that could not run is never a verdict about
+            # the world.
+            problems.append(_problem(
+                f"this campaign's world was NOT checked: {exc}. Next: nothing about the "
+                ".vast changes this -- the world can only be described where a command "
+                "can run in a container.",
+                config=config_name, severity="unchecked"))
+            continue
         except WorldQueryUnavailable as exc:
             # One exception, two very different meanings, and only the runner can tell them
             # apart: `describe_world_payload` raises this both when nothing could ask the

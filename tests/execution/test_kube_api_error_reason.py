@@ -17,6 +17,7 @@ and the call that failed is the call that gets named.
 
 import pytest
 
+from robovast.common.errors import ExecPathUnavailable
 from robovast.execution.cluster_execution.kube_client import api_error_reason, exec_stream
 
 pytest.importorskip("kubernetes")
@@ -83,23 +84,51 @@ def test_an_unrecognised_reason_still_comes_through_short():
     assert api_error_reason(_Odd()) == "something new"
 
 
-def test_a_failed_exec_handshake_names_the_exec_not_whatever_enclosed_it(monkeypatch):
-    """The misattribution this closes: the handshake is the one part of an exec that fails
-    before the command exists, and unlabelled it was reported by whichever wrapper happened
-    to enclose the call — pointing a caller at an operation that had in fact succeeded."""
+def _refusing_stream(monkeypatch, reason):
+    """``kubernetes.stream.stream`` failing the way the generated client fails it."""
     import kubernetes.stream
     from kubernetes.client.rest import ApiException
 
     def _refuse(*_a, **_k):
-        raise ApiException(status=0, reason=_HANDSHAKE_REPR)
+        raise ApiException(status=0, reason=reason)
 
     class _Core:
         connect_get_namespaced_pod_exec = staticmethod(lambda *_a, **_k: None)
 
     monkeypatch.setattr(kubernetes.stream, "stream", _refuse)
-    with pytest.raises(RuntimeError) as raised:
-        exec_stream(_Core(), "exec-pod", "ns", "held", ["true"], limit_s=5)
+    return _Core()
+
+
+def test_a_handshake_failure_is_its_own_type_not_a_bare_runtime_error(monkeypatch):
+    """The type is the fix. An upgrade answered with an ordinary response refuses every exec
+    on the deployment, and the callers that must degrade rather than blame the image or the
+    .vast can only tell that from the class -- a message they would have to match on is one
+    nobody may reword.
+
+    Which operation the failure is attributed to is settled the same way. The handshake is
+    the one part of an exec that fails before the command exists, and unlabelled it was
+    reported by whichever wrapper enclosed the call, pointing a caller at an operation that
+    had in fact succeeded.
+    """
+    core = _refusing_stream(monkeypatch, _HANDSHAKE_REPR)
+    with pytest.raises(ExecPathUnavailable) as raised:
+        exec_stream(core, "exec-pod", "ns", "held", ["true"], limit_s=5)
     message = str(raised.value)
-    assert "exec stream into exec-pod/held" in message
+    assert "no command can run in a container" in message
+    assert "never upgraded" in message, "the cause travels with the verdict"
     assert "start exec pod" not in message, "the pod started; the stream did not open"
-    assert "-+-+-" not in message
+    assert "-+-+-" not in message, "header noise is not a diagnosis"
+    assert "exec-pod" not in message and "held" not in message, (
+        "the pod this attempt happened to name is incidental, and naming it invites a "
+        "caller to try another one")
+
+
+def test_an_exec_that_failed_for_any_other_reason_is_not_a_deployment_verdict(monkeypatch):
+    """Only the handshake says *nothing* can exec. A pod that went away between the check
+    and the call is one pod, and reported as a deployment-wide outage it would send a
+    caller to their cluster administrator over a race they can retry."""
+    core = _refusing_stream(monkeypatch, "pods 'exec-pod' not found")
+    with pytest.raises(RuntimeError) as raised:
+        exec_stream(core, "exec-pod", "ns", "held", ["true"], limit_s=5)
+    assert not isinstance(raised.value, ExecPathUnavailable)
+    assert "exec stream into exec-pod/held" in str(raised.value)
