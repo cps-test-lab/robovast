@@ -29,6 +29,8 @@ PLATFORM=""
 . "$ROOT/container/ask_push.sh"
 # shellcheck source=../image_stamp.sh
 . "$ROOT/container/image_stamp.sh"
+# shellcheck source=substrate_docs.sh
+. "$BASEDIR/substrate_docs.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -96,8 +98,13 @@ buildcache_args "$TAG" "${PUSH:-}"
 # site-packages to ask and no way to read the image's own labels from inside it.
 image_stamp_args "$ROOT"
 
+# The pages the corpus serves beside our own. A sibling checkout wins over the pin, so building
+# here while working on the simulator puts the documentation on disk into the image.
+substrate_docs_args "$ROOT"
+
 docker buildx build \
   "${BUILDX_ARGS[@]}" \
+  "${SUBSTRATE_DOCS_ARGS[@]}" \
   "${BUILDCACHE_ARGS[@]}" \
   "${GIT_REVISION_ARGS[@]}" \
   "${BUILD_DATE_ARGS[@]}" \
