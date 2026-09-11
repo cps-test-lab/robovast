@@ -238,7 +238,14 @@ def _install_tool_stats(mcp: FastMCP) -> None:
 
     The recording is in a ``finally`` and cannot fail the call -- a failed call is the one
     most worth having in the log, so the failure path records and re-raises.
+
+    It runs on a worker thread: a record may flush the buffer to the index, and that
+    connect-and-``COPY`` on the event loop would stall every request the service is serving
+    for as long as the index takes to answer.
     """
+    import functools  # pylint: disable=import-outside-toplevel
+
+    import anyio  # pylint: disable=import-outside-toplevel
     from fastmcp.server.middleware import Middleware  # pylint: disable=import-outside-toplevel
     from fastmcp.server.middleware import MiddlewareContext
 
@@ -254,13 +261,14 @@ def _install_tool_stats(mcp: FastMCP) -> None:
                 answer = f"{type(exc).__name__}: {exc}"
                 raise
             finally:
-                tool_stats.LOG.record(
+                await anyio.to_thread.run_sync(functools.partial(
+                    tool_stats.LOG.record,
                     context.message.name,
                     (time.perf_counter() - started) * 1000.0,
                     ok,
                     args=tool_stats.render(context.message.arguments or {}),
                     answer=answer,
-                )
+                ))
 
     mcp.add_middleware(_ToolStatsMiddleware())
 

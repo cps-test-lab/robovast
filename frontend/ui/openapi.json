@@ -5096,7 +5096,7 @@
     },
     "/campaigns/archives/{token}": {
       "put": {
-        "description": "Redeem a one-time token and stream a campaign archive to disk.\n\n**Streamed, not buffered** \u2014 unlike ``PUT /uploads/{token}``, whose payload is a\n``.vast`` or a notebook. A campaign archive is routinely gigabytes, and reading one\ninto memory to write it straight back out would put the service's own footprint at\nthe mercy of what somebody uploads.\n\nStores the bytes and stops there: ``POST /campaigns/import`` is the import, for this\nand every other caller, so the operation has a single implementation.",
+        "description": "Redeem a one-time token and stream a campaign archive to disk.\n\n**Streamed, not buffered** \u2014 unlike ``PUT /uploads/{token}``, whose payload is a\n``.vast`` or a notebook. A campaign archive is routinely gigabytes, and reading one\ninto memory to write it straight back out would put the service's own footprint at\nthe mercy of what somebody uploads.\n\nStores the bytes and stops there: ``POST /campaigns/import`` is the import, for this\nand every other caller, so the operation has a single implementation.\n\nEvery file operation runs on a worker thread (``anyio.open_file``): a chunk written\non the event loop holds every other request for as long as the disk takes, and a\nfilling disk takes long.",
         "operationId": "put_campaign_archive_campaigns_archives__token__put",
         "parameters": [
           {

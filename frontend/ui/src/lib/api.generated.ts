@@ -268,6 +268,10 @@ export interface paths {
          *
          *     Stores the bytes and stops there: ``POST /campaigns/import`` is the import, for this
          *     and every other caller, so the operation has a single implementation.
+         *
+         *     Every file operation runs on a worker thread (``anyio.open_file``): a chunk written
+         *     on the event loop holds every other request for as long as the disk takes, and a
+         *     filling disk takes long.
          */
         put: operations["put_campaign_archive_campaigns_archives__token__put"];
         post?: never;

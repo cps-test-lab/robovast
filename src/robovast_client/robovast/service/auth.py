@@ -206,7 +206,7 @@ class AuthMiddleware:
         #: installs, so this refusal is the one that reaches a client without passing through
         #: them -- without the hook it is invisible to anything recording what was refused.
         #: A callable rather than a log: this package is the client, and must not learn what
-        #: the service keeps its records in.
+        #: the service keeps its records in. Called on a worker thread, so it may block.
         self.on_reject = on_reject
 
     async def __call__(self, scope, receive, send):
@@ -242,8 +242,13 @@ class AuthMiddleware:
         # Only this branch. The html branch above redirects to the login page, which is the
         # sign-in flow working rather than an action anyone was refused.
         if self.on_reject is not None:
+            # On a worker thread: the hook may write to disk, and this runs on the event
+            # loop in front of every request -- a slow write here would stall all of them.
+            # anyio comes with the ASGI server this middleware runs in, not with the client.
+            import anyio  # pylint: disable=import-outside-toplevel
             try:
-                self.on_reject(scope.get("path", ""), UNAUTHENTICATED_DETAIL)
+                await anyio.to_thread.run_sync(
+                    self.on_reject, scope.get("path", ""), UNAUTHENTICATED_DETAIL)
             except Exception:  # pylint: disable=broad-except
                 logger.debug("could not report an auth refusal", exc_info=True)
         await _send_simple(

@@ -91,3 +91,34 @@ def test_a_readonly_session_refuses_a_write():
         assert conn.execute("SELECT 1").fetchone()[0] == 1
         with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
             conn.execute("CREATE TABLE should_not_exist (a int)")
+
+
+def _connect_kwargs(monkeypatch, dsn: str) -> dict:
+    """What :func:`index_db.connect` hands the driver for *dsn*."""
+    psycopg = pytest.importorskip("psycopg")
+    seen = {}
+
+    def fake_connect(conninfo, **kwargs):
+        seen.update(kwargs)
+        raise psycopg.OperationalError("not really connecting")
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    with pytest.raises(IndexUnreachableError):
+        index_db.connect(dsn)
+    return seen
+
+
+def test_a_connection_does_not_wait_forever_by_default(monkeypatch):
+    """libpq waits indefinitely unless told otherwise, and a caller that waits forever holds
+    its worker thread forever -- a server that accepts and then says nothing would use up
+    the service's threads one request at a time."""
+    kwargs = _connect_kwargs(monkeypatch, "host=db.example.org dbname=robovast")
+    assert kwargs["connect_timeout"] == index_db.CONNECT_TIMEOUT_S
+
+
+@pytest.mark.parametrize("dsn", [
+    "host=db.example.org dbname=robovast connect_timeout=30",
+    "postgresql://robovast@db.example.org/robovast?connect_timeout=30",
+])
+def test_a_timeout_the_dsn_states_is_kept(monkeypatch, dsn):
+    assert "connect_timeout" not in _connect_kwargs(monkeypatch, dsn)

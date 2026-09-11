@@ -447,6 +447,23 @@ passed through the cluster path (``cluster_service.py`` into the pod's environme
 the local one, or the operation works under ``vast serve --backend local`` and silently does
 nothing on the cluster.
 
+Keep disk and database I/O off the event loop
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The service answers every request, ``/healthz`` included, from one event loop. A route or MCP
+tool declared ``def`` runs on a worker thread and may block; one declared ``async def`` runs
+on the loop, so anything it does that waits on a disk, the index or the object store stalls
+every other request for as long as that takes. A disk that is filling makes every write slow
+at once, and a stalled loop fails the liveness probe, so the pod is restarted for being short
+of disk.
+
+- Declare a route or tool ``async`` only when it has something to ``await``; otherwise make it
+  a plain ``def``.
+- Inside ``async`` code, hand blocking calls to a worker with ``anyio.to_thread.run_sync``, and
+  write files through ``anyio.open_file``.
+- Work that must not compete with the routes' threads gets its own ``anyio.CapacityLimiter``,
+  as the SSE pulls and the refusal records in :mod:`robovast.service.app` do.
+
 .. _extending-variation:
 
 Add Variation Plugin

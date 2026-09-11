@@ -387,7 +387,9 @@ async def _announced(ctx, campaign_id: str, call):
     pre-fetch one.
     """
     import anyio
-    preflight = data_access.announce_pending_fetch(campaign_id)
+    # The probe too: it asks the service, which may ask the object store.
+    preflight = await anyio.to_thread.run_sync(
+        lambda: data_access.announce_pending_fetch(campaign_id))
     if preflight[1] and ctx is not None:
         await ctx.info(preflight[1])
     return await anyio.to_thread.run_sync(lambda: call(preflight))
@@ -421,7 +423,9 @@ async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
         means the campaign is local and the question does not apply.
     """
     if preflight_only:
-        status = data_access.data_status(campaign_id)
+        import anyio
+        # Metadata lookups against the service and the store: off the event loop.
+        status = await anyio.to_thread.run_sync(lambda: data_access.data_status(campaign_id))
         if status is None:
             return {"error": (
                 "no robovast-service answered, so there is nothing to fetch from: "
