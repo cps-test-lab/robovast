@@ -249,7 +249,7 @@ weigh it rather than reading the hint as an instruction.
 .. _mcp-one-tool-per-question:
 
 What the documentation corpus covers
------------------------------------
+------------------------------------
 
 ``search_docs`` serves RoboVAST's own pages, plus the pages of any installed package that
 publishes its own. A campaign is authored against more than RoboVAST -- the simulator's world
