@@ -3111,7 +3111,6 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.client.logging_config import (add_campaign_log_handler,
                                                     remove_campaign_log_handler)
-        from robovast.results_processing.postprocessing import run_postprocessing
 
         # Capture the postprocessing narrative into its own phase file, which the
         # unified campaign log serves under the POSTPROCESSING divider. Thread-
@@ -3125,17 +3124,13 @@ class LocalTransport(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
-            # Each step's line also becomes the live ``stage`` marker: this phase has no run
-            # counter, so its own narration is the only thing that separates a long step from
-            # a stuck one for a reader watching the campaign view.
-            from robovast.execution.control_server import stage_output_callback, stop_checker
-            ok, message = run_postprocessing(
-                results_dir=results_dir, campaign=campaign_id,
-                output_callback=stage_output_callback(state, logger.info),
-                # Reads the postprocessing scope, so this ends only for a stop aimed at
-                # the analysis. Without it a stop landing once postprocessing has begun
-                # would run to the end regardless.
-                should_stop=stop_checker(state))
+            # Through the seam every other caller uses, so the lane decides HOW to
+            # postprocess. Running the pipeline here instead reads the service's own results
+            # directory, which holds the campaign only where the runs wrote it: a lane whose
+            # durable home is an object store stages the tree into the pod that processes it,
+            # and reading the local path there finds no `_config/` and no campaign.
+            ok, message = self._postprocess_campaign(
+                campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
                 from robovast.results_processing.postprocessing import \
                     campaign_defines_postprocessing
