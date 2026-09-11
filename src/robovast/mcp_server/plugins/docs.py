@@ -324,6 +324,88 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
+#: Entry-point group a package uses to publish its own documentation to this corpus. Each entry
+#: resolves to an object carrying a ``DOCS_DIR`` (the convention ``roqsim.models`` already uses for
+#: ``MODELS_DIR``), and the entry-point NAME becomes the prefix its pages are served under.
+#:
+#: The substrate a campaign runs on is documented in its own repository, and robovast cannot reach
+#: that by path without naming a sibling component -- which is exactly what a component that must
+#: stay publishable on its own may not do. So the direction is inverted: a package that wants its
+#: documentation served says so, and robovast names nobody.
+DOCS_GROUP = "robovast.docs"
+
+#: Additional corpora for a deployment whose packages predate the entry point, as
+#: ``label=/path`` pairs separated by the platform path separator. A bare path takes its label
+#: from the directory's parent. This is where cross-repository wiring belongs when it cannot be
+#: a published name: in the configuration, not in either repository.
+DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
+
+
+def _entry_point_doc_roots() -> list[tuple[str, Path]]:
+    """``(label, docs_dir)`` for every package publishing docs through :data:`DOCS_GROUP`."""
+    from importlib.metadata import entry_points
+
+    roots: list[tuple[str, Path]] = []
+    try:
+        found = list(entry_points(group=DOCS_GROUP))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not read the %s entry points: %s", DOCS_GROUP, e)
+        return roots
+    for ep in found:
+        try:
+            target = ep.load()
+        except Exception as e:  # noqa: BLE001
+            # One package's broken entry point must not cost every other package its docs.
+            logger.warning("%s entry point %r could not be loaded: %s", DOCS_GROUP, ep.name, e)
+            continue
+        docs_dir = getattr(target, "DOCS_DIR", None)
+        if docs_dir is None:
+            logger.warning("%s entry point %r exposes no DOCS_DIR", DOCS_GROUP, ep.name)
+            continue
+        path = Path(docs_dir)
+        if not path.is_dir():
+            logger.warning("%s entry point %r points at %s, which is not a directory",
+                           DOCS_GROUP, ep.name, path)
+            continue
+        roots.append((ep.name, path))
+    return roots
+
+
+def _env_doc_roots() -> list[tuple[str, Path]]:
+    """``(label, docs_dir)`` for each entry of :data:`DOCS_EXTRA_ENV`."""
+    raw = os.environ.get(DOCS_EXTRA_ENV, "")
+    roots: list[tuple[str, Path]] = []
+    for chunk in raw.split(os.pathsep):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        label, _, spec = chunk.partition("=")
+        if not spec:
+            label, spec = "", chunk
+        path = Path(spec)
+        if not path.is_dir():
+            # Set-but-wrong is a misconfiguration, as it is for ROBOVAST_DOCS_DIR: say so rather
+            # than serving nothing under a name the operator believes is theirs.
+            logger.warning("%s names %s, which is not a directory; skipping it",
+                           DOCS_EXTRA_ENV, path)
+            continue
+        roots.append((label or path.parent.name, path))
+    return roots
+
+
+def _load_corpus(docs_dir: Path, prefix: str = "") -> dict[str, tuple[Path, str, str]]:
+    """``name -> (path, kind, label)`` for one documentation root.
+
+    *prefix* namespaces a secondary corpus, so ``architecture`` from the substrate is served as
+    ``roqsim-architecture`` beside robovast's own -- both repositories have a page by that name,
+    and silently letting one shadow the other would answer a question about one with the other.
+    """
+    out: dict[str, tuple[Path, str, str]] = {}
+    for name, (path, kind) in _collect_doc_sources(docs_dir).items():
+        out[f"{prefix}-{name}" if prefix else name] = (path, kind, prefix or "robovast")
+    return out
+
+
 # -- Module-level doc loading ------------------------------------------------
 
 _docs_dir: Path | None = _find_docs_dir()
@@ -331,17 +413,32 @@ _docs_dir: Path | None = _find_docs_dir()
 _doc_files: dict[str, Path] = {}
 _doc_meta: dict[str, str] = {}
 _doc_content: dict[str, str] = {}
+#: page name -> which corpus it came from, so a listing says where an answer is from.
+_doc_source: dict[str, str] = {}
 
+_sources: dict[str, tuple[Path, str, str]] = {}
 if _docs_dir is not None:
-    for _name, (_path, _kind) in _collect_doc_sources(_docs_dir).items():
-        _text = _path.read_text(encoding="utf-8", errors="replace")
-        _doc_files[_name] = _path
-        if _kind == "roqsim":
-            _doc_meta[_name] = _extract_title(_text) or _name
-            _doc_content[_name] = _resolve_directives(_text, _path.parent)
-        else:
-            _doc_meta[_name] = _extract_md_title(_text) or _name
-            _doc_content[_name] = _text
+    _sources.update(_load_corpus(_docs_dir))
+for _label, _root in _entry_point_doc_roots() + _env_doc_roots():
+    # setdefault: robovast's own pages keep their unprefixed names, and the first registration
+    # of a label wins, so a package registered twice cannot half-replace itself.
+    for _key, _value in _load_corpus(_root, prefix=_label).items():
+        _sources.setdefault(_key, _value)
+
+for _name, (_path, _kind, _from) in _sources.items():
+    _text = _path.read_text(encoding="utf-8", errors="replace")
+    _doc_files[_name] = _path
+    _doc_source[_name] = _from
+    if _kind == "roqsim":
+        _doc_meta[_name] = _extract_title(_text) or _name
+        # Only robovast's own pages carry directives this resolver knows how to expand; another
+        # repository's Sphinx extensions are its own, and are left as written rather than
+        # half-rendered.
+        _doc_content[_name] = (
+            _resolve_directives(_text, _path.parent) if _from == "robovast" else _text)
+    else:
+        _doc_meta[_name] = _extract_md_title(_text) or _name
+        _doc_content[_name] = _text
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -403,7 +500,8 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
 
 
 def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
-    """The RoboVAST documentation: list the pages, search them, or read one.
+    """The documentation -- RoboVAST's, and any installed package publishing its own (the
+    simulator, the scenario DSL): list the pages, search them, or read one.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of
@@ -431,7 +529,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
         return {"page": page, "title": _doc_meta[page], "content": _doc_content[page]}
 
     if not query:
-        pages = [{"name": name, "title": _doc_meta[name]} for name in sorted(_doc_files)]
+        pages = [{"name": name, "title": _doc_meta[name],
+                  "source": _doc_source.get(name, "robovast")}
+                 for name in sorted(_doc_files)]
         return {"pages": pages, "total": len(pages)}
 
     results = []

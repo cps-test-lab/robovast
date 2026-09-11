@@ -121,3 +121,104 @@ def test_a_source_checkout_needs_no_env(monkeypatch):
     monkeypatch.delenv("ROBOVAST_DOCS_DIR", raising=False)
     found = docs._find_docs_dir()
     assert found is not None and any(found.glob("*.rst"))
+
+
+# -- a corpus that reaches past this repository ----------------------------------
+
+"""The substrate a campaign runs on is documented in its own repository. Serving only
+robovast's pages meant an agent on the MCP path could not reach the world format, the
+plugin reference, or the scenario DSL at all -- and a search for them returned zero, which
+reads as "no such thing" rather than "not indexed here"."""
+
+
+def _corpus_dir(tmp_path, name, pages):
+    d = tmp_path / name / "docs"
+    d.mkdir(parents=True)
+    for stem, text in pages.items():
+        (d / f"{stem}.rst").write_text(text, encoding="utf-8")
+    return d
+
+
+class _FakeEntryPoint:
+    def __init__(self, name, target):
+        self.name = name
+        self._target = target
+
+    def load(self):
+        if isinstance(self._target, Exception):
+            raise self._target
+        return self._target
+
+
+def _with_entry_points(monkeypatch, eps):
+    import importlib.metadata as md
+    monkeypatch.setattr(md, "entry_points", lambda group=None: list(eps))
+
+
+def test_a_package_publishing_docs_has_them_served_under_its_own_prefix(tmp_path, monkeypatch):
+    extra = _corpus_dir(tmp_path, "substrate", {
+        "interfaces": "World YAML\n==========\n\nThe components list.\n"})
+
+    class _Pkg:
+        DOCS_DIR = str(extra)
+
+    _with_entry_points(monkeypatch, [_FakeEntryPoint("substrate", _Pkg)])
+    assert docs._entry_point_doc_roots() == [("substrate", extra)]
+
+    label, root = docs._entry_point_doc_roots()[0]
+    loaded = docs._load_corpus(root, prefix=label)
+    assert "substrate-interfaces" in loaded
+    assert loaded["substrate-interfaces"][2] == "substrate"
+
+
+def test_a_package_that_exposes_no_docs_dir_is_skipped_with_a_reason(monkeypatch, caplog):
+    class _Pkg:
+        pass
+
+    _with_entry_points(monkeypatch, [_FakeEntryPoint("substrate", _Pkg)])
+    with caplog.at_level("WARNING"):
+        assert docs._entry_point_doc_roots() == []
+    assert "DOCS_DIR" in caplog.text
+
+
+def test_a_page_name_both_repositories_use_does_not_shadow(tmp_path):
+    """Both carry an `architecture` page. Letting one win answers a question about the
+    substrate with robovast's own page, which is worse than not answering it."""
+    extra = _corpus_dir(tmp_path, "substrate", {"architecture": "A\n=\n\nsubstrate\n"})
+    loaded = docs._load_corpus(extra, prefix="substrate")
+    assert set(loaded) == {"substrate-architecture"}
+
+
+def test_an_extra_corpus_is_read_from_the_environment(tmp_path, monkeypatch):
+    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"substrate={extra}")
+    assert docs._env_doc_roots() == [("substrate", extra)]
+
+
+def test_a_bare_path_takes_its_label_from_the_directory_it_is_in(tmp_path, monkeypatch):
+    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, str(extra))
+    assert docs._env_doc_roots() == [("substrate", extra)]
+
+
+def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeypatch, caplog):
+    """Set-but-wrong is a misconfiguration, as it is for ROBOVAST_DOCS_DIR."""
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"substrate={tmp_path / 'nope'}")
+    with caplog.at_level("WARNING"):
+        assert docs._env_doc_roots() == []
+    assert "not a directory" in caplog.text
+
+
+def test_one_packages_broken_entry_point_does_not_cost_the_others_their_docs(
+        tmp_path, monkeypatch):
+    """A package that fails to import must not take every other package's docs with it."""
+    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
+
+    class _Pkg:
+        DOCS_DIR = str(extra)
+
+    _with_entry_points(monkeypatch, [
+        _FakeEntryPoint("broken", ImportError("no such module")),
+        _FakeEntryPoint("substrate", _Pkg),
+    ])
+    assert docs._entry_point_doc_roots() == [("substrate", extra)]
