@@ -317,6 +317,16 @@ class HTTPTransport(RobovastInterface):
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
 
+    def set_campaign_scheduling(self, campaign_id: str, priority: Optional[int] = None,
+                                paused: Optional[bool] = None) -> ActionResult:
+        # ``_post`` drops the ``None``s, which is exactly the contract here: an omitted half
+        # must stay off the wire, or the service would read a default as an instruction and a
+        # pause would silently reset the rank the campaign resumes at. ``False`` is not None
+        # and is sent, which is what makes resuming work.
+        return ActionResult.model_validate(
+            self._post(Routes.campaign_scheduling(campaign_id),
+                       priority=priority, paused=paused))
+
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: Optional[str] = None, source: str = "api") -> ActionResult:
         return ActionResult.model_validate(

@@ -60,7 +60,9 @@ from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
                                                STOP_SCOPE_MESSAGES, Phase, is_running,
                                                stop_scope_for_phase)
+from robovast.common.campaign_data import update_launch_scheduling
 from robovast.service.client import LocalTransport
+from robovast.service.local_transport import require_scheduling_change
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
                                         ResourceUsage, CacheSize, KeptCacheEntry,
@@ -205,6 +207,10 @@ class ClusterService(LocalTransport):
     #: ``_admit_show_gui`` turns this into an explicit refusal rather than a silent
     #: windowless run.
     _SUPPORTS_SHOW_GUI = False
+
+    #: Campaigns here run against each other for the cluster, so there is a queue to order and
+    #: a rank means something. ``_admit_scheduling`` accepts rather than refuses.
+    _SUPPORTS_SCHEDULING = True
 
     #: How long a kubelet Summary reading is reused -- deliberately longer than
     #: ``_USAGE_CACHE_TTL``. One Summary payload carries every pod's stats on that node
@@ -2875,6 +2881,76 @@ class ClusterService(LocalTransport):
     # the disk is scratch and the object store's index is the only record that a campaign
     # from a previous service life exists. Each id is then resolved by the same precedence
     # ``get_status`` uses — live snapshot if tracked, else its records via ``_record_dir``.
+
+    def _scheduling_for(self, campaign_id: str, *, live: bool) -> dict:
+        """What the queue holds for this campaign, for a listing row.
+
+        Only while it is live: the entry is dropped when the campaign ends, so a finished
+        campaign would read as rank 0 either way -- and reading it from the queue rather than
+        from the launch record keeps one answer to the question, the one admission uses.
+        """
+        if not live:
+            return {"priority": 0, "paused": False}
+        rank, held = self._admission_controller().scheduling(campaign_id)
+        return {"priority": rank, "paused": held}
+
+    def _register_scheduling(self, campaign_id: str, request) -> None:
+        """Seed the queue with the rank and hold this campaign was launched (or adopted) with.
+
+        The same call a restart adoption makes, because a resume *is* a launch: the request it
+        rebuilds carries what the launch record kept, so a campaign that was demoted or held
+        before the restart comes back that way rather than at the default.
+        """
+        self._admission_controller().set_scheduling(
+            campaign_id, priority=request.priority, paused=request.paused)
+
+    def set_campaign_scheduling(self, campaign_id: str, priority=None, paused=None) -> ActionResult:
+        """Set a campaign's standing with the admission queue: its rank, its hold, or both.
+
+        Two writes, and both are needed. The queue holds the live answer and is what the next
+        admission pass reads; the launch record is what a **restart** re-launches the campaign
+        from, so a change written only to the queue would be undone by the next service
+        restart and the campaign would quietly go back to taking capacity somebody had already
+        taken away from it.
+
+        Ordering only, like everything else this queue does: a campaign demoted or held keeps
+        the jobs it is already running and gives up only the slots they release. Nothing is
+        preempted and no partial run is produced, which is what makes this usable on a
+        campaign whose results matter.
+
+        Refused for a campaign that is over -- there is nothing left to admit, and reporting
+        a rank set on a finished campaign would be a change that means nothing.
+        """
+        require_scheduling_change(priority, paused)
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is None:
+            return ActionResult(
+                ok=False, message=f"campaign {campaign_id} is not running here")
+        if self._is_done(entry):
+            phase = entry.state.snapshot().phase
+            return ActionResult(
+                ok=False,
+                message=f"campaign {campaign_id} is {phase}; there is nothing left to queue")
+
+        self._admission_controller().set_scheduling(
+            campaign_id, priority=priority, paused=paused)
+
+        # Best-effort, and deliberately after the queue: the change that matters now has
+        # already taken effect, and a record that could not be written must not undo it.
+        # It is logged loudly because what it costs is a restart quietly reverting the change.
+        campaign_root = Path(entry.results_dir) / campaign_id
+        try:
+            if update_launch_scheduling(campaign_root, priority=priority, paused=paused):
+                self._publish_campaign_records(campaign_id, campaign_root)
+        except OSError as e:
+            logger.warning("Could not record scheduling for %s, so a service restart would "
+                           "return it to what it was launched with: %s", campaign_id, e)
+
+        rank, held = self._admission_controller().scheduling(campaign_id)
+        return ActionResult(ok=True, message=(
+            f"priority {rank}" + (", paused" if held else "") +
+            "; jobs already running are unaffected"))
 
     def stop(self, campaign_id: str) -> ActionResult:
         """Stop a campaign this process is driving.

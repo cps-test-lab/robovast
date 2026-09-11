@@ -955,6 +955,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/scheduling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Campaign Scheduling
+         * @description Set how the queue treats a campaign: its rank, whether it admits new runs, or both. Ordering only — nothing already running stops.
+         */
+        post: operations["set_campaign_scheduling_campaigns__campaign_id__scheduling_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/screenshot": {
         parameters: {
             query?: never;
@@ -2071,6 +2091,11 @@ export interface components {
             num_runs: number;
             origin: components["schemas"]["CampaignOrigin"] | null;
             /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /**
              * Phase
              * @default unknown
              */
@@ -2085,6 +2110,11 @@ export interface components {
              * @default
              */
             postprocessing_error: string;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
             /** Results Bytes */
             results_bytes: number | null;
             /**
@@ -2192,10 +2222,20 @@ export interface components {
              */
             image_project_tag: string;
             /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /**
              * Postprocess
              * @default true
              */
             postprocess: boolean;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
             /**
              * Runs
              * @default 1
@@ -6055,6 +6095,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_campaign_scheduling_campaigns__campaign_id__scheduling_post: {
+        parameters: {
+            query?: {
+                priority?: number | null;
+                paused?: boolean | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
                 };
             };
             /** @description Validation Error */

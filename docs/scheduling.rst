@@ -76,12 +76,15 @@ headroom off: a reserve that is never spendable is not part of either answer.
 
    * - Call
      - Meaning
-   * - ``submit(owner, items, *, started_at, priority=0, sizing_for_node=None, accepts_node=None, pin=None)``
+   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None)``
      - Enqueue a whole plan. ``items`` are ``(key, JobSizing, create_fn)``; ``create_fn``
        takes the chosen ``node_id`` (or ``None`` when unpinned). ``started_at`` is the
-       **campaign's** start, not the batch's.
+       **campaign's** start, not the batch's. ``campaign`` is whose rank the items take and
+       defaults to ``owner``; a sub-scope owner (``<campaign>#probes``) must name it, or its
+       work ranks as a stranger to the campaign it belongs to.
    * - ``drain(*, limit=None) -> int``
-     - Create as many globally-highest-priority items as currently fit. Returns how many.
+     - Create as many globally-highest-ranked items as currently fit. Returns how many. A
+       **paused** campaign's items are not candidates at all.
        ``0`` means "nothing fits now" — normal, never an error. An item that does not fit is
        **skipped**, so a large one cannot idle the cluster — except a **pinned** one, which
        holds its node open until it drains (see below).
@@ -91,6 +94,14 @@ headroom off: a reserve that is never spendable is not part of either answer.
      - Drop an owner's planned items and release its holds. Runs per **batch**.
    * - ``forget_calibration(owner) -> bool``
      - End a campaign's per-node figures. Runs per **campaign**.
+   * - ``set_scheduling(campaign, *, priority=None, paused=None)``
+     - Set the campaign's rank, its hold, or both. ``None`` leaves that half alone. Reaches
+       the items already queued **and** the batches not submitted yet.
+   * - ``scheduling(campaign) -> (int, bool)``
+     - ``(priority, paused)``; ``(0, False)`` when nothing was set.
+   * - ``forget_scheduling(campaign)``
+     - Drop both, once the campaign is over. Runs per **campaign**, beside
+       ``forget_calibration`` and never merged with it.
    * - ``preflight(sizing)``
      - Raise ``AdmissionRefused`` when no node could *ever* hold it.
    * - ``states(owner) -> dict``
@@ -124,7 +135,24 @@ Workflows
         cancel(campaign)                # and cancel(campaign#probes)
 
 Step 4 is what makes ordering global without a controller thread: whichever campaign happens
-to be awake advances everybody, in ``(priority, campaign start)`` order.
+to be awake advances everybody, in ``(campaign rank, priority, campaign start)`` order.
+
+**A campaign's rank and its hold.** ``priority`` above is the order *within* a campaign --
+a probe before the work it gates, postprocessing before both. What an operator sets is the
+campaign's own rank, and it is the more significant key, so a campaign moved ahead takes its
+slots from another campaign's runs rather than queueing behind their internal priorities.
+Every campaign is at ``0`` unless somebody says otherwise, and there the order is exactly what
+it was before ranks existed.
+
+A **paused** campaign is not a low rank but no rank: its items are not candidates, however
+idle the cluster is. Neither setting touches work already created -- both order what is
+queued, so a campaign demoted or held keeps the jobs it is running and gives up only the slots
+they release. That is why both are offered on a live campaign and stopping is not: nothing is
+preempted and no partial run is produced.
+
+Because a paused campaign never reaches the placement walk, ``drain`` records its refusal
+separately -- a campaign waiting for a machine and one waiting for a person need opposite
+responses, and leaving the last "no node has that free" standing would confuse them.
 
 Two traps the loop must respect, both of which cost a live campaign when they were missed:
 

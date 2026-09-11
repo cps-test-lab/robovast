@@ -272,7 +272,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    allow_opaque_image: bool = False,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   show_gui: bool = False, description: str = "",
+                   show_gui: bool = False, description: str = "", priority: int = 0,
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -297,6 +297,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         force: Re-run despite a blocking pre-flight axis, for one you have decided you
             understand. With ``from_campaign`` only — a workspace launch has no pre-flight
             to override.
+        priority: Which campaign the cluster queue admits first: higher first, ``0`` normal,
+            negative last. Orders what is queued; never stops a running run. Cluster only.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -348,7 +350,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("workspace_id", workspace_id), ("config_path", config_path),
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("show_gui", show_gui), ("description", description)) if value]
+                ("show_gui", show_gui), ("description", description),
+                ("priority", priority)) if value]
             if supplied:
                 return {"error":
                         f"from_campaign={from_campaign!r} replays what that campaign "
@@ -371,7 +374,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # campaign started without an explicit count to one run per configuration — a
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
-            allow_opaque_image=allow_opaque_image,
+            allow_opaque_image=allow_opaque_image, priority=priority,
             upload_to_share=upload_to_share, show_gui=show_gui))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}

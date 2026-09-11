@@ -528,6 +528,15 @@ run for days, and a blocking tool call would occupy its caller for the whole of
 it, where a command can be backgrounded and waited on. ``get_campaign_status``
 is the single-read version for a campaign you are not waiting on.
 
+``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
+when several are waiting, so an assistant told to start something out of the way of a
+running campaign can do it at launch. **Changing it afterwards, and pausing, are
+``vast campaign`` verbs rather than tools** — ``priority``, ``pause`` and ``resume``.
+Which experiment deserves the cluster right now is a decision about the operator's
+plans rather than about the campaign in front of the assistant, and every tool's schema
+is injected into the model's context on every request, so the surface is spent on what
+an assistant is actually the right one to decide.
+
 **Image builds wait the same way**, through ``vast image wait <build-id>…``.
 That was once the exception — a blocking ``wait_for_image_build`` tool, on the
 argument that a build is minutes rather than days — and the exception did not

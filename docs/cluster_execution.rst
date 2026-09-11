@@ -1246,18 +1246,44 @@ declare no ``resources.cpu`` is refused at launch, naming them. If only *some* d
 the campaign runs, but the queue paces on less than the pod really takes — that is a
 warning naming the silent containers, not an error.
 
-**Older campaigns finish first.** When several campaigns run at once, the one that
-started earliest is admitted first: each slot that frees up goes to the oldest campaign
-that still has work queued, so a campaign is not overtaken by one launched after it.
-There is nothing to configure and no way to get it wrong — the order comes from the
-campaign id, which carries its start time.
+**Older campaigns finish first, unless you say otherwise.** When several campaigns run at
+once, the one that started earliest is admitted first: each slot that frees up goes to the
+oldest campaign that still has work queued, so a campaign is not overtaken by one launched
+after it. Nothing needs configuring — the order comes from the campaign id, which carries
+its start time.
+
+That is the right default for campaigns run in sequence, and the wrong one when a long
+campaign is in the way of a short one: the long campaign takes every freed slot across all of
+its batches, so a five-run pilot waits for a multi-day search to finish. A campaign's
+**priority** overrides it. Higher is admitted first, ``0`` is what a campaign nobody asked
+about runs at, and negative waits behind everything else:
+
+.. code-block:: bash
+
+   vast workspace run my-ws long.vast --priority -1   # start it out of everyone's way
+   vast campaign priority -1 <campaign-id>            # or move it aside once it is running
+   vast campaign pause <campaign-id>                  # or hold it entirely
+   vast campaign resume <campaign-id>
+
+**Pause holds back what is queued; it does not stop what is running.** The runs already
+started finish normally and their results are kept, so a paused campaign drains rather than
+stopping — the cluster is free for something else within one run's length, and nothing has
+to be re-run when you resume. It keeps the priority it will resume at. To end a campaign
+instead, that is ``vast campaign stop``.
+
+Both need a lane that queues campaigns against each other. A service on the local Docker lane
+runs one campaign at a time, so it has no queue to order and refuses rather than accepting a
+value it cannot act on.
+
+A campaign that is admitting nothing says which of the two reasons it is: a queued campaign
+reports what capacity it is waiting for, and a paused one reports that it is paused.
 
 Two properties are worth stating, because they are what make this safe to leave on:
 
-* **It never stops work that is already running.** Priority orders the *queue* only. A
-  younger campaign's runs finish undisturbed; nothing is preempted, and no partial run
-  data is produced. The older campaign takes the capacity as it is released, not by
-  taking it away.
+* **It never stops work that is already running.** Order — by age, by priority, or a
+  pause — applies to the *queue* only. An overtaken campaign's runs finish undisturbed;
+  nothing is preempted, and no partial run data is produced. The campaign ahead takes the
+  capacity as it is released, not by taking it away.
 * **The cluster still stays full.** A high-priority job that does not fit does not block
   smaller ones behind it, so a younger campaign keeps using capacity the older one cannot.
   Utilization is unchanged; only the order in which queued jobs are admitted changes.

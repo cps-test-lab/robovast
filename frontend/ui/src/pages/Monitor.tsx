@@ -13,11 +13,15 @@ import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
+import Chip from '@mui/material/Chip'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
+import LowPriorityRoundedIcon from '@mui/icons-material/LowPriorityRounded'
+import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // Postprocessing recomputes metrics from the preserved rosbags, so it gets the
 // derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
@@ -335,6 +339,28 @@ function CampaignCard({ summary, newest, openedByLink }: {
     },
   })
 
+  // The campaign's standing with the cluster queue. Ordering only: nothing already running
+  // stops, which is why these are offered on a LIVE campaign where every other act-on entry
+  // is not — they change what happens next without touching what the campaign has produced.
+  const setScheduling = useMutation({
+    mutationFn: (opts: { priority?: number; paused?: boolean }) =>
+      robovast.setScheduling(id, opts),
+    // A warning rather than an error, as for stopJob: the expected refusal here is a service
+    // whose lane has no queue, and its message says so in full.
+    onError: (e: unknown) => notify({
+      severity: 'warning', key: `sched:${id}`, message: 'Could not change the queue order.',
+      note: (e as Error).message,
+    }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      qc.invalidateQueries({ queryKey: ['status', id] })
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `sched:${id}`,
+                 message: 'The queue order was not changed.', note: res.message || undefined })
+      }
+    },
+  })
+
 
   // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
   // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
@@ -381,6 +407,31 @@ function CampaignCard({ summary, newest, openedByLink }: {
     })
     if (reason === null) return
     stopJob.mutate({ jobName: job.job_name, reason: reason.trim() || undefined })
+  }
+
+  // A number, asked for as text because that is the prompt this app has. A value that is not
+  // a whole number is rejected rather than coerced: Number('') is 0, which would silently
+  // reset the campaign to normal when somebody meant to cancel.
+  const onSetPriority = async () => {
+    closeMenu()
+    const typed = await prompt({
+      title: 'Queue priority',
+      message:
+        'Which campaign the cluster admits first when several are waiting. Higher goes ' +
+        'first, 0 is normal, negative waits behind everything else. This orders what is ' +
+        'queued — runs already started finish either way.',
+      label: 'Priority',
+      placeholder: 'e.g. -1 to let other campaigns past',
+      confirmLabel: 'Set priority',
+    })
+    if (typed === null) return
+    const value = Number(typed.trim())
+    if (!typed.trim() || !Number.isInteger(value)) {
+      notify({ severity: 'warning', key: `sched:${id}`,
+               message: 'Priority must be a whole number.' })
+      return
+    }
+    setScheduling.mutate({ priority: value })
   }
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
@@ -761,6 +812,34 @@ function CampaignCard({ summary, newest, openedByLink }: {
         ) : null,
   ].filter(Boolean)
 
+  // Only while it runs, and the mirror image of `actItems`: these change what the campaign
+  // does NEXT without touching what it has produced, which is what makes them safe on a live
+  // campaign. A finished campaign has no standing with the queue to set.
+  const queueItems = running
+    ? [
+        <MenuItem key="priority" onClick={onSetPriority} disabled={setScheduling.isPending}>
+          <ListItemIcon><LowPriorityRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Set queue priority…</ListItemText>
+        </MenuItem>,
+        <MenuItem
+          key="pause"
+          disabled={setScheduling.isPending}
+          onClick={() => { closeMenu(); setScheduling.mutate({ paused: !summary.paused }) }}
+        >
+          <ListItemIcon>
+            {summary.paused
+              ? <PlayArrowRoundedIcon fontSize="small" />
+              : <PauseRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          {/* The label says what it leaves alone, because "pause" on a thing that is running
+              trials reads as though it stops them. It does not: it stops admitting new ones. */}
+          <ListItemText>
+            {summary.paused ? 'Resume admitting runs' : 'Pause admitting new runs'}
+          </ListItemText>
+        </MenuItem>,
+      ]
+    : []
+
   // Nothing here while the campaign runs: each one either re-runs a step of it or destroys it.
   const actItems = running
     ? []
@@ -790,7 +869,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
         </MenuItem>,
       ]
 
-  const menuItems = [openItems, takeItems, actItems]
+  const menuItems = [openItems, takeItems, queueItems, actItems]
     .filter((group) => group.length)
     .flatMap((group, i) => (i ? [<Divider key={`sep-${i}`} />, ...group] : group))
 
@@ -1094,6 +1173,33 @@ function CampaignCard({ summary, newest, openedByLink }: {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {summary.description}
         </Typography>
+      ) : null}
+
+      {/* Only when it is not the default, and only on an open card: the queue order matters to
+          whoever is deciding what runs next, not to a page of folded rows, and a chip reading
+          "priority 0" on every campaign would say nothing while costing every row a glance.
+          Paused is shown whatever the rank, because a campaign admitting nothing looks idle
+          and this is the only thing that says why. */}
+      {!collapsed && running && (summary.priority !== 0 || summary.paused) ? (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+          {summary.paused ? (
+            <Chip
+              size="small"
+              icon={<PauseRoundedIcon />}
+              label="Paused — admitting no new runs"
+              color="warning"
+              variant="outlined"
+            />
+          ) : null}
+          {summary.priority !== 0 ? (
+            <Chip
+              size="small"
+              icon={<LowPriorityRoundedIcon />}
+              label={`Queue priority ${summary.priority > 0 ? `+${summary.priority}` : summary.priority}`}
+              variant="outlined"
+            />
+          ) : null}
+        </Stack>
       ) : null}
 
       {/* Every action's outcome — refusal included — is reported by its mutation, as a toast.

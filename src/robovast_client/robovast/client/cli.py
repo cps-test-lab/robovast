@@ -622,6 +622,11 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
 @click.option('--description', default=None, metavar='TEXT',
               help='One line saying what this run is for. It is what tells two '
                    'same-day <name>-<timestamp> campaigns apart in the web UI.')
+@click.option('--priority', type=int, default=None, metavar='N',
+              help='Which campaign the cluster queue admits first: higher goes first, '
+                   '0 is normal, negative waits behind everything else. Ordering only — '
+                   'it never stops a run that has started. Refused by a service on the '
+                   'local Docker lane, which runs one campaign at a time.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
@@ -648,7 +653,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
               help='Seconds between status polls when --wait-and-download is set.')
 @target_options
 def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
-                  campaign_name, description, upload_to_share, show_gui,
+                  campaign_name, description, priority, upload_to_share, show_gui,
                   allow_opaque_image, image_project, image_project_tag,
                   wait_and_download, poll_interval, namespace, context):
     """Run a ``.vast`` — the one way to start a campaign from a project.
@@ -723,6 +728,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
                 campaign_name=campaign_name or "", description=description or "",
                 upload_to_share=upload_to_share, show_gui=show_gui,
                 allow_opaque_image=allow_opaque_image,
+                priority=priority or 0,
                 image_project=project, image_project_tag=project_tag))
             cid = ref.campaign_id
 
