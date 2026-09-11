@@ -987,3 +987,77 @@ def test_a_campaign_calibration_never_applied_to_weighs_nothing():
     r._calibration = calibration
     r._probes = {"probe-a": "n1"}
     assert r.weigh_unmeasured_nodes() == {}
+
+
+def test_a_node_that_cannot_be_measured_is_left_out_rather_than_fatal():
+    """A campaign that loses a machine is smaller, not wrong.
+
+    Every run still uses its own node's figures, so nothing is sized two ways -- which is the
+    property the terminal error protected and the only one at stake. What skipping costs is
+    the machine's capacity, and a campaign is not worth ending over that.
+    """
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-b": "n2"}
+    r.skip_unmeasured_nodes(["n2"], "its probe did not run in 2 consecutive batches")
+
+    assert calibration.outcome()["skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, "recorded, not only logged"
+    assert not calibration.accepts_work("n2"), \
+        "a skipped node must take no work, or its runs would be sized from the seed"
+    assert calibration.accepts_work("n1"), "the measured node is unaffected"
+    assert r.has_usable_node(), "a calibrated node remains, so the campaign carries on"
+
+
+def test_a_skipped_node_is_never_probed_again():
+    """Re-probing it would re-open the wait the campaign has already decided not to spend."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration.skip("n2", "its probe did not run in 2 consecutive batches")
+
+    assert calibration.claim_probe("n2", "probe-c") is False, "settled, so not re-asked"
+    assert calibration.claim_probe("n3", "probe-d") is True, "an untouched node still is"
+
+
+def test_skipping_every_node_leaves_nowhere_to_run():
+    """The one case that is still terminal: a smaller campaign is fine, an empty one is not."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-a": "n1"}
+    r.skip_unmeasured_nodes(["n1"], "its probe did not run in 2 consecutive batches")
+
+    assert not r.has_usable_node(), \
+        "no node is calibrated and none is still being measured, so no run can be placed"
+
+
+def test_skipping_clears_the_unmeasured_tally():
+    """The tally asks whether to give up; once given up it has no further question to answer."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-b": "n2"}
+    assert r.weigh_unmeasured_nodes() == {"n2": 1}
+
+    r.skip_unmeasured_nodes(["n2"], "its probe did not run in 2 consecutive batches")
+    assert r.weigh_unmeasured_nodes() == {}, "a node left out is no longer sitting out"
