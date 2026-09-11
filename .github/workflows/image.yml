@@ -797,12 +797,25 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # The pages `search_docs` serves beside RoboVAST's own. The same script the local build
+      # uses (container/controller/build.sh), so a published corpus and a locally built one are
+      # assembled the same way and from the same commits -- the pins already in the image
+      # Dockerfiles, not a second definition here.
+      - name: Collect the upstream documentation
+        id: upstream_docs
+        run: |
+          . container/controller/upstream_docs.sh
+          upstream_docs_args "$PWD"
+          echo "dir=${UPSTREAM_DOCS_ARGS[1]#upstream-docs=}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
           platforms: ${{ steps.plat.outputs.platforms }}
           # Repo root context so pyproject + src are available for `pip install .`.
           context: .
+          build-contexts: |
+            upstream-docs=${{ steps.upstream_docs.outputs.dir }}
           file: ./container/controller/Dockerfile
           push: true
           # So the deployed service can say which revision it is running. A tag cannot
