@@ -144,6 +144,14 @@ def load_kube_config(context: str | None = None) -> str:
         return loaded
 
 
+def _waiting_reason(status) -> str:
+    """What one container status says it is waiting for, or ``""`` if it is not waiting."""
+    waiting = getattr(status.state, "waiting", None)
+    if not (waiting and waiting.reason):
+        return ""
+    return f"{waiting.reason}: {waiting.message or ''}".strip()
+
+
 def pod_pending_reason(pod) -> str:
     """The most useful line from a pod that is not Running yet, or ``""``.
 
@@ -154,12 +162,26 @@ def pod_pending_reason(pod) -> str:
 
     Init containers are checked first: they run before the main one, so when both are
     waiting the init container's reason is the one that explains the other.
+
+    ``PodInitializing`` is the exception the rest of this has to work around. It is what
+    kubelet puts on the *main* container for the whole time an init container is working,
+    it carries no message, and on a pod whose init container is running rather than
+    waiting it is the only reason there is — so read raw it says a pod is initializing and
+    nothing about what would end it. The init container still running is that, and is
+    named here.
     """
-    for statuses in (pod.status.init_container_statuses, pod.status.container_statuses):
-        for status in statuses or []:
-            waiting = getattr(status.state, "waiting", None)
-            if waiting and waiting.reason:
-                return f"{waiting.reason}: {waiting.message or ''}".strip()
+    for status in pod.status.init_container_statuses or []:
+        reason = _waiting_reason(status)
+        if reason:
+            return reason
+    initializing = next((status.name for status in pod.status.init_container_statuses or []
+                         if getattr(status.state, "running", None)), "")
+    for status in pod.status.container_statuses or []:
+        reason = _waiting_reason(status)
+        if reason:
+            if initializing and reason.startswith("PodInitializing"):
+                return f"PodInitializing: init container {initializing} is still running"
+            return reason
     return ""
 
 
@@ -192,7 +214,7 @@ def pod_workload_containers(pod) -> list:
 
 
 def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
-                   on_pending=None) -> None:
+                   on_pending=None, should_stop=None) -> None:
     """Block until *name* can be exec'd into, or fail saying why it cannot.
 
     Args:
@@ -201,17 +223,24 @@ def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
             *why* a wait is still going while it is going: a pull that will never succeed backs
             off for the whole timeout, and its reason is on the pod within seconds of the pod
             existing. Without it the reason arrives only with the failure, minutes later.
+        should_stop: predicate polled on every poll; true ends the wait at once. What it is
+            for is a wait nobody wants any more -- the work behind the pod was cancelled --
+            which without it is answered only when the pod comes up or the timeout expires.
 
     Raises:
-        RuntimeError: the pod reached a terminal phase before it could be used, or it was
-            still not Running at *timeout_s* — in which case the message carries
-            :func:`pod_pending_reason` rather than only the elapsed time.
+        RuntimeError: the pod reached a terminal phase before it could be used, *should_stop*
+            asked for the wait to end, or it was still not Running at *timeout_s* — in which
+            case the message carries :func:`pod_pending_reason` rather than only the elapsed
+            time.
     """
     import time
 
     deadline = time.monotonic() + timeout_s
     last = ""
     while time.monotonic() < deadline:
+        if should_stop is not None and should_stop():
+            raise RuntimeError(
+                f"stopped while waiting for pod {name} to be ready: {last or 'pending'}")
         pod = core.read_namespaced_pod(name, namespace)
         phase = pod.status.phase
         if phase == "Running":

@@ -43,6 +43,13 @@ def _container(reason=None, message=""):
     return type("C", (), {"state": _State(reason, message)})()
 
 
+def _running_container(name):
+    """An init container that is past its image and executing."""
+    state = _State()
+    state.running = object()
+    return type("C", (), {"name": name, "state": state})()
+
+
 # -- pod_pending_reason -------------------------------------------------------
 
 
@@ -66,6 +73,20 @@ def test_the_init_container_reason_wins():
 
 def test_a_healthy_pod_has_no_reason():
     assert pod_pending_reason(_Pod("Running", main=[_container()])) == ""
+
+
+def test_pod_initializing_names_the_init_container_that_is_still_running():
+    """Kubelet's own wording for this is a placeholder with no message.
+
+    An init container that is *running* is waiting for nothing, so the only reason on the
+    pod is the main container's ``PodInitializing`` -- which, reported as it stands, tells
+    a reader that a pod is initializing and nothing about what would end it.
+    """
+    pod = _Pod("Pending",
+               init=[_running_container("mc-tools")],
+               main=[_container("PodInitializing")])
+    assert pod_pending_reason(pod) == ("PodInitializing: init container mc-tools "
+                                       "is still running")
 
 
 # -- wait_pod_ready -----------------------------------------------------------
@@ -100,6 +121,23 @@ def test_wait_pod_ready_fails_fast_on_a_terminal_phase():
     """A Failed pod will never become Running; waiting out the timeout tells no one more."""
     with pytest.raises(RuntimeError, match="Failed"):
         wait_pod_ready(_Core([_Pod("Failed")]), "ns", "p", timeout_s=30)
+
+
+def test_wait_pod_ready_ends_when_the_caller_no_longer_wants_it():
+    """A stopped campaign must not go on waiting out a pull it will never use.
+
+    The wait is the longest thing a composition does on this lane, so a stop answered
+    only when the image lands is a stop nothing distinguishes from a hang.
+    """
+    with pytest.raises(RuntimeError, match="stopped while waiting"):
+        wait_pod_ready(_Core([_Pod("Pending")] * 20), "ns", "p", timeout_s=30,
+                       should_stop=lambda: True)
+
+
+def test_wait_pod_ready_keeps_waiting_while_the_caller_still_wants_it():
+    """The predicate ends the wait; it must not shorten a healthy one."""
+    wait_pod_ready(_Core([_Pod("Pending"), _Pod("Running")]), "ns", "p", timeout_s=30,
+                   should_stop=lambda: False)
 
 
 # -- wait_pod_gone ------------------------------------------------------------
