@@ -370,7 +370,8 @@ a cluster, campaign files fetched from the object store; on every lane, compiled
 **Clear cache** removes everything not in use and says what it freed; what it keeps is listed
 with the reason — a running campaign, an export to the share, or files read in the last hour.
 It is the thing to reach for when new work is refused for disk space. ``vast service cache
-[--clear]`` does the same from a terminal.
+[--clear]`` does the same from a terminal. On a cluster, campaign files nobody has read for a
+week are removed on their own (see :ref:`deployment-disk-reserve`).
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
 back, which is why several failures in RoboVAST are diagnosable only from a log nobody

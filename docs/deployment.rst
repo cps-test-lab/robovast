@@ -341,6 +341,14 @@ disk (``nodefs.available``), so convert it for your disk. Read it from the node:
 defaults to the same reserve (see :doc:`cluster_execution`); on an existing deployment, pass
 ``--buildkit-cache-min-free`` to ``upgrade`` once to bring the cache in line.
 
+On a cluster the service also removes the campaign files it fetched from the object store once
+nobody has read them for a week, checking hourly and keeping anything in use. Set the age in
+the same ``.env``; setup and upgrade apply it the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS=7    # the default; 0 keeps them until the cache is cleared
+
 Checking a deployment
 ---------------------
 
