@@ -58,6 +58,8 @@ def say(**payload):
     sys.exit(0)
 
 try:
+    import py_trees
+    from scenario_execution.model.model_resolver import resolve_internal_model
     from scenario_execution.model.osc2_parser import OpenScenario2Parser
     from scenario_execution.utils.logging import Logger
 except Exception as exc:
@@ -67,11 +69,27 @@ except Exception as exc:
 try:
     parser = OpenScenario2Parser(Logger("validate", False))
     parsed = parser.parse_file(path, log_model=False)
-    parser.load_internal_model(parsed, path, log_model=False, debug=False)
+    model = parser.load_internal_model(parsed, path, log_model=False, debug=False)
 except Exception as exc:
     # The TYPE as well as the message: an exception raised bare stringifies to ""
     # and would otherwise arrive as a refusal that names nothing.
     say(error="%s: %s" % (type(exc).__name__, exc) if str(exc) else type(exc).__name__)
+
+# RESOLUTION, not only the model. Building the model checks that the file is well formed and
+# that every `import osc.<library>` resolves; it does not bind an invocation to the action it
+# names, so an argument the action does not take, or a name two imported libraries both
+# declare, is invisible until the run -- once per trial, with the campaign reporting finished.
+try:
+    resolve_internal_model(model, py_trees.composites.Sequence(name="", memory=True),
+                           parser.logger, False)
+except Exception as exc:
+    message = "%s: %s" % (type(exc).__name__, exc) if str(exc) else type(exc).__name__
+    # A parameter with no value is not a defect in the scenario: the configuration supplies
+    # those, and this check has none to give. Resolution binds arguments BEFORE it needs a
+    # parameter's value, so stopping here still leaves the invocations checked -- what it does
+    # not check is whatever the file does after its first unbound parameter.
+    if "is used but has no value" not in str(exc):
+        say(error=message)
 
 say(ok=True)
 '''
@@ -128,7 +146,12 @@ def _verdict(output: str):
 
 def scenario_problems(exec_call, *, workspace_id: str, config_path: str,
                       scenario_path: str) -> list:
-    """Does this campaign's scenario parse in the image that will run it?
+    """Does this campaign's scenario parse AND resolve in the image that will run it?
+
+    Resolve, not only parse: building the model checks the file's shape and that every
+    ``import osc.<library>`` resolves, and stops before an invocation is bound to the action it
+    names. An argument the action does not take, or a name two imported libraries both declare,
+    survives that and kills every trial instead.
 
     *scenario_path* is the scenario file's path relative to the workspace root, which is
     where the exec lane mounts the project (``/sources/<workspace_id>``) -- the same

@@ -4618,13 +4618,21 @@ class LocalTransport(RobovastInterface):
 
     def _with_scenario_check(self, workspace_id: str, path: str, project,
                              result: dict) -> dict:
-        """*result* plus the verdict on parsing the scenario in the image that runs it.
+        """*result* plus the verdict on parsing and resolving the scenario in the image that
+        runs it.
 
         The failure this catches is invisible to every cheap check and fatal to every
         trial: an ``import osc.<library>`` resolves against what is installed in the
         scenario image, so a scenario that parses on the service's host can die at its
         first line in the container -- once per run, after the pull and the schedule, with
-        the campaign reporting finished.
+        the campaign reporting finished. The same is true of a call the action's own
+        signature refuses, which is why the check goes as far as RESOLVING the model and not
+        merely building it.
+
+        What it still cannot see is whatever the scenario does after its first parameter
+        with no value, because the values are the configuration's and this check has none.
+        Arguments are bound before a parameter's value is needed, so the invocations are
+        reached; a defect that is only expressible in terms of a parameter's value is not.
 
         Like the world check, it is held (a repeat validation costs an exec, not a
         container start) and its own failure is an ``unchecked`` problem rather than a
