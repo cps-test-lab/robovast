@@ -1231,6 +1231,13 @@ class ResourceUsage(BaseModel):
     #: leaves both absent, which reads identically to "did not try". Names counts and the
     #: fixing command, **never a node name**: this string crosses the interface.
     disk_unavailable: Optional[str] = None
+    #: Why new disk-consuming work -- a campaign, a rerun, an image build, an import,
+    #: postprocessing -- is refused right now: ``disk`` or ``store`` has less free space than
+    #: the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``). ``None`` while there is
+    #: room, and when neither meter could be read. Judged on the two readings above, so this
+    #: and the meters are one measurement; the same sentence is what a refused call carries.
+    #: Names amounts, **never a node or a path**.
+    storage_refusal: Optional[str] = None
     #: The held container-exec container, when one exists. A diagnostic container can
     #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
     #: has no way to discover that its own container is the reason.
@@ -1241,6 +1248,41 @@ class ResourceUsage(BaseModel):
     #: own schedule, and a lane holding three of them while reporting one would read as
     #: having capacity it does not have.
     query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
+
+
+class CacheSize(BaseModel):
+    """One cache the service keeps, and what it holds now."""
+
+    #: Which cache, in the reader's terms.
+    name: str
+    size_bytes: int = 0
+    entries: int = 0
+
+
+class KeptCacheEntry(BaseModel):
+    """An entry a clear leaves in place, and why."""
+
+    cache: str
+    #: The entry: a campaign id for the fetch cache, a world key for the scene cache.
+    name: str
+    size_bytes: int = 0
+    reason: str
+
+
+class ServiceCache(BaseModel):
+    """The service's caches: copies it can rebuild from durable data, and nothing else.
+
+    Clearing one loses nothing but the time to rebuild what is next asked for. An entry that
+    may still be in use is never removed; ``kept`` names each and why. After a clear,
+    ``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.
+    """
+
+    caches: list[CacheSize] = Field(default_factory=list)
+    #: Entries a clear leaves (or, in a report, would leave) in place.
+    kept: list[KeptCacheEntry] = Field(default_factory=list)
+    #: What a clear removed. Zero in a report.
+    freed_bytes: int = 0
+    removed_entries: int = 0
 
 
 class UsageSample(BaseModel):
@@ -2209,6 +2251,8 @@ class Routes:
     ADMIN_UPGRADE = "/admin/upgrade"
     #: What this service is configured with, read back out of its own environment.
     ADMIN_CONFIG = "/admin/config"
+    #: The service's rebuildable caches: what they hold (GET), and clearing them (DELETE).
+    ADMIN_CACHE = "/admin/cache"
     #: What this service DID -- durable, unlike the log above it. Cursor-keyed, and its own
     #: route rather than a field on a polled payload, per the tiers in docs/http_api.rst.
     ADMIN_EVENTS = "/admin/events"
@@ -2530,6 +2574,19 @@ class RobovastInterface(ABC):
 
         ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
         single-backend services offer one lane and ignore it.
+        """
+
+    @abstractmethod
+    def service_cache(self) -> ServiceCache:
+        """What the service's rebuildable caches hold, and what a clear would keep."""
+
+    @abstractmethod
+    def clear_service_cache(self) -> ServiceCache:
+        """Remove every cache entry nothing may still be using; report what was freed.
+
+        Only copies of durable data are touched, so nothing is lost but the time to rebuild
+        it. Kept, and named in ``kept``: a running campaign's files, an entry an operation has
+        pinned, and one read recently enough that its reader may still hold the path.
         """
 
     # -- rolling this service onto newer bytes ------------------------------

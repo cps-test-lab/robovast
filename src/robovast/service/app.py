@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.common.errors import STORAGE_FULL_DETAIL, is_storage_full
+from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageError,
+                                    is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
@@ -57,7 +58,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
-                                        PanelsSource,
+                                        PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
@@ -418,6 +419,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                     logger.warning("storage full: %s", e)
                     raise HTTPException(status_code=507, detail=STORAGE_FULL_DETAIL) from e
                 raise
+        except InsufficientStorageError as e:
+            # The same status as a write that already failed for lack of space, with the
+            # meter and the amounts: new work is declined before the disk is full.
+            raise HTTPException(status_code=507, detail=str(e)) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
@@ -949,6 +954,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         before this one stops, so watch ``upgrade_info().running_digest`` for the handover.
         """
         return _guard(lambda: impl.upgrade_service(force))
+
+    @app.get(Routes.ADMIN_CACHE, response_model=ServiceCache, tags=["admin"])
+    def service_cache() -> ServiceCache:
+        """What the service's rebuildable caches hold, and what a clear would keep and why."""
+        return _guard(impl.service_cache)
+
+    @app.delete(Routes.ADMIN_CACHE, response_model=ServiceCache, tags=["admin"])
+    def clear_service_cache() -> ServiceCache:
+        """Remove every cache entry nothing may still be using, and say what that freed.
+
+        Only copies of durable data: the cost is the time to rebuild what is next asked for.
+        """
+        return _guard(impl.clear_service_cache)
 
     @app.get(Routes.ADMIN_CONFIG, response_model=ServiceConfig, tags=["admin"])
     def service_config(request: Request) -> ServiceConfig:

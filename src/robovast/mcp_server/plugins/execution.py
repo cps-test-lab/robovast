@@ -960,9 +960,9 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
 def get_resource_usage() -> dict:
     """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
-    Capacity **now** — what an executed run consumed is a table in its campaign's data
-    (``describe_campaign_data``), not here. It reads the cluster's nodes, so it also
-    confirms the lane is reachable, which ``get_service_info`` cannot.
+    Capacity **now**; what a finished run consumed is in its campaign's data
+    (``describe_campaign_data``). Reading the nodes also confirms the lane is reachable,
+    which ``get_service_info`` cannot.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
@@ -971,24 +971,21 @@ def get_resource_usage() -> dict:
     Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
-        jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and
-        bytes — or ``{error}``.
+        jobs_pending, disk, disk_node, store, store_node, disk_unavailable,
+        storage_refusal}`` — cores and bytes — or ``{error}``.
 
         **Size a sweep against ``*_reserved``, judge a finished one against
-        ``*_measured``**: reserved is what the scheduler committed, so it decides whether
-        the next run fits; measured is what is being consumed. ``cpu_used`` aliases
-        whichever the lane leads with. A ``null`` in either pair is "no such reading",
-        never zero — nothing reserves locally, and ``metrics_unavailable`` says why a
-        cluster could not measure.
+        ``*_measured``**: reserved is what the scheduler committed; measured is what is
+        consumed. ``cpu_used`` aliases whichever the lane leads with. ``null`` in either
+        pair is "no such reading", never zero; ``metrics_unavailable`` says why.
 
         ``disk`` (what runs write into) and ``store`` (the results store) are
-        ``{capacity_bytes, used_bytes}``, or **null meaning the lane does not report it —
-        never an empty disk**. On a cluster ``disk`` is ONE node's filesystem, not a sum:
-        ``disk_node``, which carries the service pod and the workspaces; ``store_node`` is
-        often another. ``jobs_running``/``jobs_pending`` is what the lane is *already* busy
-        with across every campaign, so free cores behind a long queue are not as free as
-        they look, and ``exec_container`` appears while an ``exec_in_container`` container
-        is held, which can hold a stack's worth of memory.
+        ``{capacity_bytes, used_bytes}``, or **null: not reported, never an empty disk**.
+        On a cluster ``disk`` is ONE node's filesystem (``disk_node``), not a sum;
+        ``store_node`` is often another. Set, ``storage_refusal`` says why new work is
+        refused for disk space. ``jobs_running``/``jobs_pending`` is
+        work already queued across every campaign; ``exec_container``, a held
+        ``exec_in_container`` container and its memory.
     """
     client = service_access.service_client()
     if client is None:

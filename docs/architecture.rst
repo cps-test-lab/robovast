@@ -1020,6 +1020,33 @@ lives in the ``run_data`` MCP plugin):
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
 
+**New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
+``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
+``run_postprocessing`` each call ``LocalTransport._admit_storage`` first, on both lanes (the
+cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
+``disk`` and ``store`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
+refusal and the meters are one measurement. With no reserve configured nothing is read; a
+reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
+launch never depends on the permissions the capacity reading needs. Nothing that continues
+accepted work is guarded:
+resuming a live campaign after a restart would otherwise be abandoned, and stop and delete are
+what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
+that already failed for lack of space is also given.
+
+**The caches a clear may empty are copies of durable data, and nothing else.**
+``service_cache`` / ``clear_service_cache`` sweep the scene cache on both lanes and, on the
+cluster lane, the object-store fetch cache (``/tmp/robovast-campaigns``, one directory per
+campaign) through the ``_lane_cache_sweeps`` hook; a local lane's results directory is the
+durable home and is never offered. A reader of the fetch cache is handed a *path* and opens
+files under it after the fetch lock is released, so no lock a clear could take covers it.
+What makes the clear safe beside them is what it keeps: a campaign that is still running, a
+directory an operation pinned with ``_holding_cache`` (``run_share``, which edits the outcome
+there and publishes it long after the fetch), and one handed to a reader within the last hour
+(``_mark_cache_read``, recorded under the fetch lock). Each removal takes that campaign's fetch
+lock and checks again, so a fetch in flight finishes first and its reader is then recent
+enough to keep.
+
 .. _image-resolution:
 
 Why images resolve the way they do

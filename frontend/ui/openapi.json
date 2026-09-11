@@ -379,6 +379,32 @@
         "title": "BuildImageRequest",
         "type": "object"
       },
+      "CacheSize": {
+        "description": "One cache the service keeps, and what it holds now.",
+        "properties": {
+          "entries": {
+            "default": 0,
+            "title": "Entries",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size_bytes": {
+            "default": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "name",
+          "size_bytes"
+        ],
+        "title": "CacheSize",
+        "type": "object"
+      },
       "CampaignDataStatus": {
         "description": "Whether querying this campaign has to transfer anything first, and what it costs.\n\nExists so a caller can say *why* it is about to wait, **before** it waits. As with\n:class:`ResourceUsage`, the local\u2194cluster difference is resolved inside the service, so\na consumer reads the same fields either way and never branches on the backend:\n``fetch_required`` false means the question does not apply.\n\nDeliberately cheap \u2014 two metadata lookups, never an enumeration of the campaign prefix\n\u2014 because the point is to answer *before* the expensive thing, and a probe that itself\ncost a listing would only move the cost.",
         "properties": {
@@ -1897,6 +1923,36 @@
         "title": "JobUsage",
         "type": "object"
       },
+      "KeptCacheEntry": {
+        "description": "An entry a clear leaves in place, and why.",
+        "properties": {
+          "cache": {
+            "title": "Cache",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "size_bytes": {
+            "default": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cache",
+          "name",
+          "reason",
+          "size_bytes"
+        ],
+        "title": "KeptCacheEntry",
+        "type": "object"
+      },
       "ListCampaignsResponse": {
         "properties": {
           "campaigns": {
@@ -2520,6 +2576,17 @@
             "title": "Query Containers",
             "type": "object"
           },
+          "storage_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Refusal"
+          },
           "store": {
             "anyOf": [
               {
@@ -2561,6 +2628,7 @@
           "metrics_unavailable",
           "parallel_runs",
           "query_containers",
+          "storage_refusal",
           "store",
           "store_node"
         ],
@@ -3022,6 +3090,43 @@
           "markers"
         ],
         "title": "ServedContribution",
+        "type": "object"
+      },
+      "ServiceCache": {
+        "description": "The service's caches: copies it can rebuild from durable data, and nothing else.\n\nClearing one loses nothing but the time to rebuild what is next asked for. An entry that\nmay still be in use is never removed; ``kept`` names each and why. After a clear,\n``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.",
+        "properties": {
+          "caches": {
+            "items": {
+              "$ref": "#/components/schemas/CacheSize"
+            },
+            "title": "Caches",
+            "type": "array"
+          },
+          "freed_bytes": {
+            "default": 0,
+            "title": "Freed Bytes",
+            "type": "integer"
+          },
+          "kept": {
+            "items": {
+              "$ref": "#/components/schemas/KeptCacheEntry"
+            },
+            "title": "Kept",
+            "type": "array"
+          },
+          "removed_entries": {
+            "default": 0,
+            "title": "Removed Entries",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "caches",
+          "freed_bytes",
+          "kept",
+          "removed_entries"
+        ],
+        "title": "ServiceCache",
         "type": "object"
       },
       "ServiceConfig": {
@@ -4628,6 +4733,48 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/cache": {
+      "delete": {
+        "description": "Remove every cache entry nothing may still be using, and say what that freed.\n\nOnly copies of durable data: the cost is the time to rebuild what is next asked for.",
+        "operationId": "clear_service_cache_admin_cache_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceCache"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Clear Service Cache",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "description": "What the service's rebuildable caches hold, and what a clear would keep and why.",
+        "operationId": "service_cache_admin_cache_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceCache"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service Cache",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/config": {
       "get": {
         "description": "What this service is configured with, read back out of its own environment.\n\nNot a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it\ndescribes the process that is serving rather than the campaigns it drives, and both\nlanes answer it identically -- the pod and a `vast serve` both hold their settings\nin the environment.\n\nHost paths are blanked for a non-loopback caller, the same rule ``/version``\napplies to ``results_root`` -- so the two admin surfaces do not disagree about\nwhether a path on the service's disk is publishable.",
