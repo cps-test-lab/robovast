@@ -182,9 +182,11 @@ def test_a_demoted_campaign_yields_to_a_younger_one():
     assert made == ["short-0"]
 
 
-def test_a_campaigns_rank_outranks_another_campaigns_postprocessing():
-    """The rank has to lead the queue's own bookkeeping, or a campaign moved ahead would
-    queue behind work that merely carries a higher internal priority."""
+def test_a_rank_does_not_reach_another_campaigns_postprocessing():
+    """Priority leads the rank, not the other way round. Postprocessing is what turns a
+    finished campaign's runs into its results -- bounded, short, and a precondition for the
+    campaign being over at all -- so a rank set to let short campaigns past must not park it
+    behind them."""
     p = FakeProvider(cpu=2.0)
     c = _controller(p)
     made = []
@@ -194,7 +196,7 @@ def test_a_campaigns_rank_outranks_another_campaigns_postprocessing():
     _items(c, "short", 1, started_at=900.0, created=made)
     c.set_scheduling("short", priority=1)
     c.drain()
-    assert made == ["short-0"]
+    assert made == ["old-pp"]
 
 
 def test_within_one_rank_a_probe_still_precedes_the_work_it_gates():
@@ -210,19 +212,41 @@ def test_within_one_rank_a_probe_still_precedes_the_work_it_gates():
     assert made == ["camp-probe"]
 
 
-def test_a_probe_takes_its_own_campaigns_rank():
-    """Probes queue under their own owner; ranking them as a stranger would let a demoted
-    campaign's probe outrank its own runs."""
-    p = FakeProvider(cpu=2.0)
+def test_demoting_a_campaign_does_not_starve_its_calibration_probe():
+    """The regression guard for the whole ordering. A probe is pinned to one node and is the
+    largest pod its campaign asks for, so work that outranks it takes that node every pass and
+    it is never placed at all -- and a node still unmeasured after UNMEASURED_BATCH_LIMIT
+    batches ends the campaign. A rank that reached a campaign's probes would therefore turn
+    "let other campaigns past" into "end this campaign"."""
+    p = FakeProvider(cpu=4.0)
     c = _controller(p)
     made = []
     c.submit("low#probes",
-             [("low-probe", JobSizing(2.0, MIB), lambda _n=None: made.append("low-probe"))],
-             started_at=100.0, priority=1, campaign="low")
-    _items(c, "normal", 1, started_at=900.0, created=made)
+             [("low-probe", JobSizing(4.0, MIB), lambda _n=None: made.append("low-probe"))],
+             started_at=100.0, priority=1, campaign="low", pin="n1")
+    c.submit("normal", [("normal-0", JobSizing(4.0, MIB),
+                         lambda _n=None: made.append("normal-0"))],
+             started_at=900.0, campaign="normal")
     c.set_scheduling("low", priority=-1)
     c.drain()
-    assert made == ["normal-0"]
+    assert made == ["low-probe"]
+
+
+def test_the_rank_still_orders_two_campaigns_probes():
+    """It is only ordinary work the rank is kept out of: among items of the same kind it
+    decides, exactly as it does for runs."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    c.submit("a#probes", [("a-probe", JobSizing(2.0, MIB),
+                           lambda _n=None: made.append("a-probe"))],
+             started_at=100.0, priority=1, campaign="a")
+    c.submit("b#probes", [("b-probe", JobSizing(2.0, MIB),
+                           lambda _n=None: made.append("b-probe"))],
+             started_at=900.0, priority=1, campaign="b")
+    c.set_scheduling("b", priority=1)
+    c.drain()
+    assert made == ["b-probe"]
 
 
 def test_setting_a_rank_reorders_what_is_already_queued():

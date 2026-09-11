@@ -135,14 +135,23 @@ Workflows
         cancel(campaign)                # and cancel(campaign#probes)
 
 Step 4 is what makes ordering global without a controller thread: whichever campaign happens
-to be awake advances everybody, in ``(campaign rank, priority, campaign start)`` order.
+to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
 
 **A campaign's rank and its hold.** ``priority`` above is the order *within* a campaign --
-a probe before the work it gates, postprocessing before both. What an operator sets is the
-campaign's own rank, and it is the more significant key, so a campaign moved ahead takes its
-slots from another campaign's runs rather than queueing behind their internal priorities.
+a probe before the work it gates, postprocessing before both -- and it stays the leading key.
+What an operator sets is the campaign's own rank, and it orders the **runs**: that is where a
+campaign spends all but a moment of its time, and all of what another campaign is waiting for.
 Every campaign is at ``0`` unless somebody says otherwise, and there the order is exactly what
 it was before ranks existed.
+
+**The rank deliberately does not reach a campaign's own preconditions.** A probe measures the
+node its campaign's work will be sized from, and postprocessing turns finished runs into
+results; both are bounded and short, and ordinary work placed ahead of them does not make the
+queue fairer. It makes the campaign behind them fail: a probe is pinned to one node and is the
+largest pod its campaign asks for, so anything outranking it takes that node every pass, and a
+node still unmeasured after ``UNMEASURED_BATCH_LIMIT`` batches ends the campaign. A rank that
+reached them would turn "let other campaigns past" into "end this campaign". Among items of
+the same kind the rank decides as usual -- two campaigns' probes order by it.
 
 A **paused** campaign is not a low rank but no rank: its items are not candidates, however
 idle the cluster is. Neither setting touches work already created -- both order what is
