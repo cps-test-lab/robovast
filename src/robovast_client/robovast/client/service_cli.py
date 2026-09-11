@@ -241,6 +241,50 @@ def resources(namespace, context):
     click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"
                f" {_gib(usage.memory_capacity_bytes)}")
     click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
+    # In GB, the unit the free-space reserve is stated in, so the two lines can be compared.
+    for label, space in (("disk", usage.disk), ("store", usage.store)):
+        if space is not None and space.capacity_bytes > 0:
+            free = max(0, space.capacity_bytes - space.used_bytes)
+            click.echo(f"  {label:<9} {free / 1000 ** 3:.0f} GB free of "
+                       f"{space.capacity_bytes / 1000 ** 3:.0f} GB")
+    if usage.disk is None and usage.disk_unavailable:
+        click.echo(f"  disk      not read: {usage.disk_unavailable}")
+    if usage.storage_refusal:
+        click.echo(f"  refusing  {usage.storage_refusal}")
+
+
+@service.command('cache')
+@click.option('--clear', is_flag=True,
+              help='Remove every entry nothing may still be using, and say what that freed.')
+@target_options
+def cache(clear, namespace, context):
+    """What the service's rebuildable caches hold; with --clear, free what may go.
+
+    Only copies of durable data -- a campaign's files fetched from the object store, compiled
+    3D worlds -- so clearing loses nothing but the time to rebuild what is next asked for. The
+    thing to reach for when a launch is refused for free space. What a running campaign, an
+    operation or a recent reader may still be using is kept, and listed with the reason.
+    """
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            report = client.clear_service_cache() if clear else client.service_cache()
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    def _gb(value):
+        return f"{value / 1000 ** 3:.1f} GB"
+
+    for part in report.caches:
+        click.echo(f"  {part.name:<26} {_gb(part.size_bytes)} in {part.entries} "
+                   f"entr{'y' if part.entries == 1 else 'ies'}")
+    if clear:
+        click.echo(f"  freed {_gb(report.freed_bytes)} ({report.removed_entries} "
+                   f"entr{'y' if report.removed_entries == 1 else 'ies'})")
+    for kept in report.kept:
+        click.echo(f"  {'kept' if clear else 'would keep'} {kept.name} ({kept.cache}): "
+                   f"{kept.reason}")
 
 
 @service.command('mcp-stats')

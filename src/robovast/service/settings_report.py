@@ -53,6 +53,7 @@ from robovast.execution.notify import DEFAULT_SERVER as DEFAULT_NTFY_SERVER
 from robovast.execution.share_providers.sftp import DEFAULT_SFTP_PORT
 
 from .scene_cache import DEFAULT_MAX_CACHE_BYTES
+from .storage_reserve import DEFAULT_RESERVE_GB, RESERVE_ENV
 
 #: Only these are reported. A local ``vast serve`` inherits the operator's whole shell, and
 #: enumerating that would put unrelated environment — including other tools' credentials —
@@ -148,6 +149,9 @@ KNOWN: dict[str, Known] = {
         _CLUSTER, "JSON options the cluster flavor was set up with."),
     "ROBOVAST_KUBE_CONNECT_TIMEOUT": Known(
         _CLUSTER, "Seconds before an unreachable cluster gives up connecting."),
+    "ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS": Known(
+        _CLUSTER, "Days a fetched campaign nobody reads is kept before it is removed; "
+        "0 keeps it until the cache is cleared."),
     "ROBOVAST_JOB_NODE_LABELS": Known(
         _CLUSTER, "JSON node labels restricting where campaign Jobs are scheduled."),
     "ROBOVAST_NODE_CALIBRATION": Known(
@@ -249,6 +253,10 @@ KNOWN: dict[str, Known] = {
     "ROBOVAST_SCENE_CACHE_BYTES": Known(
         _STORAGE, "Ceiling the scene cache is trimmed to.",
         default=str(DEFAULT_MAX_CACHE_BYTES)),
+    RESERVE_ENV: Known(
+        _STORAGE, "Free space, in GB, below which new campaigns, re-runs, image builds, "
+        "imports and postprocessing are refused; 0 keeps none.",
+        default=f"{DEFAULT_RESERVE_GB:g}"),
 
     # -- process plumbing, never reported -------------------------------------
     # Set by a container entrypoint, a build, or `vast` itself. An operator did not put

@@ -35,6 +35,8 @@ class _Resp:
                        422: "Unprocessable Entity", 502: "Bad Gateway"}[status_code]
         self.url = "http://svc/x"
         self.text = text
+        # A refusal may name its class here (see ``ERROR_CODE_HEADER``); these carry none.
+        self.headers = {}
         self._payload = payload
 
     def json(self):

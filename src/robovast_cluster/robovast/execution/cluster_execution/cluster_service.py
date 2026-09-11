@@ -63,12 +63,24 @@ from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
-                                        ResourceUsage,
+                                        ResourceUsage, CacheSize, KeptCacheEntry,
                                         DiskSpace, UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
 logger = logging.getLogger(__name__)
+
+
+def _tree_bytes(path: Path) -> int:
+    """Bytes of the files under *path*. A file removed mid-walk is not counted, not an error."""
+    total = 0
+    for dirpath, _dirs, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
 
 AUX_LABEL = "app=robovast-aux"
 
@@ -279,6 +291,15 @@ class ClusterService(LocalTransport):
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
         self._last_fetch: dict[str, tuple[int, float]] = {}
+        # How many operations hold each campaign's cache dir pinned -- with the dir's own
+        # modification time, the record of when it was last read, what lets a cache clear
+        # run beside the readers: see ``_fetch_cache_keep_reason``. Guarded by
+        # ``_fetch_locks_guard``.
+        self._cache_pins: dict[str, int] = {}
+        # The background removal of cache dirs nobody has read for the maximum age; started
+        # with the service's other startup work below, stopped by ``shutdown``.
+        self._cache_expiry: "threading.Thread | None" = None
+        self._cache_expiry_stop = threading.Event()
         # Last kubelet Summary reading behind the disk/store meters, as
         # ``(monotonic, fields)``. Its own TTL, longer than the usage cache's -- see
         # ``_DISK_CACHE_TTL``. Read under ``_usage_lock``, so it needs no lock of its own.
@@ -330,6 +351,7 @@ class ClusterService(LocalTransport):
             # design. Only a waiter writes what that Job did, so without this the previous
             # attempt's verdict stands over a conversion that succeeded.
             self.reattach_live_postprocessing()
+            self._start_cache_expiry()
 
     # -- version ------------------------------------------------------------
 
@@ -2137,6 +2159,7 @@ class ClusterService(LocalTransport):
 
     def build_image(self, request):
         from robovast.service.image_build import primary_build_ref
+        self._admit_storage("build an image")
         (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
             self._build_context(request)
         refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
@@ -3267,6 +3290,10 @@ class ClusterService(LocalTransport):
         monitor, self._pf_monitor = self._pf_monitor, None
         if monitor is not None:
             monitor.join(timeout=self._PF_PROBE_INTERVAL_S + 1)
+        self._cache_expiry_stop.set()
+        expiry, self._cache_expiry = self._cache_expiry, None
+        if expiry is not None:
+            expiry.join(timeout=5)
         try:
             super().shutdown()
         finally:
@@ -3448,11 +3475,191 @@ class ClusterService(LocalTransport):
 
     # -- data / results -----------------------------------------------------
 
+    #: Where the fetch cache lives. The pod's own scratch: the object store is the durable
+    #: home, and this is only a copy of what readers asked for.
+    _FETCH_CACHE_ROOT = Path("/tmp") / "robovast-campaigns"  # noqa: S108 - pod scratch
+
     def _cache_dir(self, campaign_id: str) -> Path:
         """Local scratch mirroring a campaign's objects. Ephemeral by design — the object
         store is the durable home — and shared by the whole-campaign fetch and every
         named-object fetch, so the two can never hold divergent copies of one file."""
-        return Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
+        return self._FETCH_CACHE_ROOT / campaign_id
+
+    # -- clearing the fetch cache ------------------------------------------------------------
+
+    #: What the fetch cache is called where a reader sees it.
+    FETCH_CACHE = "object-store fetch cache"
+
+    #: How recently a campaign's cache dir must have been handed to a reader for a clear to
+    #: keep it. A reader is given a *path*, and every one of them opens files under it after
+    #: the fetch lock is released -- a results download, a notebook render, a plugin endpoint --
+    #: so there is no lock a clear could take that would cover them. An hour outlasts every
+    #: such request; an operation that can run longer pins the dir (``_holding_cache``).
+    _CACHE_READ_GRACE_S = 3600.0
+
+    def _mark_cache_read(self, campaign_id: str) -> None:
+        """Record that a reader was just handed this campaign's cache dir -- on the dir itself.
+
+        Its modification time, so the record lasts exactly as long as the files it describes: a
+        service restarted beside a cache it did not fill still knows how long each entry has sat
+        unread. Called under the campaign's fetch lock, so a clear waiting on that lock sees it
+        when it re-checks.
+        """
+        try:
+            os.utime(self._cache_dir(campaign_id))
+        except OSError:
+            pass    # no dir, so nothing was handed out
+
+    def _cache_idle_s(self, campaign_id: str) -> "float | None":
+        """Seconds since this campaign's cache dir was last read; ``None`` when there is none."""
+        try:
+            return time.time() - self._cache_dir(campaign_id).stat().st_mtime
+        except OSError:
+            return None
+
+    @contextlib.contextmanager
+    def _holding_cache(self, campaign_id: str):
+        """Keep a clear away from this campaign's cache dir for the duration.
+
+        For an operation that goes on using the dir for longer than the read grace. Take it
+        *before* the fetch: a clear either removed the dir already, and the fetch that follows
+        restores it, or it re-checks under the fetch lock and finds the pin.
+        """
+        with self._fetch_locks_guard:
+            self._cache_pins[campaign_id] = self._cache_pins.get(campaign_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._fetch_locks_guard:
+                left = self._cache_pins[campaign_id] - 1
+                if left:
+                    self._cache_pins[campaign_id] = left
+                else:
+                    del self._cache_pins[campaign_id]
+
+    def _fetch_cache_keep_reason(self, campaign_id: str) -> str:
+        """Why a clear must leave this campaign's cache dir, or ``""`` when it may go."""
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None and not self._is_done(entry):
+            return "the campaign is still running"
+        with self._fetch_locks_guard:
+            pinned = self._cache_pins.get(campaign_id, 0)
+        if pinned:
+            return "an operation on the campaign is using it"
+        idle = self._cache_idle_s(campaign_id)
+        if idle is not None and idle < self._CACHE_READ_GRACE_S:
+            return "read within the last hour, so a reader may still be using it"
+        return ""
+
+    def _remove_fetch_cache_dir(self, campaign_id: str, keep_reason) -> str:
+        """Remove one campaign's cache dir unless *keep_reason* names a reason to keep it.
+
+        Asked again under the campaign's fetch lock, so a fetch in flight finishes first and
+        the reader it served is then recent enough to keep. Returns ``""`` once the dir is
+        gone, or the reason it stayed.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+        with self._fetch_locks_guard:
+            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
+        with lock:
+            reason = keep_reason()
+            if not reason:
+                shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
+            return reason
+
+    def _lane_cache_sweeps(self) -> list:
+        return [self._sweep_fetch_cache]
+
+    def _sweep_fetch_cache(self, clear: bool):
+        """Report the fetch cache, removing each campaign's dir that may go when *clear*.
+
+        Each removal goes through :meth:`_remove_fetch_cache_dir`, which checks again under
+        the campaign's fetch lock.
+        """
+        from robovast.service.local_transport import \
+            _Swept  # pylint: disable=import-outside-toplevel
+        swept = _Swept(size=CacheSize(name=self.FETCH_CACHE))
+        root = self._FETCH_CACHE_ROOT
+        dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+        for cache_dir in dirs:
+            campaign_id = cache_dir.name
+            size = _tree_bytes(cache_dir)
+            reason = self._fetch_cache_keep_reason(campaign_id)
+            if clear and not reason:
+                reason = self._remove_fetch_cache_dir(
+                    campaign_id, lambda cid=campaign_id: self._fetch_cache_keep_reason(cid))
+                if not reason:
+                    swept.freed_bytes += size
+                    swept.removed += 1
+                    continue
+            swept.size.size_bytes += size
+            swept.size.entries += 1
+            if reason:
+                swept.kept.append(KeptCacheEntry(cache=self.FETCH_CACHE, name=campaign_id,
+                                                 size_bytes=size, reason=reason))
+        return swept
+
+    # -- expiring the fetch cache ------------------------------------------------------------
+
+    #: How often the fetch cache is checked for dirs left unread past the maximum age. A check
+    #: is one stat per cached campaign, so this sets how promptly space comes back, not a cost.
+    _CACHE_EXPIRY_INTERVAL_S = 3600.0
+
+    def _start_cache_expiry(self) -> None:
+        """Start removing cache dirs nobody has read for the maximum age (:mod:`.fetch_cache`).
+
+        A malformed setting raises here, so the service fails to start rather than keeping,
+        or removing, what nobody asked it to.
+        """
+        from .fetch_cache import MAX_AGE_ENV, max_age_days
+        days = max_age_days()
+        if days <= 0:
+            logger.info("fetch cache expiry is off (%s=0)", MAX_AGE_ENV)
+            return
+        self._cache_expiry = threading.Thread(
+            target=self._cache_expiry_loop, args=(days * 86400.0,),
+            name="robovast-fetch-cache-expiry", daemon=True)
+        self._cache_expiry.start()
+
+    def _cache_expiry_loop(self, max_age_s: float) -> None:
+        while True:
+            try:
+                self._expire_fetch_cache(max_age_s)
+            except Exception:  # noqa: BLE001 - a failed pass must not end the ones after it
+                logger.warning("could not expire the fetch cache", exc_info=True)
+            if self._cache_expiry_stop.wait(self._CACHE_EXPIRY_INTERVAL_S):
+                return
+
+    def _expire_fetch_cache(self, max_age_s: float) -> int:
+        """Remove each campaign's cache dir left unread for *max_age_s*; return how many went.
+
+        What a clear keeps is kept here too -- a running campaign, a pinned dir -- and the dir's
+        age is judged again under its fetch lock, so a read that lands meanwhile saves it.
+        Only removed dirs are measured, for the log line.
+        """
+        def keep_reason(campaign_id):
+            idle = self._cache_idle_s(campaign_id)
+            if idle is None or idle < max_age_s:
+                return "read recently"
+            return self._fetch_cache_keep_reason(campaign_id)
+
+        root = self._FETCH_CACHE_ROOT
+        dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+        removed = freed = 0
+        for cache_dir in dirs:
+            campaign_id = cache_dir.name
+            if keep_reason(campaign_id):
+                continue
+            size = _tree_bytes(cache_dir)
+            if not self._remove_fetch_cache_dir(campaign_id,
+                                                lambda cid=campaign_id: keep_reason(cid)):
+                removed += 1
+                freed += size
+        if removed:
+            logger.info("fetch cache: removed %d campaign(s) unread for %.1f days, %d bytes",
+                        removed, max_age_s / 86400.0, freed)
+        return removed
 
     def _data_dir(self, campaign_id: str):
         """Refused on this lane: there is no cheap "the campaign's directory" here.
@@ -3609,6 +3816,7 @@ class ClusterService(LocalTransport):
                     ) from exc
                 raise
             elapsed = time.perf_counter() - started
+            self._mark_cache_read(campaign_id)
         if fetched:
             self._last_fetch[campaign_id] = (fetched, elapsed)
             logger.info("Fetched %s for campaign %s (%s of %s) from %s/%s in %.1fs",
@@ -4158,6 +4366,8 @@ class ClusterService(LocalTransport):
         """
         from .postprocess_job import postprocess_campaign
 
+        self._admit_storage(f"postprocess {request.campaign_id}")
+
         def work(state):
             # **No whole-campaign fetch.** Both stages read the run tree inside the
             # postprocessing pod, which stages the campaign into its own volume once; a
@@ -4342,6 +4552,12 @@ class ClusterService(LocalTransport):
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
+            # Pinned for the whole export: the outcome is edited in the materialised root and
+            # published back at the end, which can be long after the read grace has passed.
+            with self._holding_cache(request.campaign_id):
+                _share(state)
+
+        def _share(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             campaign_root = self._materialize(
@@ -4675,6 +4891,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+        into_cache = dest is None
         dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
@@ -4720,6 +4937,8 @@ class ClusterService(LocalTransport):
                         f"store bucket does not exist (not yet published or removed)"
                     ) from exc
                 raise
+            if into_cache:
+                self._mark_cache_read(campaign_id)
         # Elapsed as well as the count: "1832 files" alone does not distinguish a transfer
         # that took two seconds from one that took four minutes, which is the only question
         # a caller staring at a slow first call actually has. The byte figure comes from the

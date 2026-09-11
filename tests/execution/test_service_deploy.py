@@ -382,6 +382,55 @@ def test_family_env_carries_what_the_environment_says(monkeypatch):
     assert env["ROBOVAST_PROJECT_TAG"] == "2026-08-20"
 
 
+def test_the_disk_reserve_is_carried_even_when_unset(monkeypatch):
+    """Empty, not absent, for the family's reason: deleting the .env line must reset the pod."""
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.delenv(RESERVE_ENV, raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[RESERVE_ENV] == ""
+
+
+def test_the_disk_reserve_carries_what_the_environment_says(monkeypatch):
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[RESERVE_ENV] == "150"
+
+
+def test_a_malformed_disk_reserve_fails_the_deploy_not_the_pod(monkeypatch):
+    """Caught on the operator's machine, where the .env is, rather than by every campaign."""
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "a lot")
+    with pytest.raises(ValueError, match=RESERVE_ENV):
+        sd.service_manifests(namespace="default", image="x")
+
+
+def test_the_fetch_cache_age_is_carried_even_when_unset(monkeypatch):
+    """Empty, not absent: deleting the .env line must reset the pod to the default."""
+    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
+    monkeypatch.delenv(MAX_AGE_ENV, raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[MAX_AGE_ENV] == ""
+
+
+def test_the_fetch_cache_age_carries_what_the_environment_says(monkeypatch):
+    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
+    monkeypatch.setenv(MAX_AGE_ENV, "14")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[MAX_AGE_ENV] == "14"
+
+
+def test_a_malformed_fetch_cache_age_fails_the_deploy(monkeypatch):
+    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
+    monkeypatch.setenv(MAX_AGE_ENV, "a week")
+    with pytest.raises(ValueError, match=MAX_AGE_ENV):
+        sd.service_manifests(namespace="default", image="x")
+
+
 def test_the_pod_carries_the_setup_hosts_timezone(monkeypatch):
     # Campaign ids are minted from datetime.now() in this pod, so without TZ every
     # campaign directory is named in UTC (see _host_timezone).

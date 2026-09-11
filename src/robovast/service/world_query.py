@@ -305,6 +305,19 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     return found
 
 
+def _unchecked(reason, step: str = "") -> str:
+    """One advisory sentence: why the world was not checked, then what would settle it.
+
+    The reasons come from several exceptions and some already end in a full stop, so the
+    punctuation is decided here rather than by each arm appending one.
+    """
+    text = str(reason).rstrip()
+    if not text.endswith((".", "!", "?")):
+        text += "."
+    return (f"this campaign's world was NOT checked: {text}"
+            + (f" Next: {step}" if step else ""))
+
+
 def world_problems(exec_call, *, workspace_id: str, config_path: str,
                    vast_dir: str, parameters: dict) -> list:
     """Does this campaign's world load, and does its model compile?
@@ -322,7 +335,7 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     from robovast.common.config_generation import (WorldQueryUnavailable,
                                                    describe_world_payload,
                                                    set_container_runner_factory)
-    from robovast.common.errors import ActionableError
+    from robovast.common.errors import ActionableError, ExecPathUnavailable
 
     execution = parameters.get("execution", {}) or {}
     blocks = _distinct_blocks(parameters, vast_dir)
@@ -334,6 +347,16 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
         try:
             payload, image = describe_world_payload(
                 execution, block, vast_dir, entities=True)
+        except ExecPathUnavailable as exc:
+            # Before the arms below, and its own answer: they name the image or the lane as
+            # what would settle it, and neither is what is wrong. Unchecked rather than an
+            # error, by the same rule -- a check that could not run is never a verdict about
+            # the world.
+            problems.append(_problem(
+                _unchecked(exc, "nothing about the .vast changes this -- the world can "
+                                "only be described where a command can run in a container"),
+                config=config_name, severity="unchecked"))
+            continue
         except WorldQueryUnavailable as exc:
             # One exception, two very different meanings, and only the runner can tell them
             # apart: `describe_world_payload` raises this both when nothing could ask the
@@ -353,16 +376,16 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             # already-built one. It errs towards "not checked" rather than a wrong pass,
             # so it is left as it is -- lifting it means teaching that function which
             # images this lane can reach.
-            step = getattr(exc, "next_step", "")
             problems.append(_problem(
-                f"this campaign's world was NOT checked: {exc}."
-                + (f" Next: {step}" if step else ""),
+                _unchecked(exc, getattr(exc, "next_step", "")),
                 config=config_name, severity="unchecked"))
             continue
         except ActionableError as exc:
+            # Its own arm, and not folded into the one above: this is a refusal that knows
+            # the command that settles it -- an image that is not built names the build --
+            # so the advisory carries that rather than the lane advice a wrapped one gets.
             problems.append(_problem(
-                f"this campaign's world was NOT checked: {exc}."
-                + (f" Next: {exc.next_step}" if exc.next_step else ""),
+                _unchecked(exc, exc.next_step),
                 config=config_name, severity="unchecked"))
             continue
         finally:

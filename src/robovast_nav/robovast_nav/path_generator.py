@@ -35,6 +35,19 @@ from .object_shapes import (get_object_type_from_model_path,
                             get_obstacle_dimensions)
 
 
+def path_length(path: Optional[List[Position]]) -> float:
+    """The arc length of a planned path, in metres.
+
+    Derived from the path rather than carried beside it. A length stated separately is a second
+    copy of one fact, and the two drift the moment a later variation re-plans: an obstacle count
+    resolved per metre would then be resolved against a path the run does not drive.
+    """
+    if not path or len(path) < 2:
+        return 0.0
+    return sum(math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y)
+               for i in range(1, len(path)))
+
+
 class PathGenerator:
     """Standalone utility class for generating navigation paths on maps using A* algorithm."""
 

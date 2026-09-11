@@ -291,7 +291,8 @@ The lifecycle verbs are deliberately distinct:
    * - ``vast service upgrade``
      - The image, RBAC, and the credential Secrets it can rebuild from ``.env``
        (git, share, ntfy, registry) — which is how a registry move or a rotated
-       password reaches the cluster. The **access token is preserved**, so nobody is
+       password reaches the cluster — plus the settings it carries from ``.env``, the
+       free-space reserve and the build daemon's among them. The **access token is preserved**, so nobody is
        logged out.
    * - ``vast cluster setup --force``
      - The same, plus it will re-mint the access token when asked
@@ -305,6 +306,48 @@ The lifecycle verbs are deliberately distinct:
 
 Campaign data lives in the object store and survives all three. Plain ``setup`` over
 a live service is refused (``Cluster is already set up``).
+
+.. _deployment-disk-reserve:
+
+Keeping free space
+------------------
+
+The service can keep a **free-space reserve**: while its disk or its results store has less
+free space than that, it refuses to *start* a campaign, a re-run, an image build, an import or
+a postprocessing run, with a 507 naming the meter and the amounts. Work already running
+continues, and stopping or deleting campaigns is never refused. The web UI's sidebar and
+``get_resource_usage`` (``storage_refusal``) show the same verdict. If clearing the service's
+caches would help, the refusal says so: ``vast service cache --clear``, or **Service cache** on
+the Admin page.
+
+.. code-block:: bash
+
+   # .env on the machine you run setup/upgrade from, or the one running `vast serve`
+   ROBOVAST_DISK_RESERVE_GB=150
+
+It is an absolute amount in gigabytes (10\ :sup:`9` bytes); unset or ``0`` keeps no reserve. An
+invalid value is an error, not a fallback.
+
+**On a cluster, set it above the kubelet's hard eviction threshold on the data node**, which
+evicts every pod there, the service included. That threshold is usually a *fraction* of the
+disk (``nodefs.available``), so convert it for your disk. Read it from the node:
+
+.. code-block:: bash
+
+   kubectl get --raw "/api/v1/nodes/<node>/proxy/configz" | jq .kubeletconfig.evictionHard
+
+``vast cluster setup`` and ``vast service upgrade`` apply it, and deleting the line resets it;
+``vast service restart`` does not. The build cache keeps the same reserve free unless
+``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
+<buildkit-settings>`).
+
+On a cluster the service also removes the campaign files it fetched from the object store once
+nobody has read them for a week, checking hourly and keeping anything in use. Set the age in
+the same ``.env``; setup and upgrade apply it the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS=7    # the default; 0 keeps them until the cache is cleared
 
 Checking a deployment
 ---------------------

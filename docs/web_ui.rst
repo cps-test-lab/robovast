@@ -263,7 +263,7 @@ The Admin page
 --------------
 
 Every other page is about a campaign. This one is about the service running them, and it
-answers four questions no other page does.
+answers the questions no other page does.
 
 **How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
@@ -363,6 +363,15 @@ added to RoboVAST appears here without anyone maintaining a list. The cost is th
 nothing recognises can turn up; it is shown as ``set`` with **no value**, since the next
 setting somebody adds may well be a credential. If you see one, that is the prompt to
 describe it in ``robovast.service.settings_report``.
+
+**What it can give back.** The **Service cache** panel — collapsed until you open it, and
+measured when you do — lists what the service keeps that it can rebuild from durable data: on
+a cluster, campaign files fetched from the object store; on every lane, compiled 3D worlds.
+**Clear cache** removes everything not in use and says what it freed; what it keeps is listed
+with the reason — a running campaign, an export to the share, or files read in the last hour.
+It is the thing to reach for when new work is refused for disk space. ``vast service cache
+[--clear]`` does the same from a terminal. On a cluster, campaign files nobody has read for a
+week are removed on their own (see :ref:`deployment-disk-reserve`).
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
 back, which is why several failures in RoboVAST are diagnosable only from a log nobody
@@ -1210,6 +1219,10 @@ hover tooltip spelling the numbers out:
   slow lane. Its denominator is the store's own volume, not the **Disk** figure; the two
   can sit on different nodes.
 
+Beneath them, **refusing new work: disk below reserve** appears while either meter has less
+free space than the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see
+:ref:`deployment`); its tooltip is the sentence a refused launch carries.
+
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a
 cluster whose kubelet could not be read (the service needs ``nodes/proxy``; see
@@ -1220,10 +1233,9 @@ and shared across browser tabs, so it never loads the backend.
 
 .. note::
 
-   The service is **unauthenticated in v1** and must stay behind the
-   localhost / SSH-tunnel / ``kubectl port-forward`` boundary — do not expose it
-   directly. Public access (Ingress + token/TLS) is a deferred, whole-surface
-   decision (see :ref:`deployment`).
+   Every request needs the service's shared token — a browser presents it as the cookie
+   ``/login`` sets — and a service published over an Ingress insists on TLS. See
+   :ref:`deployment`.
 
 Results viewer
 --------------

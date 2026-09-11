@@ -35,7 +35,8 @@ from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest, FileListing,
+                                        CreateWorkspaceRequest, EditFileRequest,
+                                        ERROR_CODE_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
@@ -43,13 +44,17 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceError, UploadGrant,
+                                        ServiceCache, ServiceError, UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+#: How long a cache report or clear may take. Both walk every file in the caches, and a
+#: campaign fetched whole can hold a hundred thousand of them.
+_CACHE_TIMEOUT_S = 600.0
 
 
 class HTTPTransport(RobovastInterface):
@@ -105,7 +110,12 @@ class HTTPTransport(RobovastInterface):
             detail = (resp.text or "").strip()[:500]
         raise ServiceError(resp.status_code,
                            detail or f"{resp.status_code} {resp.reason}",
-                           resp.url)
+                           resp.url,
+                           # The class of the refusal, where the service named one: the
+                           # exception type itself cannot cross this boundary, and a client
+                           # that has to act on which failure this was would otherwise have
+                           # to match on the sentence.
+                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip())
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
@@ -134,9 +144,9 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.json()
 
-    def _delete(self, route: str, **params):
+    def _delete(self, route: str, *, timeout: "float | None" = None, **params):
         resp = self.session.delete(f"{self.base_url}{route}", params=params or None,
-                               timeout=self.timeout)
+                               timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
@@ -145,6 +155,14 @@ class HTTPTransport(RobovastInterface):
 
     def resource_usage(self) -> ResourceUsage:
         return ResourceUsage.model_validate(self._get(Routes.USAGE))
+
+    def service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._get(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
+
+    def clear_service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._delete(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
 
     def upgrade_info(self) -> UpgradeInfo:
         return UpgradeInfo.model_validate(self._get(Routes.ADMIN_UPGRADE))

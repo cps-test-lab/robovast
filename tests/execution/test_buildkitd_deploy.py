@@ -13,9 +13,10 @@ import types
 import pytest
 
 from robovast.execution.cluster_execution.buildkitd_deploy import (
-    BUILDKITD_NAME, BUILDKITD_PORT, BUILDKITD_STORE_DIR, buildkitd_address,
-    buildkitd_deployment_manifest, buildkitd_pvc_manifest,
-    buildkitd_service_manifest, buildkitd_toml, buildkitd_volume)
+    BUILDKITD_CPU_LIMIT, BUILDKITD_CPU_REQUEST, BUILDKITD_MAX_PARALLELISM,
+    BUILDKITD_MEMORY_LIMIT, BUILDKITD_MEMORY_REQUEST, BUILDKITD_NAME, BUILDKITD_PORT,
+    BUILDKITD_STORE_DIR, buildkitd_address, buildkitd_deployment_manifest,
+    buildkitd_pvc_manifest, buildkitd_service_manifest, buildkitd_toml, buildkitd_volume)
 
 
 def _dep(**kw):
@@ -100,7 +101,7 @@ def test_the_default_budget_cannot_overrun_a_disk_it_did_not_choose():
     for a reason with no visible connection to a build. A percentage cannot be wrong that way.
     """
     from robovast.execution.cluster_execution.buildkitd_deploy import (
-        DEFAULT_BUILDKITD_GC_MAX_USED, DEFAULT_BUILDKITD_GC_MIN_FREE)
+        DEFAULT_BUILDKITD_GC_MAX_USED, default_gc_min_free)
 
     # `minFreeSpace` is what makes an absolute ceiling safe, and it is the assertion that
     # matters: it is measured against the FILESYSTEM rather than the cache, so on a disk
@@ -108,7 +109,7 @@ def test_the_default_budget_cannot_overrun_a_disk_it_did_not_choose():
     # it a fixed ceiling is not a ceiling at all on a disk we did not choose -- the store grows
     # until the node runs out, and the kubelet answers DiskPressure by evicting pods, on the
     # node the daemon is pinned to and the service pod may share.
-    assert DEFAULT_BUILDKITD_GC_MIN_FREE, (
+    assert default_gc_min_free(), (
         "without a free-space floor, an absolute ceiling is unbounded on a smaller disk")
     assert DEFAULT_BUILDKITD_GC_MAX_USED, "the store must have a ceiling at all"
 
@@ -139,6 +140,46 @@ def test_parallelism_is_bounded():
     dep = _dep()
     rendered = " ".join(_container(dep).get("args") or _container(dep)["command"])
     assert "--oci-max-parallelism" in rendered
+
+
+def test_the_size_of_a_build_is_an_argument_not_a_constant():
+    """The ceiling an out-of-memory build hits belongs to whoever runs the deployment.
+
+    A compile the kernel kills is classified as a resource failure precisely so it is not
+    read as a package the project forgot -- which is only useful if the operator it names can
+    then act, without editing a source file and republishing an image.
+    """
+    dep = _dep(memory_limit="48Gi", cpu_limit="16", max_parallelism=2)
+    res = _container(dep)["resources"]
+    assert res["limits"] == {"cpu": "16", "memory": "48Gi"}
+    rendered = " ".join(_container(dep).get("args") or _container(dep)["command"])
+    assert "--oci-max-parallelism 2" in rendered
+
+
+def test_a_ceiling_below_the_reservation_lowers_the_reservation():
+    """Kubernetes refuses a container asking for more than its own limit.
+
+    Both defaults are set here, so lowering only the ceiling -- the sensible thing to do on a
+    small node -- would render a Deployment the API rejects, over a setting that was on its own
+    perfectly reasonable. The reservation follows it down instead of the command failing.
+    """
+    res = _container(_dep(memory_limit="1Gi", cpu_limit="250m"))["resources"]
+    assert res["requests"] == {"cpu": "250m", "memory": "1Gi"}
+    assert res["limits"] == {"cpu": "250m", "memory": "1Gi"}
+
+
+@pytest.mark.parametrize("kwargs,name", [
+    ({"memory_limit": "32 gigs"}, "ROBOVAST_BUILDKIT_MEMORY"),
+    ({"memory_limit": "0"}, "ROBOVAST_BUILDKIT_MEMORY"),
+    ({"cpu_limit": "plenty"}, "ROBOVAST_BUILDKIT_CPU"),
+    ({"max_parallelism": -1}, "ROBOVAST_BUILDKIT_PARALLELISM"),
+])
+def test_a_size_that_is_not_one_fails_here_rather_than_at_the_api_server(kwargs, name):
+    """A malformed quantity comes back from the API server as a 422 quoting the manifest --
+    and on `setup` it arrives after the service is already up, so the deployment is left half
+    built over a typo. The message names the setting the operator wrote."""
+    with pytest.raises(ValueError, match=name):
+        _dep(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -343,15 +384,22 @@ def _api_error(status):
     return ApiException(status=status, reason="canned")
 
 
+#: What every recovery carries whether or not anybody set it: the size of a build. Rendered
+#: from the defaults here, so a test states only the setting it is about.
+_SIZE = {"cpu_request": BUILDKITD_CPU_REQUEST, "memory_request": BUILDKITD_MEMORY_REQUEST,
+         "cpu_limit": BUILDKITD_CPU_LIMIT, "memory_limit": BUILDKITD_MEMORY_LIMIT,
+         "max_parallelism": BUILDKITD_MAX_PARALLELISM}
+
+
 @pytest.mark.parametrize("rendered,recovered", [
     ({"storage_class": "fast", "storage_size": "300Gi",
       "node_selector": {"robovast.io/build-node": "true"}},
      {"storage_class": "fast", "storage_size": "300Gi",
-      "node_selector": {"robovast.io/build-node": "true"}}),
+      "node_selector": {"robovast.io/build-node": "true"}, **_SIZE}),
     ({"storage_path": "/data/elsewhere",
       "node_selector": {"robovast.io/build-node": "true"}},
      {"storage_path": "/data/elsewhere",
-      "node_selector": {"robovast.io/build-node": "true"}}),
+      "node_selector": {"robovast.io/build-node": "true"}, **_SIZE}),
 ])
 def test_an_upgrade_re_renders_the_store_it_found(monkeypatch, rendered, recovered):
     """The point of the reader: converge the daemon without moving its cache.
@@ -381,6 +429,30 @@ def test_an_upgrade_re_renders_the_store_it_found(monkeypatch, rendered, recover
             == original["spec"]["template"]["spec"]["volumes"])
     assert (again["spec"]["template"]["spec"].get("nodeSelector")
             == original["spec"]["template"]["spec"].get("nodeSelector"))
+
+
+@pytest.mark.parametrize("rendered", [
+    {"memory_limit": "48Gi", "cpu_limit": "16", "max_parallelism": 2},
+    # The registry-CA branch replaces `args` with a shell `command` carrying the same
+    # arguments joined into it, so a recovery reading only `args` resets the parallelism on
+    # exactly the deployments that have a private registry -- and nothing would say so.
+    {"max_parallelism": 2, "ca_configmap_name": "registry-ca"},
+])
+def test_an_upgrade_reads_the_ceiling_the_daemon_runs_with(monkeypatch, rendered):
+    """What an upgrade compares the ``.env`` against, so a ceiling it moves is said -- above all
+    one going back to its default because nobody wrote it down."""
+    from robovast.execution.cluster_execution.buildkitd_deploy import (
+        buildkitd_storage_from_cluster)
+
+    original = buildkitd_deployment_manifest(namespace="ns", **rendered)
+    _reader(monkeypatch, dep=_deserialize(original, "V1Deployment"))
+
+    settings = buildkitd_storage_from_cluster("ns")
+
+    assert settings["max_parallelism"] == 2
+    for key, value in rendered.items():
+        if key.endswith("_limit"):
+            assert settings[key] == value
 
 
 def test_no_daemon_yet_reads_as_nothing_to_preserve(monkeypatch):
@@ -455,7 +527,7 @@ def test_the_budget_is_configurable_not_baked_in():
     """The defaults suit the disk in front of us; another deployment's may be much smaller.
 
     Sizing it should not require editing the source, so the values reach `buildkitd.toml`
-    from `apply_buildkitd`'s arguments, which the `--buildkit-cache-*` flags supply.
+    from `apply_buildkitd`'s arguments, which the `ROBOVAST_BUILDKIT_CACHE_*` settings supply.
     """
     toml = buildkitd_toml(gc_reserved="10GB", gc_max_used="20GB", gc_min_free="5GB")
     assert 'reservedSpace = "10GB"' in toml
@@ -473,12 +545,8 @@ def test_a_percentage_budget_is_expressible_for_a_disk_of_unknown_size():
     assert policy["minFreeSpace"] == "10%"
 
 
-def test_an_upgrade_keeps_the_budget_the_deployment_was_given(monkeypatch):
-    """The same trap as the storage settings: set by a flag, recorded nowhere else.
-
-    An upgrade that re-rendered the config from defaults would silently re-size a store an
-    operator had bounded deliberately -- on the deployment whose disk was the reason for it.
-    """
+def test_an_upgrade_reads_the_budget_the_daemon_runs_with(monkeypatch):
+    """What an upgrade compares the ``.env`` against, read from the file the daemon reads."""
     from kubernetes import client as kclient
 
     from robovast.execution.cluster_execution import buildkitd_deploy
@@ -518,14 +586,16 @@ def test_apply_accepts_every_setting_that_can_be_handed_to_it():
     accepted = set(inspect.signature(buildkitd_deploy.apply_buildkitd).parameters)
 
     recoverable = set(buildkitd_deploy._GC_KEYS.values()) | {
-        "storage_class", "storage_path", "storage_size", "node_selector"}
+        "storage_class", "storage_path", "storage_size", "node_selector",
+        "cpu_request", "memory_request", "cpu_limit", "memory_limit", "max_parallelism"}
     assert recoverable <= accepted, (
         f"buildkitd_storage_from_cluster can return {sorted(recoverable - accepted)}, which "
         "apply_buildkitd does not accept -- upgrade would raise TypeError")
 
     # The same contract on the other side: what `vast cluster setup` collects.
     from_cli = {"storage_class", "storage_path", "storage_size", "node_selector",
-                "gc_max_used", "gc_min_free", "gc_reserved"}
+                "gc_max_used", "gc_min_free", "gc_reserved",
+                "cpu_limit", "memory_limit", "max_parallelism"}
     assert from_cli <= accepted, (
         f"the --buildkit-* flags supply {sorted(from_cli - accepted)}, which apply_buildkitd "
         "does not accept -- setup would raise TypeError")
@@ -553,3 +623,32 @@ def test_the_store_is_made_writable_before_the_daemon_opens_it():
     assert "-R" not in chown["command"]
     # It must precede the daemon, which is what an initContainer means.
     assert dep["spec"]["template"]["spec"]["containers"][0]["name"] == "buildkitd"
+
+
+def test_the_cache_keeps_the_services_reserve_free_by_default(monkeypatch):
+    """A cache allowed to fill past the reserve would take back, one build at a time, the
+    margin the service refuses new work to protect."""
+    import tomllib
+
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    parsed = tomllib.loads(buildkitd_toml())
+    assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "150GB"
+
+
+@pytest.mark.parametrize("reserve", ["", "0", "20"])
+def test_the_cache_never_keeps_less_than_its_own_floor(monkeypatch, reserve):
+    """No reserve turns the service's refusals off; it must not let the cache fill the disk."""
+    from robovast.execution.cluster_execution.buildkitd_deploy import default_gc_min_free
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, reserve)
+    assert default_gc_min_free() == "50GB"
+
+
+def test_a_stated_min_free_wins_over_the_reserve(monkeypatch):
+    import tomllib
+
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    parsed = tomllib.loads(buildkitd_toml(gc_min_free="300GB"))
+    assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "300GB"

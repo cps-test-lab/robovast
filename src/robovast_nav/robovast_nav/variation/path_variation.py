@@ -24,12 +24,15 @@ from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
+                                                      SLOT_BINDINGS,
                                                       DestinationConfig,
                                                       ProvContribution,
                                                       VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
-from ..path_generator import PathGenerator
+# `path_length` here always means the length a campaign ASKED for; the measurement of a
+# path in hand is imported under a name that cannot be confused with it.
+from ..path_generator import PathGenerator, path_length as arc_length
 from ..waypoint_generator import WaypointGenerator
 from .. import config_view
 from .nav_base_variation import NavVariation
@@ -70,7 +73,7 @@ class PathVariationRandomConfig(DestinationConfig):
     #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
     #: quaternion and tells them apart by the keys present -- and an omitted z means the
     #: model's own resting height, which is what a wheeled base needs.
-    SLOTS = ("start", "goal")
+    OUTPUT_SLOTS = ("start", "goal")
 
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
     num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per meters of path length; single value or list for additional variations
@@ -172,7 +175,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute navigation goal count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
-        goals = config_cfg.get(config_entry.get("_goal_parameter_name"))
+        goals = config_cfg.get((config_entry.get(SLOT_BINDINGS) or {}).get("goal"))
 
         if goals is None:
             return None
@@ -243,7 +246,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                         print(f"Generating path for configuration {config['name']}, "
                               f"path_length={target_path_length}, num_goal_poses={effective_num_goal_poses}, "
                               f"path_index={path_index}, seed={current_seed}")
-                        start_pose, goal_poses, path, map_file, actual_path_length = self.generate_path_for_config(
+                        start_pose, goal_poses, path, map_file = self.generate_path_for_config(
                             self.output_dir, config, path_index, current_seed, target_path_length,
                             num_goal_poses=effective_num_goal_poses
                         )
@@ -254,13 +257,9 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
 
                         other_values = {
                             '_path': path,
-                            '_path_length': actual_path_length,
                         }
                         if not config.get("config", {}).get("map_file"):
                             other_values['_map_file'] = map_file
-                        # The renderer cannot know what the campaign named these, so the
-                        # resolved destination travels with the configuration.
-                        other_values['_goal_parameter_name'] = goal_param
                         new_config = self.update_slots(
                             config,
                             {'start': start_pose, 'goal': formatted_goal_poses},
@@ -285,7 +284,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                 overrides ``self.parameters.num_goal_poses``.
 
         Returns:
-            Tuple of (start_pose, goal_poses, path, map_file_path, actual_path_length)
+            Tuple of (start_pose, goal_poses, path, map_file_path)
         """
         if path_length is None:
             raw = self.parameters.path_length
@@ -403,12 +402,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                 continue
 
             # Enforce path length tolerance
-            length = sum(
-                math.hypot(
-                    path[i].x - path[i - 1].x, path[i].y - path[i - 1].y
-                )
-                for i in range(1, len(path))
-            )
+            length = arc_length(path)
             if abs(length - path_length) > path_length_tolerance:
                 self.progress_update(f"   path length {length:.2f} outside tolerance. {
                     abs(length - path_length)} > {path_length_tolerance}")
@@ -471,7 +465,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             input_files=[map_file_path],
             file_content=file_content,
             binary=True)
-        return start_pose, goal_poses, path, map_file_path, length
+        return start_pose, goal_poses, path, map_file_path
 
 
 class PathVariationRasterizedConfig(DestinationConfig):
@@ -491,7 +485,7 @@ class PathVariationRasterizedConfig(DestinationConfig):
     #: A world reads the pose as it stands -- it states orientation as Euler angles or as a
     #: quaternion and tells them apart by the keys present -- and an omitted z means the
     #: model's own resting height, which is what a wheeled base needs.
-    SLOTS = ("start", "goal")
+    OUTPUT_SLOTS = ("start", "goal")
 
     #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
     #: variation set. Input only: where the generated start pose *goes* is the ``start``
@@ -671,7 +665,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                 if path:
                     # Calculate path length
-                    actual_path_length = self._calculate_path_length(path)
+                    actual_path_length = arc_length(path)
 
                     # Check if path length is within tolerance
                     min_length = path_length - self.parameters.path_length_tolerance
@@ -679,7 +673,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                     if min_length <= actual_path_length <= max_length:
                         # Shape from the scenario's declaration, not from num_goal_poses.
-                        goal_dest, single = self._goal_destination()
+                        _, single = self._goal_destination()
                         formatted_goal_poses = goal_pose if single else [goal_pose]
 
                         new_config = self.update_slots(
@@ -689,8 +683,6 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': actual_path_length,
-                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                     else:
@@ -752,7 +744,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                 if path:
                     # Calculate path length
-                    actual_path_length = self._calculate_path_length(path)
+                    actual_path_length = arc_length(path)
 
                     # Check if path length is within tolerance
                     min_length = path_length - self.parameters.path_length_tolerance
@@ -760,7 +752,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                     if min_length <= actual_path_length <= max_length:
                         # Shape from the scenario's declaration, not from num_goal_poses.
-                        goal_dest, single = self._goal_destination()
+                        _, single = self._goal_destination()
                         formatted_goal_poses = (
                             (goal_poses_list[0] if goal_poses_list else None) if single
                             else goal_poses_list)
@@ -772,8 +764,6 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': actual_path_length,
-                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                         self.progress_update(f"  Generated valid multi-goal path with {len(goal_poses_list)} goals")
@@ -913,23 +903,3 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
         if not valid_points:
             raise ValueError(f"Checked {checked_points} grid points, {valid_points} valid. All points are occupied.")
         return raster_points
-
-    def _calculate_path_length(self, path):
-        """Calculate the total length of a path.
-
-        Args:
-            path: List of Position objects representing the path
-
-        Returns:
-            Total path length in meters
-        """
-        if not path or len(path) < 2:
-            return 0.0
-
-        total_length = 0.0
-        for i in range(len(path) - 1):
-            dx = path[i + 1].x - path[i].x
-            dy = path[i + 1].y - path[i].y
-            total_length += math.sqrt(dx * dx + dy * dy)
-
-        return total_length
