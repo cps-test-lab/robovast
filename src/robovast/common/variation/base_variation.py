@@ -293,7 +293,7 @@ class DestinationConfig(VariationConfig):
         # all is a question about the pipeline, answered where the pipeline is known.
         return self
 
-    def input_binding(self, slot: str, config=None) -> str:
+    def input_binding(self, slot: str, config: dict) -> str:
         """The scenario parameter *slot* is read from.
 
         ``reads:`` wins where the campaign stated it -- which is what a configuration setting
@@ -309,7 +309,7 @@ class DestinationConfig(VariationConfig):
         stated = (self.reads or {}).get(slot)
         if stated:
             return stated
-        inherited = ((config or {}).get(SLOT_BINDINGS) or {}).get(slot)
+        inherited = (config.get(SLOT_BINDINGS) or {}).get(slot)
         if inherited:
             return inherited
         raise KeyError(
