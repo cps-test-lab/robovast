@@ -222,11 +222,11 @@ class SimulatorBackend:
         """Files the simulator needs that the campaign owns, relative to the ``.vast``.
 
         *vast_dir* is the directory the ``.vast`` lives in, and it is required because the
-        paths in *cfg* are relative to it and to nothing else. A backend that reads one --
-        to decide whether a world inherits from another campaign file, say -- must resolve
-        it against this, never against the process's working directory: composition runs
-        from the CLI's cwd, from a service worker, and from an isolated subprocess, and a
-        backend that guessed made the same campaign answer differently in each.
+        paths in *cfg* are relative to it and to nothing else. A backend that resolves one --
+        to name a file for staging, or to spell it for the container -- must resolve it
+        against this, never against the process's working directory: composition runs from
+        the CLI's cwd, from a service worker, and from an isolated subprocess, and a backend
+        that guessed made the same campaign answer differently in each.
 
         Typically a world declared as a path rather than a package ref. A packaged world
         travels inside the image and needs nothing here, which is the default.
