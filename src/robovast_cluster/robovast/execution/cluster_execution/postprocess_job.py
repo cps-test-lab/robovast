@@ -420,7 +420,7 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
     owner = f"{campaign_id}{_POSTPROCESS_OWNER_SUFFIX}"
     admission.submit(owner, [(name, sizing, _record_grant)],
                      started_at=campaign_start_key(campaign_id),
-                     priority=POSTPROCESS_PRIORITY)
+                     priority=POSTPROCESS_PRIORITY, campaign=campaign_id)
 
     deadline = time.monotonic() + timeout
     logged = 0.0

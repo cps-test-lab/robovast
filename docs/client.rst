@@ -53,6 +53,9 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
      - Stop a campaign, kill one wedged job, read its infrastructure log.
+   * - ``vast campaign priority|pause|resume``
+     - Which campaign the cluster queue admits first, and whether one admits at all. Orders
+       what is queued; runs already started finish either way (:ref:`cluster-admission`).
    * - ``vast campaign rerun <id>``
      - Launch a new campaign from what a past one recorded. The service refuses one its
        pre-flight blocks; ``--check`` reports every axis without launching, ``--force``

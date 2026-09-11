@@ -944,3 +944,27 @@ def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
     problem = next(p for p in report["problems"] if p["stage"] == "scenario")
     assert problem["severity"] == "unchecked"
     assert "/sources/" in problem["message"], "it must name what would settle it"
+
+
+# -- a held campaign is not a wedged one --------------------------------------------------
+
+def test_the_listing_says_when_a_campaign_is_held():
+    """No progress is a fault everywhere except here. Without this an agent reads a campaign
+    somebody parked as one that is stuck, and the reasonable next move is the wrong one."""
+    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.service.interface import CampaignSummary
+
+    entry = _summary_to_dict(CampaignSummary(
+        campaign_id="c-1", phase="running", priority=-3, paused=True))
+    assert entry["paused"] is True
+    assert entry["priority"] == -3
+
+
+def test_an_ordinary_campaign_carries_neither():
+    """Omitted at the default, like description: every campaign reporting "priority 0"
+    spends context on a fact about none of them."""
+    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.service.interface import CampaignSummary
+
+    entry = _summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
+    assert "paused" not in entry and "priority" not in entry

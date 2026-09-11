@@ -42,7 +42,7 @@ class CreateCampaignRequestStub:
     """Stand-in for CreateCampaignRequest, which ``prepare`` takes by injection."""
 
     _FIELDS = ("config_filter", "campaign_name", "runs", "postprocess", "upload_to_share",
-               "show_gui", "description", "workspace_id", "config_path")
+               "show_gui", "description", "workspace_id", "config_path", "priority", "paused")
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)

@@ -63,6 +63,13 @@ from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401
 #: ``.vast`` itself, which is archived with the campaign.
 DESCRIPTION_MAX_LEN = 200
 
+#: Bound on a campaign's scheduling rank (:attr:`CreateCampaignRequest.priority`).
+#: Symmetric so demoting a long campaign and promoting a short one are the same gesture.
+#: Bounded at all because the rank's whole job is to be compared: a value far outside the
+#: range everything else uses says nothing more than the edge of the range does, and a typo
+#: that parks a campaign at the top of the queue forever should be refused where it is typed.
+PRIORITY_LIMIT = 100
+
 
 class CreateCampaignRequest(BaseModel):
     """Start a campaign from a workspace's current project.
@@ -117,6 +124,19 @@ class CreateCampaignRequest(BaseModel):
     #: images, and silently redirecting one would launch something nobody named.
     image_project: str = ""
     image_project_tag: str = ""
+    #: Which campaign the cluster queue admits first when several are waiting. Higher goes
+    #: first; the default 0 is what everything not asked about runs at, so a campaign is
+    #: demoted with a negative value and promoted with a positive one.
+    #:
+    #: Ordering only, and only where there is a queue to order. It never stops a run that has
+    #: started, so a campaign overtaken keeps what it is running and gives up only the slots
+    #: those runs release. The local Docker lane runs one campaign at a time and has no queue,
+    #: so it refuses a non-default value rather than accepting one it cannot act on.
+    priority: int = Field(0, ge=-PRIORITY_LIMIT, le=PRIORITY_LIMIT)
+    #: Launch, but admit nothing until resumed. Carried here because a campaign's scheduling
+    #: is replayed when a service restart adopts it, and a paused campaign must come back
+    #: paused rather than quietly starting to run while nobody is watching.
+    paused: bool = False
 
 
 class CampaignRef(BaseModel):
@@ -458,6 +478,13 @@ class CampaignSummary(BaseModel):
     #: see :class:`CampaignOrigin`.
     origin: Optional[CampaignOrigin] = None
     postprocessed: bool = False      # configured postprocessing pipelines have run
+    #: How the queue is treating this campaign: its rank, and whether it is admitting at all.
+    #: Both are the launch defaults unless somebody set them, and both describe only what is
+    #: still queued -- a paused campaign's running jobs are running. Reported so a campaign
+    #: that is admitting nothing says which of the two reasons it is, rather than leaving a
+    #: deliberate hold looking like a full cluster.
+    priority: int = 0
+    paused: bool = False
     #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
     #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,
     #: which a reader must treat as "not a search" rather than guessing -- an old store may
@@ -2371,6 +2398,10 @@ class Routes:
         return f"/campaigns/{campaign_id}/stop"
 
     @staticmethod
+    def campaign_scheduling(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/scheduling"
+
+    @staticmethod
     def campaign_retrigger(campaign_id: str) -> str:
         # Under the SOURCE campaign, because that is what the request identifies; the campaign
         # it creates is new and is named in the response.
@@ -2915,6 +2946,37 @@ class RobovastInterface(ABC):
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop of a running campaign."""
+
+    def set_campaign_scheduling(self, campaign_id: str, priority: Optional[int] = None,
+                                paused: Optional[bool] = None) -> ActionResult:
+        """Set how the queue treats a campaign: its rank, whether it admits, or both.
+
+        One operation rather than two verbs, because it sets one fact -- a campaign's standing
+        with the queue -- and setting half of it must not disturb the other half. ``None``
+        leaves that half alone, so holding a campaign keeps the rank it will resume at.
+
+        **Ordering only.** Neither setting stops a run that has started: a campaign demoted or
+        held keeps the jobs it is running and gives up only the slots they release. That is
+        what makes it safe on a campaign whose results matter -- nothing is discarded, and no
+        partial run is produced.
+
+        Higher ranks are admitted first; ``0`` is what a campaign nobody asked about runs at,
+        so a long campaign is moved out of the way with a negative value and a short one is
+        let past with a positive one. Bounded by :data:`PRIORITY_LIMIT`.
+
+        Takes effect on the next admission pass, and reaches the batches the campaign has not
+        submitted yet as well as the jobs already queued.
+
+        Raises ``ValueError`` when neither argument is given -- a call that asked for nothing
+        is a caller's mistake, and answering it "done" would report a change that never
+        happened. Raises on a lane with no queue to order (the local Docker lane runs one
+        campaign at a time), and on a campaign that is already over.
+
+        Not abstract, for the reason :meth:`exec_in_job` is not: a transport that cannot do
+        this inherits a refusal rather than being made to write one.
+        """
+        del campaign_id, priority, paused
+        raise NotImplementedError("this service does not queue campaigns against each other")
 
     @abstractmethod
     def stop_job(self, campaign_id: str, job_name: str,

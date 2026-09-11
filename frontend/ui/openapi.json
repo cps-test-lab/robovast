@@ -715,6 +715,11 @@
               }
             ]
           },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
           "phase": {
             "default": "unknown",
             "title": "Phase",
@@ -729,6 +734,11 @@
             "default": "",
             "title": "Postprocessing Error",
             "type": "string"
+          },
+          "priority": {
+            "default": 0,
+            "title": "Priority",
+            "type": "integer"
           },
           "results_bytes": {
             "anyOf": [
@@ -771,9 +781,11 @@
           "num_passed",
           "num_runs",
           "origin",
+          "paused",
           "phase",
           "postprocessed",
           "postprocessing_error",
+          "priority",
           "results_bytes",
           "share_error",
           "started_at"
@@ -893,10 +905,22 @@
             "title": "Image Project Tag",
             "type": "string"
           },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
           "postprocess": {
             "default": true,
             "title": "Postprocess",
             "type": "boolean"
+          },
+          "priority": {
+            "default": 0,
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "title": "Priority",
+            "type": "integer"
           },
           "runs": {
             "default": 1,
@@ -7047,6 +7071,81 @@
         "summary": "Campaign Scene Asset",
         "tags": [
           "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/scheduling": {
+      "post": {
+        "description": "Set how the queue treats a campaign: its rank, whether it admits new runs, or both. Ordering only \u2014 nothing already running stops.",
+        "operationId": "set_campaign_scheduling_campaigns__campaign_id__scheduling_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priority",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Priority"
+            }
+          },
+          {
+            "in": "query",
+            "name": "paused",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Paused"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Campaign Scheduling",
+        "tags": [
+          "campaigns"
         ]
       }
     },

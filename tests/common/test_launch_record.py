@@ -16,7 +16,7 @@ pair answers it; neither number does alone.
 import yaml
 
 from robovast.common.campaign_data import (read_launch_record, update_launch_images,
-                                           write_launch_record)
+                                           update_launch_scheduling, write_launch_record)
 from robovast.service.interface import CreateCampaignRequest
 
 
@@ -179,3 +179,52 @@ def test_recording_nothing_leaves_the_record_alone(tmp_path):
     update_launch_images(tmp_path, {"simulation": ""})
 
     assert read_launch_record(tmp_path)["images"] == {"sut": "reg.example.com/sut:abc"}
+
+
+# -- scheduling ---------------------------------------------------------------------------
+#
+# The queue holds the live answer in memory. A restart adopts a campaign by re-launching it
+# from this file, so a rank or a hold missing here silently reverts.
+
+def test_the_scheduling_is_recorded(tmp_path):
+    write_launch_record(tmp_path, CreateCampaignRequest(
+        workspace_id="ws-abc", priority=-5, paused=True))
+    record = read_launch_record(tmp_path)
+    assert record["priority"] == -5
+    assert record["paused"] is True
+
+
+def test_an_unasked_campaign_records_the_defaults(tmp_path):
+    write_launch_record(tmp_path, CreateCampaignRequest(workspace_id="ws-abc"))
+    record = read_launch_record(tmp_path)
+    assert record["priority"] == 0
+    assert record["paused"] is False
+
+
+def test_a_changed_rank_is_written_back(tmp_path):
+    write_launch_record(tmp_path, CreateCampaignRequest(workspace_id="ws-abc"))
+    assert update_launch_scheduling(tmp_path, priority=-3) is True
+    assert read_launch_record(tmp_path)["priority"] == -3
+
+
+def test_holding_a_campaign_leaves_the_rank_it_resumes_at(tmp_path):
+    write_launch_record(tmp_path, CreateCampaignRequest(workspace_id="ws-abc", priority=4))
+    update_launch_scheduling(tmp_path, paused=True)
+    record = read_launch_record(tmp_path)
+    assert record["paused"] is True and record["priority"] == 4
+
+
+def test_rewriting_keeps_the_rest_of_the_record(tmp_path):
+    write_launch_record(tmp_path, CreateCampaignRequest(
+        workspace_id="ws-abc", config_filter="nav-*", runs=7),
+        images={"scenario": "reg.example.com/exp@sha256:abc"})
+    update_launch_scheduling(tmp_path, priority=2)
+    record = read_launch_record(tmp_path)
+    assert record["config_filter"] == "nav-*" and record["runs"] == 7
+    assert record["images"] == {"scenario": "reg.example.com/exp@sha256:abc"}
+
+
+def test_a_campaign_with_no_record_is_left_alone(tmp_path):
+    """Writing a bare record here would produce a launch record with no request in it."""
+    assert update_launch_scheduling(tmp_path, priority=1) is False
+    assert read_launch_record(tmp_path) is None

@@ -1411,7 +1411,7 @@ class BatchJobRunner:
                 self._probe_owner(),
                 [(key, sizing,
                   partial(self._create_probe, base, key, probe_output_dir(node_id)))],
-                started_at=started, priority=1, pin=node_id)
+                started_at=started, priority=1, campaign=self.campaign, pin=node_id)
             logger.info("Batch %s: measuring node %s before placing work on it",
                         self._batch_tag, node_id)
         return calibration
@@ -1558,14 +1558,13 @@ class BatchJobRunner:
             what.append("throttled against its own limit: "
                         + ", ".join(f"{k} {v:.1%}" for k, v in sorted(capped.items())))
         raise CampaignConfigError(
-            f"{job_name} ran on the BOOTSTRAP allocation and {'; '.join(what)}. This "
-            f"campaign asked for execution.sizing: calibrated, but calibration does not "
-            f"apply to it -- a campaign with no more jobs than the cluster has nodes, or a "
-            f"cluster that can grow -- so every container is running on the deployment's "
-            f"default rather than a measured or declared figure. That default does not fit "
-            f"this workload, and every remaining run would carry the same fault. Raise "
-            f"ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for the role named above, "
-            f"or set execution.sizing: fixed and declare what this campaign needs.")
+            f"{job_name} ran on the BOOTSTRAP allocation and {'; '.join(what)}.\n\n"
+            f"Calibration does not apply to this campaign -- no more jobs than the cluster "
+            f"has nodes, or a cluster that can grow -- so every container runs on the "
+            f"deployment's default, which does not fit this workload. Every remaining run "
+            f"would carry the same fault.\n\n"
+            f"Raise ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for the role named "
+            f"above, or set execution.sizing: fixed and declare what this campaign needs.")
 
     def _fail_on_crashed_probes(self, job_label, campaign_root, storage, bucket_name,
                                 campaign_prefix) -> None:
@@ -1726,12 +1725,11 @@ class BatchJobRunner:
             return
         remedy = self._remedy_for(reason)
         raise CampaignConfigError(
-            f"Node {node_id} could not be calibrated: {reason}. This campaign asked for "
-            f"execution.sizing: calibrated, so its runs are meant to be sized from what each "
-            f"node measures -- and a node that cannot be measured would run at the starting "
-            f"allocation while the others run at measured figures, which is not a comparable "
-            f"campaign. {remedy}, or set execution.sizing: fixed to declare the sizing "
-            f"outright.")
+            f"Node {node_id} could not be calibrated: {reason}.\n\n"
+            f"An unmeasured node runs at the starting allocation while measured ones run at "
+            f"their own figures, so the campaign would mix two sizings and its runs would "
+            f"not be comparable.\n\n"
+            f"{remedy}, or set execution.sizing: fixed to declare the sizing outright.")
 
     def _probe_crash_error(self, node_id, detail, others: int = 0) -> CampaignConfigError:
         """The terminal error for a probe that lost a container, wherever it was noticed.
@@ -1748,10 +1746,11 @@ class BatchJobRunner:
         also = (f" {others} further probe(s) of this batch failed the same way."
                 if others else "")
         return CampaignConfigError(
-            f"Node {node_id}'s calibration probe lost a container: {detail}.{also} A probe "
-            f"runs one of this campaign's own configurations, so a workload container dying "
-            f"in it is the campaign's to fix rather than the allocation's -- every run would "
-            f"meet the same fault. What that container printed before it died is in "
+            f"Node {node_id}'s calibration probe lost a container: {detail}.{also}\n\n"
+            f"A probe runs one of this campaign's own configurations, so a workload "
+            f"container dying in it is the campaign's to fix rather than the allocation's -- "
+            f"every run would meet the same fault.\n\n"
+            f"What that container printed before it died is in "
             f"_execution/container_failures.json, beside the probe's own output under "
             f"{PROBE_DIR}/.")
 
@@ -3908,6 +3907,10 @@ class KubernetesBackend(ExecutionBackend):
         # every node every batch.
         if self._admission is not None:
             self._admission.forget_calibration(campaign_id)
+            # Its standing with the queue ends with it too, and for a plainer reason: ids carry
+            # a timestamp, so nothing would ever ask about this one again -- the entry would
+            # simply accumulate for the life of the process.
+            self._admission.forget_scheduling(campaign_id)
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)

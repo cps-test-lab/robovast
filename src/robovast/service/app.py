@@ -1594,6 +1594,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
+    @app.post(Routes.campaign_scheduling("{campaign_id}"), response_model=ActionResult,
+              tags=["campaigns"],
+              description="Set how the queue treats a campaign: its rank, whether it admits "
+                          "new runs, or both. Ordering only — nothing already running stops.")
+    def set_campaign_scheduling(campaign_id: str, priority: "int | None" = None,
+                                paused: "bool | None" = None) -> ActionResult:
+        return _guard(lambda: impl.set_campaign_scheduling(campaign_id, priority, paused))
+
     @app.post(Routes.job_stop("{campaign_id}"), response_model=ActionResult,
               tags=["campaigns"])
     def stop_job(campaign_id: str, job_name: str, reason: "str | None" = None,

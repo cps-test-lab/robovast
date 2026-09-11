@@ -144,6 +144,195 @@ def test_priority_outranks_age():
     assert made == ["urgent-0"]
 
 
+# -- campaign rank and pause --------------------------------------------------------------
+
+def test_the_default_rank_leaves_the_order_untouched():
+    """The regression guard for the whole feature: with nobody ranked, the queue orders
+    exactly as it did before there was a rank at all."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "young", 1, started_at=200.0, created=made)
+    _items(c, "old", 1, started_at=100.0, created=made)
+    c.drain()
+    assert made == ["old-0"]
+
+
+def test_a_ranked_campaign_overtakes_an_older_one():
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "old", 1, started_at=100.0, created=made)
+    _items(c, "short", 1, started_at=900.0, created=made)
+    c.set_scheduling("short", priority=1)
+    c.drain()
+    assert made == ["short-0"]
+
+
+def test_a_demoted_campaign_yields_to_a_younger_one():
+    """The case this exists for: a long campaign started first, dropped below the default so
+    a later, shorter one gets the slots."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "long", 1, started_at=100.0, created=made)
+    _items(c, "short", 1, started_at=900.0, created=made)
+    c.set_scheduling("long", priority=-1)
+    c.drain()
+    assert made == ["short-0"]
+
+
+def test_a_rank_does_not_reach_another_campaigns_postprocessing():
+    """Priority leads the rank, not the other way round. Postprocessing is what turns a
+    finished campaign's runs into its results -- bounded, short, and a precondition for the
+    campaign being over at all -- so a rank set to let short campaigns past must not park it
+    behind them."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    c.submit("old#postprocess",
+             [("old-pp", JobSizing(2.0, MIB), lambda _n=None: made.append("old-pp"))],
+             started_at=100.0, priority=2, campaign="old")
+    _items(c, "short", 1, started_at=900.0, created=made)
+    c.set_scheduling("short", priority=1)
+    c.drain()
+    assert made == ["old-pp"]
+
+
+def test_within_one_rank_a_probe_still_precedes_the_work_it_gates():
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "camp", 1, started_at=100.0, created=made)
+    c.submit("camp#probes",
+             [("camp-probe", JobSizing(2.0, MIB), lambda _n=None: made.append("camp-probe"))],
+             started_at=100.0, priority=1, campaign="camp")
+    c.set_scheduling("camp", priority=7)
+    c.drain()
+    assert made == ["camp-probe"]
+
+
+def test_demoting_a_campaign_does_not_starve_its_calibration_probe():
+    """The regression guard for the whole ordering. A probe is pinned to one node and is the
+    largest pod its campaign asks for, so work that outranks it takes that node every pass and
+    it is never placed at all -- and a node still unmeasured after UNMEASURED_BATCH_LIMIT
+    batches ends the campaign. A rank that reached a campaign's probes would therefore turn
+    "let other campaigns past" into "end this campaign"."""
+    p = FakeProvider(cpu=4.0)
+    c = _controller(p)
+    made = []
+    c.submit("low#probes",
+             [("low-probe", JobSizing(4.0, MIB), lambda _n=None: made.append("low-probe"))],
+             started_at=100.0, priority=1, campaign="low", pin="n1")
+    c.submit("normal", [("normal-0", JobSizing(4.0, MIB),
+                         lambda _n=None: made.append("normal-0"))],
+             started_at=900.0, campaign="normal")
+    c.set_scheduling("low", priority=-1)
+    c.drain()
+    assert made == ["low-probe"]
+
+
+def test_the_rank_still_orders_two_campaigns_probes():
+    """It is only ordinary work the rank is kept out of: among items of the same kind it
+    decides, exactly as it does for runs."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    c.submit("a#probes", [("a-probe", JobSizing(2.0, MIB),
+                           lambda _n=None: made.append("a-probe"))],
+             started_at=100.0, priority=1, campaign="a")
+    c.submit("b#probes", [("b-probe", JobSizing(2.0, MIB),
+                           lambda _n=None: made.append("b-probe"))],
+             started_at=900.0, priority=1, campaign="b")
+    c.set_scheduling("b", priority=1)
+    c.drain()
+    assert made == ["b-probe"]
+
+
+def test_setting_a_rank_reorders_what_is_already_queued():
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "long", 1, started_at=100.0, created=made)
+    _items(c, "short", 1, started_at=900.0, created=made)
+    c.drain()
+    assert made == ["long-0"]           # the order it was launched with
+    c.finished("long-0")
+    c.set_scheduling("long", priority=-5)
+    _items(c, "long", 1, started_at=100.0, created=made)   # its next batch
+    c.drain()
+    assert made[-1] == "short-0"
+
+
+def test_a_paused_campaign_admits_nothing_while_others_drain():
+    p = FakeProvider(cpu=4.0)           # room for both
+    c = _controller(p)
+    made = []
+    _items(c, "long", 1, started_at=100.0, created=made)
+    _items(c, "short", 1, started_at=900.0, created=made)
+    c.set_scheduling("long", paused=True)
+    assert c.drain() == 1 and made == ["short-0"]
+
+
+def test_a_pause_never_stops_a_job_already_created():
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    made = []
+    _items(c, "long", 2, started_at=100.0, created=made)
+    assert c.drain() == 1 and made == ["long-0"]
+    c.set_scheduling("long", paused=True)
+    assert c.states("long")["long-0"] == "created"
+
+
+def test_resuming_comes_back_at_the_rank_it_was_paused_at():
+    c = _controller()
+    c.set_scheduling("camp", priority=3)
+    c.set_scheduling("camp", paused=True)
+    assert c.scheduling("camp") == (3, True)
+    c.set_scheduling("camp", paused=False)
+    assert c.scheduling("camp") == (3, False)
+
+
+def test_a_paused_campaign_says_so_rather_than_reading_as_a_wait():
+    """A campaign waiting for a machine and one waiting for a person need opposite
+    responses, so the refusal must not be left saying the cluster is full."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    _items(c, "long", 2, started_at=100.0)
+    c.set_scheduling("long", paused=True)
+    c.drain()
+    assert "paused" in c.refusal("long")
+
+
+def test_resuming_clears_the_paused_reason():
+    """A refusal that outlived the wait it described reads as a campaign still stuck."""
+    p = FakeProvider(cpu=2.0)
+    c = _controller(p)
+    _items(c, "long", 1, started_at=100.0)
+    c.set_scheduling("long", paused=True)
+    c.drain()
+    assert "paused" in c.refusal("long")
+    c.set_scheduling("long", paused=False)
+    assert c.drain() == 1
+    assert c.refusal("long") == ""
+
+
+def test_forget_scheduling_drops_the_rank():
+    c = _controller()
+    c.set_scheduling("camp", priority=4, paused=True)
+    c.forget_scheduling("camp")
+    assert c.scheduling("camp") == (0, False)
+
+
+def test_a_rank_survives_the_end_of_a_batch():
+    """cancel() runs per batch; a search submits batch after batch under one campaign and
+    must not come back at the default halfway through."""
+    c = _controller()
+    c.set_scheduling("camp", priority=6)
+    c.cancel("camp")
+    assert c.scheduling("camp") == (6, False)
+
+
 def test_a_job_that_does_not_fit_is_skipped_not_blocked_behind():
     """A large job must not hold the cluster idle while smaller ones could run."""
     p = FakeProvider(cpu=3.0)

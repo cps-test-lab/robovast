@@ -791,8 +791,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         config_dir = os.path.join(campaign_dir, "_config")
         found = campaign_vast_or_none(campaign_dir)
         if found is None:
-            return False, (f"No .vast file in {config_dir}. "
-                           f"Is {campaign!r} a valid campaign under {results_dir}?")
+            # Absent and empty are different faults: a campaign whose results live elsewhere
+            # has no `_config/` here at all, and telling that reader their campaign may be
+            # invalid sends them to check the one thing that is fine.
+            return False, (
+                f"No frozen config in {config_dir}, so {campaign!r}'s configuration cannot "
+                f"be read." + ("" if os.path.isdir(config_dir) else
+                               f" That directory does not exist: the campaign's results were "
+                               f"never projected into {results_dir}."))
         vast_path = str(found)
         output(f"Using config from campaign {campaign}: {vast_path}")
 
