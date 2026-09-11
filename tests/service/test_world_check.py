@@ -391,6 +391,29 @@ def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, m
     assert "Next: check the lane" in problems[0]["message"]
 
 
+def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_lane(tmp_path):
+    """The advisory a caller acts on. Nothing ran, but not because the lane cannot run
+    anything -- the image the query needs does not exist yet, and the refusal already knows
+    the call that creates it. Sending the caller to the lane instead costs them the check
+    and a detour through a lane that is working."""
+    from robovast.common.errors import ImageNotBuilt
+    from robovast.service.world_query import world_problems
+
+    # The exec refuses, and nothing between it and the reply is stubbed: what is under test
+    # is the chain that used to replace this refusal with one about the lane.
+    def _refuse(_request):
+        raise ImageNotBuilt("the image for container 'simulation' is not built.",
+                            next_step="build_experiment_image(container='simulation')")
+
+    problems = world_problems(_refuse, workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert [p["severity"] for p in problems] == ["unchecked"]
+    message = problems[0]["message"]
+    assert "Next: build_experiment_image(container='simulation')" in message
+    assert "execution lane" not in message, "the lane is fine; the image is what is missing"
+    assert ".." not in message, "the reason already ended in a full stop"
+
+
 def _two_worlds(monkeypatch):
     """Make the campaign resolve to two distinct worlds.
 
