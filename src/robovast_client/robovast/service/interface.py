@@ -1231,6 +1231,13 @@ class ResourceUsage(BaseModel):
     #: leaves both absent, which reads identically to "did not try". Names counts and the
     #: fixing command, **never a node name**: this string crosses the interface.
     disk_unavailable: Optional[str] = None
+    #: Why new disk-consuming work -- a campaign, a rerun, an image build, an import,
+    #: postprocessing -- is refused right now: ``disk`` or ``store`` has less free space than
+    #: the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``). ``None`` while there is
+    #: room, and when neither meter could be read. Judged on the two readings above, so this
+    #: and the meters are one measurement; the same sentence is what a refused call carries.
+    #: Names amounts, **never a node or a path**.
+    storage_refusal: Optional[str] = None
     #: The held container-exec container, when one exists. A diagnostic container can
     #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
     #: has no way to discover that its own container is the reason.

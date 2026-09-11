@@ -241,6 +241,16 @@ def resources(namespace, context):
     click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"
                f" {_gib(usage.memory_capacity_bytes)}")
     click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
+    # In GB, the unit the free-space reserve is stated in, so the two lines can be compared.
+    for label, space in (("disk", usage.disk), ("store", usage.store)):
+        if space is not None and space.capacity_bytes > 0:
+            free = max(0, space.capacity_bytes - space.used_bytes)
+            click.echo(f"  {label:<9} {free / 1000 ** 3:.0f} GB free of "
+                       f"{space.capacity_bytes / 1000 ** 3:.0f} GB")
+    if usage.disk is None and usage.disk_unavailable:
+        click.echo(f"  disk      not read: {usage.disk_unavailable}")
+    if usage.storage_refusal:
+        click.echo(f"  refusing  {usage.storage_refusal}")
 
 
 @service.command('mcp-stats')

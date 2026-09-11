@@ -277,6 +277,16 @@ function ConnectionStatus() {
           text={formatBytesPair(u.store.used_bytes, u.store.capacity_bytes)}
         />
       ) : null}
+      {/* The service's own verdict on the two meters above, not a threshold of the UI's: the
+          free-space reserve is the operator's setting, and this is the sentence a refused
+          launch carries. Short in the footer, whole in the tooltip. */}
+      {u.storage_refusal ? (
+        <Tooltip placement="right" title={u.storage_refusal}>
+          <Typography variant="caption" color="error.main" sx={{ lineHeight: 1.2 }}>
+            refusing new work: disk below reserve
+          </Typography>
+        </Tooltip>
+      ) : null}
     </Stack>
   )
 }

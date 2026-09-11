@@ -1139,7 +1139,7 @@ gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all), and each ha
 
    vast cluster setup rke2 \
      --buildkit-cache-max 150GB \        # ceiling on the cache
-     --buildkit-cache-min-free 50GB \    # free space kept on the filesystem
+     --buildkit-cache-min-free 150GB \   # free space kept on the filesystem
      --buildkit-cache-reserved 100GB      # cache kept even when old
 
 **Size these for the disk the store lands on.** The defaults suit a large one. The load-bearing
@@ -1150,9 +1150,16 @@ ceiling at all — the store grows until the node runs out, and the kubelet answ
 by evicting pods, on the node the daemon is pinned to and the service pod may share. On a disk
 whose size you do not know, a percentage (``70%``) is accepted for any of the three.
 
+Left unset, ``--buildkit-cache-min-free`` is the service's free-space reserve
+(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), never below ``50GB``: the reserve is the
+margin the service refuses new work to protect, and a cache allowed to fill past it would take
+that margin back one build at a time.
+
 All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
 are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
-re-size a store somebody had bounded on purpose.
+re-size a store somebody had bounded on purpose. That includes a ``minFreeSpace`` that was a
+default at setup, so a reserve raised later reaches the cache only when ``upgrade`` is given
+``--buildkit-cache-min-free`` once.
 
 Three consequences worth knowing before they surprise you:
 

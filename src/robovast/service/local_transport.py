@@ -55,6 +55,7 @@ from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
 from robovast.common.host_display import require_host_display
 from robovast.common.campaign_data import read_campaign_finished_at
+from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
                                                ControllerState, Phase, Status, failure_detail,
@@ -75,6 +76,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
+from robovast.service.storage_reserve import reserve_gb, storage_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -1136,6 +1138,8 @@ class LocalTransport(RobovastInterface):
             snapshot=self._snapshot_facts(campaign_id) if live else None)
 
     def create_archive_upload(self) -> UploadGrant:
+        # At the grant, so a refusal comes before a multi-gigabyte upload rather than after.
+        self._admit_storage("take in a campaign archive")
         token = secrets.token_urlsafe(32)
         staged = self._staging_dir() / f"{token}.tar.gz"
         with self._archive_grants_lock:
@@ -1255,6 +1259,9 @@ class LocalTransport(RobovastInterface):
         settled here, synchronously, so the caller learns about a bad archive or a name
         collision as an error and not as a background failure five minutes later.
         """
+        # An extraction, and for a share import a download first: both write the whole
+        # campaign again.
+        self._admit_storage("import a campaign")
         campaign_id, fetch, raw = self._resolve_import_source(request)
         note = ("this archive has no metric tables, so postprocessing runs once it lands -- "
                 "the import is not over when the extraction is") if raw else ""
@@ -1659,6 +1666,9 @@ class LocalTransport(RobovastInterface):
                 usage = cached[1]
             else:
                 usage = self._compute_resource_usage()
+                # Judged here, once for both lanes, on the readings just taken -- which is
+                # what makes the refusal and the meters one measurement.
+                usage = usage.model_copy(update={"storage_refusal": storage_refusal(usage)})
                 self._usage_cache = (time.monotonic(), usage)
         # Attached outside the cache: a held exec container comes and goes far faster
         # than the sampling window, and a stale "still holding 6 GB" would be worse than
@@ -1782,6 +1792,10 @@ class LocalTransport(RobovastInterface):
         service that has never run a campaign would otherwise fail to read the very disk it
         is about to write to. Same filesystem either way, unless the missing component is
         itself an unmounted mountpoint.
+
+        Capacity is ``used + free`` rather than the filesystem's total, as on the cluster
+        lane: a filesystem holds blocks back for root, and ``total - used`` would count those
+        as room a campaign's writes could use. What is left is what ``free`` says.
         """
         import psutil  # pylint: disable=import-outside-toplevel
         path = self._campaigns_root()
@@ -1792,7 +1806,7 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.debug("could not read disk usage for %s: %s", path, e)
             return None, f"could not read the results filesystem: {e}"
-        return DiskSpace(capacity_bytes=usage.total, used_bytes=usage.used), None
+        return DiskSpace(capacity_bytes=usage.used + usage.free, used_bytes=usage.used), None
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` scenario runs across this lane's live campaigns.
@@ -1847,6 +1861,34 @@ class LocalTransport(RobovastInterface):
                 raise RuntimeError(
                     "A local campaign is already running (local Docker is "
                     "single-flight). Stop it before starting another.")
+
+    def _admit_storage(self, action: str) -> None:
+        """Refuse new disk-consuming work while free space is below the reserve.
+
+        Called first by every operation that takes on work of unknown size -- a campaign, a
+        rerun, an image build, an archive upload or import, postprocessing -- and by none that
+        continues work already accepted: resuming a live campaign after a restart, stopping
+        or deleting one. Refusing those would abandon running work, or refuse the very thing
+        that frees space. See :mod:`robovast.service.storage_reserve`.
+
+        Reads the same cached reading ``/usage`` serves, so what refuses here is what the
+        meters show. With no reserve configured it reads nothing at all. A reading that
+        fails is not judged, for the reason an unmeasured meter is not a full disk: refusing
+        every launch because the capacity could not be read would make a campaign depend on
+        a permission it never needed. The failure is logged, and ``/usage`` reports it.
+        """
+        if reserve_gb() <= 0:          # raises on a malformed value, naming the variable
+            return
+        try:
+            refusal = self.resource_usage().storage_refusal
+        except Exception as e:  # noqa: BLE001 - see above: unjudged, not refused
+            logger.warning("free space could not be read before trying to %s, so the "
+                           "reserve was not applied: %s", action, e)
+            return
+        if refusal:
+            raise InsufficientStorageError(
+                f"Cannot {action}. {refusal} Free space -- delete campaigns that are no "
+                "longer needed -- then retry.")
 
     def _build_backend(self, state):
         """The :class:`ExecutionBackend` this deployment runs campaigns on."""
@@ -1941,6 +1983,7 @@ class LocalTransport(RobovastInterface):
         # Before anything is resolved or created: a lane that cannot show a window, or a
         # serve host with no display, must refuse rather than launch a windowless run.
         self._admit_show_gui(request)
+        self._admit_storage("start a campaign")
         target = self._resolve_project(request.workspace_id, request.config_path)
         self._admit_image_provenance(target, request)
         return self._launch_campaign(request, target)
@@ -2053,6 +2096,8 @@ class LocalTransport(RobovastInterface):
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = self._retrigger_source_dir(campaign_id)
         self._admit_retrigger(retrigger.check(source_dir, campaign_id), force)
+        # Before `prepare`, which stages the source's tree: a refusal leaves nothing behind.
+        self._admit_storage(f"re-run {campaign_id}")
         plan = retrigger.prepare(
             source_dir, campaign_id,
             workspaces_root=self.store.registry.root,
@@ -2594,6 +2639,7 @@ class LocalTransport(RobovastInterface):
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
         from robovast.service.image_build import primary_build_ref, validate_build_spec
+        self._admit_storage("build an image")
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
         specs, project_dir = self._build_specs_for(project, campaign_config)
@@ -4467,6 +4513,7 @@ class LocalTransport(RobovastInterface):
             ok=True, message=f"{phase} started; monitor it in the campaign view")
 
     def run_postprocessing(self, request) -> ActionResult:
+        self._admit_storage(f"postprocess {request.campaign_id}")
         campaign_dir = self._campaign_dir(request.campaign_id)
 
         def work(state):

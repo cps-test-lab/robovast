@@ -104,10 +104,13 @@ the meaning of a status is uniform across every route:
        store, the index, or the exec path into a container. Worth retrying, unlike the
        codes above.
    * - ``507``
-     - The service's storage is full: a file write failed with no space left, or the
-       index reported its disk full. Checked ahead of every other mapping, so a full disk
-       is never reported as bad input or a conflict, even where a layer beneath translated
-       it into one. The request itself was fine; it is worth retrying once space is freed.
+     - The service's storage is full, or close enough that it declines new work: a file
+       write failed with no space left, the index reported its disk full, or free space is
+       below the reserve and the request would start disk-consuming work
+       (``InsufficientStorageError``, see :ref:`deployment-disk-reserve`). A full disk is
+       checked ahead of every other mapping, so it is never reported as bad input or a
+       conflict, even where a layer beneath translated it into one. The request itself was
+       fine; it is worth retrying once space is freed.
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class — today only ``exec_path_unavailable``, for a

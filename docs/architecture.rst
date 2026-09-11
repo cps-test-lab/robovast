@@ -1020,6 +1020,20 @@ lives in the ``run_data`` MCP plugin):
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
 
+**New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
+``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
+``run_postprocessing`` each call ``LocalTransport._admit_storage`` first, on both lanes (the
+cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
+``disk`` and ``store`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
+refusal and the meters are one measurement. With no reserve configured nothing is read; a
+reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
+launch never depends on the permissions the capacity reading needs. Nothing that continues
+accepted work is guarded:
+resuming a live campaign after a restart would otherwise be abandoned, and stop and delete are
+what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
+that already failed for lack of space is also given.
+
 .. _image-resolution:
 
 Why images resolve the way they do

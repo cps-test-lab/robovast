@@ -2118,6 +2118,7 @@ class ClusterService(LocalTransport):
 
     def build_image(self, request):
         from robovast.service.image_build import primary_build_ref
+        self._admit_storage("build an image")
         (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
             self._build_context(request)
         refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
@@ -4131,6 +4132,8 @@ class ClusterService(LocalTransport):
         visible in the campaign log where a successful one is read.
         """
         from .postprocess_job import postprocess_campaign
+
+        self._admit_storage(f"postprocess {request.campaign_id}")
 
         def work(state):
             # **No whole-campaign fetch.** Both stages read the run tree inside the

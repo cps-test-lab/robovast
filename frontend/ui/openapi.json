@@ -2520,6 +2520,17 @@
             "title": "Query Containers",
             "type": "object"
           },
+          "storage_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Refusal"
+          },
           "store": {
             "anyOf": [
               {
@@ -2561,6 +2572,7 @@
           "metrics_unavailable",
           "parallel_runs",
           "query_containers",
+          "storage_refusal",
           "store",
           "store_node"
         ],
