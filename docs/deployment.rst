@@ -292,7 +292,7 @@ The lifecycle verbs are deliberately distinct:
      - The image, RBAC, and the credential Secrets it can rebuild from ``.env``
        (git, share, ntfy, registry) — which is how a registry move or a rotated
        password reaches the cluster — plus the settings it carries from ``.env``, the
-       free-space reserve among them. The **access token is preserved**, so nobody is
+       free-space reserve and the build daemon's among them. The **access token is preserved**, so nobody is
        logged out.
    * - ``vast cluster setup --force``
      - The same, plus it will re-mint the access token when asked
@@ -337,9 +337,9 @@ disk (``nodefs.available``), so convert it for your disk. Read it from the node:
    kubectl get --raw "/api/v1/nodes/<node>/proxy/configz" | jq .kubeletconfig.evictionHard
 
 ``vast cluster setup`` and ``vast service upgrade`` apply it, and deleting the line resets it;
-``vast service restart`` does not. At setup the build cache's ``--buildkit-cache-min-free``
-defaults to the same reserve (see :doc:`cluster_execution`); on an existing deployment, pass
-``--buildkit-cache-min-free`` to ``upgrade`` once to bring the cache in line.
+``vast service restart`` does not. The build cache keeps the same reserve free unless
+``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
+<buildkit-settings>`).
 
 On a cluster the service also removes the campaign files it fetched from the object store once
 nobody has read them for a week, checking hourly and keeping anything in use. Set the age in

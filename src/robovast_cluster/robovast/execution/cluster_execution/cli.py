@@ -699,21 +699,6 @@ def _node_labels(pairs, flag):
                    'over. Separate them where the disk is tight: these are the '
                    'deployment\'s two large on-disk tenants, and a full builder disk on '
                    'the service\'s node becomes DiskPressure evictions of the API.')
-@click.option('--buildkit-cache-max', default='', metavar='SIZE',
-              help='Ceiling on the build cache, e.g. 150GB or 70%. Sized for the disk it '
-                   'lands on: the default suits a large one, and a deployment whose /data is '
-                   'smaller should say so here rather than rely on --buildkit-cache-min-free '
-                   'to hold the line.')
-@click.option('--buildkit-cache-min-free', default='', metavar='SIZE',
-              help='Free space to keep on the cache\'s filesystem, e.g. 150GB. Measured '
-                   'against the disk rather than the cache, so it is what keeps any ceiling '
-                   'safe on a disk smaller than the ceiling -- and what stops a full builder '
-                   'disk from becoming DiskPressure evictions on that node. Defaults to the '
-                   'service\'s free-space reserve (ROBOVAST_DISK_RESERVE_GB), never below '
-                   '50GB.')
-@click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
-              help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
-                   'stops a quiet week from evicting the base image the cache exists to hold.')
 @click.option('--performance-governor/--no-performance-governor', 'performance_governor',
               default=None,
               help="Set the nodes' CPU governor to 'performance'. ON by default, because a "
@@ -760,8 +745,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           workspaces_path, workspaces_class,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
-          buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, performance_governor, tailnet,
+          buildkit_node, performance_governor, tailnet,
           jobs_node_label,
           control_node_label,
           cluster_config):
@@ -849,6 +833,14 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                    "--index-class, or drop it.", err=True)
         sys.exit(1)
     placements = data_paths.resolve(stated, data_root=data_root)
+    # The build daemon's tuning comes from the environment (a `.env`), like every standing
+    # setting of the deployment; checked here, before anything is applied.
+    from .buildkitd_deploy import settings_from_env  # pylint: disable=import-outside-toplevel
+    try:
+        buildkit_settings = settings_from_env()
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     service_kwargs = {
         'ingress_host': ingress_host, 'ingress_class': ingress_class,
@@ -873,9 +865,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'storage_class': placements['buildkit'].storage_class,
         'storage_path': placements['buildkit'].path,
         'storage_size': buildkit_storage_size,
-        'gc_max_used': buildkit_cache_max,
-        'gc_min_free': buildkit_cache_min_free,
-        'gc_reserved': buildkit_cache_reserved,
+        **buildkit_settings,
     }
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's
@@ -1017,14 +1007,6 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
                    'because a service that comes up owing campaigns restores them before it '
                    'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
                    'loop) still fails fast on its own, without spending this.')
-@click.option('--buildkit-cache-max', default='', metavar='SIZE',
-              help='Resize the build cache ceiling. Without this the daemon keeps whatever '
-                   'it was set up with -- an upgrade is not the place to quietly re-size a '
-                   'store somebody bounded on purpose.')
-@click.option('--buildkit-cache-min-free', default='', metavar='SIZE',
-              help='Change the free space kept on the cache filesystem. See setup.')
-@click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
-              help='Change the cache kept even when old. See setup.')
 @click.option('--no-restart', is_flag=True, default=False,
               help='Reconcile only what does not need the pod rolled -- RBAC, the '
                    'queues, the registry ingress route -- then stop. For granting a '
@@ -1033,8 +1015,7 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
 @click.option('--yes', '-y', is_flag=True, default=False,
               help='Do not ask before rolling over live campaigns. For scripts; without it '
                    'a non-interactive run aborts rather than rolling silently.')
-def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
-            buildkit_cache_min_free, buildkit_cache_reserved, no_restart, yes):
+def upgrade(namespace, kube_context, timeout, no_restart, yes):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1111,6 +1092,15 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
                                  verify_store_pod_infrastructure, wait_for_rollout,
                                  wait_for_service_ready)
 
+    # The build daemon's tuning, from the environment like every standing setting of the
+    # deployment. Checked before anything is applied, so a typo fails the upgrade rather than
+    # stopping it half way.
+    from .buildkitd_deploy import settings_from_env  # pylint: disable=import-outside-toplevel
+    try:
+        buildkit_settings = settings_from_env()
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
             namespace, kube_context)
@@ -1182,7 +1172,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             click.echo("  the pod was NOT restarted: the running version is unchanged and "
                        "its env Secrets were not re-read")
             click.echo("  run 'vast service upgrade' without --no-restart to move the "
-                       "image or pick up changed Secrets")
+                       "image, pick up changed Secrets, or apply the build daemon's settings")
             return
         # The last moment to ask. Everything above is picked up by the RUNNING pod, which
         # is exactly why --no-restart returns before here; below this line the pod is
@@ -1227,18 +1217,15 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         # recovers its own the same way (see `service_storage_from_cluster`), and both take
         # their node pin from the constant label rather than from an argument this call site
         # would have to remember to pass.
-        from .buildkitd_deploy import (apply_buildkitd,  # pylint: disable=import-outside-toplevel
-                                       buildkitd_storage_from_cluster)
-        settings = buildkitd_storage_from_cluster(namespace, kube_context)
-        # An explicitly passed budget wins over the recovered one -- otherwise the setting
-        # would be write-once at setup, changeable only by tearing the daemon down. Recovery
-        # is the default, not a lock: it exists so an upgrade that says nothing changes
-        # nothing, which is a different thing from an upgrade that cannot change it.
-        settings.update({k: v for k, v in (
-            ("gc_max_used", buildkit_cache_max),
-            ("gc_min_free", buildkit_cache_min_free),
-            ("gc_reserved", buildkit_cache_reserved)) if v})
-        apply_buildkitd(namespace, kube_context=kube_context, **settings)
+        from .buildkitd_deploy import (  # pylint: disable=import-outside-toplevel
+            apply_buildkitd, buildkitd_storage_from_cluster, setting_changes)
+        live = buildkitd_storage_from_cluster(namespace, kube_context)
+        # The store and node are kept as found; the tuning is what the environment says, and
+        # each value that moves is said -- a ceiling going back to its default because nobody
+        # wrote it into the .env must not pass unnoticed.
+        for change in setting_changes(live, buildkit_settings):
+            click.echo(f"  build daemon {change}")
+        apply_buildkitd(namespace, kube_context=kube_context, **{**live, **buildkit_settings})
         click.echo("  converged the shared build daemon")
         wait_for_service_ready(namespace=namespace, kube_context=kube_context,
                                timeout_s=timeout)
