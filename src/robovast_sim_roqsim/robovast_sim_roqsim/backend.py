@@ -52,13 +52,24 @@ def _config_in_container(config: str) -> str:
     return f"{CONFIG_MOUNT}/{config.lstrip('./')}"
 
 
-def _extends_a_campaign_file(config: str, vast_dir: str) -> bool:
-    """Whether this world inherits from another file the CAMPAIGN owns.
+def _names_a_file(ref) -> bool:
+    """Whether a ``sim.world`` value is a file path rather than a built-in name or package ref.
 
-    Reading one top-level key is not resolving the chain -- it is deciding whether the chain
-    has to be resolved, which is the difference between a cheap answer and a container run.
-    A parent that is a package ref, or absent entirely, means the campaign's one file is the
-    whole of what it owns.
+    The same rule roqsim's ``world_file`` applies: an ``.xml``/``.mjcf`` suffix or a path
+    separator makes it a file, anything else is a registered world such as ``empty_room``.
+    """
+    return (isinstance(ref, str) and not _is_package_ref(ref)
+            and (ref.endswith((".xml", ".mjcf")) or "/" in ref))
+
+
+def _references_a_campaign_file(config: str, vast_dir: str) -> bool:
+    """Whether this world names another file the CAMPAIGN owns, and so is more than one file.
+
+    Two keys can: an ``extends`` parent, and a ``sim.world`` MJCF (which in turn names its
+    meshes and textures). Reading them is not resolving the chain -- it is deciding whether
+    the chain has to be resolved, which is the difference between a cheap answer and a
+    container run. A parent or a model that is a package ref or a built-in name, or absent
+    entirely, means the campaign's one file is the whole of what it owns.
 
     Resolved against *vast_dir*, never against the working directory. Opening the authored
     path as given made this answer depend on where the caller stood: from the campaign's own
@@ -80,7 +91,10 @@ def _extends_a_campaign_file(config: str, vast_dir: str) -> bool:
     if not isinstance(raw, dict):
         return False
     parent = raw.get("extends")
-    return isinstance(parent, str) and not _is_package_ref(parent)
+    if isinstance(parent, str) and not _is_package_ref(parent):
+        return True
+    sim = raw.get("sim")
+    return isinstance(sim, dict) and _names_a_file(sim.get("world"))
 
 
 class RoqsimConfig(BaseModel):
@@ -288,11 +302,11 @@ class RoqsimBackend(SimulatorBackend):
         """
         if _is_package_ref(cfg.config):
             return []
-        if not _extends_a_campaign_file(cfg.config, vast_dir):
-            # The common case, and it needs no container: a world that extends nothing, or
-            # extends a PACKAGED world, is complete in the one file the campaign owns. Asking
-            # an image would make every ordinary campaign's composition depend on pulling a
-            # multi-gigabyte simulator -- a cost paid by `validate_project` and
+        if not _references_a_campaign_file(cfg.config, vast_dir):
+            # The common case, and it needs no container: a world that extends nothing and
+            # compiles a built-in or PACKAGED model is complete in the one file the campaign
+            # owns. Asking an image would make every ordinary campaign's composition depend on
+            # pulling a multi-gigabyte simulator -- a cost paid by `validate_project` and
             # `preview_configurations` too, neither of which runs anything.
             return [cfg.config]
         return ContainerQuery(

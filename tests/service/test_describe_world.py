@@ -71,6 +71,28 @@ def test_input_files_asks_the_same_image():
     assert getattr(query, "spec", None) is None or query.spec.image == pinned
 
 
+@pytest.mark.parametrize("world, resolved", [
+    ("hall.xml", True),                    # a campaign MJCF beside the YAML
+    ("models/hall.mjcf", True),
+    ("empty_room", False),                 # a built-in name travels with the simulator
+    ("roqsim_scenes:depot", False),        # so does a package ref
+])
+def test_a_world_naming_a_campaign_mjcf_is_resolved_not_staged_alone(tmp_path, world, resolved):
+    """A world whose ``sim.world`` is a campaign file is more than its YAML.
+
+    Staging the YAML alone passes every check that reads the workspace, then the simulator
+    fails in the container on a model that never travelled.
+    """
+    (tmp_path / "world.yaml").write_text(f"sim: {{world: '{world}'}}\ncomponents: []\n",
+                                         encoding="utf-8")
+    files = RoqsimBackend().input_files(_cfg(config="world.yaml"), {"mode": "ros2"},
+                                        str(tmp_path))
+    if resolved:
+        assert files.command[:3] == ["roqsim", "scenes", "inputs"]
+    else:
+        assert files == ["world.yaml"]
+
+
 # -- what is asked for --------------------------------------------------------------------
 def test_targets_and_entities_are_opt_in_because_each_costs_a_model_build():
     backend = RoqsimBackend()

@@ -393,9 +393,10 @@ would make an old image the *least* checked case rather than the second-best one
 then reports itself unchecked, and the second container is the price of the degraded case only.
 
 The same seam answers the staging question. ``input_files`` may also return a query, which is
-how a world that ``extends`` **another campaign file** stages its whole chain; a world extending
-a *packaged* one, or nothing, is complete in the single file the campaign owns and says so
-without starting a container.
+how a world that names **another campaign file** stages everything it needs: an ``extends``
+parent and its chain, or a ``sim.world`` MJCF with the meshes and textures it names. A world
+that extends a *packaged* one or nothing, and compiles a built-in or packaged model, is complete
+in the single file the campaign owns and says so without starting a container.
 
 That query is a container like any other, so it is subject to the same two facts every aux
 container is: it is handed the campaign's files at ``/config`` (the command names the world
