@@ -460,6 +460,13 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
     uncapped over HTTP. Follow it (or give it to the user) instead of paging thousands of
     rows through this interface.
 
+    **Not for a question about where the robot went.** ``nav_get_trajectory``,
+    ``nav_get_path_deviation``, ``nav_get_obstacles``, ``nav_get_map_info`` and
+    ``nav_get_action_feedback`` answer those from the same tables, already joined and
+    already reduced — a summary over *every* recorded pose, which the same question asked
+    in SQL gets wrong as soon as it is written against a thinned or unjoined result. Reach
+    for SQL when no tool fits, not first.
+
     Args:
         campaign_id: Campaign identifier or absolute path (schema ``main``).
         sql: A single ``SELECT``.
