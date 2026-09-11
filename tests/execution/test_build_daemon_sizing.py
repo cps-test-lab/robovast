@@ -1,16 +1,17 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""How big one image build may be, reached from the two commands that own the deployment.
+"""How big one image build may be, and how much cache it keeps: set in the ``.env``.
 
 Builds are solved by one long-lived BuildKit daemon, and its ceilings are one build's
 ceilings. A build that needs more memory than is there is not rejected -- the kernel kills
 the toolchain part-way through, and that is classified as a resource failure whose owner is
 the operator rather than as a package the project forgot. Naming that owner is only worth
-doing if they then have a knob, so these assert the knob reaches the daemon: from ``setup``,
-from ``upgrade``, and from the environment either reads.
+doing if they then have a knob. The knobs are the deployment's standing configuration, so they
+live where its other settings do -- the ``.env`` -- and both commands that own the deployment
+apply them, rather than a flag each run has to repeat.
 
 The pod is a Deployment of its own, so nothing here is picked up by a running service: a
-value that cannot be applied must fail rather than be reported as applied.
+setting that cannot be applied must fail, and one that changes must be said.
 """
 
 from unittest import mock
@@ -22,24 +23,32 @@ from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import cli as cluster_cli
 from robovast.execution.cluster_execution import cluster_setup, service_deploy
 
+#: What the running daemon reports: a cache placed deliberately, and a ceiling somebody raised.
+_LIVE = {"storage_class": "fast", "memory_limit": "48Gi", "cpu_limit": "8",
+         "max_parallelism": 4}
+
+
+@pytest.fixture(autouse=True)
+def _no_standing_settings(monkeypatch):
+    """Each test states the environment it is about; the developer's own is not it."""
+    for var in buildkitd_deploy.SETTINGS_ENV.values():
+        monkeypatch.delenv(var, raising=False)
+
 
 @pytest.fixture
 def converge(monkeypatch):
     """Stub out everything an upgrade touches except the build daemon it converges.
 
-    Returns the kwargs ``apply_buildkitd`` was called with, so a test states the flag it is
-    about and reads the setting that reached the daemon.
+    Returns the kwargs ``apply_buildkitd`` was called with, so a test sets the environment it
+    is about and reads the setting that reached the daemon.
     """
     from robovast.execution.cluster_execution import image_warm, tailnet_deploy
 
     applied = {}
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd",
                         mock.Mock(side_effect=lambda ns, **kw: applied.update(kw)))
-    # A daemon that is already there, with a cache somebody placed deliberately: every
-    # converge below has to hand that back untouched while changing the size.
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster",
-                        lambda *a, **k: {"storage_class": "fast", "memory_limit": "16Gi",
-                                         "max_parallelism": 4})
+                        lambda *a, **k: dict(_LIVE))
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
     monkeypatch.setattr(image_warm, "warm_family_images", lambda *a, **k: [])
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -57,97 +66,98 @@ def converge(monkeypatch):
     return applied
 
 
-def test_an_upgrade_raises_the_ceiling_a_build_did_not_fit_under(converge):
-    """The move an out-of-memory build asks for, from the command an operator already runs
-    to change the deployment."""
-    result = CliRunner().invoke(cluster_cli.upgrade, ["--buildkit-memory", "48Gi"])
-    assert result.exit_code == 0, result.output
-    assert converge["memory_limit"] == "48Gi"
+def _upgrade(*args):
+    return CliRunner().invoke(cluster_cli.upgrade, list(args))
 
 
-def test_the_cheaper_half_of_the_answer_is_reachable_the_same_way(converge):
-    """Peak memory is roughly the concurrent steps times the heaviest compile, so this fits
-    a build under a ceiling the nodes cannot raise."""
-    result = CliRunner().invoke(cluster_cli.upgrade, ["--buildkit-parallelism", "2"])
-    assert result.exit_code == 0, result.output
-    assert converge["max_parallelism"] == 2
-
-
-def test_the_environment_supplies_it_like_every_other_deployment_setting(converge,
-                                                                        monkeypatch):
-    """A ``.vast`` cannot say how big its build is, so the size belongs to the deployment --
-    and the deployment's settings live in its ``.env`` rather than in one operator's shell
-    history. Unset, the daemon keeps what it has."""
+def test_an_upgrade_applies_the_size_the_env_states(converge, monkeypatch):
+    """The move an out-of-memory build asks for -- a bigger ceiling, or fewer steps sharing it."""
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "64Gi")
     monkeypatch.setenv("ROBOVAST_BUILDKIT_PARALLELISM", "2")
-    monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "48Gi")
-    result = CliRunner().invoke(cluster_cli.upgrade, [])
+    result = _upgrade()
     assert result.exit_code == 0, result.output
+    assert converge["memory_limit"] == "64Gi"
     assert converge["max_parallelism"] == 2
-    assert converge["memory_limit"] == "48Gi"
 
 
-def test_an_upgrade_that_says_nothing_changes_nothing(converge):
-    """The recovered settings, not the defaults: a ceiling raised because a build did not
-    fit under it must survive the next version bump, and so must the cache."""
-    result = CliRunner().invoke(cluster_cli.upgrade, [])
+def test_an_upgrade_applies_the_cache_budget_the_env_states(converge, monkeypatch):
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_CACHE_MAX", "70%")
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_CACHE_MIN_FREE", "200GB")
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_CACHE_RESERVED", "50GB")
+    result = _upgrade()
     assert result.exit_code == 0, result.output
-    assert converge["memory_limit"] == "16Gi"
-    assert converge["max_parallelism"] == 4
-    assert converge["storage_class"] == "fast"
+    assert (converge["gc_max_used"], converge["gc_min_free"], converge["gc_reserved"]) == (
+        "70%", "200GB", "50GB")
 
 
-def test_changing_the_size_leaves_the_cache_where_it_is(converge):
-    """The store, the GC budget and the node pin arrive as `setup` flags and are recorded
-    nowhere else, so a converge that re-rendered from defaults would hand a PVC-backed cache
-    a fresh empty hostPath while the old claim still holds its space."""
-    result = CliRunner().invoke(cluster_cli.upgrade, ["--buildkit-memory", "48Gi"])
+def test_an_unset_setting_goes_back_to_its_default_and_says_so(converge):
+    """Deleting the line resets the setting, as with every other one in the ``.env`` -- and a
+    ceiling going back down is the change that must not pass silently, because the build it no
+    longer fits is where it would otherwise surface."""
+    result = _upgrade()
     assert result.exit_code == 0, result.output
-    assert converge["storage_class"] == "fast"
+    assert converge["memory_limit"] == ""        # renders the default
+    assert "memory ceiling: 48Gi -> 16Gi (ROBOVAST_BUILDKIT_MEMORY unset)" in result.output
 
 
-def test_no_restart_refuses_a_ceiling_it_would_have_dropped(converge):
-    """`--no-restart` returns before the daemon is converged, so a size typed beside it
-    would be accepted and then ignored -- an upgrade reporting success while the ceiling the
-    operator came to raise is still the old one."""
-    result = CliRunner().invoke(
-        cluster_cli.upgrade, ["--no-restart", "--buildkit-memory", "48Gi"])
-    assert result.exit_code != 0
-    assert "--buildkit-memory" in result.output and "ignored" in result.output
-    assert not converge
-
-
-def test_a_standing_environment_value_does_not_block_no_restart(converge, monkeypatch):
-    """The refusal is about what this run asked for. A deployment whose `.env` carries a
-    ceiling has not asked for anything by running `--no-restart`, and refusing there would
-    make the flag unusable on exactly the deployments that set one."""
+def test_an_upgrade_that_changes_nothing_says_nothing(converge, monkeypatch):
     monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "48Gi")
-    result = CliRunner().invoke(cluster_cli.upgrade, ["--no-restart"])
+    result = _upgrade()
+    assert result.exit_code == 0, result.output
+    assert not [line for line in result.output.splitlines() if " -> " in line]
+
+
+def test_the_store_is_kept_as_found(converge, monkeypatch):
+    """The store and the node pin are placement, recorded nowhere but the daemon: a converge
+    that re-rendered them from defaults would hand a PVC-backed cache a fresh empty hostPath."""
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "64Gi")
+    result = _upgrade()
+    assert result.exit_code == 0, result.output
+    assert converge["storage_class"] == "fast"
+
+
+def test_no_restart_leaves_the_daemon_as_it_is_and_says_how_to_apply(converge, monkeypatch):
+    """`--no-restart` returns before the daemon is converged, and converging replaces its pod."""
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "64Gi")
+    result = _upgrade("--no-restart")
     assert result.exit_code == 0, result.output
     assert not converge, "--no-restart must not converge the daemon"
+    assert "build daemon's settings" in result.output
 
 
-@pytest.mark.parametrize("flag,value", [("--buildkit-memory", "32 gigs"),
-                                        ("--buildkit-cpu", "plenty"),
-                                        ("--buildkit-parallelism", "0")])
-def test_a_size_that_is_not_one_is_refused_before_the_cluster_is_touched(converge, flag,
-                                                                        value):
-    """The API server's own answer is a 422 quoting the whole manifest, and on `setup` it
-    arrives after the service is already up -- so the deployment is left half built over a
-    typo. The message names the flag that was typed."""
-    result = CliRunner().invoke(cluster_cli.upgrade, [flag, value])
+@pytest.mark.parametrize("var,value", [("ROBOVAST_BUILDKIT_MEMORY", "32 gigs"),
+                                       ("ROBOVAST_BUILDKIT_CPU", "plenty"),
+                                       ("ROBOVAST_BUILDKIT_PARALLELISM", "0"),
+                                       ("ROBOVAST_BUILDKIT_CACHE_MIN_FREE", "lots")])
+def test_a_setting_that_is_not_one_fails_before_the_cluster_is_touched(converge, monkeypatch,
+                                                                     var, value):
+    """The API server's own answer is a 422 quoting the whole manifest, after part of the
+    deployment has already changed. The message names the setting that was written."""
+    monkeypatch.setenv(var, value)
+    result = _upgrade()
     assert result.exit_code != 0
-    assert flag in result.output
+    assert var in result.output
     assert not converge
+    service_deploy.deploy_service.assert_not_called()
 
 
-def test_setup_takes_the_same_three():
-    """Where the deployment is first described, so a cluster whose nodes are large can say
-    so once instead of being upgraded immediately afterwards."""
-    import inspect
+def test_setup_applies_the_same_settings(monkeypatch):
+    """Where the deployment is first described, from the same ``.env``."""
+    seen = {}
+    monkeypatch.setattr(cluster_setup, "setup_server",
+                        lambda **kw: seen.update(kw["buildkit_kwargs"]) or {})
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_MEMORY", "64Gi")
+    monkeypatch.setenv("ROBOVAST_BUILDKIT_CACHE_MAX", "300GB")
+    result = CliRunner().invoke(cluster_cli.setup, ["rke2"])
+    assert result.exit_code == 0, result.output
+    assert seen["memory_limit"] == "64Gi"
+    assert seen["gc_max_used"] == "300GB"
 
-    params = {p.name for p in cluster_cli.setup.params}
-    assert {"buildkit_memory", "buildkit_cpu", "buildkit_parallelism"} <= params
-    # And they reach the daemon: `setup` hands `apply_buildkitd` its buildkit_kwargs whole,
-    # so the contract that matters is that these are names it accepts.
-    accepted = set(inspect.signature(buildkitd_deploy.apply_buildkitd).parameters)
-    assert {"memory_limit", "cpu_limit", "max_parallelism"} <= accepted
+
+def test_neither_command_takes_them_as_flags():
+    """One place to state them. A flag beside the ``.env`` is a second source that the next
+    upgrade, reading only the ``.env``, would silently undo."""
+    settings = {f"buildkit_{name}" for name in (
+        "memory", "cpu", "parallelism", "cache_max", "cache_min_free", "cache_reserved")}
+    for command in (cluster_cli.setup, cluster_cli.upgrade):
+        assert not settings & {p.name for p in command.params}

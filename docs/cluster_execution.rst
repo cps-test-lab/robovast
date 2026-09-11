@@ -373,20 +373,9 @@ Flag                          Environment                     Default
 ``--buildkit-size``           ``ROBOVAST_BUILDKIT_SIZE``      ``200Gi`` (needs a class)
 ============================  ==============================  =================================
 
-.. _cluster-env-defaults:
-
 Every one reads an environment variable, so a ``.env`` — or ``~/.config/robovast/env``, for
 what is true of the machine rather than of a project — sets them once instead of on every
-``setup``. The build daemon's size is set the same way, and is the one group that ``vast
-service upgrade`` reads too, because it is changed on a deployment that already exists:
-
-============================  ==================================  =========================
-Flag                          Environment                         Default
-============================  ==================================  =========================
-``--buildkit-memory``         ``ROBOVAST_BUILDKIT_MEMORY``        ``16Gi``
-``--buildkit-cpu``            ``ROBOVAST_BUILDKIT_CPU``           ``8``
-``--buildkit-parallelism``    ``ROBOVAST_BUILDKIT_PARALLELISM``   ``4``
-============================  ==================================  =========================
+``setup``.
 
 **Two tenants take no path flag**, and for the same reason: one pod holds each pair, and
 derived data must not be separated from its source. The campaign results sit beside the
@@ -1141,71 +1130,45 @@ tenants and the service pod is pinned to that one. On a cluster that can provisi
 prefer an **SSD** class: BuildKit's snapshotter is small-file heavy, and a slow disk becomes
 the bottleneck the cache was meant to remove.
 
-The store is **bounded** — a component whose whole purpose is that state survives is also the
-one that fills a disk. The daemon's ``buildkitd.toml`` sets ``reservedSpace`` / ``maxUsedSpace``
-/ ``minFreeSpace`` (the keys the pinned BuildKit understands; the older ``gckeepstorage`` is
-gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all), and each has a flag:
+.. _buildkit-settings:
 
-.. code-block:: bash
+The daemon's budget and size are set in the ``.env`` — no flags — and applied by both
+``vast cluster setup`` and ``vast service upgrade``. Unset takes the default, deleting a line
+resets it, and an upgrade prints every value it changes on the running daemon:
 
-   vast cluster setup rke2 \
-     --buildkit-cache-max 150GB \        # ceiling on the cache
-     --buildkit-cache-min-free 150GB \   # free space kept on the filesystem
-     --buildkit-cache-reserved 100GB      # cache kept even when old
+====================================  ============================  ==========================
+Environment                           What it bounds                Default
+====================================  ============================  ==========================
+``ROBOVAST_BUILDKIT_CACHE_MAX``       the cache's size              ``150GB``
+``ROBOVAST_BUILDKIT_CACHE_MIN_FREE``  free space kept on its disk   the free-space reserve,
+                                                                    at least ``50GB``
+``ROBOVAST_BUILDKIT_CACHE_RESERVED``  cache kept even when old      ``100GB``
+``ROBOVAST_BUILDKIT_MEMORY``          memory one build may use      ``16Gi``
+``ROBOVAST_BUILDKIT_CPU``             CPU one build may use         ``8``
+``ROBOVAST_BUILDKIT_PARALLELISM``     build steps run at once       ``4``
+====================================  ============================  ==========================
 
-**Size these for the disk the store lands on.** The defaults suit a large one. The load-bearing
-one is ``--buildkit-cache-min-free``: it is measured against the *filesystem* rather than the
-cache, so it forces pruning long before an oversized ceiling is reached and is what keeps a
-fixed ceiling honest on a disk smaller than the ceiling. Without it a fixed ceiling is not a
-ceiling at all — the store grows until the node runs out, and the kubelet answers DiskPressure
-by evicting pods, on the node the daemon is pinned to and the service pod may share. On a disk
-whose size you do not know, a percentage (``70%``) is accepted for any of the three.
+A cache size is an amount (``150GB``) or a share of the disk (``70%``); memory and CPU are
+Kubernetes quantities. A value that is not one fails the command before anything is applied.
+A deployment whose daemon was given these as ``setup`` flags keeps them only until its next
+upgrade: write them into the ``.env`` first.
 
-Left unset, ``--buildkit-cache-min-free`` is the service's free-space reserve
-(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), never below ``50GB``, so the cache never
-fills the margin the service keeps free.
+**Size the cache for the disk it lands on.** The load-bearing setting is the free space it
+keeps: it is measured against the *filesystem*, so it prunes the cache long before an
+oversized ceiling is reached, and stops a full builder disk from becoming DiskPressure
+evictions on its node. Unset, it is the service's free-space reserve
+(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`).
 
-All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
-are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
-re-size a store somebody had bounded on purpose. So a reserve raised later reaches the cache
-only when ``upgrade`` is given ``--buildkit-cache-min-free``.
+**A build killed for memory** is reported as a ``resource`` failure fixable by ``infra``, not
+as a missing dependency: the daemon's ceilings are one build's ceilings. Raise
+``ROBOVAST_BUILDKIT_MEMORY`` where the nodes have room, or lower
+``ROBOVAST_BUILDKIT_PARALLELISM`` where they do not — peak memory is roughly the parallel steps
+times the heaviest compile. The daemon reserves far less than its ceilings, because admission
+subtracts every request from what campaigns may run; a ceiling below that reservation lowers
+the reservation with it.
 
-How big one build may be
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-The daemon is where the compiling happens — the build Job is only a client that streams its
-context — so the daemon's ceilings are one build's ceilings. A build that needs more memory
-than is there is not rejected: the kernel kills the toolchain part-way through, and the
-service reports that as a ``resource`` failure whose ``fixable_by`` is ``infra``, rather than
-as a missing build dependency. That distinction only helps if the operator it names can act,
-so the size is a deployment setting like the cache's:
-
-.. code-block:: bash
-
-   vast cluster setup rke2 --buildkit-memory 48Gi   # when the deployment is described
-   vast service upgrade --buildkit-memory 48Gi      # afterwards, on a deployment that has one
-   vast service upgrade --buildkit-parallelism 2    # ...or the same ceiling, spent by fewer steps
-
-``--buildkit-parallelism`` is the half that works on nodes that cannot be given more: peak
-memory is roughly the concurrent steps times the heaviest compile, so halving it fits a build
-under a ceiling that cannot move. All three are recovered from the running daemon like the
-storage and the GC budget, so an upgrade that says nothing never hands back a ceiling raised
-because a build did not fit under it. Each also has an environment variable
-(:ref:`below <cluster-env-defaults>`), which is where a deployment's own value belongs: a
-``.vast`` cannot say how big its build is, so the number is the cluster's rather than one
-operator's shell history.
-
-Requests and limits are deliberately far apart: the daemon reserves little, because admission
-subtracts every request from what campaigns may run, and bursts into whatever the node has
-idle. Lowering a ceiling below the reservation lowers the reservation with it — Kubernetes
-refuses a request above its own limit, and a smaller node is not the moment to learn about a
-second knob. A ceiling *above* what any node has allocatable is accepted: limits are not
-scheduled against, so it is simply never reached — the node runs out first and the kubelet
-kills the pod, which is the same build failure one layer further out.
-
-Changing any of them replaces the daemon pod, with the consequence the next section opens on.
-``--no-restart`` therefore refuses them rather than accepting a ceiling it returns too early
-to apply.
+Changing any of these replaces the daemon pod, so ``upgrade --no-restart`` leaves the daemon as
+it is.
 
 Three consequences worth knowing before they surprise you:
 

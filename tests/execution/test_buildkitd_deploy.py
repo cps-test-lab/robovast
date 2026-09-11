@@ -160,7 +160,7 @@ def test_a_ceiling_below_the_reservation_lowers_the_reservation():
     """Kubernetes refuses a container asking for more than its own limit.
 
     Both defaults are set here, so lowering only the ceiling -- the sensible thing to do on a
-    small node -- would render a Deployment the API rejects, over a flag that was on its own
+    small node -- would render a Deployment the API rejects, over a setting that was on its own
     perfectly reasonable. The reservation follows it down instead of the command failing.
     """
     res = _container(_dep(memory_limit="1Gi", cpu_limit="250m"))["resources"]
@@ -168,17 +168,17 @@ def test_a_ceiling_below_the_reservation_lowers_the_reservation():
     assert res["limits"] == {"cpu": "250m", "memory": "1Gi"}
 
 
-@pytest.mark.parametrize("kwargs,flag", [
-    ({"memory_limit": "32 gigs"}, "--buildkit-memory"),
-    ({"memory_limit": "0"}, "--buildkit-memory"),
-    ({"cpu_limit": "plenty"}, "--buildkit-cpu"),
-    ({"max_parallelism": -1}, "--buildkit-parallelism"),
+@pytest.mark.parametrize("kwargs,name", [
+    ({"memory_limit": "32 gigs"}, "ROBOVAST_BUILDKIT_MEMORY"),
+    ({"memory_limit": "0"}, "ROBOVAST_BUILDKIT_MEMORY"),
+    ({"cpu_limit": "plenty"}, "ROBOVAST_BUILDKIT_CPU"),
+    ({"max_parallelism": -1}, "ROBOVAST_BUILDKIT_PARALLELISM"),
 ])
-def test_a_size_that_is_not_one_fails_here_rather_than_at_the_api_server(kwargs, flag):
+def test_a_size_that_is_not_one_fails_here_rather_than_at_the_api_server(kwargs, name):
     """A malformed quantity comes back from the API server as a 422 quoting the manifest --
     and on `setup` it arrives after the service is already up, so the deployment is left half
-    built over a typo. The message names the flag the operator typed."""
-    with pytest.raises(ValueError, match=flag):
+    built over a typo. The message names the setting the operator wrote."""
+    with pytest.raises(ValueError, match=name):
         _dep(**kwargs)
 
 
@@ -438,13 +438,9 @@ def test_an_upgrade_re_renders_the_store_it_found(monkeypatch, rendered, recover
     # exactly the deployments that have a private registry -- and nothing would say so.
     {"max_parallelism": 2, "ca_configmap_name": "registry-ca"},
 ])
-def test_an_upgrade_keeps_the_ceiling_somebody_raised(monkeypatch, rendered):
-    """Set by a flag and recorded nowhere but the daemon, like the store and the GC budget.
-
-    Re-rendering from defaults would hand back a ceiling raised *because* a build did not fit
-    under it, and the build that then fails again is indistinguishable from the one that
-    failed before the flag.
-    """
+def test_an_upgrade_reads_the_ceiling_the_daemon_runs_with(monkeypatch, rendered):
+    """What an upgrade compares the ``.env`` against, so a ceiling it moves is said -- above all
+    one going back to its default because nobody wrote it down."""
     from robovast.execution.cluster_execution.buildkitd_deploy import (
         buildkitd_storage_from_cluster)
 
@@ -531,7 +527,7 @@ def test_the_budget_is_configurable_not_baked_in():
     """The defaults suit the disk in front of us; another deployment's may be much smaller.
 
     Sizing it should not require editing the source, so the values reach `buildkitd.toml`
-    from `apply_buildkitd`'s arguments, which the `--buildkit-cache-*` flags supply.
+    from `apply_buildkitd`'s arguments, which the `ROBOVAST_BUILDKIT_CACHE_*` settings supply.
     """
     toml = buildkitd_toml(gc_reserved="10GB", gc_max_used="20GB", gc_min_free="5GB")
     assert 'reservedSpace = "10GB"' in toml
@@ -549,12 +545,8 @@ def test_a_percentage_budget_is_expressible_for_a_disk_of_unknown_size():
     assert policy["minFreeSpace"] == "10%"
 
 
-def test_an_upgrade_keeps_the_budget_the_deployment_was_given(monkeypatch):
-    """The same trap as the storage settings: set by a flag, recorded nowhere else.
-
-    An upgrade that re-rendered the config from defaults would silently re-size a store an
-    operator had bounded deliberately -- on the deployment whose disk was the reason for it.
-    """
+def test_an_upgrade_reads_the_budget_the_daemon_runs_with(monkeypatch):
+    """What an upgrade compares the ``.env`` against, read from the file the daemon reads."""
     from kubernetes import client as kclient
 
     from robovast.execution.cluster_execution import buildkitd_deploy
