@@ -54,6 +54,7 @@ def variation(monkeypatch, tmp_path):
     map_file = _corridor_map(tmp_path)
 
     def _make(**oc):
+        # pylint: disable-next=no-value-for-parameter
         v = ObstacleVariation.__new__(ObstacleVariation)
         v.parameters = ObstacleVariationConfig(
             scenario={'objects': 'static_objects'},

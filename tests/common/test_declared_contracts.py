@@ -76,7 +76,7 @@ def test_neither_is_refused_before_anything_runs():
     assert "reads: {start: <parameter>}" in message
 
 
-def test_a_producer_AFTER_the_consumer_is_refused():
+def test_a_producer_listed_after_the_consumer_is_refused():
     """Order is the whole contract: the same two variations, listed the other way round, is
     a campaign where nothing has written the poses by the time they are read."""
     with pytest.raises(ValueError, match="Consumer reads 'start'"):

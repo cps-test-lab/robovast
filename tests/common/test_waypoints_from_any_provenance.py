@@ -9,8 +9,6 @@ consumer that assumed the second worked only after a path variation had run -- a
 attribute access, deep in composition, for the campaign that had simply stated its own poses.
 """
 
-import math
-
 import pytest
 
 from robovast_nav.data_model import Orientation, Pose, Position
@@ -58,6 +56,7 @@ def test_what_is_not_a_pose_says_so_naming_itself(value):
 
 def _reader(**binding):
     """A NavVariation with nothing but its parameters -- `get_waypoints` needs no more."""
+    # pylint: disable-next=no-value-for-parameter
     reader = NavVariation.__new__(NavVariation)
     reader.parameters = ObstacleVariationConfig(
         scenario={'objects': 'static_objects'},

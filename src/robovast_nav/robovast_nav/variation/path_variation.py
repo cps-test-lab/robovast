@@ -246,7 +246,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                         print(f"Generating path for configuration {config['name']}, "
                               f"path_length={target_path_length}, num_goal_poses={effective_num_goal_poses}, "
                               f"path_index={path_index}, seed={current_seed}")
-                        start_pose, goal_poses, path, map_file, actual_path_length = self.generate_path_for_config(
+                        start_pose, goal_poses, path, map_file = self.generate_path_for_config(
                             self.output_dir, config, path_index, current_seed, target_path_length,
                             num_goal_poses=effective_num_goal_poses
                         )
@@ -284,7 +284,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                 overrides ``self.parameters.num_goal_poses``.
 
         Returns:
-            Tuple of (start_pose, goal_poses, path, map_file_path, actual_path_length)
+            Tuple of (start_pose, goal_poses, path, map_file_path)
         """
         if path_length is None:
             raw = self.parameters.path_length
@@ -465,7 +465,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             input_files=[map_file_path],
             file_content=file_content,
             binary=True)
-        return start_pose, goal_poses, path, map_file_path, length
+        return start_pose, goal_poses, path, map_file_path
 
 
 class PathVariationRasterizedConfig(DestinationConfig):
@@ -673,7 +673,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                     if min_length <= actual_path_length <= max_length:
                         # Shape from the scenario's declaration, not from num_goal_poses.
-                        goal_dest, single = self._goal_destination()
+                        _, single = self._goal_destination()
                         formatted_goal_poses = goal_pose if single else [goal_pose]
 
                         new_config = self.update_slots(
@@ -752,7 +752,7 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
 
                     if min_length <= actual_path_length <= max_length:
                         # Shape from the scenario's declaration, not from num_goal_poses.
-                        goal_dest, single = self._goal_destination()
+                        _, single = self._goal_destination()
                         formatted_goal_poses = (
                             (goal_poses_list[0] if goal_poses_list else None) if single
                             else goal_poses_list)
