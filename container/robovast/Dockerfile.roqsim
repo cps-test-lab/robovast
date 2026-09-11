@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=b35a7e76ae2bf2dfcd94fbe23fc875593620e12a
+ARG ROQSIM_REF=cb38c39ad93d4ff7e256c60a5ea7be0361016afd
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -257,8 +257,12 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
       echo "legged platforms: skipped (build with --build-arg INCLUDE_TORCH_PKGS=1)" ; \
     fi
 
-# The ROS bridge and the nav2 example are colcon packages, not pip ones: they register
-# the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks for transport.
+# The ROS bridge, its navigation actions and the nav2 example are colcon packages, not pip
+# ones: they register the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks
+# for transport. `roqsim_nav_ros` serves a navigator's or walker's goal endpoints (nav2's
+# NavigateToPose / NavigateThroughPoses, and StartRoute from `roqsim_nav_interfaces` for a
+# mover with a configured route). A world that declares an endpoint nothing here serves stops
+# the bridge at start-up, so without these a scenario cannot send traffic anywhere.
 #
 # Built into **/ws**, the overlay the RoboVAST entrypoint already sources -- not into a
 # second workspace of their own. A separate overlay has to be sourced by something, and
@@ -268,14 +272,17 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # entrypoint runs non-interactively, so bashrc is never read, and the bridge would be
 # missing at exactly the moment a campaign asks for transport.
 #
-# --packages-select so only these two build; /ws already holds a built scenario-execution
+# --packages-select so only these build; /ws already holds a built scenario-execution
 # and rebuilding it would cost minutes for nothing.
 # hadolint ignore=DL3003
 RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge && \
+    ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_interfaces /ws/src/roqsim_nav_interfaces && \
+    ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_ros /ws/src/roqsim_nav_ros && \
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav2_example /ws/src/roqsim_nav2_example && \
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
-    colcon build --packages-select roqsim_ros_bridge roqsim_nav2_example
+    colcon build --packages-select \
+      roqsim_ros_bridge roqsim_nav_interfaces roqsim_nav_ros roqsim_nav2_example
 
 # Back to the archive the base image shipped, whatever this build fetched through. An image that
 # kept a site's mirror would carry a host nobody outside that network can resolve, so every
