@@ -705,10 +705,12 @@ def _node_labels(pairs, flag):
                    'smaller should say so here rather than rely on --buildkit-cache-min-free '
                    'to hold the line.')
 @click.option('--buildkit-cache-min-free', default='', metavar='SIZE',
-              help='Free space to keep on the cache\'s filesystem, e.g. 50GB. Measured '
+              help='Free space to keep on the cache\'s filesystem, e.g. 150GB. Measured '
                    'against the disk rather than the cache, so it is what keeps any ceiling '
                    'safe on a disk smaller than the ceiling -- and what stops a full builder '
-                   'disk from becoming DiskPressure evictions on that node.')
+                   'disk from becoming DiskPressure evictions on that node. Defaults to the '
+                   'service\'s free-space reserve (ROBOVAST_DISK_RESERVE_GB), never below '
+                   '50GB.')
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')

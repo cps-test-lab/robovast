@@ -94,6 +94,11 @@ def error_result(e: BaseException) -> dict:
         # the source; what each tool could not say on its own is what is unavailable *here*,
         # which is a fact about the deployment and the same one for all of them.
         return {"error": f"{e}. {EXEC_PATH_CONSEQUENCE}"}
+    from robovast.common.errors import STORAGE_FULL_DETAIL, is_storage_full
+    if is_storage_full(e):
+        # The sentence the HTTP surface answers with, rather than an errno and a path on
+        # the service host: mounted in the service, a tool is handed the raw OSError.
+        return {"error": STORAGE_FULL_DETAIL}
     result = {"error": str(e)}
     next_step = getattr(e, "next_step", "")
     if next_step:

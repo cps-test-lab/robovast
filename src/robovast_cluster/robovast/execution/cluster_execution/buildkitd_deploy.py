@@ -64,12 +64,6 @@ DEFAULT_BUILDKITD_HOST_PATH = data_paths.DEFAULT_BUILDKITD_HOST_PATH
 #: hostPath default is bounded by the node's disk and by the GC ceiling below.
 DEFAULT_BUILDKITD_STORAGE_SIZE = "200Gi"
 
-#: What the daemon is allowed to keep. **Not optional, and not a detail.** The point of this
-#: component is that state survives, which is exactly what makes an unbounded store fill a disk
-#: it shares with something else. On the hostPath default that disk belongs to a node the
-#: service pod may also be pinned to, and a full one means DiskPressure evictions rather than a
-#: failed build.
-#:
 #: What the daemon may keep. **Not optional**: the point of this component is that state
 #: survives, which is exactly what makes an unbounded store fill a disk shared with other
 #: things. On the hostPath default that disk belongs to a node the service pod may also be
@@ -79,15 +73,37 @@ DEFAULT_BUILDKITD_STORAGE_SIZE = "200Gi"
 #: safe to state in absolute terms. A fixed ceiling is only a ceiling on a disk at least that
 #: large -- on a smaller one the store simply grows until the *node* runs out. ``minFreeSpace``
 #: is measured against the filesystem rather than the cache, so it forces pruning long before
-#: an oversized ceiling is reached, whatever the disk turns out to be. That is what lets these
-#: be chosen for the deployment in front of us (500 GB free) without becoming a trap on a
-#: deployment that is not.
+#: an oversized ceiling is reached, whatever the disk turns out to be. That is what lets the
+#: ceiling be stated for a large disk without becoming a trap on a small one.
 #:
 #: ``reservedSpace`` is a floor, not a target: cache below it is kept even when old, which is
 #: what stops a quiet week from evicting the base image this exists to hold.
 DEFAULT_BUILDKITD_GC_RESERVED = "100GB"
 DEFAULT_BUILDKITD_GC_MAX_USED = "150GB"
-DEFAULT_BUILDKITD_GC_MIN_FREE = "50GB"
+
+#: The least ``minFreeSpace`` defaults to, whatever the service's reserve says -- including no
+#: reserve at all, which leaves the service refusing nothing but must not let the cache fill the
+#: disk.
+_GC_MIN_FREE_FLOOR_GB = 50.0
+
+
+def default_gc_min_free() -> str:
+    """The free space the cache keeps unless a budget says otherwise: the service's reserve.
+
+    The reserve (:mod:`robovast.service.storage_reserve`) is the margin the service refuses new
+    work to protect. A cache allowed to fill past it would take that margin back one build at a
+    time, on the node the service may share -- so by default the two are one number, never below
+    :data:`_GC_MIN_FREE_FLOOR_GB`. BuildKit reads ``GB`` as 2^30 bytes, so the floor it keeps is
+    never less than a reserve stated in 10^9.
+
+    Read from the environment of the command that renders the config (``setup``, the operator's
+    ``.env``). An ``upgrade`` keeps the budget the live daemon has rather than re-deriving it, the
+    rule every budget key follows; ``--buildkit-cache-min-free`` changes it.
+    """
+    from robovast.service.storage_reserve import \
+        reserve_gb  # pylint: disable=import-outside-toplevel
+    return f"{max(reserve_gb(), _GC_MIN_FREE_FLOOR_GB):g}GB"
+
 
 #: What the daemon reserves. Unlike the warm DaemonSet's near-nothing, this is a real workload:
 #: it compiles, unpacks and compresses layers, and a solve holds gigabytes.
@@ -133,7 +149,7 @@ def buildkitd_address(namespace: str) -> str:
 
 def buildkitd_toml(*, registry_host: str = "", gc_reserved: str = DEFAULT_BUILDKITD_GC_RESERVED,
                    gc_max_used: str = DEFAULT_BUILDKITD_GC_MAX_USED,
-                   gc_min_free: str = DEFAULT_BUILDKITD_GC_MIN_FREE) -> str:
+                   gc_min_free: str = "") -> str:
     """The daemon's config: where its store is, what it may keep, and whose CA to trust.
 
     ``root`` is here rather than left to the image's default for the reason
@@ -149,6 +165,9 @@ def buildkitd_toml(*, registry_host: str = "", gc_reserved: str = DEFAULT_BUILDK
     TLS connection to the registry API. The client keeps its own copy on ``SSL_CERT_FILE`` for
     the token endpoint -- see the note in ``cluster_image_build.build_job_manifest``.
     """
+    # Resolved here, the one place every caller's config passes through, so "no budget given"
+    # means the same default whether setup, an upgrade or a test rendered it.
+    gc_min_free = gc_min_free or default_gc_min_free()
     lines = [f'root = "{BUILDKITD_STORE_DIR}"', "",
              "[worker.oci]",
              "  enabled = true",
@@ -165,7 +184,7 @@ def buildkitd_toml(*, registry_host: str = "", gc_reserved: str = DEFAULT_BUILDK
 def buildkitd_configmap_manifest(namespace: str, *, registry_host: str = "",
                                  gc_reserved: str = DEFAULT_BUILDKITD_GC_RESERVED,
                                  gc_max_used: str = DEFAULT_BUILDKITD_GC_MAX_USED,
-                                 gc_min_free: str = DEFAULT_BUILDKITD_GC_MIN_FREE) -> dict:
+                                 gc_min_free: str = "") -> dict:
     """The ConfigMap holding :func:`buildkitd_toml`."""
     return {
         "apiVersion": "v1",
@@ -430,7 +449,7 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
         namespace, registry_host=registry_host,
         gc_reserved=gc_reserved or DEFAULT_BUILDKITD_GC_RESERVED,
         gc_max_used=gc_max_used or DEFAULT_BUILDKITD_GC_MAX_USED,
-        gc_min_free=gc_min_free or DEFAULT_BUILDKITD_GC_MIN_FREE)
+        gc_min_free=gc_min_free)
     try:
         core.create_namespaced_config_map(namespace, cfg)
     except client.exceptions.ApiException as e:

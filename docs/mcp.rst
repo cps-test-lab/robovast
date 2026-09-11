@@ -665,6 +665,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    metrics-server cannot measure, saying which in ``metrics_unavailable`` — and ``null``
    never means zero.
 
+   ``storage_refusal`` is non-null while ``disk`` or ``store`` has less free space than the
+   reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`). While
+   it is set, ``start_campaign``, re-runs, image builds, imports and postprocessing are
+   refused with the same sentence; campaigns already running continue. Check it before a
+   sweep rather than learning it from the refusal. When clearing the service's caches would
+   help, the refusal's ``next_step`` is ``vast service cache --clear``.
+
 
 .. _mcp-liveness:
 
