@@ -25,7 +25,7 @@ class OneOutput(DestinationConfig):
 class TwoOutputs(DestinationConfig):
     """A generator producing a map and a mesh -- the FloorplanGeneration shape."""
 
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
 
 # -- single output ------------------------------------------------------------------------
@@ -182,7 +182,7 @@ def test_a_slot_bound_twice_is_written_to_both_destinations():
 # -- the shape of a one-or-many output ------------------------------------------------------
 
 class _GoalShape(DestinationConfig):
-    SLOTS = ("start", "goal")
+    OUTPUT_SLOTS = ("start", "goal")
 
 
 def _path_variation(scenario_file, binding):
@@ -286,6 +286,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
     def _cfg(**oc):
         return ObstacleVariationConfig(
             scenario={"objects": "static_objects"},
+            reads={"start": "start_pose", "goal": "goal_poses"},
             sim={"instances": "plugins.obstacles.instances"},
             obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m", **oc}],
             seed=1, robot_diameter=0.35)
@@ -295,6 +296,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
 
     # Bound only to a run-time spawner, no size is needed -- that campaign compiles nothing.
     ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                            reads={"start": "start_pose", "goal": "goal_poses"},
                             obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
                                                "xacro_arguments": "radius:=0.3"}],
                             seed=1, robot_diameter=0.35)
@@ -302,6 +304,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
     # A template that cannot resolve is refused rather than reaching a spawner as a literal.
     with pytest.raises(ValueError, match=r"references \{size\[\.\.\.\]\} but no 'size'"):
         ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                reads={"start": "start_pose", "goal": "goal_poses"},
                                 obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
                                                    "xacro_arguments": "width:={size[0]}"}],
                                 seed=1, robot_diameter=0.35)
@@ -312,6 +315,7 @@ def test_an_optional_slot_may_be_left_unbound():
     from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
 
     cfg = ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                  reads={"start": "start_pose", "goal": "goal_poses"},
                                   obstacle_configs=[], seed=1, robot_diameter=0.35)
     assert cfg.is_bound("objects") and not cfg.is_bound("instances")
     assert cfg.outputs() == {SCENARIO_CHANNEL: ["static_objects"]}
@@ -321,6 +325,7 @@ def test_binding_the_optional_slot_puts_it_on_the_sim_channel():
     from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
 
     cfg = ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                  reads={"start": "start_pose", "goal": "goal_poses"},
                                   sim={"instances": "plugins.obstacles.instances"},
                                   obstacle_configs=[], seed=1, robot_diameter=0.35)
     assert cfg.is_bound("instances")
@@ -835,6 +840,7 @@ def test_a_density_is_refused_where_a_single_obstacle_is_required():
         return ObstacleVariationWithDistanceTriggerConfig(
             scenario={"objects": "dynamic_objects", "trigger_point": "p",
                       "trigger_threshold": "t"},
+            reads={"start": "start_pose", "goal": "goal_poses"},
             obstacle_configs=[{"max_distance": 0.1, "model": "m", **oc}],
             trigger_distance=2.0, seed=1, robot_diameter=0.35)
 

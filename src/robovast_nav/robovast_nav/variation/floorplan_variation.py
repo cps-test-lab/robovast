@@ -108,7 +108,7 @@ class FloorplanVariationConfig(DestinationConfig):
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
     #: parameter. Each destination is named, rather than positional as in
     #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
     variation_files: list[str]
     num_variations: int
@@ -166,7 +166,7 @@ class FloorplanGenerationConfig(DestinationConfig):
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
     #: parameter. Each destination is named, rather than positional as in
     #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
     floorplans: list[str]
     mesh_format: str = 'stl'

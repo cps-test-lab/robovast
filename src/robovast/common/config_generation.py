@@ -431,9 +431,9 @@ def _validated_variation_config(variation_class, parameters):
     return model(**parameters)
 
 
-def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
-                            parameters, vast_dir):
-    """Check what each variation says it will write, before any of them runs.
+def _check_declared_contracts(config, classes_and_parameters, scenario_parameters,
+                              parameters, vast_dir):
+    """Check what each variation says it will write and read, before any of them runs.
 
     A variation's outputs were never checked at all: the scenario-file check covers only the
     hand-written ``parameters:`` block, so a plugin writing a parameter the ``.osc`` does not
@@ -445,6 +445,12 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     "undeclared", which is every third-party plugin and was the state of every plugin before
     this existed.
 
+    Inputs are checked in the SAME walk, because the answer depends on order: the variations run
+    in the order the ``.vast`` lists them, so a value one reads must already have been put there
+    -- by the campaign's own ``parameters:`` block, or by a variation ahead of it. Carrying that
+    set through the one loop is what makes "nothing writes this" answerable at all; separately it
+    would have to reconstruct the same ordering.
+
     The ``sim`` half checks the destination is addressable in the backend's schema. Whether
     the *path inside* an override actually exists in a particular world is a question only
     the simulator can answer, so a typo there is still refused in the container.
@@ -452,6 +458,12 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     valid_names = [p.get('name') for p in (scenario_parameters or [])
                    if isinstance(p, dict) and 'name' in p]
     execution = parameters.get('execution', {}) or {}
+    # What a variation could read at this point in the walk: whatever the campaign stated
+    # outright, plus what each variation ahead of it writes, added as the walk passes.
+    available = set(channel(config, SCENARIO) or {})
+    #: ``{slot: parameter}`` for every slot written so far, so a variation reading a slot
+    #: resolves the name the campaign gave it without restating it.
+    slot_writers: dict = {}
 
     backend = backend_key_checker = None
     sut_destinations: list = []
@@ -463,12 +475,30 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
             # and this whole check silently did nothing, for every channel. A config that
             # will not validate is skipped rather than reported here; it is refused a
             # moment later with a message about the config itself.
-            declared = variation_class.declared_outputs(
-                _validated_variation_config(variation_class, variation_parameters)) or {}
+            validated = _validated_variation_config(variation_class, variation_parameters)
+            declared = variation_class.declared_outputs(validated) or {}
+            reads = variation_class.declared_inputs(validated) or {}
         except Exception as exc:  # noqa: BLE001 - a plugin that cannot answer is not checked
-            logger.debug("%s did not declare its outputs: %s",
+            logger.debug("%s did not declare its contract: %s",
                          variation_class.__name__, exc)
             continue
+
+        # Reads before writes: a variation cannot read what it writes itself, so checking in
+        # that order names the variation that is actually missing an input rather than the one
+        # that would have supplied it.
+        for slot, stated in reads.items():
+            name = stated or slot_writers.get(slot)
+            if name is None:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}', "
+                    f"which no earlier variation writes. Either put a variation that writes "
+                    f"'{slot}' ahead of this one, or say which parameter holds it: "
+                    f"'reads: {{{slot}: <parameter>}}'.")
+            if name not in available:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}' "
+                    f"from '{name}', which no earlier variation writes and the 'parameters:' "
+                    f"block does not set. Available here: {sorted(available)}")
 
         unknown = [n for n in declared.get('scenario', []) if n not in valid_names]
         if unknown and valid_names:
@@ -476,6 +506,13 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                 f"Scenario '{config['name']}': {variation_class.__name__} writes "
                 f"{unknown}, which the scenario file does not declare. "
                 f"Valid parameters are: {valid_names}")
+        available.update(declared.get('scenario', []))
+        # The binding a later variation reading the same slot inherits, recorded here for the
+        # same reason `update_slots` records it at run time: the name is the campaign's, so a
+        # consumer can only know it from whoever wrote it.
+        bound = getattr(validated, 'scenario', None)
+        if isinstance(bound, dict):
+            slot_writers.update({k: v for k, v in bound.items() if isinstance(v, str)})
 
         sut_destinations.extend(declared.get('sut', []))
 
@@ -1970,7 +2007,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         f"Valid parameters are: {valid_param_names}"
                     )
 
-        _check_declared_outputs(
+        _check_declared_contracts(
             config, variation_classes_and_parameters,
             existing_scenario_parameters, parameters, vast_dir)
 
