@@ -964,6 +964,31 @@ function CampaignCard({ summary, newest, openedByLink }: {
             </Typography>
           </CampaignOrigin>
           <LaunchedBy name={summary.created_by} />
+          {/* Beside the name, not on a line of its own: this is a label on the campaign, and a
+              full-width row for one short value pushed everything below it down. Only on an open
+              card and only when it is not the default — a chip reading "prio 0" on every campaign
+              costs every row a glance and says nothing. Paused shows whatever the rank, because a
+              campaign admitting nothing looks idle and this is the only thing that says why. */}
+          {!collapsed && running && summary.priority !== 0 ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`prio ${summary.priority > 0 ? `+${summary.priority}` : summary.priority}`}
+              title="Which campaign the cluster queue admits first. Higher goes first."
+              sx={{ flexShrink: 0 }}
+            />
+          ) : null}
+          {!collapsed && running && summary.paused ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              color="warning"
+              icon={<PauseRoundedIcon />}
+              label="paused"
+              title="Admitting no new runs. The runs already started finish normally."
+              sx={{ flexShrink: 0 }}
+            />
+          ) : null}
           {/* Folded, the description moves up into the row. On its own line it doubled the height
               of every collapsed card, which is most of what the fold was for; here it also lines
               up into a column that can be read down. The full text is on hover, and it returns to
@@ -1173,33 +1198,6 @@ function CampaignCard({ summary, newest, openedByLink }: {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {summary.description}
         </Typography>
-      ) : null}
-
-      {/* Only when it is not the default, and only on an open card: the queue order matters to
-          whoever is deciding what runs next, not to a page of folded rows, and a chip reading
-          "priority 0" on every campaign would say nothing while costing every row a glance.
-          Paused is shown whatever the rank, because a campaign admitting nothing looks idle
-          and this is the only thing that says why. */}
-      {!collapsed && running && (summary.priority !== 0 || summary.paused) ? (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
-          {summary.paused ? (
-            <Chip
-              size="small"
-              icon={<PauseRoundedIcon />}
-              label="Paused — admitting no new runs"
-              color="warning"
-              variant="outlined"
-            />
-          ) : null}
-          {summary.priority !== 0 ? (
-            <Chip
-              size="small"
-              icon={<LowPriorityRoundedIcon />}
-              label={`Queue priority ${summary.priority > 0 ? `+${summary.priority}` : summary.priority}`}
-              variant="outlined"
-            />
-          ) : null}
-        </Stack>
       ) : null}
 
       {/* Every action's outcome — refusal included — is reported by its mutation, as a toast.
