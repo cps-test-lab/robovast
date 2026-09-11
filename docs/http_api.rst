@@ -103,6 +103,10 @@ the meaning of a status is uniform across every route:
      - A dependency did not answer, so the request could not be attempted: the object
        store, the index, or the exec path into a container. Worth retrying, unlike the
        codes above.
+   * - ``507``
+     - The service is out of disk space, or low enough that it declines new work (see
+       :ref:`deployment-disk-reserve`). Never reported as bad input or a conflict: the
+       request itself was fine, and is worth retrying once space is freed.
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class — today only ``exec_path_unavailable``, for a

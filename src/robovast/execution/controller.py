@@ -2303,6 +2303,14 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
                 image_project_tag=opts.image_project_tag)
         finally:
             remove_campaign_log_handler(var_handler)
+        # Composition is the one phase with no stop check of its own: it can run for
+        # minutes (a variation searching for a path, an aux container being pulled), and
+        # the loop below is where ``stop_requested`` is next read. Without this a stop
+        # asked for while composing took effect only after the whole sweep had been
+        # composed, submitted a batch and released it again -- reported as a batch that
+        # produced no results, which is a failure's wording for an operator's own request.
+        if state is not None and state.stop_requested:
+            raise CampaignStopped("stopped while composing the campaign's configurations")
 
         be = backend or DockerBackend(state=state)
         _preflight_upload_to_share(be, opts)

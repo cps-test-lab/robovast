@@ -44,13 +44,17 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceError, UploadGrant,
+                                        ServiceCache, ServiceError, UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+#: How long a cache report or clear may take. Both walk every file in the caches, and a
+#: campaign fetched whole can hold a hundred thousand of them.
+_CACHE_TIMEOUT_S = 600.0
 
 
 class HTTPTransport(RobovastInterface):
@@ -140,9 +144,9 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.json()
 
-    def _delete(self, route: str, **params):
+    def _delete(self, route: str, *, timeout: "float | None" = None, **params):
         resp = self.session.delete(f"{self.base_url}{route}", params=params or None,
-                               timeout=self.timeout)
+                               timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
@@ -151,6 +155,14 @@ class HTTPTransport(RobovastInterface):
 
     def resource_usage(self) -> ResourceUsage:
         return ResourceUsage.model_validate(self._get(Routes.USAGE))
+
+    def service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._get(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
+
+    def clear_service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._delete(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
 
     def upgrade_info(self) -> UpgradeInfo:
         return UpgradeInfo.model_validate(self._get(Routes.ADMIN_UPGRADE))

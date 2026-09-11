@@ -21,6 +21,7 @@ user-error type the execution backends do, without importing the execution layer
 (which imports *them*).
 """
 
+import errno
 import os
 
 
@@ -261,6 +262,60 @@ class ImageStoreUnavailable(RuntimeError):
     """
 
     include_traceback = False
+
+
+class InsufficientStorageError(ActionableError):
+    """Raised when new disk-consuming work is refused because free space is below the reserve.
+
+    Distinct from a write that already failed for lack of space (:func:`is_storage_full`):
+    this is the service declining to *start* something while it still has room to keep
+    running what it has -- see :mod:`robovast.service.storage_reserve`. Both reach an HTTP
+    caller as a 507; this one says which meter is short and by how much, and its
+    ``next_step`` is clearing the service cache when that would free something worth it.
+
+    Not a ``RuntimeError``: nothing is in conflict, and a caller that maps a conflict to
+    "wait for the other operation" would wait for something that will not finish.
+    """
+
+
+#: What a caller is told when a write failed because the service's storage is full. One
+#: sentence for every surface, and no path: where on the service host the write landed is
+#: nothing a caller can act on.
+STORAGE_FULL_DETAIL = (
+    "The service ran out of disk space and did not complete this request. The request "
+    "itself is fine: free space on the service's storage -- deleting campaigns that are "
+    "no longer needed is the usual way -- then retry.")
+
+#: Postgres's SQLSTATE for ``disk_full``: what the index answers when its volume is full.
+_PG_DISK_FULL = "53100"
+
+
+def is_storage_full(exc: BaseException) -> bool:
+    """Whether *exc*, or anything that caused it, says the storage behind a write is full.
+
+    Two shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write, and
+    Postgres's ``disk_full`` on an index write -- matched on the SQLSTATE attribute rather
+    than the psycopg class, so this module does not import the driver.
+
+    The cause chain is followed because a layer that translates an ``OSError`` into its own
+    refusal (an archive that could not be extracted is a ``ValueError``) would otherwise
+    turn "the disk is full" into "your input is wrong", which sends the caller to fix a
+    request that was never the problem.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
+            return True
+        if getattr(exc, "sqlstate", None) == _PG_DISK_FULL:
+            return True
+        # The chain a traceback prints: an explicit cause, else the exception being handled
+        # when this one was raised -- unless ``from None`` said that one is irrelevant.
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        else:
+            exc = None if exc.__suppress_context__ else exc.__context__
+    return False
 
 
 def missing_input_error(entries, *, hint=True):

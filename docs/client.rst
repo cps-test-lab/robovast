@@ -61,6 +61,8 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
      - Which service is answering and which code it runs; whether the lane has room.
+   * - ``vast service cache [--clear]``
+     - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
      - What the *service itself* has been doing. ``-f`` follows.
    * - ``vast service restart``

@@ -118,3 +118,51 @@ def test_a_failed_campaign_that_also_uploads_still_skips_postprocessing(monkeypa
 
     assert calls == ["share", "finalize"]  # the upload happened; postprocessing did not
     assert state.phase == Phase.FAILED     # and the campaign still says it failed
+
+
+def test_a_stop_during_composition_ends_the_campaign(monkeypatch, tmp_path):
+    """Composition has no stop check of its own, and the batch loop is the next reader.
+
+    Composing can take minutes -- a variation searching for a path, a helper image being
+    pulled -- and without this the stop was answered only after the whole sweep had been
+    composed, submitted a batch and released it again, which the log then reported as a
+    batch that produced no results.
+    """
+    import pytest
+
+    from robovast.execution.backends import CampaignStopped
+
+    state = _state(True, phase=Phase.VARIATION)
+    monkeypatch.setattr(controller, "_install_plugins", lambda *a, **k: None)
+    monkeypatch.setattr(controller, "build_campaign_data",
+                        lambda *a, **k: {"configs": [{"name": "config1-1"}]})
+    # Reached only if the stop is not honoured -- which is the failure this pins.
+    monkeypatch.setattr(controller, "CampaignController",
+                        lambda **kw: pytest.fail("a stopped campaign built a controller"))
+
+    with pytest.raises(CampaignStopped):
+        controller.run_batch_campaign(
+            str(tmp_path / "c.vast"), types.SimpleNamespace(), str(tmp_path), 1,
+            campaign_id="camp-1", state=state)
+
+
+def test_composition_runs_on_when_no_stop_was_asked_for(monkeypatch, tmp_path):
+    """The check ends a stopped campaign; it must not end an ordinary one."""
+    import pytest
+
+    class _Reached(Exception):
+        """Raised where a campaign that was not stopped is supposed to arrive."""
+
+    monkeypatch.setattr(controller, "_install_plugins", lambda *a, **k: None)
+    monkeypatch.setattr(controller, "build_campaign_data",
+                        lambda *a, **k: {"configs": [{"name": "config1-1"}]})
+    monkeypatch.setattr(controller, "_preflight_upload_to_share", lambda *a, **k: None)
+    def _reached(*_args, **_kwargs):
+        raise _Reached
+
+    monkeypatch.setattr(controller, "CampaignStore", _reached)
+
+    with pytest.raises(_Reached):
+        controller.run_batch_campaign(
+            str(tmp_path / "c.vast"), types.SimpleNamespace(), str(tmp_path), 1,
+            campaign_id="camp-1", state=_state(False, phase=Phase.VARIATION))

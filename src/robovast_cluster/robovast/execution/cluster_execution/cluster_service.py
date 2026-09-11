@@ -63,12 +63,24 @@ from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
-                                        ResourceUsage,
+                                        ResourceUsage, CacheSize, KeptCacheEntry,
                                         DiskSpace, UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
 logger = logging.getLogger(__name__)
+
+
+def _tree_bytes(path: Path) -> int:
+    """Bytes of the files under *path*. A file removed mid-walk is not counted, not an error."""
+    total = 0
+    for dirpath, _dirs, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
 
 AUX_LABEL = "app=robovast-aux"
 
@@ -93,6 +105,12 @@ _IMAGE_WAIT_REASONS = ("ContainerCreating", "PodInitializing", "ErrImagePull", "
                       "ImageInspectError", "ErrImageNeverPull", "RegistryUnavailable")
 
 
+#: How often :func:`_aux_pending_logger` repeats a reason that has not changed. Long enough
+#: that a pod which comes up normally says its reason once, short enough that a reader
+#: deciding whether to wait or intervene gets a second line before they give up.
+_AUX_WAIT_REPEAT_S = 30.0
+
+
 def _aux_pending_logger(tag):
     """Say what a composition's aux pod is waiting on, while it is still waiting.
 
@@ -102,17 +120,24 @@ def _aux_pending_logger(tag):
     and its worker thread's log is the channel — which is where the reason belongs anyway,
     since it outlives the run.
 
-    Only a *change* is logged: ``wait_pod_ready`` polls every two seconds, and a repeated
-    line is how a log stops being read.
+    A change is logged at once; an unchanged reason is repeated every
+    :data:`_AUX_WAIT_REPEAT_S` with how long the wait has run. ``wait_pod_ready`` polls
+    every two seconds, so logging every poll is how a log stops being read — but logging
+    only changes is what makes a pull of several minutes indistinguishable from a hung
+    campaign, since the reason arrives once, seconds in, and then nothing until it ends.
+    The elapsed figure is the part that separates the two.
     """
-    last = []
+    started = time.monotonic()
+    state = {"reason": "", "said": 0.0}
 
     def report(reason: str) -> None:
         current = reason or "pending"
-        if last and last[0] == current:
+        now = time.monotonic()
+        if current == state["reason"] and now - state["said"] < _AUX_WAIT_REPEAT_S:
             return
-        last[:] = [current]
-        logger.info("Aux pod for %s is not ready yet: %s", tag, current)
+        state.update(reason=current, said=now)
+        logger.info("Aux pod for %s is not ready yet after %ds: %s",
+                    tag, int(now - started), current)
 
     return report
 
@@ -266,6 +291,11 @@ class ClusterService(LocalTransport):
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
         self._last_fetch: dict[str, tuple[int, float]] = {}
+        # When each campaign's cache dir was last handed to a reader, and how many operations
+        # hold it pinned. Together they are what lets a cache clear run beside the readers:
+        # see ``_fetch_cache_keep_reason``. Guarded by ``_fetch_locks_guard``.
+        self._cache_read_at: dict[str, float] = {}
+        self._cache_pins: dict[str, int] = {}
         # Last kubelet Summary reading behind the disk/store meters, as
         # ``(monotonic, fields)``. Its own TTL, longer than the usage cache's -- see
         # ``_DISK_CACHE_TTL``. Read under ``_usage_lock``, so it needs no lock of its own.
@@ -1074,7 +1104,7 @@ class ClusterService(LocalTransport):
         return False
 
     @contextlib.contextmanager
-    def _aux_runner_context(self, tag, project, *, hold=False):
+    def _aux_runner_context(self, tag, project, *, hold=False, should_stop=None):
         """The container-runner factory for this thread, over *tag*'s span.
 
         Entered inside the thread that composes, so the factory (a ContextVar) is scoped to
@@ -1093,6 +1123,11 @@ class ClusterService(LocalTransport):
         The two spans differ only in who owns the container's death — see
         :meth:`LocalTransport._aux_runner_context`. A campaign's pods are deleted here;
         a held one is released to the exec manager's reaper.
+
+        *should_stop* ends the pod's ready wait for a campaign that was stopped while it
+        was waiting. That wait is the longest thing composition does on this lane — a
+        helper image is pulled inside it — so without it a stop is not seen until the pull
+        either finishes or times out, minutes later. A held span has no campaign to stop.
         """
         del project
         from robovast.common.config_generation import set_container_runner_factory
@@ -1112,6 +1147,7 @@ class ClusterService(LocalTransport):
                            kube_context=self.kube_context,
                            pull_secret=self._registry_pull_secret(),
                            on_pending=_aux_pending_logger(tag),
+                           should_stop=should_stop,
                            **self._aux_store_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
             try:
@@ -2118,6 +2154,7 @@ class ClusterService(LocalTransport):
 
     def build_image(self, request):
         from robovast.service.image_build import primary_build_ref
+        self._admit_storage("build an image")
         (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
             self._build_context(request)
         refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
@@ -3150,10 +3187,17 @@ class ClusterService(LocalTransport):
         batch wait loop unblocks. Label-scoped to this campaign's Jobs and pods, and
         nothing cluster-wide is paused for the duration, so a concurrent campaign keeps
         being admitted while this one is torn down.
+
+        ``aux=False``: the driver is in *this* process and its composition span owns the
+        campaign's aux pods, deleting them when it ends. Reaping them here removes a pod
+        the span may be exec'ing into, and the exec then fails with a 404 on the
+        ``pods/exec`` subresource — reported as a simulator that could not be asked about
+        the world, on a campaign that was merely stopped. The reaper keeps that job (it
+        collects a pod whose span is gone); a stop must not do it.
         """
         from .cluster_execution import cleanup_cluster_campaign
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
-                                 context=self.kube_context)
+                                 context=self.kube_context, aux=False)
 
     def _adopts_on_restart(self) -> bool:
         """True: this lane's campaigns outlive the process, and the next one adopts them.
@@ -3422,11 +3466,105 @@ class ClusterService(LocalTransport):
 
     # -- data / results -----------------------------------------------------
 
+    #: Where the fetch cache lives. The pod's own scratch: the object store is the durable
+    #: home, and this is only a copy of what readers asked for.
+    _FETCH_CACHE_ROOT = Path("/tmp") / "robovast-campaigns"  # noqa: S108 - pod scratch
+
     def _cache_dir(self, campaign_id: str) -> Path:
         """Local scratch mirroring a campaign's objects. Ephemeral by design — the object
         store is the durable home — and shared by the whole-campaign fetch and every
         named-object fetch, so the two can never hold divergent copies of one file."""
-        return Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
+        return self._FETCH_CACHE_ROOT / campaign_id
+
+    # -- clearing the fetch cache ------------------------------------------------------------
+
+    #: What the fetch cache is called where a reader sees it.
+    FETCH_CACHE = "object-store fetch cache"
+
+    #: How recently a campaign's cache dir must have been handed to a reader for a clear to
+    #: keep it. A reader is given a *path*, and every one of them opens files under it after
+    #: the fetch lock is released -- a results download, a notebook render, a plugin endpoint --
+    #: so there is no lock a clear could take that would cover them. An hour outlasts every
+    #: such request; an operation that can run longer pins the dir (``_holding_cache``).
+    _CACHE_READ_GRACE_S = 3600.0
+
+    def _mark_cache_read(self, campaign_id: str) -> None:
+        """Record that a reader was just handed this campaign's cache dir. Called under the
+        campaign's fetch lock, so a clear waiting on that lock sees it when it re-checks."""
+        with self._fetch_locks_guard:
+            self._cache_read_at[campaign_id] = time.monotonic()
+
+    @contextlib.contextmanager
+    def _holding_cache(self, campaign_id: str):
+        """Keep a clear away from this campaign's cache dir for the duration.
+
+        For an operation that goes on using the dir for longer than the read grace. Take it
+        *before* the fetch: a clear either removed the dir already, and the fetch that follows
+        restores it, or it re-checks under the fetch lock and finds the pin.
+        """
+        with self._fetch_locks_guard:
+            self._cache_pins[campaign_id] = self._cache_pins.get(campaign_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._fetch_locks_guard:
+                left = self._cache_pins[campaign_id] - 1
+                if left:
+                    self._cache_pins[campaign_id] = left
+                else:
+                    del self._cache_pins[campaign_id]
+
+    def _fetch_cache_keep_reason(self, campaign_id: str) -> str:
+        """Why a clear must leave this campaign's cache dir, or ``""`` when it may go."""
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None and not self._is_done(entry):
+            return "the campaign is still running"
+        with self._fetch_locks_guard:
+            pinned = self._cache_pins.get(campaign_id, 0)
+            read_at = self._cache_read_at.get(campaign_id)
+        if pinned:
+            return "an operation on the campaign is using it"
+        if read_at is not None and time.monotonic() - read_at < self._CACHE_READ_GRACE_S:
+            return "read within the last hour, so a reader may still be using it"
+        return ""
+
+    def _lane_cache_sweeps(self) -> list:
+        return [self._sweep_fetch_cache]
+
+    def _sweep_fetch_cache(self, clear: bool):
+        """Report the fetch cache, removing each campaign's dir that may go when *clear*.
+
+        Each removal happens under that campaign's fetch lock, after checking again: a fetch
+        in flight finishes first, and the reader it served is then recent enough to keep.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+
+        from robovast.service.local_transport import \
+            _Swept  # pylint: disable=import-outside-toplevel
+        swept = _Swept(size=CacheSize(name=self.FETCH_CACHE))
+        root = self._FETCH_CACHE_ROOT
+        dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+        for cache_dir in dirs:
+            campaign_id = cache_dir.name
+            size = _tree_bytes(cache_dir)
+            reason = self._fetch_cache_keep_reason(campaign_id)
+            if clear and not reason:
+                with self._fetch_locks_guard:
+                    lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
+                with lock:
+                    reason = self._fetch_cache_keep_reason(campaign_id)
+                    if not reason:
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                        swept.freed_bytes += size
+                        swept.removed += 1
+                        continue
+            swept.size.size_bytes += size
+            swept.size.entries += 1
+            if reason:
+                swept.kept.append(KeptCacheEntry(cache=self.FETCH_CACHE, name=campaign_id,
+                                                 size_bytes=size, reason=reason))
+        return swept
 
     def _data_dir(self, campaign_id: str):
         """Refused on this lane: there is no cheap "the campaign's directory" here.
@@ -3583,6 +3721,7 @@ class ClusterService(LocalTransport):
                     ) from exc
                 raise
             elapsed = time.perf_counter() - started
+            self._mark_cache_read(campaign_id)
         if fetched:
             self._last_fetch[campaign_id] = (fetched, elapsed)
             logger.info("Fetched %s for campaign %s (%s of %s) from %s/%s in %.1fs",
@@ -4132,6 +4271,8 @@ class ClusterService(LocalTransport):
         """
         from .postprocess_job import postprocess_campaign
 
+        self._admit_storage(f"postprocess {request.campaign_id}")
+
         def work(state):
             # **No whole-campaign fetch.** Both stages read the run tree inside the
             # postprocessing pod, which stages the campaign into its own volume once; a
@@ -4316,6 +4457,12 @@ class ClusterService(LocalTransport):
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
+            # Pinned for the whole export: the outcome is edited in the materialised root and
+            # published back at the end, which can be long after the read grace has passed.
+            with self._holding_cache(request.campaign_id):
+                _share(state)
+
+        def _share(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             campaign_root = self._materialize(
@@ -4649,6 +4796,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+        into_cache = dest is None
         dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
@@ -4694,6 +4842,8 @@ class ClusterService(LocalTransport):
                         f"store bucket does not exist (not yet published or removed)"
                     ) from exc
                 raise
+            if into_cache:
+                self._mark_cache_read(campaign_id)
         # Elapsed as well as the count: "1832 files" alone does not distinguish a transfer
         # that took two seconds from one that took four minutes, which is the only question
         # a caller staring at a slow first call actually has. The byte figure comes from the

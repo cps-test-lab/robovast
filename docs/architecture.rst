@@ -104,8 +104,15 @@ campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly. The deletions are label-scoped to the one campaign, so other
-queued/running campaigns are untouched. **Service shutdown** is deliberately *not*
-the same thing. Whether exiting tears a campaign down is a property of the lane, asked
+queued/running campaigns are untouched, and to its Jobs: a campaign's aux pod belongs to
+the composition span that created it and is deleted when that span ends, so a stop leaves
+it alone and only a reaper (``jobs-cleanup``, a campaign being deleted) collects one.
+Composition itself is stop-checked in two places, because it is long enough to give up
+in: the pod's ready wait ends as soon as the flag is set, and a campaign stopped while
+composing raises rather than submitting the sweep it has just composed.
+
+**Service shutdown** is deliberately *not* the same thing. Whether exiting tears a
+campaign down is a property of the lane, asked
 as ``_adopts_on_restart``: the local backend answers no and kills its scenario
 container, because nothing comes back for it; the cluster lane answers yes and leaves
 its Jobs running, because they outlive any one service process and the next one adopts
@@ -1019,6 +1026,33 @@ lives in the ``run_data`` MCP plugin):
   re-run in the background and returns at once (watch the campaign view for progress).
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
+
+**New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
+``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
+``run_postprocessing`` each call ``LocalTransport._admit_storage`` first, on both lanes (the
+cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
+``disk`` and ``store`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
+refusal and the meters are one measurement. With no reserve configured nothing is read; a
+reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
+launch never depends on the permissions the capacity reading needs. Nothing that continues
+accepted work is guarded:
+resuming a live campaign after a restart would otherwise be abandoned, and stop and delete are
+what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
+that already failed for lack of space is also given.
+
+**The caches a clear may empty are copies of durable data, and nothing else.**
+``service_cache`` / ``clear_service_cache`` sweep the scene cache on both lanes and, on the
+cluster lane, the object-store fetch cache (``/tmp/robovast-campaigns``, one directory per
+campaign) through the ``_lane_cache_sweeps`` hook; a local lane's results directory is the
+durable home and is never offered. A reader of the fetch cache is handed a *path* and opens
+files under it after the fetch lock is released, so no lock a clear could take covers it.
+What makes the clear safe beside them is what it keeps: a campaign that is still running, a
+directory an operation pinned with ``_holding_cache`` (``run_share``, which edits the outcome
+there and publishes it long after the fetch), and one handed to a reader within the last hour
+(``_mark_cache_read``, recorded under the fetch lock). Each removal takes that campaign's fetch
+lock and checks again, so a fetch in flight finishes first and its reader is then recent
+enough to keep.
 
 .. _image-resolution:
 
