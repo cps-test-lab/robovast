@@ -3267,6 +3267,8 @@ export interface components {
             query_containers: {
                 [key: string]: components["schemas"]["ExecContainerState"];
             };
+            /** Storage Refusal */
+            storage_refusal: string | null;
             store: components["schemas"]["DiskSpace"] | null;
             /** Store Node */
             store_node: string | null;

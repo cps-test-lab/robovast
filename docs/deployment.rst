@@ -291,7 +291,8 @@ The lifecycle verbs are deliberately distinct:
    * - ``vast service upgrade``
      - The image, RBAC, and the credential Secrets it can rebuild from ``.env``
        (git, share, ntfy, registry) — which is how a registry move or a rotated
-       password reaches the cluster. The **access token is preserved**, so nobody is
+       password reaches the cluster — plus the settings it carries from ``.env``, the
+       free-space reserve among them. The **access token is preserved**, so nobody is
        logged out.
    * - ``vast cluster setup --force``
      - The same, plus it will re-mint the access token when asked
@@ -305,6 +306,44 @@ The lifecycle verbs are deliberately distinct:
 
 Campaign data lives in the object store and survives all three. Plain ``setup`` over
 a live service is refused (``Cluster is already set up``).
+
+.. _deployment-disk-reserve:
+
+Keeping free space
+------------------
+
+A campaign, a re-run, an image build, an import and a postprocessing run each write gigabytes,
+and none can say beforehand how many. So the service keeps a **free-space reserve** and refuses
+to *start* any of them while its disk or its results store has less free space than that —
+with a 507 whose message names the meter and the amounts, on every client. Work already
+running continues, and stopping or deleting campaigns, which frees space, is never refused.
+The web UI's sidebar and ``get_resource_usage`` (``storage_refusal``) show the same verdict
+before anyone is refused.
+
+.. code-block:: bash
+
+   # .env on the machine you run setup/upgrade from, or the one running `vast serve`
+   ROBOVAST_DISK_RESERVE_GB=150
+
+It is an absolute amount in gigabytes (10\ :sup:`9` bytes). Unset or ``0`` keeps no reserve: the
+margin that matters is the one above a particular disk's eviction threshold, which only its
+operator knows. A value that is not a non-negative number fails the command that reads it,
+naming the variable, rather than falling back to none.
+
+**On a cluster, set it above the kubelet's hard eviction threshold on the data node**, in the
+same absolute terms. That threshold is what evicts every pod on the node, the service among
+them, and it is usually a *fraction* of the disk (``nodefs.available``), so work it out for the
+disk in front of you. Read it from the node itself:
+
+.. code-block:: bash
+
+   kubectl get --raw "/api/v1/nodes/<node>/proxy/configz" | jq .kubeletconfig.evictionHard
+
+``vast cluster setup`` and ``vast service upgrade`` carry the value into the service Deployment,
+empty included, so deleting the line resets it; ``vast service restart`` does not, like every
+setting it leaves alone. At setup the build cache's ``--buildkit-cache-min-free`` defaults to the
+same reserve (see :doc:`cluster_execution`). An upgrade keeps the budget the running daemon has,
+so on an existing deployment pass ``--buildkit-cache-min-free`` once to bring the cache in line.
 
 Checking a deployment
 ---------------------

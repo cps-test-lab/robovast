@@ -2069,6 +2069,16 @@ def service_manifests(namespace="default", image=None, env=None,
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
+    # The free-space reserve, from the operator's .env like the family above and carried
+    # unconditionally for the same reason: "" is the default, so deleting the line resets the
+    # pod instead of leaving the old value in force. Parsed here first, so a malformed value
+    # fails this command on the operator's machine rather than every campaign in the pod.
+    from robovast.service.storage_reserve import (  # pylint: disable=import-outside-toplevel
+        RESERVE_ENV, reserve_gb)
+    if not any(e["name"] == RESERVE_ENV for e in env):
+        reserve_gb()
+        env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
+
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means -- so an
     # empty value resets the pod to UTC instead of being a value the merge patch preserves.

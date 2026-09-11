@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.common.errors import STORAGE_FULL_DETAIL, is_storage_full
+from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageError,
+                                    is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
@@ -418,6 +419,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                     logger.warning("storage full: %s", e)
                     raise HTTPException(status_code=507, detail=STORAGE_FULL_DETAIL) from e
                 raise
+        except InsufficientStorageError as e:
+            # The same status as a write that already failed for lack of space, with the
+            # meter and the amounts: new work is declined before the disk is full.
+            raise HTTPException(status_code=507, detail=str(e)) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id

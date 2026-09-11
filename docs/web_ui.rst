@@ -1210,6 +1210,11 @@ hover tooltip spelling the numbers out:
   slow lane. Its denominator is the store's own volume, not the **Disk** figure; the two
   can sit on different nodes.
 
+Beneath them, **refusing new work: disk below reserve** appears while either meter has less
+free space than the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see
+:ref:`deployment`); its tooltip is the sentence a refused launch carries. It is the service's
+own verdict on the same reading, not a threshold of the UI's.
+
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a
 cluster whose kubelet could not be read (the service needs ``nodes/proxy``; see
@@ -1220,10 +1225,9 @@ and shared across browser tabs, so it never loads the backend.
 
 .. note::
 
-   The service is **unauthenticated in v1** and must stay behind the
-   localhost / SSH-tunnel / ``kubectl port-forward`` boundary — do not expose it
-   directly. Public access (Ingress + token/TLS) is a deferred, whole-surface
-   decision (see :ref:`deployment`).
+   Every request needs the service's shared token — a browser presents it as the cookie
+   ``/login`` sets — and a service published over an Ingress insists on TLS. See
+   :ref:`deployment`.
 
 Results viewer
 --------------
