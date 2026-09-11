@@ -13,7 +13,6 @@ available and is the wrong number to compare the cap against.
 Needs Postgres: set ``ROBOVAST_TEST_PG_DSN`` or these skip.
 """
 
-import asyncio
 import os
 
 import pytest
@@ -103,8 +102,8 @@ def _ingest(root) -> None:
 def _summary(**kwargs) -> dict:
     # `min_severity` keeps the verdict line out of the counts: it is written to give the
     # index a scenario verdict, not to be one of the matches being counted.
-    return asyncio.run(run_logs.search_run_logs(
-        "^camp-", campaign_regex=True, summarize=True, min_severity="error", **kwargs))
+    return run_logs.search_run_logs(
+        "^camp-", campaign_regex=True, summarize=True, min_severity="error", **kwargs)
 
 
 def test_campaigns_read_whole_are_not_reported_as_truncated(campaigns):
@@ -143,7 +142,7 @@ def test_a_search_of_one_campaign_does_not_count_the_others_rows(campaigns):
     """The scoping bug the single table makes possible, and which nothing else reveals:
     both campaigns hold ``cfg-a``/run 0, so an unscoped count is exactly double and looks
     like a perfectly ordinary result."""
-    result = asyncio.run(run_logs.search_run_logs(
-        _CAMPAIGNS[0], summarize=True, min_severity="error"))
+    result = run_logs.search_run_logs(
+        _CAMPAIGNS[0], summarize=True, min_severity="error")
     assert result["lines_total"] == _ROWS_PER_CAMPAIGN
     assert result["severity_counts"]["error"] == _ROWS_PER_CAMPAIGN

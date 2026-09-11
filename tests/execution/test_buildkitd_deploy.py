@@ -100,7 +100,7 @@ def test_the_default_budget_cannot_overrun_a_disk_it_did_not_choose():
     for a reason with no visible connection to a build. A percentage cannot be wrong that way.
     """
     from robovast.execution.cluster_execution.buildkitd_deploy import (
-        DEFAULT_BUILDKITD_GC_MAX_USED, DEFAULT_BUILDKITD_GC_MIN_FREE)
+        DEFAULT_BUILDKITD_GC_MAX_USED, default_gc_min_free)
 
     # `minFreeSpace` is what makes an absolute ceiling safe, and it is the assertion that
     # matters: it is measured against the FILESYSTEM rather than the cache, so on a disk
@@ -108,7 +108,7 @@ def test_the_default_budget_cannot_overrun_a_disk_it_did_not_choose():
     # it a fixed ceiling is not a ceiling at all on a disk we did not choose -- the store grows
     # until the node runs out, and the kubelet answers DiskPressure by evicting pods, on the
     # node the daemon is pinned to and the service pod may share.
-    assert DEFAULT_BUILDKITD_GC_MIN_FREE, (
+    assert default_gc_min_free(), (
         "without a free-space floor, an absolute ceiling is unbounded on a smaller disk")
     assert DEFAULT_BUILDKITD_GC_MAX_USED, "the store must have a ceiling at all"
 
@@ -553,3 +553,32 @@ def test_the_store_is_made_writable_before_the_daemon_opens_it():
     assert "-R" not in chown["command"]
     # It must precede the daemon, which is what an initContainer means.
     assert dep["spec"]["template"]["spec"]["containers"][0]["name"] == "buildkitd"
+
+
+def test_the_cache_keeps_the_services_reserve_free_by_default(monkeypatch):
+    """A cache allowed to fill past the reserve would take back, one build at a time, the
+    margin the service refuses new work to protect."""
+    import tomllib
+
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    parsed = tomllib.loads(buildkitd_toml())
+    assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "150GB"
+
+
+@pytest.mark.parametrize("reserve", ["", "0", "20"])
+def test_the_cache_never_keeps_less_than_its_own_floor(monkeypatch, reserve):
+    """No reserve turns the service's refusals off; it must not let the cache fill the disk."""
+    from robovast.execution.cluster_execution.buildkitd_deploy import default_gc_min_free
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, reserve)
+    assert default_gc_min_free() == "50GB"
+
+
+def test_a_stated_min_free_wins_over_the_reserve(monkeypatch):
+    import tomllib
+
+    from robovast.service.storage_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    parsed = tomllib.loads(buildkitd_toml(gc_min_free="300GB"))
+    assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "300GB"

@@ -773,17 +773,7 @@ def evict(root: str, max_bytes: int | None = None) -> list:
     """
     if max_bytes is None:
         max_bytes = int(os.environ.get("ROBOVAST_SCENE_CACHE_BYTES") or DEFAULT_MAX_CACHE_BYTES)
-    if not os.path.isdir(root):
-        return []
-    entries = []
-    for name in os.listdir(root):
-        path = os.path.join(root, name)
-        if not os.path.isdir(path) or name.startswith("."):
-            continue
-        try:
-            entries.append((os.stat(path).st_atime, entry_bytes(name), name))
-        except OSError:
-            continue
+    entries = _entries(root)
     total = sum(size for _atime, size, _name in entries)
     removed = []
     for _atime, size, name in sorted(entries):
@@ -799,6 +789,40 @@ def evict(root: str, max_bytes: int | None = None) -> list:
         logger.info("scene cache: evicted %d entr%s to stay under %d bytes",
                     len(removed), "y" if len(removed) == 1 else "ies", max_bytes)
     return removed
+
+
+def _entries(root: str) -> list:
+    """Every entry under *root* as ``(atime, bytes, name)``; dot-names are bookkeeping."""
+    if not os.path.isdir(root):
+        return []
+    entries = []
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path) or name.startswith("."):
+            continue
+        try:
+            entries.append((os.stat(path).st_atime, entry_bytes(name), name))
+        except OSError:
+            continue
+    return entries
+
+
+def clear(root: str, *, dry_run: bool = False) -> "tuple[list, list]":
+    """Remove every entry no request is building or reading: ``(removed, kept)``.
+
+    Each is a list of ``(name, bytes)``. With *dry_run* nothing is removed and ``removed`` is
+    what would be. An entry whose lock is held is kept -- the rule :func:`evict` follows -- so a
+    clear never pulls a descriptor out from under a viewer loading it.
+    """
+    removed, kept = [], []
+    for _atime, size, name in _entries(root):
+        if _lock_for(name).locked():
+            kept.append((name, size))
+            continue
+        if not dry_run:
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+        removed.append((name, size))
+    return removed, kept
 
 
 def touch(key: str) -> None:

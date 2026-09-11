@@ -37,7 +37,8 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_c
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
-from .errors import AuxContainerUnavailable, missing_input_error
+from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
+                     missing_input_error)
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
@@ -612,6 +613,18 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
             expose(vast_dir, CONFIG_MOUNT)
             _stage_query_documents(runner, query, expose)
         runner.run(query.command, lines.append)
+    except ExecPathUnavailable:
+        # Passed through, not folded into the verdict below: "could not describe this world
+        # in <image>" is a claim about this world and this image, and both are fine -- the
+        # deployment simply cannot run a command in a container. Callers tell the two apart
+        # by the type, and the world and scenario checks report this one as unchecked.
+        raise
+    except ActionableError:
+        # Passed through for the same reason, and for one more: this refusal already names
+        # the single command that would move the caller forward -- an image that has to be
+        # built before anything can run in it. Folded into the verdict below it loses that,
+        # and the lane advice that replaces it sends a caller to check a lane that works.
+        raise
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
         # A non-zero exit that nonetheless PRINTED a payload is a partial answer, not a failure: a
         # simulator that could not build the world can still say which plugin keys it has, and that
@@ -708,6 +721,14 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
         try:
             payload, _image = describe_world_payload(
                 execution, block, vast_dir, entities=bool(named))
+        except (ExecPathUnavailable, ActionableError) as exc:
+            # Advisory, like the arm below and for the reason in this function's docstring --
+            # but with no second attempt to make: neither a deployment that cannot run a
+            # command in a container nor an image that is not built yet is changed by
+            # dropping the overrides, so the retry below would be refused identically.
+            logger.warning("sim overrides were not pre-checked (%s). They are still refused "
+                           "in the container if they are wrong.", exc)
+            return
         except WorldQueryUnavailable as exc:
             # A simulator too old to take the overrides on its describe (no ``--override``: it
             # says "unrecognized arguments" and exits) can still answer the half that does not

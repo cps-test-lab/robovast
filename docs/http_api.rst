@@ -99,6 +99,22 @@ the meaning of a status is uniform across every route:
      - A notebook or visualization failed to render.
    * - ``501``
      - Workspaces are not configured on this service.
+   * - ``503``
+     - A dependency did not answer, so the request could not be attempted: the object
+       store, the index, or the exec path into a container. Worth retrying, unlike the
+       codes above.
+   * - ``507``
+     - The service is out of disk space, or low enough that it declines new work (see
+       :ref:`deployment-disk-reserve`). Never reported as bad input or a conflict: the
+       request itself was fine, and is worth retrying once space is freed.
+
+A refusal whose *class* a caller must act on rather than print also carries an
+``x-robovast-error`` header naming that class — today only ``exec_path_unavailable``, for a
+deployment where no command can be run in a container at all. The exception type is what an
+HTTP boundary drops, and a client that has to *behave* differently (report the deployment
+rather than the image, degrade a check to "unchecked") would otherwise have to match on the
+sentence, which then nobody may reword. ``ServiceError.code`` carries it; the body stays
+FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 
 Streaming
 =========

@@ -39,6 +39,38 @@ NO_SERVICE = ("no robovast-service reachable — start one on this machine "
               "no provenance and no repetitions, and answers a different question")
 
 
+#: What an unreachable exec path costs, in the vocabulary of the tools. Composed here
+#: because only this layer knows the tool names -- the service layer, which raises the
+#: error, has no business naming them -- and once, because five tools saying it five ways
+#: is what made a deployment property read as five separate defects. Named by class rather
+#: than as a list to maintain: a tool that answers by asking an image cannot answer here,
+#: whichever tool it is, and the examples are examples.
+EXEC_PATH_CONSEQUENCE = (
+    "Every tool that answers by asking a container cannot answer on this deployment -- "
+    "exec_in_container, the image catalogs (list_scenario_actions, list_roqsim_plugins), "
+    "describe_scenario, describe_world -- and validate_project reports its world and "
+    "scenario checks as unchecked rather than passed. Everything that reads what a "
+    "campaign produced is unaffected: status, logs, results, plots and SQL. Report this "
+    "and carry on with those; nothing about a .vast changes it."
+)
+
+
+def exec_path_unavailable(e: BaseException) -> bool:
+    """Whether *e* says no command can run in a container on this deployment.
+
+    Two spellings of one fact, because the MCP runs in two places: mounted inside the
+    service it is handed the :class:`~robovast.common.errors.ExecPathUnavailable` itself,
+    and over HTTP it is handed a :class:`~robovast.service.interface.ServiceError` carrying
+    the :data:`~robovast.service.interface.EXEC_PATH_UNAVAILABLE` code, the exception type
+    being the one thing that cannot cross that boundary. Both are structural: neither reads
+    the message, which is why the message stays free to be reworded.
+    """
+    from robovast.common.errors import ExecPathUnavailable
+    from robovast.service.interface import EXEC_PATH_UNAVAILABLE
+    return (isinstance(e, ExecPathUnavailable)
+            or getattr(e, "code", "") == EXEC_PATH_UNAVAILABLE)
+
+
 def error_result(e: BaseException) -> dict:
     """A tool's error dict, carrying the caller's next move when the error knows it.
 
@@ -52,7 +84,21 @@ def error_result(e: BaseException) -> dict:
     So an :class:`~robovast.common.errors.ActionableError` passes its hint through here, and
     every other exception is reported exactly as before. Absence of ``next_step`` is
     meaningful: it says there is nothing obvious to do, not that someone forgot.
+
+    A refusal whose *class* a caller must act on rather than print is answered with what
+    that class costs here — see :func:`exec_path_unavailable` and
+    :data:`EXEC_PATH_CONSEQUENCE`.
     """
+    if exec_path_unavailable(e):
+        # The consequence, not only the cause. The cause is already a complete sentence at
+        # the source; what each tool could not say on its own is what is unavailable *here*,
+        # which is a fact about the deployment and the same one for all of them.
+        return {"error": f"{e}. {EXEC_PATH_CONSEQUENCE}"}
+    from robovast.common.errors import STORAGE_FULL_DETAIL, is_storage_full
+    if is_storage_full(e):
+        # The sentence the HTTP surface answers with, rather than an errno and a path on
+        # the service host: mounted in the service, a tool is handed the raw OSError.
+        return {"error": STORAGE_FULL_DETAIL}
     result = {"error": str(e)}
     next_step = getattr(e, "next_step", "")
     if next_step:
