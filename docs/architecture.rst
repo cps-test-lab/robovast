@@ -1054,6 +1054,14 @@ there and publishes it long after the fetch), and one handed to a reader within 
 lock and checks again, so a fetch in flight finishes first and its reader is then recent
 enough to keep.
 
+When a directory was last read is its own modification time, stamped by ``_mark_cache_read``, so
+the record lives exactly as long as the files and survives a restart of a service running off
+the cluster. The same record drives **expiry**: a thread started with the service
+(``_start_cache_expiry``) removes, once an hour, each directory unread for
+``ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS``
+(:mod:`robovast.execution.cluster_execution.fetch_cache`), through the same keep rules and
+the same re-check under the fetch lock as a clear.
+
 .. _image-resolution:
 
 Why images resolve the way they do
