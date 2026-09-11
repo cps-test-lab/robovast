@@ -30,6 +30,8 @@ session, so the staged context in the Job's own emptyDir still works untouched.
 """
 
 import logging
+import os
+import re
 
 from . import data_paths
 
@@ -96,9 +98,8 @@ def default_gc_min_free() -> str:
     :data:`_GC_MIN_FREE_FLOOR_GB`. BuildKit reads ``GB`` as 2^30 bytes, so the floor it keeps is
     never less than a reserve stated in 10^9.
 
-    Read from the environment of the command that renders the config (``setup``, the operator's
-    ``.env``). An ``upgrade`` keeps the budget the live daemon has rather than re-deriving it, the
-    rule every budget key follows; ``--buildkit-cache-min-free`` changes it.
+    Read from the environment of the command that renders the config -- ``setup`` or ``upgrade``,
+    with the operator's ``.env`` -- unless ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` states its own.
     """
     from robovast.service.storage_reserve import \
         reserve_gb  # pylint: disable=import-outside-toplevel
@@ -116,12 +117,26 @@ def default_gc_min_free() -> str:
 #: to be schedulable and survive, burst into whatever is idle.
 BUILDKITD_CPU_REQUEST = "500m"
 BUILDKITD_MEMORY_REQUEST = "2Gi"
+
+#: The ceiling, and a **default rather than the setting**: it is what one compile hits, and a
+#: link step that needs more than is here is killed by the kernel mid-build. That failure is
+#: reported as ``resource``/``infra`` rather than as a missing package, which is precisely what
+#: makes this an operator's number and not the author's -- so it has to be reachable without
+#: editing this file: ``ROBOVAST_BUILDKIT_MEMORY`` / ``ROBOVAST_BUILDKIT_CPU`` (:data:`SETTINGS_ENV`).
+#:
+#: A limit below the default request takes the request down with it (:func:`_fitted_requests`):
+#: Kubernetes refuses a request above its own limit, and someone lowering the ceiling on a small
+#: node must not have to learn about a second knob to do it.
 BUILDKITD_CPU_LIMIT = "8"
 BUILDKITD_MEMORY_LIMIT = "16Gi"
 
 #: Cap on concurrent build steps across the **whole daemon**, not per build. Left to its default
 #: it is the node's CPU count, which is capacity admission has already counted out to campaign
 #: jobs -- so an unbounded daemon competes with the runs it exists to serve.
+#:
+#: The other half of the out-of-memory answer, and often the cheaper one: peak memory is roughly
+#: the parallel steps times the heaviest compile, so halving this fits a build into a ceiling a
+#: node cannot raise.
 BUILDKITD_MAX_PARALLELISM = 4
 
 _CA_MOUNT = "/certs"
@@ -237,6 +252,136 @@ def buildkitd_pvc_manifest(namespace: str, storage_class: str,
     }
 
 
+def checked_quantity(value: str, *, kind: str, name: str) -> str:
+    """``value`` back if it is a Kubernetes ``kind`` quantity; a ``ValueError`` naming ``name``
+    if it is not.
+
+    Checked here rather than left to the API server. A malformed quantity comes back as a 422
+    quoting the whole manifest, and on ``setup`` it arrives *after* the service is up -- so a
+    typo leaves a half-built deployment rather than failing the command that made it. ``name``
+    is the setting the operator wrote, not the keyword this module calls it.
+    """
+    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+
+    parsed = to_cores(value) if kind == "cpu" else to_bytes(value)
+    if parsed is None or parsed <= 0:
+        example = "8, 0.5 or \"500m\"" if kind == "cpu" else "\"32Gi\" or \"512Mi\""
+        raise ValueError(f"{name} {value!r} is not a {kind} quantity: use {example}")
+    return value
+
+
+def _fitted_requests(cpu_request: str, memory_request: str,
+                     cpu_limit: str, memory_limit: str) -> tuple:
+    """The requests to actually declare, never above the limits they sit under.
+
+    Kubernetes rejects a container whose request exceeds its own limit, and the defaults here
+    are a request *and* a limit -- so lowering only the ceiling would render a Deployment the
+    API refuses, over a setting that was on its own perfectly sensible. Lowered rather than
+    refused: the request is a reservation for the scheduler, the limit is what the operator
+    came to change, and a ceiling below the reservation says the reservation was too big for
+    this node. Reported, because it changes what admission counts.
+    """
+    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+
+    for name, request, limit, parse in (
+            ("cpu", cpu_request, cpu_limit, to_cores),
+            ("memory", memory_request, memory_limit, to_bytes)):
+        if (parse(request) or 0) > (parse(limit) or 0):
+            logger.info("the buildkitd %s request (%s) is above the ceiling asked for (%s); "
+                        "reserving the ceiling instead", name, request, limit)
+            if name == "cpu":
+                cpu_request = cpu_limit
+            else:
+                memory_request = memory_limit
+    return cpu_request, memory_request
+
+
+#: The daemon's tuning, as ``apply_buildkitd`` keyword -> the variable that sets it. Read from
+#: the operator's environment -- a ``.env`` -- by ``vast cluster setup`` and ``vast service
+#: upgrade`` alike (:func:`settings_from_env`), so a deployment states its build daemon once
+#: and every converge applies it. Unset is the default, and deleting a line resets it.
+SETTINGS_ENV = {
+    "memory_limit": "ROBOVAST_BUILDKIT_MEMORY",
+    "cpu_limit": "ROBOVAST_BUILDKIT_CPU",
+    "max_parallelism": "ROBOVAST_BUILDKIT_PARALLELISM",
+    "gc_max_used": "ROBOVAST_BUILDKIT_CACHE_MAX",
+    "gc_min_free": "ROBOVAST_BUILDKIT_CACHE_MIN_FREE",
+    "gc_reserved": "ROBOVAST_BUILDKIT_CACHE_RESERVED",
+}
+
+#: What each setting is called where an operator reads a change to it.
+_SETTING_LABELS = {
+    "memory_limit": "memory ceiling",
+    "cpu_limit": "CPU ceiling",
+    "max_parallelism": "parallel build steps",
+    "gc_max_used": "cache ceiling",
+    "gc_min_free": "free space kept by the cache",
+    "gc_reserved": "cache kept even when old",
+}
+
+#: A GC budget BuildKit accepts: an amount such as ``150GB`` or ``512MiB``, or a share of the
+#: disk such as ``70%``.
+_CACHE_BUDGET = re.compile(r"^\d+(\.\d+)?\s*([KMGT]i?B?|B)?$|^\d{1,3}%$", re.IGNORECASE)
+
+
+def settings_from_env() -> dict:
+    """The daemon's tuning from the environment, checked, as ``apply_buildkitd`` keywords.
+
+    Every key of :data:`SETTINGS_ENV` is present, ``""`` (or ``0``) where its variable is unset,
+    which renders the default. A value that is not one raises ``ValueError`` naming the
+    variable -- called before anything is applied, so a typo fails the command rather than
+    leaving a deployment half converged.
+    """
+    settings = {}
+    for key, var in SETTINGS_ENV.items():
+        raw = os.environ.get(var, "").strip()
+        if key in ("memory_limit", "cpu_limit"):
+            value = checked_quantity(raw, kind="memory" if key == "memory_limit" else "cpu",
+                                     name=var) if raw else ""
+        elif key == "max_parallelism":
+            if raw and not (raw.isdigit() and int(raw) >= 1):
+                raise ValueError(f"{var} {raw!r} is not a number of concurrent build steps: "
+                                 "use 1 or more")
+            value = int(raw) if raw else 0
+        else:
+            if raw and not _CACHE_BUDGET.match(raw):
+                raise ValueError(f"{var} {raw!r} is not a cache budget: use an amount such as "
+                                 "150GB or a share of the disk such as 70%")
+            value = raw
+        settings[key] = value
+    return settings
+
+
+def _rendered(key: str, value):
+    """What a setting renders as: *value*, or the default an unset one takes."""
+    if value:
+        return value
+    return {"memory_limit": BUILDKITD_MEMORY_LIMIT, "cpu_limit": BUILDKITD_CPU_LIMIT,
+            "max_parallelism": BUILDKITD_MAX_PARALLELISM,
+            "gc_max_used": DEFAULT_BUILDKITD_GC_MAX_USED,
+            "gc_reserved": DEFAULT_BUILDKITD_GC_RESERVED,
+            "gc_min_free": default_gc_min_free()}[key]
+
+
+def setting_changes(live: dict, wanted: dict) -> list:
+    """What converging to *wanted* changes on a daemon running *live*, one line per setting.
+
+    *live* is :func:`buildkitd_storage_from_cluster`'s answer; a setting it does not report
+    (no daemon yet) is not a change. So an upgrade says what it resets as well as what it
+    raises -- a ceiling going back to its default because nobody wrote it down is exactly the
+    change that must not pass silently.
+    """
+    lines = []
+    for key, var in SETTINGS_ENV.items():
+        if key not in live:
+            continue
+        before, after = str(live[key]), str(_rendered(key, wanted.get(key)))
+        if before != after:
+            lines.append(f"{_SETTING_LABELS[key]}: {before} -> {after} ({var}"
+                         f"{'' if wanted.get(key) else ' unset'})")
+    return lines
+
+
 def _tolerations() -> list:
     """What the daemon must tolerate to be schedulable where the work is.
 
@@ -252,6 +397,9 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
                                   pull_secret_name: str = "", ca_configmap_name: str = "",
                                   host_aliases=None, cpu_request: str = BUILDKITD_CPU_REQUEST,
                                   memory_request: str = BUILDKITD_MEMORY_REQUEST,
+                                  cpu_limit: str = BUILDKITD_CPU_LIMIT,
+                                  memory_limit: str = BUILDKITD_MEMORY_LIMIT,
+                                  max_parallelism: int = BUILDKITD_MAX_PARALLELISM,
                                   stamp: str = "") -> dict:
     """The daemon itself.
 
@@ -261,6 +409,12 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
     and the build path deliberately *detaches* a waiting campaign rather than cancelling it, so
     a sibling campaign can be waiting on a build this restart destroys. There is no drain.
 
+    ``cpu_limit`` / ``memory_limit`` / ``max_parallelism`` are the build's size, and they are
+    arguments rather than constants because the failure they answer belongs to whoever runs the
+    deployment: a compile killed for memory is reported as ``resource``/``infra`` precisely so
+    it is not mistaken for a package the project forgot. Changing any of them changes the pod
+    template, so the daemon rolls.
+
     ``stamp`` goes into the pod template's restart annotation. Unlike the warm DaemonSet, this
     one should **not** be stamped on every deploy: rolling it discards nothing persistent, but it
     does interrupt whatever was building, and an upgrade that changed nothing about the daemon
@@ -269,6 +423,20 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
     from .cluster_image_build import BUILDKIT_IMAGE
     from .service_deploy import RESTART_ANNOTATION
 
+    cpu_limit = checked_quantity(cpu_limit or BUILDKITD_CPU_LIMIT,
+                                 kind="cpu", name=SETTINGS_ENV["cpu_limit"])
+    memory_limit = checked_quantity(memory_limit or BUILDKITD_MEMORY_LIMIT,
+                                    kind="memory", name=SETTINGS_ENV["memory_limit"])
+    cpu_request, memory_request = _fitted_requests(
+        cpu_request or BUILDKITD_CPU_REQUEST, memory_request or BUILDKITD_MEMORY_REQUEST,
+        cpu_limit, memory_limit)
+    # Falsy is "not given", as everywhere else here; anything below one is a daemon that
+    # solves nothing, and BuildKit does not read it as "unbounded" either.
+    max_parallelism = int(max_parallelism or BUILDKITD_MAX_PARALLELISM)
+    if max_parallelism < 1:
+        raise ValueError(f"{SETTINGS_ENV['max_parallelism']} {max_parallelism} is not a number "
+                         "of concurrent build steps: use 1 or more")
+
     args = [
         "--addr", f"tcp://0.0.0.0:{BUILDKITD_PORT}",
         # Rootless BuildKit runs inside a user namespace it creates itself; without this it
@@ -276,7 +444,7 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
         # refuses the nesting. The same flag the per-build daemon carried, for the same reason.
         "--oci-worker-no-process-sandbox",
         "--config", f"{_CONF_DIR}/buildkitd.toml",
-        "--oci-max-parallelism", str(BUILDKITD_MAX_PARALLELISM),
+        "--oci-max-parallelism", str(max_parallelism),
     ]
 
     volumes = [
@@ -313,9 +481,8 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
         "ports": [{"containerPort": BUILDKITD_PORT, "name": "buildkit"}],
         "volumeMounts": mounts,
         "resources": {
-            "requests": {"cpu": cpu_request or BUILDKITD_CPU_REQUEST,
-                         "memory": memory_request or BUILDKITD_MEMORY_REQUEST},
-            "limits": {"cpu": BUILDKITD_CPU_LIMIT, "memory": BUILDKITD_MEMORY_LIMIT},
+            "requests": {"cpu": cpu_request, "memory": memory_request},
+            "limits": {"cpu": cpu_limit, "memory": memory_limit},
         },
         # Rootless BuildKit needs both Unconfined: rootlesskit's mount namespace is what
         # AppArmor and seccomp otherwise refuse, with "failed to share mount point: /:
@@ -414,6 +581,7 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
                     pull_secret_name: str = "", ca_configmap_name: str = "",
                     registry_host: str = "", host_aliases=None,
                     cpu_request: str = "", memory_request: str = "",
+                    cpu_limit: str = "", memory_limit: str = "", max_parallelism: int = 0,
                     gc_reserved: str = "", gc_max_used: str = "", gc_min_free: str = "",
                     stamp: str = "") -> None:
     """Create or converge the daemon: its claim, its config, its Deployment and its Service.
@@ -472,7 +640,10 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
         node_selector=node_selector, pull_secret_name=pull_secret_name,
         ca_configmap_name=ca_configmap_name, host_aliases=host_aliases,
         cpu_request=cpu_request or BUILDKITD_CPU_REQUEST,
-        memory_request=memory_request or BUILDKITD_MEMORY_REQUEST, stamp=stamp)
+        memory_request=memory_request or BUILDKITD_MEMORY_REQUEST,
+        cpu_limit=cpu_limit or BUILDKITD_CPU_LIMIT,
+        memory_limit=memory_limit or BUILDKITD_MEMORY_LIMIT,
+        max_parallelism=max_parallelism or BUILDKITD_MAX_PARALLELISM, stamp=stamp)
     try:
         apps.create_namespaced_deployment(namespace, dep)
         logger.info("created the buildkitd Deployment in %s", namespace)
@@ -500,10 +671,15 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
 
 
 def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
-    """Recover the daemon's storage settings from the live objects, as ``apply_buildkitd`` kwargs.
+    """Recover what the live daemon is running with, as ``apply_buildkitd`` kwargs.
 
-    These arrive as ``setup`` flags and **nothing records them**: they exist only in the
-    Deployment and the claim that Deployment produced. So an ``upgrade`` re-rendering the daemon
+    Two kinds of setting, used differently. The store and the node pin are kept: an ``upgrade``
+    converges with them. The GC budget and the build's size (:func:`_resources_from_cluster`)
+    come from the operator's environment on every converge (:data:`SETTINGS_ENV`), so what is
+    recovered of them is what :func:`setting_changes` reports an upgrade as changing.
+
+    The store settings arrive as ``setup`` flags and **nothing records them**: they exist only in
+    the Deployment and the claim that Deployment produced. So an ``upgrade`` re-rendering the daemon
     from defaults would move a PVC-backed store back to a hostPath -- a new empty cache, on
     whichever node the pod next lands on, while the old claim still holds its space and nothing
     says so. The symptom is the one this component exists to remove: base images pulled again,
@@ -533,11 +709,10 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
         return {}
 
     pod_spec = dep.spec.template.spec
-    # The budget belongs to the same recovery: it is a `setup` flag recorded nowhere but the
-    # daemon's own config, so an upgrade re-rendering from defaults would silently re-size a
-    # store an operator had deliberately bounded -- on the deployment whose disk was the reason
-    # they bounded it. Merged before the branches below, both of which return.
+    # What the daemon runs with now, so an upgrade can say what it changes. Merged before the
+    # branches below, both of which return.
     settings = _gc_budget_from_cluster(namespace, core)
+    settings.update(_resources_from_cluster(dep))
 
     from .node_placement import BUILD_NODE_LABEL  # pylint: disable=import-outside-toplevel
     node_selector = pod_spec.node_selector or {}
@@ -588,6 +763,40 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
     return settings
 
 
+#: The daemon's own ``--oci-max-parallelism``, wherever the container carries it. A private
+#: registry's CA replaces ``args`` with a shell ``command`` that has the same arguments joined
+#: into it, so a recovery reading only ``args`` would reset the parallelism on exactly the
+#: deployments that have a registry CA.
+_PARALLELISM_ARG = re.compile(r"--oci-max-parallelism[= ]+(\d+)")
+
+
+def _resources_from_cluster(dep) -> dict:
+    """The size a deployed daemon runs with, as ``apply_buildkitd`` kwargs.
+
+    Read so an upgrade can report a ceiling it moves -- above all one going back to its default
+    because nobody wrote it into the ``.env``, which would otherwise surface only as the build it
+    no longer fits.
+
+    Keys that are not there are left out rather than defaulted: a daemon predating the setting
+    is running the defaults already.
+    """
+    container = next((c for c in (dep.spec.template.spec.containers or [])
+                      if c.name == "buildkitd"), None)
+    if container is None:
+        return {}
+    settings = {}
+    resources = container.resources
+    for suffix, declared in (("request", resources.requests if resources else None),
+                             ("limit", resources.limits if resources else None)):
+        for name in ("cpu", "memory"):
+            if (declared or {}).get(name):
+                settings[f"{name}_{suffix}"] = declared[name]
+    found = _PARALLELISM_ARG.search(" ".join(container.args or container.command or []))
+    if found:
+        settings["max_parallelism"] = int(found.group(1))
+    return settings
+
+
 #: ``buildkitd.toml`` GC key -> the ``apply_buildkitd`` keyword that sets it.
 _GC_KEYS = {"reservedSpace": "gc_reserved", "maxUsedSpace": "gc_max_used",
             "minFreeSpace": "gc_min_free"}
@@ -600,10 +809,9 @@ def _gc_budget_from_cluster(namespace: str, core) -> dict:
     and read with a real TOML parser rather than by matching text -- what is being read is the
     file the daemon itself reads.
 
-    ``{}`` when there is no config or it cannot be understood: the caller then applies its own
-    defaults, which is the right answer for a daemon that predates this setting. Unlike the
-    storage recovery below, guessing wrong here costs disk rather than the whole cache, so it
-    does not refuse.
+    ``{}`` when there is no config or it cannot be understood, which reports no change. Unlike
+    the storage recovery below, guessing wrong here costs a line of output rather than the whole
+    cache, so it does not refuse.
     """
     import tomllib
 

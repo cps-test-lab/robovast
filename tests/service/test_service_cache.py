@@ -9,6 +9,7 @@ reader was handed recently enough that it may still be opening files under it. E
 is named with its reason, so "nothing to free" and "in use" read differently.
 """
 
+import os
 import threading
 import time
 
@@ -24,13 +25,20 @@ from robovast.service.storage_reserve import RESERVE_ENV
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
-def _entry(root, name, size):
-    """A cache entry holding *size* bytes -- sparse, so a gigabyte costs no disk."""
+def _entry(root, name, size, *, idle_s=0.0):
+    """A cache entry holding *size* bytes -- sparse, so a gigabyte costs no disk -- last read
+    *idle_s* ago. The dir's own modification time is that record."""
     path = root / name
     path.mkdir(parents=True)
     with open(path / "blob", "wb") as handle:
         handle.truncate(size)
+    then = time.time() - idle_s
+    os.utime(path, (then, then))
     return path
+
+
+#: Idle long enough that the one-hour read grace no longer protects an entry.
+_UNREAD = 2 * 3600.0
 
 
 @pytest.fixture(name="scenes")
@@ -93,7 +101,7 @@ def _cluster(tmp_path, scenes, monkeypatch):
     svc._lock = threading.Lock()
     svc._campaigns = {}
     svc._fetch_locks, svc._fetch_locks_guard = {}, threading.Lock()
-    svc._cache_read_at, svc._cache_pins = {}, {}
+    svc._cache_pins = {}
     monkeypatch.setattr(svc, "_FETCH_CACHE_ROOT", tmp_path / "fetched")
     return svc
 
@@ -111,7 +119,7 @@ def _live(campaign_id):
 def test_a_clear_keeps_what_may_still_be_in_use_and_says_why(cluster, tmp_path):
     root = tmp_path / "fetched"
     for cid in ("camp-idle", "camp-live", "camp-pinned", "camp-recent"):
-        _entry(root, cid, 100)
+        _entry(root, cid, 100, idle_s=_UNREAD)
     cluster._campaigns["camp-live"] = _live("camp-live")
     cluster._mark_cache_read("camp-recent")
 
@@ -128,13 +136,19 @@ def test_a_clear_keeps_what_may_still_be_in_use_and_says_why(cluster, tmp_path):
 
 
 def test_a_read_long_ago_no_longer_protects_a_dir(cluster, tmp_path):
-    _entry(tmp_path / "fetched", "camp-old", 100)
-    cluster._cache_read_at["camp-old"] = time.monotonic() - cluster._CACHE_READ_GRACE_S - 1
+    _entry(tmp_path / "fetched", "camp-old", 100, idle_s=cluster._CACHE_READ_GRACE_S + 1)
     assert cluster.clear_service_cache().removed_entries == 1
 
 
+def test_a_read_is_recorded_on_the_dir_so_a_restart_keeps_it(cluster, tmp_path):
+    """A service restarted beside a cache it did not fill must still know what was read."""
+    _entry(tmp_path / "fetched", "camp-1", 100, idle_s=_UNREAD)
+    cluster._mark_cache_read("camp-1")
+    assert cluster._cache_idle_s("camp-1") < 5
+
+
 def test_a_pin_is_released_when_the_operation_ends(cluster, tmp_path):
-    _entry(tmp_path / "fetched", "camp-1", 100)
+    _entry(tmp_path / "fetched", "camp-1", 100, idle_s=_UNREAD)
     with cluster._holding_cache("camp-1"):
         with cluster._holding_cache("camp-1"):
             pass
@@ -145,7 +159,7 @@ def test_a_pin_is_released_when_the_operation_ends(cluster, tmp_path):
 def test_a_fetch_in_flight_finishes_and_its_reader_is_then_kept(cluster, tmp_path):
     """A clear waits on the campaign's fetch lock and checks again: the fetch it waited for
     marked the dir read, so its reader -- about to open files there -- keeps it."""
-    _entry(tmp_path / "fetched", "camp-1", 100)
+    _entry(tmp_path / "fetched", "camp-1", 100, idle_s=_UNREAD)
     lock = cluster._fetch_locks.setdefault("camp-1", threading.Lock())
     lock.acquire()
     result = {}
@@ -215,3 +229,91 @@ def test_the_cli_reports_and_clears(transport, scenes, monkeypatch):
     cleared = CliRunner().invoke(service_cli.service, ["cache", "--clear"])
     assert "scene cache" in shown.output and "2.0 GB in 1 entry" in shown.output
     assert "freed 2.0 GB (1 entry)" in cleared.output
+
+
+# -- expiry: what nobody has read for the maximum age goes on its own --------------------------
+
+_WEEK = 7 * 86400.0
+
+
+def test_a_dir_unread_past_the_maximum_age_expires(cluster, tmp_path):
+    root = tmp_path / "fetched"
+    _entry(root, "camp-stale", 100, idle_s=_WEEK + 60)
+    _entry(root, "camp-this-week", 100, idle_s=_WEEK - 60)
+
+    assert cluster._expire_fetch_cache(_WEEK) == 1
+    assert not (root / "camp-stale").exists()
+    assert (root / "camp-this-week").is_dir()
+
+
+def test_expiry_keeps_what_a_clear_keeps(cluster, tmp_path):
+    """Old is not enough: a running campaign's files and a pinned dir stay, however stale."""
+    root = tmp_path / "fetched"
+    _entry(root, "camp-live", 100, idle_s=_WEEK + 60)
+    _entry(root, "camp-pinned", 100, idle_s=_WEEK + 60)
+    cluster._campaigns["camp-live"] = _live("camp-live")
+
+    with cluster._holding_cache("camp-pinned"):
+        assert cluster._expire_fetch_cache(_WEEK) == 0
+    assert (root / "camp-live").is_dir() and (root / "camp-pinned").is_dir()
+
+
+def test_a_read_landing_while_expiry_waits_saves_the_dir(cluster, tmp_path):
+    _entry(tmp_path / "fetched", "camp-1", 100, idle_s=_WEEK + 60)
+    lock = cluster._fetch_locks.setdefault("camp-1", threading.Lock())
+    lock.acquire()
+    result = {}
+    expiring = threading.Thread(target=lambda: result.update(n=cluster._expire_fetch_cache(_WEEK)))
+    expiring.start()
+    time.sleep(0.2)                      # judged stale, now waiting for the fetch to finish
+    cluster._mark_cache_read("camp-1")
+    lock.release()
+    expiring.join(5)
+
+    assert result["n"] == 0
+    assert (tmp_path / "fetched" / "camp-1").is_dir()
+
+
+def test_expiry_runs_on_its_own_and_stops_with_the_service(cluster, monkeypatch):
+    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
+
+    monkeypatch.setenv(MAX_AGE_ENV, "7")
+    cluster._cache_expiry, cluster._cache_expiry_stop = None, threading.Event()
+    passes = threading.Event()
+    seen = {}
+
+    def expire(max_age_s):
+        seen["max_age_s"] = max_age_s
+        passes.set()
+        return 0
+
+    monkeypatch.setattr(cluster, "_expire_fetch_cache", expire)
+    cluster._start_cache_expiry()
+    assert passes.wait(5), "the first pass runs at start, not an interval later"
+    assert seen["max_age_s"] == _WEEK
+
+    cluster._cache_expiry_stop.set()
+    cluster._cache_expiry.join(5)
+    assert not cluster._cache_expiry.is_alive()
+
+
+def test_a_maximum_age_of_zero_starts_nothing(cluster, monkeypatch):
+    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
+
+    monkeypatch.setenv(MAX_AGE_ENV, "0")
+    cluster._cache_expiry, cluster._cache_expiry_stop = None, threading.Event()
+    cluster._start_cache_expiry()
+    assert cluster._cache_expiry is None
+
+
+def test_the_maximum_age_defaults_to_a_week_and_refuses_nonsense(monkeypatch):
+    from robovast.execution.cluster_execution import fetch_cache
+
+    monkeypatch.delenv(fetch_cache.MAX_AGE_ENV, raising=False)
+    assert fetch_cache.max_age_days() == 7
+    monkeypatch.setenv(fetch_cache.MAX_AGE_ENV, "2.5")
+    assert fetch_cache.max_age_days() == 2.5
+    for bad in ("a week", "-1", "nan"):
+        monkeypatch.setenv(fetch_cache.MAX_AGE_ENV, bad)
+        with pytest.raises(ValueError, match=fetch_cache.MAX_AGE_ENV):
+            fetch_cache.max_age_days()

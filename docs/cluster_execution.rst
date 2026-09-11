@@ -1130,34 +1130,45 @@ tenants and the service pod is pinned to that one. On a cluster that can provisi
 prefer an **SSD** class: BuildKit's snapshotter is small-file heavy, and a slow disk becomes
 the bottleneck the cache was meant to remove.
 
-The store is **bounded** — a component whose whole purpose is that state survives is also the
-one that fills a disk. The daemon's ``buildkitd.toml`` sets ``reservedSpace`` / ``maxUsedSpace``
-/ ``minFreeSpace`` (the keys the pinned BuildKit understands; the older ``gckeepstorage`` is
-gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all), and each has a flag:
+.. _buildkit-settings:
 
-.. code-block:: bash
+The daemon's budget and size are set in the ``.env`` — no flags — and applied by both
+``vast cluster setup`` and ``vast service upgrade``. Unset takes the default, deleting a line
+resets it, and an upgrade prints every value it changes on the running daemon:
 
-   vast cluster setup rke2 \
-     --buildkit-cache-max 150GB \        # ceiling on the cache
-     --buildkit-cache-min-free 150GB \   # free space kept on the filesystem
-     --buildkit-cache-reserved 100GB      # cache kept even when old
+====================================  ============================  ==========================
+Environment                           What it bounds                Default
+====================================  ============================  ==========================
+``ROBOVAST_BUILDKIT_CACHE_MAX``       the cache's size              ``150GB``
+``ROBOVAST_BUILDKIT_CACHE_MIN_FREE``  free space kept on its disk   the free-space reserve,
+                                                                    at least ``50GB``
+``ROBOVAST_BUILDKIT_CACHE_RESERVED``  cache kept even when old      ``100GB``
+``ROBOVAST_BUILDKIT_MEMORY``          memory one build may use      ``16Gi``
+``ROBOVAST_BUILDKIT_CPU``             CPU one build may use         ``8``
+``ROBOVAST_BUILDKIT_PARALLELISM``     build steps run at once       ``4``
+====================================  ============================  ==========================
 
-**Size these for the disk the store lands on.** The defaults suit a large one. The load-bearing
-one is ``--buildkit-cache-min-free``: it is measured against the *filesystem* rather than the
-cache, so it forces pruning long before an oversized ceiling is reached and is what keeps a
-fixed ceiling honest on a disk smaller than the ceiling. Without it a fixed ceiling is not a
-ceiling at all — the store grows until the node runs out, and the kubelet answers DiskPressure
-by evicting pods, on the node the daemon is pinned to and the service pod may share. On a disk
-whose size you do not know, a percentage (``70%``) is accepted for any of the three.
+A cache size is an amount (``150GB``) or a share of the disk (``70%``); memory and CPU are
+Kubernetes quantities. A value that is not one fails the command before anything is applied.
+A deployment whose daemon was given these as ``setup`` flags keeps them only until its next
+upgrade: write them into the ``.env`` first.
 
-Left unset, ``--buildkit-cache-min-free`` is the service's free-space reserve
-(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), never below ``50GB``, so the cache never
-fills the margin the service keeps free.
+**Size the cache for the disk it lands on.** The load-bearing setting is the free space it
+keeps: it is measured against the *filesystem*, so it prunes the cache long before an
+oversized ceiling is reached, and stops a full builder disk from becoming DiskPressure
+evictions on its node. Unset, it is the service's free-space reserve
+(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`).
 
-All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
-are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
-re-size a store somebody had bounded on purpose. So a reserve raised later reaches the cache
-only when ``upgrade`` is given ``--buildkit-cache-min-free``.
+**A build killed for memory** is reported as a ``resource`` failure fixable by ``infra``, not
+as a missing dependency: the daemon's ceilings are one build's ceilings. Raise
+``ROBOVAST_BUILDKIT_MEMORY`` where the nodes have room, or lower
+``ROBOVAST_BUILDKIT_PARALLELISM`` where they do not — peak memory is roughly the parallel steps
+times the heaviest compile. The daemon reserves far less than its ceilings, because admission
+subtracts every request from what campaigns may run; a ceiling below that reservation lowers
+the reservation with it.
+
+Changing any of these replaces the daemon pod, so ``upgrade --no-restart`` leaves the daemon as
+it is.
 
 Three consequences worth knowing before they surprise you:
 
