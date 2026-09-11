@@ -1864,6 +1864,11 @@ class BatchJobRunner:
         for node_id in node_ids:
             calibration.skip(node_id, reason)
 
+    def skipped_nodes(self) -> dict:
+        """``{node_id: why}`` for the machines this campaign left out. Empty is the norm."""
+        calibration = self._calibration
+        return calibration.skipped() if calibration is not None else {}
+
     def has_usable_node(self) -> bool:
         """Whether any node can still take a run.
 
@@ -3806,7 +3811,8 @@ class KubernetesBackend(ExecutionBackend):
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
                               image_digests=digests or None,
-                              image_labels=image_labels or None)
+                              image_labels=image_labels or None,
+                              nodes_skipped=runner.skipped_nodes() or None)
 
     def publish_execution_records(self, campaign_root: str) -> None:
         """Publish the directories only the driver writes, so a reader elsewhere has them.

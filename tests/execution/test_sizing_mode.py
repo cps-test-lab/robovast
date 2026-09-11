@@ -1061,3 +1061,44 @@ def test_skipping_clears_the_unmeasured_tally():
 
     r.skip_unmeasured_nodes(["n2"], "its probe did not run in 2 consecutive batches")
     assert r.weigh_unmeasured_nodes() == {}, "a node left out is no longer sitting out"
+
+
+def test_a_left_out_node_reaches_the_campaign_record(tmp_path, monkeypatch):
+    """A log line is gone by the time two campaigns are compared; the record is not.
+
+    The complaint this whole path exists for is a campaign that ran on fewer machines than it
+    had and said nothing, so "which ones" has to survive into what the campaign leaves behind.
+    """
+    import yaml
+
+    from robovast.common import execution as execution_mod
+    from robovast.common.execution import create_execution_yaml
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration.skip("n2", "its probe did not run in 2 consecutive batches")
+
+    r = kb.BatchJobRunner()
+    r._calibration = calibration
+    assert r.skipped_nodes() == {"n2": "its probe did not run in 2 consecutive batches"}
+
+    create_execution_yaml(1, str(tmp_path), nodes_skipped=r.skipped_nodes())
+    written = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
+    assert written["nodes_skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, "the record names it and why"
+
+
+def test_a_campaign_that_used_every_node_records_nothing(tmp_path, monkeypatch):
+    """Absent means none was left out -- the normal case must not grow an empty key."""
+    import yaml
+
+    from robovast.common import execution as execution_mod
+    from robovast.common.execution import create_execution_yaml
+
+    monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
+    create_execution_yaml(1, str(tmp_path), nodes_skipped=None)
+    written = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
+    assert "nodes_skipped" not in written
