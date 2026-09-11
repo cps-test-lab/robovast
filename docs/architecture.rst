@@ -1034,6 +1034,19 @@ resuming a live campaign after a restart would otherwise be abandoned, and stop 
 what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
 that already failed for lack of space is also given.
 
+**The caches a clear may empty are copies of durable data, and nothing else.**
+``service_cache`` / ``clear_service_cache`` sweep the scene cache on both lanes and, on the
+cluster lane, the object-store fetch cache (``/tmp/robovast-campaigns``, one directory per
+campaign) through the ``_lane_cache_sweeps`` hook; a local lane's results directory is the
+durable home and is never offered. A reader of the fetch cache is handed a *path* and opens
+files under it after the fetch lock is released, so no lock a clear could take covers it.
+What makes the clear safe beside them is what it keeps: a campaign that is still running, a
+directory an operation pinned with ``_holding_cache`` (``run_share``, which edits the outcome
+there and publishes it long after the fetch), and one handed to a reader within the last hour
+(``_mark_cache_read``, recorded under the fetch lock). Each removal takes that campaign's fetch
+lock and checks again, so a fetch in flight finishes first and its reader is then recent
+enough to keep.
+
 .. _image-resolution:
 
 Why images resolve the way they do

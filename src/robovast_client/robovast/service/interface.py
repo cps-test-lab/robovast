@@ -1250,6 +1250,45 @@ class ResourceUsage(BaseModel):
     query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
 
 
+class CacheSize(BaseModel):
+    """One cache the service keeps, and what it holds now."""
+
+    #: Which cache, in the reader's terms.
+    name: str
+    size_bytes: int = 0
+    entries: int = 0
+
+
+class KeptCacheEntry(BaseModel):
+    """An entry a clear leaves in place, and why."""
+
+    cache: str
+    #: The entry: a campaign id for the fetch cache, a world key for the scene cache.
+    name: str
+    size_bytes: int = 0
+    reason: str
+
+
+class ServiceCache(BaseModel):
+    """The service's caches: copies it can rebuild from durable data, and nothing else.
+
+    Clearing one loses nothing but the time to rebuild what is next asked for -- a campaign's
+    files are fetched from the object store again, a world is compiled again. An entry
+    something may still be using is never removed; ``kept`` names each and why, so a caller
+    can tell "nothing to free" from "in use".
+
+    Reported by ``service_cache`` and, after removing what may go, by ``clear_service_cache``,
+    whose ``freed_bytes`` / ``removed_entries`` say what it did. ``caches`` is what remains.
+    """
+
+    caches: list[CacheSize] = Field(default_factory=list)
+    #: Entries a clear leaves (or, in a report, would leave) in place.
+    kept: list[KeptCacheEntry] = Field(default_factory=list)
+    #: What a clear removed. Zero in a report.
+    freed_bytes: int = 0
+    removed_entries: int = 0
+
+
 class UsageSample(BaseModel):
     """One :class:`ResourceUsage` reading, at a point in time.
 
@@ -2216,6 +2255,8 @@ class Routes:
     ADMIN_UPGRADE = "/admin/upgrade"
     #: What this service is configured with, read back out of its own environment.
     ADMIN_CONFIG = "/admin/config"
+    #: The service's rebuildable caches: what they hold (GET), and clearing them (DELETE).
+    ADMIN_CACHE = "/admin/cache"
     #: What this service DID -- durable, unlike the log above it. Cursor-keyed, and its own
     #: route rather than a field on a polled payload, per the tiers in docs/http_api.rst.
     ADMIN_EVENTS = "/admin/events"
@@ -2537,6 +2578,19 @@ class RobovastInterface(ABC):
 
         ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
         single-backend services offer one lane and ignore it.
+        """
+
+    @abstractmethod
+    def service_cache(self) -> ServiceCache:
+        """What the service's rebuildable caches hold, and what a clear would keep."""
+
+    @abstractmethod
+    def clear_service_cache(self) -> ServiceCache:
+        """Remove every cache entry nothing may still be using; report what was freed.
+
+        Only copies of durable data are touched, so nothing is lost but the time to rebuild
+        it. Kept, and named in ``kept``: a running campaign's files, an entry an operation has
+        pinned, and one read recently enough that its reader may still hold the path.
         """
 
     # -- rolling this service onto newer bytes ------------------------------

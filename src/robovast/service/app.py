@@ -58,7 +58,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
-                                        PanelsSource,
+                                        PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
@@ -954,6 +954,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         before this one stops, so watch ``upgrade_info().running_digest`` for the handover.
         """
         return _guard(lambda: impl.upgrade_service(force))
+
+    @app.get(Routes.ADMIN_CACHE, response_model=ServiceCache, tags=["admin"])
+    def service_cache() -> ServiceCache:
+        """What the service's rebuildable caches hold, and what a clear would keep and why."""
+        return _guard(impl.service_cache)
+
+    @app.delete(Routes.ADMIN_CACHE, response_model=ServiceCache, tags=["admin"])
+    def clear_service_cache() -> ServiceCache:
+        """Remove every cache entry nothing may still be using, and say what that freed.
+
+        Only copies of durable data: the cost is the time to rebuild what is next asked for.
+        """
+        return _guard(impl.clear_service_cache)
 
     @app.get(Routes.ADMIN_CONFIG, response_model=ServiceConfig, tags=["admin"])
     def service_config(request: Request) -> ServiceConfig:

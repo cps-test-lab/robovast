@@ -318,7 +318,9 @@ to *start* any of them while its disk or its results store has less free space t
 with a 507 whose message names the meter and the amounts, on every client. Work already
 running continues, and stopping or deleting campaigns, which frees space, is never refused.
 The web UI's sidebar and ``get_resource_usage`` (``storage_refusal``) show the same verdict
-before anyone is refused.
+before anyone is refused. When clearing the service's rebuildable caches would free at least a
+gigabyte, the refusal says so; ``vast service cache --clear`` (or the Admin page's **Service
+cache**) does it.
 
 .. code-block:: bash
 

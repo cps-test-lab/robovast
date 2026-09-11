@@ -96,6 +96,8 @@ def _transport(tmp_path, monkeypatch):
     lt = LocalTransport(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     monkeypatch.setenv(RESERVE_ENV, "150")
+    # A refusal measures the service cache for its hint; keep that off the developer's own.
+    monkeypatch.setenv("ROBOVAST_SCENE_CACHE", str(tmp_path / "scenes"))
     return lt
 
 

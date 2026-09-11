@@ -82,6 +82,7 @@ def _svc(monkeypatch, tmp_path):
     svc._fetch_locks = {}
     svc._fetch_locks_guard = threading.Lock()
     svc._last_fetch = {}
+    svc._cache_read_at = {}
     svc._work_progress = {}
     svc._work_progress_guard = threading.Lock()
     monkeypatch.setattr(ClusterService, "_campaign_object_location",
