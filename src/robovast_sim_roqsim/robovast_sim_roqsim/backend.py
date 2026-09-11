@@ -6,11 +6,9 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 from typing import Optional
 
-import yaml
 from pydantic import BaseModel, ConfigDict
 
 from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
@@ -50,37 +48,6 @@ def _config_in_container(config: str) -> str:
     if config.startswith("/"):
         return config
     return f"{CONFIG_MOUNT}/{config.lstrip('./')}"
-
-
-def _extends_a_campaign_file(config: str, vast_dir: str) -> bool:
-    """Whether this world inherits from another file the CAMPAIGN owns.
-
-    Reading one top-level key is not resolving the chain -- it is deciding whether the chain
-    has to be resolved, which is the difference between a cheap answer and a container run.
-    A parent that is a package ref, or absent entirely, means the campaign's one file is the
-    whole of what it owns.
-
-    Resolved against *vast_dir*, never against the working directory. Opening the authored
-    path as given made this answer depend on where the caller stood: from the campaign's own
-    directory the file was found and the chain was resolved, from anywhere else the open
-    failed and the branch below read that as "no parent" -- so the same campaign both did and
-    did not ask the simulator, and only one of those staged the parent.
-
-    Unreadable, or not a mapping: no, because such a file is not a world the simulator can
-    open either -- it fails with its own error, and paying for a container to describe it
-    would only make that failure slower. The question here is narrow on purpose: does the
-    chain need resolving, not is this world any good.
-    """
-    path = config if os.path.isabs(config) else os.path.join(vast_dir or ".", config)
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            raw = yaml.safe_load(handle)
-    except (OSError, yaml.YAMLError):
-        return False
-    if not isinstance(raw, dict):
-        return False
-    parent = raw.get("extends")
-    return isinstance(parent, str) and not _is_package_ref(parent)
 
 
 class RoqsimConfig(BaseModel):
@@ -273,31 +240,40 @@ class RoqsimBackend(SimulatorBackend):
         """Everything the world is made of -- asked of the image that can answer it.
 
         A world is not one file. It is the YAML, whatever it ``extends``, the MJCF that chain
-        settles on, and the meshes and colliders that MJCF names, all referenced by paths
-        relative to each other. Returning just ``cfg.config`` staged the YAML and nothing
-        else, so a world extending another **campaign** file failed in the container on a
-        parent that never travelled -- after the image pull and the pod schedule.
+        settles on, the meshes and textures that MJCF names, and whatever its plugins point at
+        -- a floorplan's mesh and the wall colliders beside it, a trajectory CSV -- all
+        referenced by paths relative to each other. Returning just ``cfg.config`` staged the
+        YAML and nothing else, so such a world failed in the container on a file that never
+        travelled, after the image pull and the pod schedule.
 
-        Enumerating the chain needs roqsim, which this module must not import (it is loaded
-        in the long-lived service process). So it returns the question instead: ``roqsim scenes
+        Which files those are is roqsim's rule, and roqsim is the only place all of it exists:
+        a plugin's own config is what no YAML walk can see, so each plugin is asked
+        (``roqsim.plugin.Plugin.sources``). Deciding *here* whether a world is more than one
+        file would mean restating that rule from outside, in a copy free to disagree with it
+        -- and wrong in the direction that stages too little, which nothing notices until a
+        run opens the file that did not come.
+
+        Enumerating it needs roqsim, which this module must not import (it is loaded in the
+        long-lived service process). So it returns the question instead: ``roqsim scenes
         inputs`` run in roqsim's own image, which is also the image that will run the
         campaign, so the answer describes exactly what that run will open.
+
+        Asked of every world the campaign owns rather than only of the ones a test here
+        believes are more than one file, because the container this costs is one the caller
+        already has: ``validate_project`` and ``preview_configurations`` compose inside the
+        lane's aux-runner context and hold it, sharing one warm container across an authoring
+        loop.
 
         A package ref (``roqsim_scenes:depot``) still needs nothing, and says so without a
         container: the files arrive installed.
         """
+        # Nothing here opens the campaign's files: what they say is roqsim's to read.
+        del vast_dir
         if _is_package_ref(cfg.config):
             return []
-        if not _extends_a_campaign_file(cfg.config, vast_dir):
-            # The common case, and it needs no container: a world that extends nothing, or
-            # extends a PACKAGED world, is complete in the one file the campaign owns. Asking
-            # an image would make every ordinary campaign's composition depend on pulling a
-            # multi-gigabyte simulator -- a cost paid by `validate_project` and
-            # `preview_configurations` too, neither of which runs anything.
-            return [cfg.config]
         return ContainerQuery(
             # The campaign's own image, for the same reason describe_query uses it: what a
-            # world extends is resolved by what is installed.
+            # world is made of is resolved by what is installed.
             ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
             # Through ``_config_in_container``, like every other command this backend sends:
             # the container is given the campaign's files at ``/config``, and the authored

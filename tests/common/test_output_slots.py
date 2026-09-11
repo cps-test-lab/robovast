@@ -335,31 +335,53 @@ def test_binding_the_optional_slot_puts_it_on_the_sim_channel():
 # -- answers that need the simulator ---------------------------------------------------------
 
 @pytest.mark.requires_simulator
-def test_a_world_with_no_campaign_parent_needs_no_container(tmp_path):
-    """The common case must not make composition depend on pulling a simulator image."""
+@pytest.mark.parametrize("world_yaml", [
+    # Extends nothing the campaign owns, and once answered here without a container.
+    "plugins: []\n",
+    # Extends a PACKAGED world -- likewise, and likewise wrong: what the parent is made of
+    # is the image's to say, and a mesh under its assets is what makes a compiled scene stale.
+    "extends: roqsim_scenes:depot\nplugins: []\n",
+    # A plugin pointing at a campaign file. No walk of this YAML can find the wall colliders
+    # beside that mesh: where they live is the plugin's rule, held in roqsim.
+    "plugins:\n  - floorplan:\n      mesh: env/lab.obj\n",
+    # The MJCF the world compiles, which names its own meshes and textures.
+    "sim:\n  world: models/lab.xml\nplugins: []\n",
+    # An extends chain the campaign owns.
+    "extends: ./base.yaml\nplugins: []\n",
+])
+def test_every_campaign_world_asks_the_image_what_it_is_made_of(tmp_path, world_yaml):
+    """Which files a world needs is roqsim's rule, and no part of it is restated here.
+
+    A test in the backend deciding a world is "just one file" is a second copy of that rule,
+    and it is wrong in the direction nothing notices: the campaign stages too little, every
+    check reading the workspace passes, and the run opens the missing file after the image
+    pull and the pod schedule.
+    """
     from robovast.common.simulators import ContainerQuery
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     world = tmp_path / "w.yaml"
-    world.write_text("extends: roqsim_scenes:depot\nplugins: []\n")
-    declared = RoqsimBackend().input_files(
-        RoqsimConfig(config=str(world)), {}, str(tmp_path))
-    assert not isinstance(declared, ContainerQuery)
-    assert declared == [str(world)]
-
-
-@pytest.mark.requires_simulator
-def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
-    """That chain is what the backend cannot resolve without importing the simulator."""
-    from robovast.common.simulators import ContainerQuery
-    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
-
-    world = tmp_path / "w.yaml"
-    world.write_text("extends: ./base.yaml\nplugins: []\n")
+    world.write_text(world_yaml)
     declared = RoqsimBackend().input_files(
         RoqsimConfig(config=str(world)), {}, str(tmp_path))
     assert isinstance(declared, ContainerQuery)
     assert declared.command[:3] == ["roqsim", "scenes", "inputs"]
+
+
+@pytest.mark.requires_simulator
+def test_an_unreadable_world_is_still_asked_about(tmp_path):
+    """Whether a world is any good is not this question, and not answerable here either.
+
+    A file this process cannot parse is one the simulator reports on with its own error; a
+    campaign staging nothing for it would fail later and say less.
+    """
+    from robovast.common.simulators import ContainerQuery
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
+
+    world = tmp_path / "w.yaml"
+    world.write_text("this: [is not: valid yaml\n")
+    assert isinstance(RoqsimBackend().input_files(
+        RoqsimConfig(config=str(world)), {}, str(tmp_path)), ContainerQuery)
 
 
 @pytest.mark.requires_simulator
@@ -391,12 +413,14 @@ def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
 
 
 @pytest.mark.requires_simulator
-def test_the_extends_question_is_answered_from_the_vast_dir_not_the_cwd(tmp_path, monkeypatch):
-    """The authored path is relative to the ``.vast``; the caller's cwd is not a party to it.
+def test_the_query_names_the_world_where_the_container_will_find_it(tmp_path, monkeypatch):
+    """The authored path is relative to the ``.vast``, which is not a directory the container has.
 
-    Opening it as given made the same campaign answer differently depending on where the
-    caller stood -- asked from its own directory, skipped from anywhere else -- and only the
-    asking branch staged the parent.
+    RoboVAST mounts the campaign's files at ``/config``, so that is the spelling the command
+    carries. Passed through unchanged it made the simulator look beside its own working
+    directory and fail with "world config does not exist" -- after the image pull.
+
+    The caller's cwd is not a party to any of it, so the answer is the same from both.
     """
     from robovast.common.simulators import ContainerQuery
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
@@ -407,14 +431,11 @@ def test_the_extends_question_is_answered_from_the_vast_dir_not_the_cwd(tmp_path
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    declared = RoqsimBackend().input_files(cfg, {}, str(tmp_path))
-    assert isinstance(declared, ContainerQuery)
-    # And the container is told where the file will be, not where it is on this host.
-    assert declared.command == ["roqsim", "scenes", "inputs", "/config/world/w.yaml"]
-
-    monkeypatch.chdir(tmp_path)
-    assert isinstance(RoqsimBackend().input_files(cfg, {}, str(tmp_path)), ContainerQuery)
+    for cwd in (elsewhere, tmp_path):
+        monkeypatch.chdir(cwd)
+        declared = RoqsimBackend().input_files(cfg, {}, str(tmp_path))
+        assert isinstance(declared, ContainerQuery)
+        assert declared.command == ["roqsim", "scenes", "inputs", "/config/world/w.yaml"]
 
 
 def test_the_query_mounts_the_campaign_where_its_command_looks(tmp_path):
