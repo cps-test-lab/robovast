@@ -15,7 +15,7 @@ be decided by which thread won the lock. A search campaign submits its batches o
 another, so ordering by submission makes an older campaign's later batches look younger than
 a newer campaign, and the two end up taking turns instead of the older one finishing first.
 Here the order is a
-property of the queue -- ``(campaign rank, priority, campaign start)`` -- and no thread can
+property of the queue -- ``(priority, campaign rank, campaign start)`` -- and no thread can
 change it by being quick.
 
 **No thread of its own, deliberately.** :meth:`AdmissionController.drain` is called by the
@@ -837,14 +837,21 @@ class AdmissionController:
                    if held.node_id is None and key not in counted)
 
     def _pending_in_order(self) -> "List[WorkItem]":
-        """Campaign rank first, then priority within it, then oldest campaign, then submission.
+        """Priority first, then campaign rank, then oldest campaign, then submission order.
 
-        The campaign's rank leads because it is the only one a person sets, and it has to
-        outrank the queue's own bookkeeping: a campaign moved ahead must take its slots from
-        another campaign's *runs*, not queue behind them because they carry a probe's or a
-        postprocessing job's internal priority. Within one rank the remaining keys are
-        untouched, so at the default -- every campaign at 0 -- this is the order it has always
-        produced.
+        ``priority`` leads, and it has to. It is not a preference but a campaign's own
+        sequence: a calibration probe measures the node its work will be sized from, and
+        postprocessing turns a finished campaign's runs into its results. Both are bounded --
+        a few per campaign, short -- and both are *preconditions*, so ranking ordinary work
+        ahead of them does not make the queue fairer, it makes the campaign behind them fail.
+        A demoted campaign whose probe keeps losing its node is refused outright after
+        ``UNMEASURED_BATCH_LIMIT`` batches, so a rank that reached its probes would turn
+        "let other campaigns past" into "end this campaign", which is not what anyone setting
+        it asked for.
+
+        The campaign's rank comes next, and is what a person actually sets: it orders the
+        *runs*, which is where a campaign spends all but a moment of its time and the whole of
+        what another campaign is waiting for.
 
         ``started_at`` before ``seq`` is the whole point: sequence is when this *batch* was
         enqueued, and an older campaign's second batch must still beat a younger campaign's
@@ -855,8 +862,9 @@ class AdmissionController:
         """
         return sorted((i for i in self._items.values()
                        if i.state == PLANNED and i.ranks_under not in self._paused),
-                      key=lambda i: (-self._priorities.get(i.ranks_under, 0),
-                                     -i.priority, i.started_at, i.seq))
+                      key=lambda i: (-i.priority,
+                                     -self._priorities.get(i.ranks_under, 0),
+                                     i.started_at, i.seq))
 
     def _effective_free_locked(self, *, force: bool = False):
         """``([NodeBudget], growable)`` with in-flight reservations already subtracted.

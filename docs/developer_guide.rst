@@ -1957,7 +1957,7 @@ the plan in RoboVAST's own store and creating on admit makes that immutability
 irrelevant rather than something to work around.
 
 **Ordering is a property of the queue, not of thread scheduling.** One global
-queue drains in ``(campaign rank, priority, campaign start)`` order, and any campaign thread that
+queue drains in ``(priority, campaign rank, campaign start)`` order, and any campaign thread that
 wakes drains it — so an older campaign's *later* batch still outranks a younger
 campaign's first, which submission order alone would get backwards. A search
 submits its batches one after another, so ordering by submission time makes an
