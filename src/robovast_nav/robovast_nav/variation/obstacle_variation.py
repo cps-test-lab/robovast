@@ -30,7 +30,7 @@ from robovast.common.variation.base_variation import (DestinationConfig, ProvCon
 
 from ..map_loader import load_map
 from ..obstacle_placer import ObstaclePlacer, footprint_of
-from ..path_generator import PathGenerator
+from ..path_generator import PathGenerator, path_length
 from .. import config_view
 from .nav_base_variation import NavVariation
 
@@ -168,7 +168,7 @@ class ObstacleVariationConfig(DestinationConfig):
 
     #: Where the placed obstacles go. ``objects`` is the trial's view of them -- the list a
     #: scenario spawns or drives, on the ``scenario`` channel.
-    SLOTS = ("objects",)
+    OUTPUT_SLOTS = ("objects",)
 
     #: ``instances`` is the *simulator's* view of the same placement: ``pos`` / ``size`` /
     #: ``yaw`` per obstacle, shaped for a list-valued placement plugin::
@@ -181,7 +181,12 @@ class ObstacleVariationConfig(DestinationConfig):
     #: one the world compiled. Optional because a simulator that spawns at run time (Gazebo)
     #: needs only the first, and requiring it would make every such campaign bind a
     #: destination it has none for.
-    OPTIONAL_SLOTS = ("instances",)
+    OPTIONAL_OUTPUT_SLOTS = ("instances",)
+
+    #: Where the obstacles go is a question about the route the robot drives, so the trial's
+    #: start and goal are read rather than assumed: the campaign binds them to the parameters
+    #: its scenario declares, the same names it bound the variation that wrote them to.
+    INPUT_SLOTS = ("start", "goal")
 
     obstacle_configs: list[ObstacleConfig]
     seed: int
@@ -311,9 +316,16 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry, *, motion=None) -> l
 class ObstacleVariation(NavVariation):
     """Places random obstacles in the environment based on configured obstacle types.
 
+    The obstacles are placed along the route the robot drives, so the trial's start and goal
+    are read through the ``start`` and ``goal`` input slots. A path variation ahead of this one
+    supplies them, and so does a campaign that states them in its own ``parameters:`` block --
+    with no path to inherit, the placement plans one itself.
+
     Expected parameters:
 
-    - ``name``: Name of the parameter to store static objects.
+    - ``reads``: Which parameter each input is read from, as
+      ``{start: <parameter>, goal: <parameter>}``. The ``goal`` parameter may hold one pose or
+      a list of them, whichever the scenario file declares.
     - ``obstacle_configs``: List of obstacle configurations, each containing:
 
       - ``amount``: Number of obstacles to place.  Mutually exclusive with
@@ -408,27 +420,10 @@ class ObstacleVariation(NavVariation):
         except Exception as e:  # pylint: disable=broad-except
             raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
 
-        # Get start and goal poses from config (set by previous variations)
-        start_pose = config['config'].get('start_pose')
-        goal_poses = config['config'].get('goal_poses', [])
-        goal_pose = config['config'].get('goal_pose')
+        waypoints = self.get_waypoints(config)
 
-        # Handle both legacy goal_pose (singular) and current goal_poses (plural, from PathVariationRandom)
-        if goal_pose and not goal_poses:
-            goal_poses = [goal_pose]
-
-        if not start_pose or not goal_poses:
-            raise ValueError(
-                f"start_pose and goal_pose(s) are required for path-dependent obstacle placement. "
-                f"Config '{config['name']}' missing: "
-                f"{'start_pose ' if not start_pose else ''}"
-                f"{'goal_pose(s) ' if not goal_poses else ''}"
-                f"Make sure a path variation (like PathVariationRandom) runs before ObstacleVariation."
-            )
-
-        self.progress_update(f"Placing obstacles along path from start_pose to {len(goal_poses)} goal_pose(s)...")
-
-        waypoints = [start_pose] + goal_poses
+        self.progress_update(
+            f"Placing obstacles along path from start to {len(waypoints) - 1} goal(s)...")
 
         # Check if path is already available from previous variation
         if '_path' in config:
@@ -440,18 +435,11 @@ class ObstacleVariation(NavVariation):
             path = path_generator.generate_path(waypoints, [])
             self.progress_update("Generated new path for obstacle placement")
 
-        # Resolve path length for amount_per_m computation.
-        # Must be set by a previous variation (e.g. PathVariationRandom) via _path_length.
-        if any(oc.amount_per_m is not None for oc in obstacle_configs):
-            if '_path_length' not in config:
-                raise ValueError(
-                    "obstacle_configs contains 'amount_per_m' but '_path_length' is not set in the config. "
-                    "Make sure a path variation (e.g. PathVariationRandom) runs before ObstacleVariation, "
-                    "or use 'amount' instead of 'amount_per_m'."
-                )
-            path_length = config['_path_length']
-        else:
-            path_length = 0.0  # not needed when all configs use fixed 'amount'
+        # The density `amount_per_m` resolves against, measured on the path this placement will
+        # actually use -- planned here when no path variation ran ahead of us. Derived rather
+        # than read off the config, so the count can never be resolved against a different path
+        # than the one the obstacles are placed along.
+        length = path_length(path)
 
         obstacle_objects = []  # List[StaticObject]
         obstacle_anchors = []  # List[Position] — path anchors for placed obstacles
@@ -471,7 +459,7 @@ class ObstacleVariation(NavVariation):
         # stack under test rather than to a second notion of the room.
         placement_map = load_map(map_file_path) if os.path.exists(map_file_path) else None
         for i, obstacle_config in enumerate(obstacle_configs):
-            effective_amount = obstacle_config.resolve_amount(path_length)
+            effective_amount = obstacle_config.resolve_amount(length)
             if effective_amount > 0:
                 max_attempts = 10
                 attempt = 0
@@ -576,11 +564,6 @@ class ObstacleVariation(NavVariation):
 
                 # If we couldn't find a navigable configuration after all attempts
                 if not navigable_config_found:
-                    # `path_length` above is only resolved when an `amount_per_m` config needs
-                    # it; `_path_length` is set by a preceding path variation (e.g.
-                    # PathVariationRandom) whenever one ran, regardless of which obstacle_config
-                    # style is in use, so prefer it here for an accurate diagnostic.
-                    reported_path_length = config.get('_path_length', path_length)
                     # The two failures ask for DIFFERENT keys, so they are reported apart. Saying
                     # "while maintaining navigation" for a placement that never found room sends
                     # the reader to widen a corridor that was never the constraint -- and a
@@ -604,7 +587,7 @@ class ObstacleVariation(NavVariation):
                     raise VariationInfeasibleError(
                         f"Could not place {effective_amount} obstacles after {max_attempts} "
                         f"attempts: {detail} "
-                        f"(path_length={reported_path_length:.2f}, "
+                        f"(path_length={length:.2f}, "
                         f"max_distance={obstacle_config.max_distance})"
                     )
 

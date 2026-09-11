@@ -110,7 +110,7 @@ class DestinationConfig(VariationConfig):
     ``.vast`` would have two spellings and a reader would have to look upwards to know
     where a value lands.
 
-    **One output** -- :attr:`SLOTS` empty -- takes a bare name, and exactly one channel:
+    **One output** -- :attr:`OUTPUT_SLOTS` empty -- takes a bare name, and exactly one channel:
 
     .. code-block:: yaml
 
@@ -121,7 +121,7 @@ class DestinationConfig(VariationConfig):
             scenario: goal_pose                # a parameter the .osc declares
             values: [...]
 
-    **Several outputs** -- :attr:`SLOTS` naming them -- take a *slot to destination*
+    **Several outputs** -- :attr:`OUTPUT_SLOTS` naming them -- take a *slot to destination*
     mapping, and may use both channels at once. A plugin producing artifacts that live on
     opposite sides of the compile boundary needs exactly that:
 
@@ -139,19 +139,39 @@ class DestinationConfig(VariationConfig):
     ``goal_poses``, or a campaign naming the parameter it wants written. Binding them by
     slot puts the name in the ``.vast``, where a reader and a validator can both see it,
     instead of leaving it implied by a positional list whose order has to be remembered.
+
+    **What a variation reads** is bound the same way, under ``reads:``, for the same reason --
+    a consumer that named the parameter itself could not be checked against the producer that
+    wrote it, and disagreed with it silently whenever a campaign chose a name of its own:
+
+    .. code-block:: yaml
+
+        - ObstacleVariation:
+            scenario: {objects: static_objects}                # what it writes
+            reads: {start: start_pose, goal: goal_poses}       # what it reads
+
+    One channel only, because a variation reads the trial's parameters: the simulator's world
+    and the system under test are surfaces it writes to, not ones it reads back.
     """
 
     #: The output names this variation produces, or ``()`` for a single unnamed output.
     #: Declared by the plugin, so an unknown slot in a ``.vast`` is refused naming the ones
     #: that exist rather than being silently ignored. Every one of these must be bound.
-    SLOTS: ClassVar[tuple] = ()
+    OUTPUT_SLOTS: ClassVar[tuple] = ()
 
     #: Outputs a campaign may bind but need not. For an output that only *makes sense* in some
     #: deployments -- obstacle geometry for the simulator to compile, which a campaign running a
     #: simulator that spawns at run time does not need -- requiring it would force every campaign
     #: to bind something it has no destination for. Unbound simply means the plugin does not
     #: produce it; an unknown slot is still refused.
-    OPTIONAL_SLOTS: ClassVar[tuple] = ()
+    OPTIONAL_OUTPUT_SLOTS: ClassVar[tuple] = ()
+
+    #: The input names this variation READS out of the configuration an earlier variation, or the
+    #: campaign's own ``parameters:`` block, put there. Declared for the same reason outputs are:
+    #: a consumer naming the parameter itself is a coupling nothing can see or check, and it goes
+    #: stale the moment a campaign binds the producer to a different name. ``()`` means this
+    #: variation reads nothing it needs to name.
+    INPUT_SLOTS: ClassVar[tuple] = ()
 
     scenario: str | list[str] | dict[str, str] | None = Field(
         default=None,
@@ -169,6 +189,12 @@ class DestinationConfig(VariationConfig):
                     "'env'), and <path> is addressed in that file's own syntax; checked against "
                     "the file. Use this for a value the stack reads, rather than declaring it in "
                     "the '.osc' and rewriting the file at run time.")
+
+    reads: dict[str, str] | None = Field(
+        default=None,
+        description="WHAT THIS VARIATION READS. A mapping of input slot to the scenario "
+                    "parameter it is read from -- the mirror of the 'scenario:' binding that "
+                    "put the value there. Every declared input must be bound.")
 
     @model_validator(mode="before")
     @classmethod
@@ -191,7 +217,7 @@ class DestinationConfig(VariationConfig):
     @model_validator(mode="after")
     def _destinations_are_bound(self):
         given = [k for k in CHANNELS if getattr(self, k) is not None]
-        if not self.SLOTS:
+        if not self.OUTPUT_SLOTS:
             if len(given) != 1:
                 # Read at the moment someone got it wrong, which is worth more than any
                 # page they did not open -- so it names all three surfaces, not just the keys.
@@ -214,19 +240,63 @@ class DestinationConfig(VariationConfig):
             if not isinstance(value, dict):
                 raise ValueError(
                     f"'{channel}' takes a mapping of slot to destination for this "
-                    f"variation, whose outputs are: {', '.join(self.SLOTS)}")
+                    f"variation, whose outputs are: {', '.join(self.OUTPUT_SLOTS)}")
             for slot in value:
-                if slot not in self.SLOTS and slot not in self.OPTIONAL_SLOTS:
+                if slot not in self.OUTPUT_SLOTS and slot not in self.OPTIONAL_OUTPUT_SLOTS:
                     raise ValueError(
                         f"'{slot}' is not an output of this variation; its outputs are: "
-                        + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+                        + ", ".join((*self.OUTPUT_SLOTS, *self.OPTIONAL_OUTPUT_SLOTS)))
                 bound.setdefault(slot, []).append(channel)
-        missing = [s for s in self.SLOTS if s not in bound]
+        missing = [s for s in self.OUTPUT_SLOTS if s not in bound]
         if missing:
             raise ValueError(
                 "every output must be bound to a channel; unbound: "
                 + ", ".join(missing))
         return self
+
+    @model_validator(mode="after")
+    def _inputs_are_bound(self):
+        """Every declared input is bound, and nothing else is.
+
+        The mirror of :meth:`_destinations_are_bound`, and strict for the same reason: an input
+        left to a conventional name is the implied coupling this exists to remove, and it would
+        read whatever happened to sit under that name rather than what the campaign meant.
+        """
+        given = self.reads or {}
+        if not self.INPUT_SLOTS:
+            if given:
+                raise ValueError(
+                    "'reads' names inputs, but this variation declares none")
+            return self
+        unknown = [s for s in given if s not in self.INPUT_SLOTS]
+        if unknown:
+            raise ValueError(
+                f"{unknown} are not inputs of this variation; its inputs are: "
+                + ", ".join(self.INPUT_SLOTS))
+        missing = [s for s in self.INPUT_SLOTS if s not in given]
+        if missing:
+            raise ValueError(
+                "every input must be bound to the scenario parameter it is read from, as "
+                "'reads: {slot: parameter}'; unbound: " + ", ".join(missing))
+        return self
+
+    def input_binding(self, slot: str) -> str:
+        """The scenario parameter *slot* is read from."""
+        try:
+            return (self.reads or {})[slot]
+        except KeyError:
+            raise KeyError(
+                f"'{slot}' is not an input of this variation; its inputs are: "
+                + ", ".join(self.INPUT_SLOTS)) from None
+
+    def inputs(self) -> dict:
+        """``{channel: [parameter, ...]}`` -- what this variation reads, and from where.
+
+        Shaped like :meth:`outputs` so one validator can walk both. Only ``scenario`` for now:
+        a variation reads the trial's parameters, while the simulator's world and the system
+        under test are surfaces it writes to.
+        """
+        return {"scenario": [str(v) for v in (self.reads or {}).values()]}
 
     @property
     def channel(self) -> str:
@@ -241,7 +311,7 @@ class DestinationConfig(VariationConfig):
     def is_bound(self, slot: str) -> bool:
         """Whether the campaign bound *slot* to a channel.
 
-        Only meaningful for :attr:`OPTIONAL_SLOTS`: a required slot is always bound, because
+        Only meaningful for :attr:`OPTIONAL_OUTPUT_SLOTS`: a required slot is always bound, because
         validation refuses the config otherwise.
         """
         # Guarded by the isinstance on the same line; pylint does not narrow through getattr.
@@ -270,7 +340,7 @@ class DestinationConfig(VariationConfig):
         if not found:
             raise KeyError(
                 f"'{slot}' is not an output of this variation; its outputs are: "
-                + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+                + ", ".join((*self.OUTPUT_SLOTS, *self.OPTIONAL_OUTPUT_SLOTS)))
         return found
 
     def binding(self, slot: str) -> tuple:
@@ -495,6 +565,22 @@ class Variation():
         """
         outputs = getattr(parameters, "outputs", None)
         return outputs() if callable(outputs) else {}
+
+    @classmethod
+    def declared_inputs(cls, parameters) -> dict:
+        """``{channel: [parameter, ...]}`` this variation READS, for *parameters*.
+
+        The counterpart of :meth:`declared_outputs`, read by the same pre-run check: walking the
+        variations in the order the ``.vast`` lists them, a value a variation reads has to have
+        been put there by the campaign's own ``parameters:`` block or by a variation before it.
+        Nothing else can tell -- ordering is list order and the coupling is otherwise invisible,
+        so an input nobody writes was discovered by the run.
+
+        ``{}`` means *undeclared*, the same escape :meth:`declared_outputs` gives a third-party
+        plugin that does not implement it.
+        """
+        inputs = getattr(parameters, "inputs", None)
+        return inputs() if callable(inputs) else {}
 
     @classmethod
     def get_required_container(cls, parameters):
