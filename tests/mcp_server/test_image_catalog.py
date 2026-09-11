@@ -173,3 +173,80 @@ def test_unparseable_output_is_reported_as_error_not_raised(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: Garbled())
     out = image_catalog.list_scenario_actions(address="/sources/ws-1/a.vast")
     assert "error" in out
+
+
+# -- the command's output is not the only thing on the stream ---------------------
+
+#: What an image's entrypoint announces before the command it was asked to run. The
+#: leading ``[`` is why this was never reported as a banner: it opens a well-formed JSON
+#: array, so a whole-stream parse dies at the second character complaining about JSON.
+_BANNER = (
+    "[INFO] [1789160740.258812] [entrypoint]: Running as UID: 1000, GID: 1000...\n"
+    "[INFO] [1789160740.677103] [entrypoint]: sourced /opt/ros/jazzy and /ws/install\n"
+)
+
+
+def _client_printing(prefix="", suffix="", payload=None):
+    class Noisy(_FakeClient):
+        def exec_in_container(self, request):
+            self.exec_calls.append(request)
+            return ExecResult(
+                exit_code=0, stdout=prefix + json.dumps(self.payload) + suffix)
+    return Noisy(payload=payload)
+
+
+def test_a_catalog_survives_the_entrypoint_banner(monkeypatch):
+    monkeypatch.setattr(service_access, "service_client",
+                        lambda: _client_printing(prefix=_BANNER))
+    out = image_catalog.list_scenario_actions(address="/sources/ws-1/a.vast")
+    assert "error" not in out
+    assert {i["name"] for i in out["items"]} == {
+        "differential_drive_robot.nav_to_pose", "timeout"}
+
+
+def test_a_roqsim_catalog_survives_the_entrypoint_banner(monkeypatch):
+    monkeypatch.setattr(
+        service_access, "service_client",
+        lambda: _client_printing(prefix=_BANNER, payload=_PLUGINS_PAYLOAD))
+    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/w.vast")
+    assert "error" not in out
+    assert [i["name"] for i in out["items"]] == ["contact_monitor"]
+
+
+def test_a_line_printed_after_the_catalog_is_ignored_too(monkeypatch):
+    monkeypatch.setattr(
+        service_access, "service_client",
+        lambda: _client_printing(prefix=_BANNER, suffix="\n[INFO] [entrypoint]: done\n"))
+    out = image_catalog.list_scenario_actions(address="/sources/ws-1/a.vast")
+    assert "error" not in out
+    assert out["total"] == 2
+
+
+def test_a_bracketed_log_line_does_not_become_the_catalog(monkeypatch):
+    """A banner line that happens to BE valid JSON must not win over the document.
+
+    ``[1, 2]`` decodes; if the scan accepted any JSON value it would return that and
+    report an empty catalog, which reads as "this image has no actions" -- a wrong answer
+    where an error is the honest one. Only an object is accepted, and both catalogs are one.
+    """
+    monkeypatch.setattr(
+        service_access, "service_client",
+        lambda: _client_printing(prefix="[1, 2]\n" + _BANNER))
+    out = image_catalog.list_scenario_actions(address="/sources/ws-1/a.vast")
+    assert "error" not in out
+    assert out["total"] == 2
+
+
+def test_output_carrying_no_json_names_the_command_that_shows_the_stream(monkeypatch):
+    class Silent(_FakeClient):
+        def exec_in_container(self, request):
+            self.exec_calls.append(request)
+            return ExecResult(exit_code=0, stdout=_BANNER)
+
+    monkeypatch.setattr(service_access, "service_client", lambda: Silent())
+    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/w.vast")
+    assert "error" in out
+    # The remedy and the evidence, not just the decoder's complaint.
+    assert "exec_in_container" in out["error"]
+    assert "roqsim.introspection" in out["error"]
+    assert "entrypoint" in out["error"]
