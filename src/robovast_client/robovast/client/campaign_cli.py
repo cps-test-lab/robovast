@@ -163,7 +163,11 @@ def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
         handle_cli_exception(e)
 
 
-@campaign.command()
+# ``ignore_unknown_options`` so a NEGATIVE value is an argument rather than a bad option.
+# Demoting is the common case -- moving a long campaign out of the way of a short one -- and
+# without this ``priority -1 <id>`` fails on the value it is for, needing a ``--`` nobody
+# would guess at.
+@campaign.command(context_settings={'ignore_unknown_options': True})
 @click.argument('value', type=int)
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @target_options
