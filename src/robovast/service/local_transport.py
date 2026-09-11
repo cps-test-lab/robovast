@@ -41,7 +41,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -70,6 +70,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
+                                        CacheSize, KeptCacheEntry, ServiceCache,
                                         MigrationMarker, RetriggerAxis, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory, WorkOrder,
                                         UploadGrant, ValidationProblem,
@@ -79,6 +80,23 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
 from robovast.service.storage_reserve import reserve_gb, storage_refusal
 
 logger = logging.getLogger(__name__)
+
+#: What the scene cache is called where a reader sees it.
+SCENE_CACHE = "scene cache"
+
+#: Below this, a refusal for disk space does not suggest clearing the cache: a clear that frees
+#: a few hundred megabytes would send the caller to the wrong lever.
+_CACHE_WORTH_CLEARING_BYTES = 1000 ** 3
+
+
+@dataclass
+class _Swept:
+    """One cache's share of a :class:`ServiceCache`: what remains, what went, what stayed."""
+
+    size: CacheSize
+    freed_bytes: int = 0
+    removed: int = 0
+    kept: list = field(default_factory=list)
 
 
 def _extended_bases(candidates, project_dir):
@@ -1677,6 +1695,49 @@ class LocalTransport(RobovastInterface):
             "exec_container": self._exec_container_state(),
             "query_containers": self._query_container_states()})
 
+    def service_cache(self) -> ServiceCache:
+        return self._sweep_caches(clear=False)
+
+    def clear_service_cache(self) -> ServiceCache:
+        return self._sweep_caches(clear=True)
+
+    def _sweep_caches(self, clear: bool) -> ServiceCache:
+        """Report every cache this lane keeps, removing what may go when *clear*.
+
+        The scene cache is common to both lanes; a lane adds its own through
+        :meth:`_lane_cache_sweeps`. This lane has none: its results directory is the
+        campaigns' durable home, not a copy of one, so nothing under it is ever offered.
+        """
+        report = ServiceCache()
+        for sweep in (self._sweep_scene_cache, *self._lane_cache_sweeps()):
+            swept = sweep(clear)
+            report.caches.append(swept.size)
+            report.kept.extend(swept.kept)
+            report.freed_bytes += swept.freed_bytes
+            report.removed_entries += swept.removed
+        if clear and report.removed_entries:
+            logger.info("cleared %d cache entr%s, %d bytes", report.removed_entries,
+                        "y" if report.removed_entries == 1 else "ies", report.freed_bytes)
+        return report
+
+    def _lane_cache_sweeps(self) -> list:
+        """This lane's own caches, as callables taking ``clear`` and returning :class:`_Swept`."""
+        return []
+
+    @staticmethod
+    def _sweep_scene_cache(clear: bool) -> _Swept:
+        from robovast.service import scene_cache  # pylint: disable=import-outside-toplevel
+        removed, kept = scene_cache.clear(scene_cache.cache_root(), dry_run=not clear)
+        remaining = kept if clear else kept + removed
+        return _Swept(
+            size=CacheSize(name=SCENE_CACHE, size_bytes=sum(size for _, size in remaining),
+                           entries=len(remaining)),
+            freed_bytes=sum(size for _, size in removed) if clear else 0,
+            removed=len(removed) if clear else 0,
+            kept=[KeptCacheEntry(cache=SCENE_CACHE, name=name, size_bytes=size,
+                                 reason="a viewer is loading it right now")
+                  for name, size in kept])
+
     def upgrade_info(self) -> UpgradeInfo:
         """The live campaigns, and a refusal: there is no Deployment here to roll.
 
@@ -1886,9 +1947,31 @@ class LocalTransport(RobovastInterface):
                            "reserve was not applied: %s", action, e)
             return
         if refusal:
+            clearable = self._clearable_cache_bytes()
+            if clearable >= _CACHE_WORTH_CLEARING_BYTES:
+                raise InsufficientStorageError(
+                    f"Cannot {action}. {refusal} Free space -- clear the service cache, which "
+                    f"can free {clearable / 1000 ** 3:.0f} GB ('vast service cache --clear', or "
+                    "Service cache on the Admin page), or delete campaigns that are no longer "
+                    "needed -- then retry.",
+                    next_step="vast service cache --clear")
             raise InsufficientStorageError(
                 f"Cannot {action}. {refusal} Free space -- delete campaigns that are no "
                 "longer needed -- then retry.")
+
+    def _clearable_cache_bytes(self) -> int:
+        """What clearing the service cache would free now; 0 when that cannot be measured.
+
+        Asked only once a refusal is certain, because it walks the caches. A measurement that
+        fails costs the hint, never the refusal it would have been attached to.
+        """
+        try:
+            report = self.service_cache()
+        except Exception:  # noqa: BLE001 - see above
+            logger.debug("could not measure the service cache for a refusal", exc_info=True)
+            return 0
+        held = sum(part.size_bytes for part in report.caches)
+        return max(0, held - sum(entry.size_bytes for entry in report.kept))
 
     def _build_backend(self, state):
         """The :class:`ExecutionBackend` this deployment runs campaigns on."""

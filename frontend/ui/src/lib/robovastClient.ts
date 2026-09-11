@@ -38,6 +38,7 @@ export type McpCall = Schemas['McpCall']
 export type UpgradeInfo = Schemas['UpgradeInfo']
 export type ServiceConfig = Schemas['ServiceConfig']
 export type ServiceSetting = Schemas['ServiceSetting']
+export type ServiceCache = Schemas['ServiceCache']
 
 export type CampaignSummary = Schemas['CampaignSummary']
 
@@ -490,6 +491,10 @@ export const robovast = {
   // What this service is configured with, read back out of its own environment.
   // Only changes when the pod restarts, so callers poll it not at all.
   serviceConfig: () => request<ServiceConfig>('GET', '/admin/config'),
+
+  // The rebuildable caches: what they hold, and clearing what nothing may still be using.
+  serviceCache: () => request<ServiceCache>('GET', '/admin/cache'),
+  clearServiceCache: () => request<ServiceCache>('DELETE', '/admin/cache'),
 
   // Returns as soon as the roll is asked for, NOT when the new pod is serving: with one
   // replica Kubernetes starts the new pod before stopping the old, so the pod answering

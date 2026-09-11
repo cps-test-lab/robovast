@@ -4,6 +4,32 @@
  */
 
 export interface paths {
+    "/admin/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Service Cache
+         * @description What the service's rebuildable caches hold, and what a clear would keep and why.
+         */
+        get: operations["service_cache_admin_cache_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Clear Service Cache
+         * @description Remove every cache entry nothing may still be using, and say what that freed.
+         *
+         *     Only copies of durable data: the cost is the time to rebuild what is next asked for.
+         */
+        delete: operations["clear_service_cache_admin_cache_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/config": {
         parameters: {
             query?: never;
@@ -1804,6 +1830,24 @@ export interface components {
             workspace_id: string;
         };
         /**
+         * CacheSize
+         * @description One cache the service keeps, and what it holds now.
+         */
+        CacheSize: {
+            /**
+             * Entries
+             * @default 0
+             */
+            entries: number;
+            /** Name */
+            name: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+        };
+        /**
          * CampaignDataStatus
          * @description Whether querying this campaign has to transfer anything first, and what it costs.
          *
@@ -2844,6 +2888,23 @@ export interface components {
             /** Memory Request Bytes */
             memory_request_bytes: number | null;
         };
+        /**
+         * KeptCacheEntry
+         * @description An entry a clear leaves in place, and why.
+         */
+        KeptCacheEntry: {
+            /** Cache */
+            cache: string;
+            /** Name */
+            name: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+        };
         /** ListCampaignsResponse */
         ListCampaignsResponse: {
             /** Campaigns */
@@ -3594,6 +3655,34 @@ export interface components {
             };
             /** Markers */
             markers: components["schemas"]["SceneMarker"][];
+        };
+        /**
+         * ServiceCache
+         * @description The service's caches: copies it can rebuild from durable data, and nothing else.
+         *
+         *     Clearing one loses nothing but the time to rebuild what is next asked for -- a campaign's
+         *     files are fetched from the object store again, a world is compiled again. An entry
+         *     something may still be using is never removed; ``kept`` names each and why, so a caller
+         *     can tell "nothing to free" from "in use".
+         *
+         *     Reported by ``service_cache`` and, after removing what may go, by ``clear_service_cache``,
+         *     whose ``freed_bytes`` / ``removed_entries`` say what it did. ``caches`` is what remains.
+         */
+        ServiceCache: {
+            /** Caches */
+            caches: components["schemas"]["CacheSize"][];
+            /**
+             * Freed Bytes
+             * @default 0
+             */
+            freed_bytes: number;
+            /** Kept */
+            kept: components["schemas"]["KeptCacheEntry"][];
+            /**
+             * Removed Entries
+             * @default 0
+             */
+            removed_entries: number;
         };
         /**
          * ServiceConfig
@@ -4446,6 +4535,46 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    service_cache_admin_cache_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceCache"];
+                };
+            };
+        };
+    };
+    clear_service_cache_admin_cache_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceCache"];
+                };
+            };
+        };
+    };
     service_config_admin_config_get: {
         parameters: {
             query?: never;

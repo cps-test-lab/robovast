@@ -253,6 +253,40 @@ def resources(namespace, context):
         click.echo(f"  refusing  {usage.storage_refusal}")
 
 
+@service.command('cache')
+@click.option('--clear', is_flag=True,
+              help='Remove every entry nothing may still be using, and say what that freed.')
+@target_options
+def cache(clear, namespace, context):
+    """What the service's rebuildable caches hold; with --clear, free what may go.
+
+    Only copies of durable data -- a campaign's files fetched from the object store, compiled
+    3D worlds -- so clearing loses nothing but the time to rebuild what is next asked for. The
+    thing to reach for when a launch is refused for free space. What a running campaign, an
+    operation or a recent reader may still be using is kept, and listed with the reason.
+    """
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            report = client.clear_service_cache() if clear else client.service_cache()
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    def _gb(value):
+        return f"{value / 1000 ** 3:.1f} GB"
+
+    for part in report.caches:
+        click.echo(f"  {part.name:<26} {_gb(part.size_bytes)} in {part.entries} "
+                   f"entr{'y' if part.entries == 1 else 'ies'}")
+    if clear:
+        click.echo(f"  freed {_gb(report.freed_bytes)} ({report.removed_entries} "
+                   f"entr{'y' if report.removed_entries == 1 else 'ies'})")
+    for kept in report.kept:
+        click.echo(f"  {'kept' if clear else 'would keep'} {kept.name} ({kept.cache}): "
+                   f"{kept.reason}")
+
+
 @service.command('mcp-stats')
 @click.option('--calls', 'show_calls', is_flag=True,
               help='Print the call log instead of the per-tool ranking.')
