@@ -4776,6 +4776,7 @@ class LocalTransport(RobovastInterface):
         import yaml
 
         from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
+        from robovast.common.errors import ActionableError
         from robovast.common.simulators import backend_name, campaign_sim_block
         project = self._resolve_project(workspace_id, path)
         with open(project.config_path, encoding="utf-8") as handle:
@@ -4802,6 +4803,14 @@ class LocalTransport(RobovastInterface):
             payload, image = describe_world_payload(
                 execution, block, str(Path(project.config_path).parent),
                 entities=entities, targets=targets)
+        except ActionableError as exc:
+            # Same 400 as the refusal below, and for the same reason -- the caller asked for
+            # a description that cannot be given. Its own arm because ActionableError is not
+            # a RuntimeError: left to escape it is the one refusal here that reaches a client
+            # as a bare 500, and the next step it carries has to travel in the detail to
+            # survive the HTTP boundary at all.
+            raise ValueError(
+                f"{exc} Next: {exc.next_step}" if exc.next_step else str(exc)) from None
         except WorldQueryUnavailable as exc:
             raise ValueError(str(exc)) from None
         finally:
