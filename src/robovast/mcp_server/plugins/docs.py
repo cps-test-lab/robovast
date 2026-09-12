@@ -500,8 +500,7 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
 
 
 def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
-    """The documentation -- RoboVAST's, and any installed package publishing its own (the
-    simulator, the scenario DSL): list the pages, search them, or read one.
+    """Documentation, ours and the substrate's: list, search, or read one page.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of

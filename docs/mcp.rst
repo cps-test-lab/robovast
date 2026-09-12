@@ -276,6 +276,54 @@ a published name.
 Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's
 extensions are its own, so its pages are served as written rather than half-rendered.
 
+Using it: search an identifier, not a word
+------------------------------------------
+
+The search is a case-insensitive substring match over lines, and results are grouped by page
+in **name order, not relevance order** — so the first page returned is not the best one. That
+makes the query the thing that decides whether a reply is useful. Measured against the corpus
+as it stands, 50 pages:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 14 52
+
+   * - ``query``
+     - pages
+     - 
+   * - ``world``
+     - 31
+     - a prose word matches most of the corpus
+   * - ``osc``
+     - 25
+     - so does a short token that occurs inside other words
+   * - ``spawn_robot``
+     - 8
+     - an identifier narrows to the pages that define and use it
+   * - ``sensor_coverage_probe``
+     - 2
+     - the more exact the spelling, the closer to one answer
+   * - ``Config::``
+     - 1
+     - punctuation included, and it lands on the page that defines it
+
+**Search for the thing as a file spells it.** A plugin name, a YAML key with its colon, a
+declaration's header — those are what the pages contain verbatim, and they are what an author
+is looking for anyway. A word like ``world`` or ``scenario`` is in every page's prose.
+
+The three calls, in the order they are usually wanted::
+
+   search_docs()                          # the page list: name, title, source
+   search_docs(query="spawn_robot")       # matching excerpts, grouped by page
+   search_docs(page="roqsim-interfaces")  # that page in full, once you know which
+
+``limit`` caps excerpts **per page**, not the number of pages, so raising it on a broad query
+makes the reply bigger without making it narrower. Narrow the term instead.
+
+``source`` on each listing row says which corpus a page came from, which is also how to tell
+a simulator page from ours when both have one by the same name.
+
+
 One tool per question, not per shape of answer
 ----------------------------------------------
 
