@@ -79,7 +79,7 @@ def _wid(client, name="demo"):
     return client.create_workspace(CreateWorkspaceRequest(name=name)).workspace_id
 
 
-def _live_campaign(campaign_id, workspace_id, done=False):
+def _live_campaign(campaign_id, workspace_id, done=False, released=False):
     """A campaign entry as the service holds one while it drives the run."""
     from robovast.client.status import Phase
     from robovast.execution.control_server import ControllerState
@@ -87,21 +87,68 @@ def _live_campaign(campaign_id, workspace_id, done=False):
 
     state = ControllerState(campaign_id=campaign_id)
     state.set_phase(Phase.FINISHED if done else Phase.RUNNING)
+    if released:
+        state.release_project()
     return _LocalCampaign(campaign_id, "results", state, workspace_id=workspace_id)
 
 
 # -- sync: refused while a campaign is reading the workspace ----------------
 
 
-def test_sync_refuses_a_workspace_a_campaign_is_reading(client, project):
-    # A campaign reads its project out of the workspace for its whole life, so a sync now
-    # would change an experiment that is still running. Not the caller's to accept, so it
-    # is a refusal and not a prompt.
+def test_sync_refuses_a_workspace_a_campaign_is_still_preparing_from(client, project):
+    # Until a campaign has staged, it is still composing and resolving files out of the
+    # workspace, so a sync now would change an experiment as it is being set up -- and a
+    # half-pushed tree read mid-composition is worse still. Not the caller's to accept,
+    # so it is a refusal and not a prompt.
     wid = _wid(client)
     client._campaigns["camp-live"] = _live_campaign("camp-live", wid)
 
     with pytest.raises(ValueError, match="camp-live"):
         sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+
+
+def test_the_refusal_does_not_promise_a_release_that_may_never_come(client, project):
+    """A search campaign holds its workspace until it ends, so "wait a moment" is a lie.
+
+    The two kinds of campaign wait for different things and only the client's message can
+    say so -- it knows the campaign ids, not their modes. Telling the reader of a search
+    campaign's refusal to wait sends them to watch a flag that will not flip for days.
+    """
+    wid = _wid(client)
+    client._campaigns["camp-live"] = _live_campaign("camp-live", wid)
+
+    with pytest.raises(ValueError, match="search") as refusal:
+        sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+    assert "batch" in str(refusal.value)
+
+
+def test_sync_allows_a_workspace_whose_campaign_has_released_it(client, project):
+    """A campaign that has staged runs from its own copy, so this workspace is free.
+
+    The case the refusal used to catch and should not: the campaign is still running, but
+    it has everything it needs and never reads this directory again. Refusing here made an
+    author wait out a campaign for a push that could not have affected it.
+    """
+    wid = _wid(client)
+    client._campaigns["camp-staged"] = _live_campaign("camp-staged", wid, released=True)
+
+    stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+    assert stats["written"] + stats["uploaded"] == 3
+
+
+def test_sync_says_which_campaigns_the_push_will_not_reach(client, project):
+    """A push that lands while a campaign runs reaches only what is launched next.
+
+    Allowed, but not silently: an author pushing a fix mid-campaign would otherwise have
+    no way to tell that the campaign they are watching is not running it.
+    """
+    wid = _wid(client)
+    client._campaigns["camp-staged"] = _live_campaign("camp-staged", wid, released=True)
+    lines = []
+
+    sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
+                                echo=lines.append)
+    assert any("camp-staged" in line and "launched from now on" in line for line in lines)
 
 
 def test_sync_allows_a_workspace_whose_campaign_has_finished(client, project):
@@ -342,7 +389,24 @@ def test_list_workspaces_names_the_campaigns_reading_each(client, project):
 
     by_id = {w.workspace_id: w for w in client.list_workspaces().workspaces}
     assert by_id[wid].running_campaigns == ["camp-live"]
+    assert by_id[wid].preparing_campaigns == ["camp-live"]
     assert by_id[other].running_campaigns == []
+
+
+def test_list_workspaces_separates_running_from_still_preparing(client):
+    """The two answer different questions, and only one of them gates a push.
+
+    A campaign that has staged is still running out of this workspace's project and is
+    still worth naming -- it just no longer reads the directory, so it cannot be changed
+    by writing to it.
+    """
+    wid = _wid(client)
+    client._campaigns["camp-staged"] = _live_campaign("camp-staged", wid, released=True)
+    client._campaigns["camp-early"] = _live_campaign("camp-early", wid)
+
+    info = {w.workspace_id: w for w in client.list_workspaces().workspaces}[wid]
+    assert sorted(info.running_campaigns) == ["camp-early", "camp-staged"]
+    assert info.preparing_campaigns == ["camp-early"]
 
 
 # ---------------------------------------------------------------------------

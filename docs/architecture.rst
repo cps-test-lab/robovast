@@ -345,17 +345,16 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
-A campaign does **record** which workspace and ``.vast`` it was launched from, on its
-``campaign`` row (``origin_*``, see :mod:`robovast.common.store`) and on
-``CampaignSummary.origin``. That is a *record*, not a link, and the difference is the whole
-of it: nothing resolves it to run anything — a retrigger relaunches from the campaign's own
-frozen ``_config/`` — so deleting the workspace it names still takes nothing with it. It
-answers "where did this come from?", which is a fact about the past; it does not answer
-"where do I re-run it from?", which is always the campaign itself. A **re-run** records the
-config version it read as well (``origin_config_version_from`` and the migration steps that
-got it there), because a re-run migrates a staged copy of the parent's frozen ``.vast``, and
-two runs of "the same campaign" that read different config versions are not the same
-experiment. See :ref:`web-ui-origin`.
+**A batch campaign reads the workspace only while it prepares.** It composes there,
+resolves what each configuration references, and stages those files; from then on it
+reads nothing but its own campaign directory, so the workspace can change underneath it
+without changing what it runs. It says so, and a bulk push waits only for that window —
+which closes before the first container starts.
+
+A **search** campaign is the exception, and holds the workspace for its whole life: it
+composes again for every generation, so a file edited between two generations would make
+them two different experiments under one campaign id. Giving a search the same freedom
+means giving it its own copy of the project to compose from, which is not yet done.
 
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and

@@ -4465,6 +4465,13 @@
             "title": "Name",
             "type": "string"
           },
+          "preparing_campaigns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Preparing Campaigns",
+            "type": "array"
+          },
           "read_only": {
             "default": false,
             "title": "Read Only",
@@ -4485,6 +4492,7 @@
         "required": [
           "created_at",
           "name",
+          "preparing_campaigns",
           "read_only",
           "running_campaigns",
           "workspace_id"

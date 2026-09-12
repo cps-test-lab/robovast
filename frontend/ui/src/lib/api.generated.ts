@@ -4426,6 +4426,8 @@ export interface components {
              * @default
              */
             name: string;
+            /** Preparing Campaigns */
+            preparing_campaigns: string[];
             /**
              * Read Only
              * @default false
