@@ -700,7 +700,16 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: the figure is the *result* of the merge rather than a target it was written to, so it
 #: moves with the baseline. It is still a lowering -- the ratchet holds, and what the merge
 #: actually saves is unchanged.
-_SURFACE_TOKEN_BUDGET = 15_125
+#: **Raised by 16, for capability rather than for prose.** ``models`` and ``worlds`` are two
+#: catalogs that had no tool at all: the robots and scenes an image can spawn, which are the
+#: first two decisions a world makes and the two nothing answered. They were added to the
+#: existing pair as ``catalog`` values rather than as tools of their own -- four new tools would
+#: have cost several hundred tokens, and this costs sixteen, so the rule that says merge before
+#: you spend is what was followed here.
+#:
+#: Still far below where it was: this sits on top of the merge above, which took the surface from
+#: ~15_490 to 15_125. The pair together is a net reduction of ~350.
+_SURFACE_TOKEN_BUDGET = 15_141
 
 
 def test_no_tool_description_carries_its_own_args_or_returns_section():

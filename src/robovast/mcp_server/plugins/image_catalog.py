@@ -70,6 +70,11 @@ _CATALOG_COMMANDS = {
     # tool's contract must not depend on a package the substrate cannot guarantee.
     "scenario_actions": "python3 -m scenario_execution.introspection list-actions",
     "roqsim_plugins": "python3 -m roqsim.introspection list",
+    # What the image can SPAWN, as against what it can configure. A campaign names a robot and a
+    # world by ref, and until these were served the only way to learn a ref was to read the
+    # simulator's source -- so the two decisions a world makes first were the two nothing answered.
+    "models": "python3 -m roqsim.catalog models",
+    "worlds": "python3 -m roqsim.catalog worlds",
 }
 
 #: How a group answers a request for ONE entry's detail. ``scenario_execution``'s list already
@@ -79,12 +84,18 @@ _CATALOG_COMMANDS = {
 #: them returned an entry with no parameters at all.
 _DETAIL_COMMANDS = {
     "roqsim_plugins": "python3 -m roqsim.introspection describe",
+    # A model's detail is where its components are -- which is the capability answer: a
+    # `turtlebot4` carries `diff_drive`, `lidar` and `oakd_camera`, a `piracer` carries
+    # `ackermann_drive` and no lidar. `worlds` has no detail command; its list already carries
+    # every field one would return.
+    "models": "python3 -m roqsim.catalog model",
 }
 
-#: An entry-point name, which is all a detail command is ever given. The name reaches a shell in
-#: the container, so it is checked against this rather than quoted: a name outside it is a
-#: mistake in the call, and refusing is a better answer than escaping it and asking anyway.
-_ENTRY_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+#: What a detail command is ever given: an entry-point name, or a `<provider>:<name>` model ref.
+#: The name reaches a shell in the container, so it is checked against this rather than quoted: a
+#: name outside it is a mistake in the call, and refusing is a better answer than escaping it and
+#: asking anyway.
+_ENTRY_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?")
 
 #: Which container answers each group. ``roqsim`` lives in the *simulator's* image, not the
 #: scenario's, and asking the default container for it got "roqsim: command not found" on
@@ -92,6 +103,8 @@ _ENTRY_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 _CATALOG_CONTAINERS = {
     "scenario_actions": "scenario",
     "roqsim_plugins": "simulation",
+    "models": "simulation",
+    "worlds": "simulation",
 }
 
 _cache_lock = threading.Lock()
@@ -234,6 +247,19 @@ def _fetch(group: str, address: str) -> dict:
     return {"items": items, "image": image, "cache": {"hit": False, "seconds": elapsed}}
 
 
+#: What one line of each catalog carries. A listing is read to CHOOSE, so the fields are the ones a
+#: choice turns on -- and they differ by catalog. A model's `components` is the capability answer
+#: (a `turtlebot4` carries `diff_drive`, `lidar`, `oakd_camera`; a `piracer` carries
+#: `ackermann_drive` and no lidar), and `ref` is what a world actually writes, so projecting a
+#: model onto `kind`/`doc` would return a name and two nulls.
+_SUMMARY_FIELDS = {
+    "models": ("name", "ref", "provider", "components"),
+    "worlds": ("name", "ref", "kind", "summary"),
+}
+#: For a catalog that declares none: the shape both introspection catalogs return.
+_DEFAULT_SUMMARY_FIELDS = ("name", "kind", "doc")
+
+
 def _list(group: str, address: str, query: str) -> dict:
     fetched = _fetch(group, address)
     if "error" in fetched:
@@ -246,7 +272,8 @@ def _list(group: str, address: str, query: str) -> dict:
             items = [i for i in items if fnmatch.fnmatch(i["name"].lower(), needle)]
         else:
             items = [i for i in items if needle in i["name"].lower()]
-    summaries = [{"name": i["name"], "kind": i.get("kind"), "doc": i.get("doc")} for i in items]
+    fields = _SUMMARY_FIELDS.get(group, _DEFAULT_SUMMARY_FIELDS)
+    summaries = [{f: i.get(f) for f in fields} for i in items]
     return {"items": summaries, "total": len(summaries),
             "image": fetched["image"], "cache": fetched["cache"]}
 
@@ -324,7 +351,7 @@ def _details(group: str, address: str, name: str) -> dict:
 
 #: The catalogs an experiment image carries. One vocabulary, so a caller learns the pair of
 #: calls once rather than a pair per catalog.
-CATALOGS = ("scenario_actions", "roqsim_plugins")
+CATALOGS = ("scenario_actions", "roqsim_plugins", "models", "worlds")
 
 
 def _bad_catalog(catalog: str) -> dict:
@@ -335,9 +362,10 @@ def list_image_catalog(address: str, catalog: str = "scenario_actions",
                        query: str = "") -> dict:
     """What an experiment image can express, one line per entry.
 
-    ``scenario_actions``: the ``.osc`` actions, modifiers, actors and structs a scenario may
-    use. ``roqsim_plugins``: the ``roqsim.plugins`` a world may declare. A catalog belongs to
-    a built image, so *address* (``/sources/<workspace_id>/<path>``) names which to read.
+    ``scenario_actions``: what a scenario may use. ``roqsim_plugins``: what a world may
+    declare. ``models``: what it can spawn, each with the components it carries.
+    ``worlds``: the scenes it ships. A catalog belongs to a built image, so *address*
+    (``/sources/<workspace_id>/<path>``) names which to read.
     """
     if catalog not in CATALOGS:
         return _bad_catalog(catalog)
@@ -348,9 +376,9 @@ def get_image_catalog_entry(address: str, name: str,
                             catalog: str = "scenario_actions") -> dict:
     """One entry in full. Same *address* and *catalog* as ``list_image_catalog``.
 
-    A scenario action: its parameters, source library, doc and resolvability. A roqsim
-    plugin: its config keys -- name, example and doc each -- plus a typed schema where the
-    plugin declares one, which is what a world YAML `components:` entry accepts.
+    An action: parameters, source library, doc, resolvability. A plugin: its config keys and,
+    where it declares one, a typed schema -- what a world `components:` entry accepts. A model:
+    its components with their defaults. ``worlds`` has no detail; its list carries every field.
     """
     if catalog not in CATALOGS:
         return _bad_catalog(catalog)
