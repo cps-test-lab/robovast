@@ -209,6 +209,12 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # run as fine. On its own it is noise on every healthy campaign.
     if findings and st.health_skipped:
         result["health_checks_not_run"] = list(st.health_skipped)
+    # Only when it happened, but then always, and NOT gated on a finding: a campaign running on
+    # fewer machines than the cluster has is slower than its plan and says so nowhere else while
+    # it runs. It is a fact about the campaign, not a diagnostic about a job, so it is reported
+    # on its own rather than beside the health block.
+    if st.nodes_skipped:
+        result["nodes_skipped"] = dict(st.nodes_skipped)
     # Only when it happened, but then always: a killed run is inside ``no_result``, so
     # without this the count reads as a run that vanished on its own rather than one
     # somebody deliberately ended — and the reader goes looking for a fault there is none.
@@ -483,6 +489,10 @@ def get_campaign_status(campaign_id: str) -> dict:
         dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
         declares more than one objective and so has no single value to trend), plus
         ``progress_deadline_s`` +
+        ``nodes_skipped`` (``{node: why}``, present only when this campaign has left a machine
+        out -- its probe never ran, so nothing may be placed there; the campaign is smaller and
+        slower than its plan, and ``_execution/execution.yaml`` records the same fact for a
+        reader who arrives after it ends), plus
         ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
         search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
         applies; or ``{error}``.

@@ -1102,3 +1102,21 @@ def test_a_campaign_that_used_every_node_records_nothing(tmp_path, monkeypatch):
     create_execution_yaml(1, str(tmp_path), nodes_skipped=None)
     written = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
     assert "nodes_skipped" not in written
+
+
+def test_a_left_out_node_reaches_a_watcher_through_the_status():
+    """The record answers after the campaign ends; a watcher needs it while it runs.
+
+    A campaign short of a machine is slower than its plan and otherwise looks entirely
+    healthy -- every run it does place passes, the progress bar simply moves less -- so
+    nothing else it publishes would say why.
+    """
+    from robovast.client.status import Status
+
+    st = Status()
+    assert st.nodes_skipped == {}, "empty is the norm: every node in play"
+
+    st.nodes_skipped = {"n2": "its probe did not run in 2 consecutive batches"}
+    assert st.model_dump()["nodes_skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, \
+        "carried on the payload every client reads"

@@ -390,6 +390,17 @@ class Status(BaseModel):
     # and the first reads as a clean bill of health. A robot-motion check with no roster is exactly
     # that case: nothing is wrong, and nothing looked.
     health_skipped: list[str] = Field(default_factory=list)
+    # ``{node_id: why}`` for machines this campaign has left out: their calibration probe never
+    # ran, so nothing may be placed there -- work sized from the seed beside work sized from a
+    # measurement is the one thing calibration exists to prevent.
+    #
+    # **Written by the controller, unlike ``health``**, because it is a decision the campaign
+    # took rather than a diagnostic gathered on read: the campaign is smaller from here on, and
+    # it stays smaller whether or not anyone is watching. ``_execution/execution.yaml`` carries
+    # the same fact for a reader who arrives after it ends; this is for one watching now.
+    #
+    # Empty is the norm and means every node is in play.
+    nodes_skipped: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 
 
