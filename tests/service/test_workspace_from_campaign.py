@@ -161,5 +161,4 @@ def test_a_seeded_workspace_is_an_ordinary_writable_one(svc, tmp_path):
     """The point of seeding: what comes back is editable, unlike the snapshot it came from."""
     _source_campaign(tmp_path / "results")
     info = _create(svc)
-    assert info.read_only is False
     assert [w.workspace_id for w in svc.list_workspaces().workspaces] == [info.workspace_id]

@@ -304,17 +304,23 @@ def report_skipped(skipped: list[tuple], echo) -> None:
              "pass --include-results to upload them anyway")
 
 
-def require_not_in_use(client, workspace_id: str) -> None:
-    """Refuse a bulk sync into a workspace a campaign is currently reading.
+def require_not_in_use(client, workspace_id: str, echo=None) -> None:
+    """Refuse a bulk sync into a workspace a campaign is still preparing from.
 
-    A campaign reads its project out of the workspace for its whole life -- a search
-    campaign re-composes from it every generation -- so overwriting one mid-run changes an
-    experiment underneath itself. ``WorkspaceInfo.running_campaigns`` is what answers this:
-    live state held by the service driving the run, never a stored campaign->workspace
-    binding, because a *finished* campaign is workspace-independent.
+    A campaign reads the workspace while it works out what to run -- it composes, resolves
+    what each configuration references, and stages those files. Overwriting it during that
+    changes an experiment as it is being set up, and a half-pushed tree read mid-composition
+    is exactly the corruption worth refusing over. Once a campaign has staged, it is running
+    from its own copy and this workspace is free to change, so the refusal lifts: that is the
+    difference between ``WorkspaceInfo.preparing_campaigns`` and ``running_campaigns``.
 
     Not the caller's to wave through, so this is a refusal rather than a prompt -- unlike
-    the overwrite question, which only risks the caller's own files.
+    the overwrite question, which only risks the caller's own files. It is also momentary,
+    which is why waiting is the first thing it suggests.
+
+    A service that reports no ``preparing_campaigns`` at all predates the split and holds
+    its workspace for a campaign's whole life; against one of those every live campaign
+    still counts, or this would push into a workspace it is reading.
 
     Asked of ``list_workspaces`` rather than of a dedicated endpoint so it works
     identically for an in-process transport and an HTTP client.
@@ -324,11 +330,19 @@ def require_not_in_use(client, workspace_id: str) -> None:
     if match is None:
         return
     running = list(getattr(match, "running_campaigns", None) or [])
-    if running:
+    preparing = getattr(match, "preparing_campaigns", None)
+    preparing = running if preparing is None else list(preparing)
+    if preparing:
         raise ValueError(
-            f"workspace {match.name!r} ({workspace_id}) is being read by "
-            f"{', '.join(running)} — pushing to it now would change a running "
-            "campaign's project. Wait for it, stop it, or push to another workspace")
+            f"workspace {match.name!r} ({workspace_id}) is still being read by "
+            f"{', '.join(preparing)} — pushing to it now would change what that campaign "
+            "is about to run. A batch campaign lets go once it has staged, usually moments "
+            "away; a search campaign composes every generation and holds it until it ends. "
+            "Wait for it, stop it, or push to another workspace")
+    if running and echo is not None:
+        echo(f"  note: {len(running)} campaign(s) launched from this workspace are still "
+             f"running ({', '.join(running)}); they run from their own copy of it, so this "
+             f"push reaches only what is launched from now on")
 
 
 def sync_directory_to_workspace(client, workspace_id: str, directory, *,
@@ -363,7 +377,7 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     if store is not None and hasattr(store, "registry"):
         store.registry.require_syncable(workspace_id)
 
-    require_not_in_use(client, workspace_id)
+    require_not_in_use(client, workspace_id, echo=echo)
 
     root = Path(directory).resolve()
     if not root.is_dir():

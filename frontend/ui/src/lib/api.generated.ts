@@ -4493,11 +4493,8 @@ export interface components {
              * @default
              */
             name: string;
-            /**
-             * Read Only
-             * @default false
-             */
-            read_only: boolean;
+            /** Preparing Campaigns */
+            preparing_campaigns: string[] | null;
             /** Running Campaigns */
             running_campaigns: string[];
             /** Workspace Id */

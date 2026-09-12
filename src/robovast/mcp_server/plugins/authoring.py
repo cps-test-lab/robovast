@@ -64,9 +64,10 @@ def list_workspaces(workspace_id: str = "") -> dict:
         workspace_id: Return just this workspace. Empty lists all of them.
 
     Returns:
-        ``{workspaces, total}`` of ``{workspace_id, name, created_at, read_only}``,
-        or ``{error}``. A ``read_only`` workspace is a directory pinned with
-        ``vast serve --workspace-dir``: edit it on the serve host, not through this API.
+        ``{workspaces, total}`` of ``{workspace_id, name, created_at}``, or ``{error}``.
+        A workspace registered with ``vast serve --workspace-dir`` is a directory used
+        in place: its files are editable through this API like any other workspace's,
+        but it is unpinned by dropping the flag rather than deleted here.
     """
     try:
         client = service_access.client_or_local()
