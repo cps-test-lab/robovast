@@ -77,7 +77,8 @@ def _clear_cache():
 
 def test_a_catalog_reports_the_deployment_not_the_image(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: _NoExecPath())
-    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/a.vast")
+    out = image_catalog.list_image_catalog(
+        address="/sources/ws-1/a.vast", catalog="roqsim_plugins")
     assert "no command can run in a container" in out["error"]
     assert "introspecting" not in out["error"], (
         "the introspection never ran, and naming it points at an image that is fine")
@@ -93,7 +94,8 @@ def test_a_catalog_that_did_run_and_failed_still_says_so(monkeypatch):
             return ExecResult(exit_code=1, stdout="", stderr="No module named roqsim")
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Failing())
-    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/a.vast")
+    out = image_catalog.list_image_catalog(
+        address="/sources/ws-1/a.vast", catalog="roqsim_plugins")
     assert "robovast-build:abc123" in out["error"]
     assert "No module named roqsim" in out["error"]
 
@@ -106,5 +108,6 @@ def test_a_working_catalog_is_untouched(monkeypatch):
                 {"items": [{"name": "contact_monitor", "kind": "plugin", "doc": "d"}]}))
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Working())
-    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/a.vast")
+    out = image_catalog.list_image_catalog(
+        address="/sources/ws-1/a.vast", catalog="roqsim_plugins")
     assert [item["name"] for item in out["items"]] == ["contact_monitor"]
