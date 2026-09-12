@@ -248,6 +248,82 @@ weigh it rather than reading the hint as an instruction.
 
 .. _mcp-one-tool-per-question:
 
+What the documentation corpus covers
+------------------------------------
+
+``search_docs`` serves RoboVAST's own pages, plus the pages of any installed package that
+publishes its own. A campaign is authored against more than RoboVAST -- the simulator's world
+format, its plugin reference, the scenario DSL -- and all of that is documented in the
+repositories that own it. Serving only this one meant a search for a world's ``components:``
+list returned nothing, which reads as "no such thing" rather than "not indexed here".
+
+A package publishes its docs by registering a ``robovast.docs`` entry point that resolves to
+an object carrying a ``DOCS_DIR``::
+
+   [project.entry-points."robovast.docs"]
+   roqsim = "roqsim.docs"
+
+The entry-point **name** becomes the prefix its pages are served under, so the substrate's
+``architecture`` page is ``roqsim-architecture`` and cannot shadow RoboVAST's own. Every row
+of the page listing carries a ``source`` saying which corpus it came from.
+
+The direction is deliberate: a package says it wants its documentation served, rather than
+RoboVAST naming a repository it must not depend on. For a deployment whose packages predate
+the entry point, ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path
+separator -- configuration, which is where cross-repository wiring belongs when it cannot be
+a published name.
+
+Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's
+extensions are its own, so its pages are served as written rather than half-rendered.
+
+Using it: search an identifier, not a word
+------------------------------------------
+
+The search is a case-insensitive substring match over lines, and results are grouped by page
+in **name order, not relevance order** — so the first page returned is not the best one. That
+makes the query the thing that decides whether a reply is useful. Measured against the corpus
+as it stands, 50 pages:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 14 52
+
+   * - ``query``
+     - pages
+     - 
+   * - ``world``
+     - 31
+     - a prose word matches most of the corpus
+   * - ``osc``
+     - 25
+     - so does a short token that occurs inside other words
+   * - ``spawn_robot``
+     - 8
+     - an identifier narrows to the pages that define and use it
+   * - ``sensor_coverage_probe``
+     - 2
+     - the more exact the spelling, the closer to one answer
+   * - ``Config::``
+     - 1
+     - punctuation included, and it lands on the page that defines it
+
+**Search for the thing as a file spells it.** A plugin name, a YAML key with its colon, a
+declaration's header — those are what the pages contain verbatim, and they are what an author
+is looking for anyway. A word like ``world`` or ``scenario`` is in every page's prose.
+
+The three calls, in the order they are usually wanted::
+
+   search_docs()                          # the page list: name, title, source
+   search_docs(query="spawn_robot")       # matching excerpts, grouped by page
+   search_docs(page="roqsim-interfaces")  # that page in full, once you know which
+
+``limit`` caps excerpts **per page**, not the number of pages, so raising it on a broad query
+makes the reply bigger without making it narrower. Narrow the term instead.
+
+``source`` on each listing row says which corpus a page came from, which is also how to tell
+a simulator page from ours when both have one by the same name.
+
+
 One tool per question, not per shape of answer
 ----------------------------------------------
 
