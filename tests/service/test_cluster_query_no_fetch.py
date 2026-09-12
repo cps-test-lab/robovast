@@ -64,6 +64,30 @@ def test_query_dir_names_the_campaign_without_fetching_anything(svc):
     assert not dest.exists()
 
 
+def test_query_scopes_by_the_id_it_was_routed_with(svc, monkeypatch):
+    """The campaign is named by the id the caller passed, never derived from the path.
+
+    A path is not evidence of the campaign it is named after: the scratch directory carries
+    that name while holding only the objects some other reader last fetched into it, and a
+    partial mirror does not walk up to a campaign. Deriving the id there refuses a query
+    whose rows are sitting in the index.
+    """
+    from robovast.results_processing import data_query
+
+    seen = {}
+
+    def _capture(campaign_dir, sql, max_rows, **kwargs):
+        seen.update(kwargs)
+        return {"columns": [], "rows": [], "row_count": 0, "truncated": False}
+
+    monkeypatch.setattr(data_query, "query_data_db", _capture)
+
+    result = svc.query_campaign_data_sql("camp-1", "SELECT 1")
+
+    assert result.campaign_id == "camp-1"
+    assert seen["campaign_id"] == "camp-1"
+
+
 def test_status_reports_no_transfer(svc):
     """The probe exists to warn before an expensive wait; there is no longer one to warn
     about, and saying otherwise would keep a fetch notice on every query."""
