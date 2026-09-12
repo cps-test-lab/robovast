@@ -204,7 +204,7 @@ def test_unparseable_output_is_reported_as_error_not_raised(monkeypatch):
     assert "error" in out
 
 
-def test_one_pair_covers_both_catalogs(monkeypatch):
+def test_one_pair_covers_every_catalog(monkeypatch):
     """Four tools were two helpers called with a different constant.
 
     The surface carried four descriptions of one question — and the two that named their
@@ -222,8 +222,9 @@ def test_one_pair_covers_both_catalogs(monkeypatch):
         image_catalog.get_image_catalog_entry(address="/sources/ws-1/a.vast",
                                               name="x", catalog=catalog)
 
-    assert seen == ["scenario_actions", "scenario_actions",
-                    "roqsim_plugins", "roqsim_plugins"]
+    # Derived from CATALOGS rather than spelled out, so a catalog added to the pair is covered
+    # by this test instead of breaking it.
+    assert seen == [c for c in image_catalog.CATALOGS for _ in range(2)]
 
 
 def test_an_unknown_catalog_names_the_ones_that_exist():
@@ -372,3 +373,96 @@ def test_a_scenario_action_detail_still_comes_from_the_list(monkeypatch):
     out = image_catalog.get_image_catalog_entry(address="/sources/ws-1/a.vast", name="timeout")
     assert out["kind"] == "modifier"
     assert len(fake.exec_calls) == 1
+
+
+# -- what the image can SPAWN, not only what it can configure ---------------------
+
+# Until these, the two decisions a world makes first -- which robot, which scene -- were the
+# two nothing answered. A ref could only be learned by reading the simulator's source.
+
+_MODELS_PAYLOAD = {
+    "items": [
+        {"name": "turtlebot4", "ref": "roqsim_mobile:turtlebot4", "provider": "roqsim_mobile",
+         "use": "spawn_robot: {model: turtlebot4}", "path": "/opt/roqsim/.../turtlebot4.xml",
+         "components": ["diff_drive", "lidar", "oakd_camera"]},
+        {"name": "piracer", "ref": "roqsim_mobile:piracer", "provider": "roqsim_mobile",
+         "use": "spawn_robot: {model: piracer}", "path": "/opt/roqsim/.../piracer.xml",
+         "components": ["ackermann_drive"]},
+    ],
+}
+
+_WORLDS_PAYLOAD = {
+    "items": [
+        {"name": "empty_room", "ref": "empty_room", "kind": "builtin",
+         "use": "sim: {world: empty_room}", "summary": "ground + light"},
+        {"name": "depot", "ref": "roqsim_scenes:depot", "kind": "scene",
+         "use": "sim: {world: roqsim_scenes:depot}", "summary": "a warehouse"},
+    ],
+}
+
+
+def test_a_model_listing_carries_the_components_each_model_has(monkeypatch):
+    """The capability answer. Projected onto the introspection shape it would be a name and
+    two nulls — and "which robot has a lidar" is exactly what a listing is read to decide."""
+    monkeypatch.setattr(service_access, "service_client",
+                        lambda: _FakeClient(payload=_MODELS_PAYLOAD))
+    out = image_catalog.list_image_catalog(address="/sources/ws-1/w.vast", catalog="models")
+    by_name = {i["name"]: i for i in out["items"]}
+    assert by_name["turtlebot4"]["components"] == ["diff_drive", "lidar", "oakd_camera"]
+    assert by_name["piracer"]["components"] == ["ackermann_drive"]
+    # And the ref, which is what a world actually writes.
+    assert by_name["piracer"]["ref"] == "roqsim_mobile:piracer"
+
+
+def test_a_world_listing_says_which_kind_each_one_is(monkeypatch):
+    monkeypatch.setattr(service_access, "service_client",
+                        lambda: _FakeClient(payload=_WORLDS_PAYLOAD))
+    out = image_catalog.list_image_catalog(address="/sources/ws-1/w.vast", catalog="worlds")
+    assert {i["name"]: i["kind"] for i in out["items"]} == {
+        "empty_room": "builtin", "depot": "scene"}
+
+
+def test_a_model_ref_carrying_a_provider_is_accepted_by_the_detail_call(monkeypatch):
+    """`roqsim_mobile:turtlebot4` is the spelling a world writes; the colon must survive the
+    name check that keeps a shell-shaped argument out of the container."""
+    detail = {"name": "turtlebot4", "ref": "roqsim_mobile:turtlebot4",
+              "components": [{"lidar": {"rays": 360}}]}
+
+    class Describing(_FakeClient):
+        def exec_in_container(self, request):
+            self.exec_calls.append(request)
+            return ExecResult(exit_code=0, stdout=json.dumps(detail))
+
+    fake = Describing()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    out = image_catalog.get_image_catalog_entry(
+        address="/sources/ws-1/w.vast", name="roqsim_mobile:turtlebot4", catalog="models")
+    assert "error" not in out
+    assert out["ref"] == "roqsim_mobile:turtlebot4"
+    assert fake.exec_calls[0].command.endswith("roqsim_mobile:turtlebot4")
+
+
+def test_a_shell_shaped_model_ref_is_still_refused(monkeypatch):
+    fake = _FakeClient(payload=_MODELS_PAYLOAD)
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    out = image_catalog.get_image_catalog_entry(
+        address="/sources/ws-1/w.vast", name="pkg:model; rm -rf /", catalog="models")
+    assert "not an entry-point name" in out["error"]
+    assert fake.exec_calls == []
+
+
+def test_worlds_answers_a_detail_from_its_list_rather_than_a_round_trip(monkeypatch):
+    """Its list already carries every field a detail would, so it declares no detail command."""
+    fake = _FakeClient(payload=_WORLDS_PAYLOAD)
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    out = image_catalog.get_image_catalog_entry(
+        address="/sources/ws-1/w.vast", name="depot", catalog="worlds")
+    assert out["ref"] == "roqsim_scenes:depot"
+    assert len(fake.exec_calls) == 1
+
+
+def test_each_catalog_is_asked_of_the_container_that_has_it():
+    """A roqsim catalog in the scenario container answers "command not found"."""
+    assert image_catalog._CATALOG_CONTAINERS["models"] == "simulation"
+    assert image_catalog._CATALOG_CONTAINERS["worlds"] == "simulation"
+    assert set(image_catalog._CATALOG_CONTAINERS) == set(image_catalog.CATALOGS)
