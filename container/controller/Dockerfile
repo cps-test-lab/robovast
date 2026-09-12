@@ -81,6 +81,34 @@ RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
 # the base image itself baked in, which no amount of pinning *our* apt calls can reach.
 # The tag is kept beside the digest because a bare digest tells a reader nothing about what
 # it is. Refresh both with: make refresh-build-pins
+# The documentation of the packages a campaign is AUTHORED against -- the simulator's world
+# format and plugin reference, the scenario DSL -- which `search_docs` serves beside our own
+# (see docs/mcp.rst, "What the documentation corpus covers").
+#
+# They cannot arrive the way this image's other content does. It installs
+# `robovast-sim-roqsim`, the backend adapter, which imports nothing from roqsim --
+# deliberately, so that no MuJoCo runtime enters the controller. So there is no dependency
+# here to carry them as package data, and making one would pull a simulator into the image to
+# serve text.
+#
+# Supplied as a BUILD CONTEXT rather than cloned, which is the same idiom
+# `container/robovast/Dockerfile.roqsim` uses for `roqsim-src` and is what keeps the
+# commits those images are built from in ONE place. A pin here would be a second definition
+# of a ref that already has one, free to disagree with it -- and this image would then serve
+# the documentation of a simulator other than the one a campaign runs against, which is worse
+# than serving none.
+#
+#   docker buildx build --build-context substrate-docs=<dir> ...
+#
+# where <dir> holds one directory per corpus, named by the label its pages are served under:
+#   substrate-docs/roqsim/*.rst      substrate-docs/osc/*.rst
+#
+# The default is EMPTY, and that is a supported build rather than a broken one: a plain
+# `docker build` of this image yields RoboVAST's own pages and nothing else, which
+# `search_docs` reports by listing fewer pages. A controller that refused to build without a
+# sibling repository's documentation would trade a complete corpus for no service at all.
+FROM scratch AS substrate-docs
+
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 # BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
@@ -193,6 +221,11 @@ ENV ROBOVAST_DOCS_DIR=/opt/robovast/docs
 # the build context and nothing above site-packages is the repository.
 COPY configs /opt/robovast/configs
 ENV ROBOVAST_EXAMPLES_DIR=/opt/robovast/configs/examples
+# The substrate's pages, from the build context at the top -- empty unless one was passed.
+# Served under the directory names it carries, so the simulator's `architecture` page is
+# `roqsim-architecture` and cannot shadow ours.
+COPY --from=substrate-docs / /opt/substrate-docs
+ENV ROBOVAST_DOCS_EXTRA=roqsim=/opt/substrate-docs/roqsim:osc=/opt/substrate-docs/osc
 
 # The revision this image's `COPY src` came from, captured here because this is the ONLY
 # point at which it is knowable. `get_app_version` asks git, from the directory the module
