@@ -167,6 +167,19 @@ def _fetch(group: str, address: str) -> dict:
     return {"items": items, "image": image, "cache": {"hit": False, "seconds": elapsed}}
 
 
+#: What one line of each catalog carries. A listing is read to CHOOSE, so the fields are the ones a
+#: choice turns on -- and they differ by catalog. A model's `components` is the capability answer
+#: (a `turtlebot4` carries `diff_drive`, `lidar`, `oakd_camera`; a `piracer` carries
+#: `ackermann_drive` and no lidar), and `ref` is what a world actually writes, so projecting a
+#: model onto `kind`/`doc` would return a name and two nulls.
+_SUMMARY_FIELDS = {
+    "models": ("name", "ref", "provider", "components"),
+    "worlds": ("name", "ref", "kind", "summary"),
+}
+#: For a catalog that declares none: the shape both introspection catalogs return.
+_DEFAULT_SUMMARY_FIELDS = ("name", "kind", "doc")
+
+
 def _list(group: str, address: str, query: str) -> dict:
     fetched = _fetch(group, address)
     if "error" in fetched:
@@ -179,7 +192,8 @@ def _list(group: str, address: str, query: str) -> dict:
             items = [i for i in items if fnmatch.fnmatch(i["name"].lower(), needle)]
         else:
             items = [i for i in items if needle in i["name"].lower()]
-    summaries = [{"name": i["name"], "kind": i.get("kind"), "doc": i.get("doc")} for i in items]
+    fields = _SUMMARY_FIELDS.get(group, _DEFAULT_SUMMARY_FIELDS)
+    summaries = [{f: i.get(f) for f in fields} for i in items]
     return {"items": summaries, "total": len(summaries),
             "image": fetched["image"], "cache": fetched["cache"]}
 
@@ -191,10 +205,10 @@ def _fetch_detail(group: str, address: str, name: str) -> dict:
     name is asked for, which is what the alternative -- a list fat enough to carry every
     plugin's parameters -- would have charged every caller of the list instead.
     """
-    from robovast.service.image_catalog import ENTRY_NAME_RE
+    from robovast.service.image_catalog import DETAIL_NAME_RE, ENTRY_NAME_RE
     from robovast.service.interface import ExecRequest
 
-    if not ENTRY_NAME_RE.fullmatch(name):
+    if not DETAIL_NAME_RE.get(group, ENTRY_NAME_RE).fullmatch(name):
         return {"error": f"{name!r} is not an entry-point name"}
     try:
         request_kwargs = _address_to_request_kwargs(address)
@@ -240,7 +254,7 @@ def _details(group: str, address: str, name: str) -> dict:
 
 #: The catalogs an experiment image carries. One vocabulary, so a caller learns the pair of
 #: calls once rather than a pair per catalog.
-CATALOGS = ("scenario_actions", "roqsim_plugins")
+CATALOGS = ("scenario_actions", "roqsim_plugins", "models", "worlds")
 
 
 def _bad_catalog(catalog: str) -> dict:
@@ -251,9 +265,10 @@ def list_image_catalog(address: str, catalog: str = "scenario_actions",
                        query: str = "") -> dict:
     """What an experiment image can express, one line per entry.
 
-    ``scenario_actions``: the ``.osc`` actions, modifiers, actors and structs a scenario may
-    use. ``roqsim_plugins``: the ``roqsim.plugins`` a world may declare. A catalog belongs to
-    a built image, so *address* (``/sources/<workspace_id>/<path>``) names which to read.
+    ``scenario_actions``: what a scenario may use. ``roqsim_plugins``: what a world may
+    declare. ``models``: what it can spawn, each with the components it carries.
+    ``worlds``: the scenes it ships. A catalog belongs to a built image, so *address*
+    (``/sources/<workspace_id>/<path>``) names which to read.
     """
     if catalog not in CATALOGS:
         return _bad_catalog(catalog)
@@ -264,9 +279,9 @@ def get_image_catalog_entry(address: str, name: str,
                             catalog: str = "scenario_actions") -> dict:
     """One entry in full. Same *address* and *catalog* as ``list_image_catalog``.
 
-    A scenario action: its parameters, source library, doc and resolvability. A roqsim
-    plugin: its config keys -- name, example and doc each -- plus a typed schema where the
-    plugin declares one, which is what a world YAML `components:` entry accepts.
+    An action: parameters, source library, doc, resolvability. A plugin: its config keys and,
+    where it declares one, a typed schema -- what a world `components:` entry accepts. A model:
+    its components with their defaults. ``worlds`` has no detail; its list carries every field.
     """
     if catalog not in CATALOGS:
         return _bad_catalog(catalog)
