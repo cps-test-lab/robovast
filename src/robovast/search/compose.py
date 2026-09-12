@@ -176,7 +176,8 @@ class Compose:
         self.variations_template = search.get("variations")
         self.fixed_parameters = search.get("parameters")
 
-    def compose(self, param_sets: list[ParamSet], output_dir: str) -> tuple[dict, dict]:
+    def compose(self, param_sets: list[ParamSet], output_dir: str,
+                container_queries: bool = True) -> tuple[dict, dict]:
         """Generate configs for ``param_sets``.
 
         Returns ``(campaign_data, name_by_id)`` where ``name_by_id`` maps each
@@ -237,6 +238,7 @@ class Compose:
                 progress_update_callback=variation_logger.info,
                 image_project=self.image_project,
                 image_project_tag=self.image_project_tag,
+                container_queries=container_queries,
             )
             # Repoint "vast" at the persistent original (same dir, so relative
             # scenario_file/run_files still resolve) so downstream consumers that
@@ -315,7 +317,8 @@ class Compose:
         return name_by_id
 
 
-def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
+def preview_search_sample(vast_file: str, sample_size: int = 0, *,
+                          container_queries: bool = True) -> dict:
     """Compose a representative sample of a ``search:``-mode ``.vast``'s configs.
 
     A search ``.vast`` has no top-level ``configuration:`` block — its variations
@@ -355,7 +358,8 @@ def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
     param_sets = distinct_draws(drawn, "This preview")
 
     with tempfile.TemporaryDirectory(prefix="robovast_preview_") as artifacts:
-        campaign_data, name_by_id = Compose(vast_file).compose(param_sets, artifacts)
+        campaign_data, name_by_id = Compose(vast_file).compose(
+            param_sets, artifacts, container_queries=container_queries)
 
     return {
         "sampled": len(drawn),

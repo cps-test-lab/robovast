@@ -81,7 +81,7 @@ ARG ROS_BASE_DIGEST
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 RUN test -d "/opt/ros/${ROS_DISTRO}" || { \
       echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not a ros:${ROS_DISTRO} image."; \
-      echo "  It carries: $(ls /opt/ros 2>/dev/null | tr '\\n' ' ')"; \
+      echo "  It carries: $(find /opt/ros -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null)"; \
       echo "  Docker ignores the tag when a digest is given, so the digest decides. Pass a"; \
       echo "  matching --build-arg ROS_BASE_DIGEST, or refresh both with make refresh-build-pins."; \
       exit 1; }
@@ -136,6 +136,10 @@ ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
 #
 # Removal is by URL rather than by filename because the filename has already moved upstream once
 # (ros2-latest.list -> ros2.sources), and guessing it wrong fails silently.
+# The lists this update writes are not spare: every apt-get install below reads them, and each
+# of those removes them in its own layer. Dropping them here would only make the next layer
+# fetch them again.
+# hadolint ignore=DL3009
 RUN . /etc/os-release \
  && grep -Rl -e archive.ubuntu.com -e security.ubuntu.com -e packages.ros.org \
       /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f \
@@ -275,7 +279,28 @@ RUN \
 # TARGETARCH (amd64 / arm64), not a hard-coded linux-amd64: this image is built for both,
 # so the fixed URL put an x86 binary into every arm64 image.
 ARG TARGETARCH
-RUN curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc && \
+# mc is fetched from the project's GitHub release, PINNED and checksummed, because MinIO
+# stopped serving it: dl.min.io answers 410 Gone for every community build, with "the open-source
+# MinIO Server, MinIO Client (mc) and MinIO KES projects are archived and no longer maintained".
+# That took every image here with it -- the URL had no version in it, so there was nothing to
+# fall back to and nothing that said which build had been installed.
+#
+# The release assets survive the archive, so the fix is also an improvement: this pins a build
+# and verifies it, where the old URL took whatever "latest" meant on the day and checked nothing.
+# See MC_RELEASE / MC_SHA256_* below; both architectures are listed because the digest is what
+# makes the pin worth having, and one sum cannot cover two binaries.
+ARG MC_RELEASE=RELEASE.2025-08-13T08-35-41Z
+ARG MC_SHA256_AMD64=01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+ARG MC_SHA256_ARM64=14c8c9616cfce4636add161304353244e8de383b2e2752c0e9dad01d4c27c12c
+RUN set -eu; \
+    url="https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-${TARGETARCH}.${MC_RELEASE}"; \
+    case "$TARGETARCH" in \
+      amd64) want="$MC_SHA256_AMD64" ;; \
+      arm64) want="$MC_SHA256_ARM64" ;; \
+      *) echo "no pinned mc checksum for TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "$url" -o /usr/local/bin/mc; \
+    echo "$want  /usr/local/bin/mc" | sha256sum -c - ; \
     chmod +x /usr/local/bin/mc
 
 RUN mkdir -p /ws/src

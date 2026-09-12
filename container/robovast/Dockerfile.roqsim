@@ -249,7 +249,7 @@ ARG INCLUDE_TORCH_PKGS=0
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     if [ "${INCLUDE_TORCH_PKGS}" = "1" ]; then \
       echo "legged platforms: installing quadruped + humanoid (CPU torch)" && \
-      pip install --break-system-packages torch --index-url https://download.pytorch.org/whl/cpu && \
+      pip install --break-system-packages torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu && \
       pip install --break-system-packages \
         /opt/roqsim/roqsim_quadruped \
         /opt/roqsim/roqsim_humanoid ; \

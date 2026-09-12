@@ -29,6 +29,7 @@ Invoked by ``config_generation._compose_isolated`` as::
     python -m robovast.common.compose_worker <job.json>
 
 where ``job.json`` is ``{variation_file, output_dir, use_cache, tolerate_infeasible,
+container_queries,
 image_project, image_project_tag, result_path, container_runner_socket}``. The
 parent sets ``ROBOVAST_ISOLATED_COMPOSE=1`` in this process's environment so the
 ``generate_scenario_variations`` call composes in-process (it does not re-fork).
@@ -83,6 +84,7 @@ def main(argv) -> int:
         output_dir=job["output_dir"],
         use_cache=job.get("use_cache", True),
         tolerate_infeasible=job.get("tolerate_infeasible", False),
+        container_queries=job.get("container_queries", True),
         image_project=job.get("image_project"),
         image_project_tag=job.get("image_project_tag"),
         # Stream progress to stdout so the parent can forward it live.
