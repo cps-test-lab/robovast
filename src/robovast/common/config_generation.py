@@ -282,12 +282,19 @@ def _plugin_run_files(vast_dir, parameters):
     return found
 
 
-def _backend_run_files(vast_dir, parameters):
+def _backend_run_files(vast_dir, parameters, *, container_queries: bool = True):
     """Files the simulator backend declares its simulator needs, relative to the ``.vast``.
 
     Empty when no backend is declared, when the backend declares nothing, or when it
     cannot be resolved -- composition must not fail here on a backend problem that
     validation reports properly elsewhere.
+
+    *container_queries* is the opt-in :func:`~robovast.common.simulators.sim_input_files`
+    already states the rule for: a caller that owns a runner answers the query, and one
+    that does not asks nothing rather than reporting a partial list. False returns no run
+    files for a world only the simulator's image can enumerate, so it is for composing a
+    REPORT -- a count of configurations, which these files do not affect -- and never for
+    composing a run, whose world would then travel without the parent it extends.
     """
     from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
         ContainerQuery, backend_name, resolve_backend)
@@ -311,7 +318,7 @@ def _backend_run_files(vast_dir, parameters):
     # image, schedules its pod and dies on a file that never travelled: the failure the query
     # exists to prevent, and indistinguishable from a world that genuinely is one file.
     if isinstance(declared, ContainerQuery):
-        return _run_input_files_query(declared, vast_dir)
+        return _run_input_files_query(declared, vast_dir) if container_queries else []
     return [str(p) for p in (declared or [])]
 
 
@@ -956,7 +963,8 @@ def _check_config_file_paths(configs, scenario_file):
 
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
-                               image_project=None, image_project_tag=None):
+                               image_project=None, image_project_tag=None,
+                               container_queries: bool = True):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
     Runs **after** the variation loop, because that is the first point at which a
@@ -1023,7 +1031,8 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     for block in seen_blocks:
         query_failed.clear()
         try:
-            declared = sim_input_files(execution, block, vast_dir, run_query=ask)
+            declared = sim_input_files(execution, block, vast_dir,
+                                       run_query=ask if container_queries else None)
         except Exception as exc:  # noqa: BLE001 - as above
             if query_failed:
                 # Raised whether or not the campaign writes the channel: what a world is made
@@ -1603,7 +1612,7 @@ def _result_from_transport(data: dict, output_dir) -> dict:
 
 def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                       tolerate_infeasible=False, image_project=None,
-                      image_project_tag=None):
+                      image_project_tag=None, container_queries=True):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1647,6 +1656,10 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 "output_dir": output_dir,
                 "use_cache": bool(use_cache),
                 "tolerate_infeasible": bool(tolerate_infeasible),
+                # Crosses the boundary because the worker composes the run files too: a
+                # flag that stopped here would be silently ignored for exactly the
+                # campaigns that declare plugins.
+                "container_queries": bool(container_queries),
                 # In the job file, not the env: the worker composes for exactly this
                 # campaign, and the parent process may be composing others against other
                 # projects at the same time. An inherited env var would be whichever
@@ -1695,7 +1708,7 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True):
     """Generate all scenario variation configs from a .vast file.
 
     ``image_project`` / ``image_project_tag`` select which project the RoboVAST image
@@ -1744,6 +1757,16 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     Pass ``isolate_plugins=False`` to compose in-process when a caller needs
     live variation GUI classes. A warm cache hit returns without forking. Built-in-only
     vasts (no ``plugins:``) always compose in-process.
+
+    ``container_queries`` answers what only the simulator's own image can answer -- which
+    files a world made of several actually needs. True (the default) is every caller that
+    composes a campaign to RUN it, and the query's failure propagates, because a world
+    staged without the parent it extends is a run that dies after the image pull. False is
+    for composing a REPORT of what the file expands to: the count of configurations, which
+    those files do not affect. It is how a caller keeps the half that needs no container
+    when the exec path is unavailable -- and what it costs is that the run files are not
+    enumerated, so the result must never be staged and the caller must say the query went
+    unanswered rather than let silence read as a pass.
     """
     if not progress_update_callback:
         progress_update_callback = logger.debug
@@ -1844,7 +1867,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # `_resolve_config_sim_blocks`. The default is still staged here because it is what the
     # `.vast` declares and therefore what the composition cache key must cover; a campaign
     # whose every configuration replaces it simply carries one file it never opens.
-    for rel in _backend_run_files(vast_dir, parameters):
+    for rel in _backend_run_files(vast_dir, parameters, container_queries=container_queries):
         if rel not in run_files:
             run_files.append(rel)
 
@@ -1948,7 +1971,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if should_isolate:
         return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                                  tolerate_infeasible, image_project=image_project,
-                                 image_project_tag=image_project_tag)
+                                 image_project_tag=image_project_tag,
+                                 container_queries=container_queries)
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
@@ -2140,7 +2164,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                existing_scenario_parameters,
                                image_project=image_project,
-                               image_project_tag=image_project_tag)
+                               image_project_tag=image_project_tag,
+                               container_queries=container_queries)
 
     # Extract execution parameters from execution section
     #

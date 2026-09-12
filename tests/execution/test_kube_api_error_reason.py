@@ -214,3 +214,42 @@ def test_no_call_site_renders_an_api_error_into_its_own_raise(module):
     assert not offenders, (
         f"{pathlib.Path(module.__file__).name} lines {offenders}: raise through "
         "raise_api_error() so a handshake keeps its type")
+
+
+class _PodRead:
+    """A ``core`` whose pod read fails with *reason*, for the waits that poll one."""
+
+    def __init__(self, reason):
+        from kubernetes.client.rest import ApiException
+        self._exc = ApiException(status=0, reason=reason)
+
+    def read_namespaced_pod(self, *_a, **_k):
+        raise self._exc
+
+
+def test_waiting_for_a_pod_classifies_a_handshake_too():
+    """The wait is inside the exec path, not beside it: it exists only so an exec can follow,
+    and it polls through the same client. Left unclassified it was the one way into the path
+    that still handed callers an untyped failure -- and a caller that must report `unchecked`
+    rather than blame the project cannot tell from an ApiException that it should."""
+    from robovast.execution.cluster_execution.kube_client import wait_pod_ready
+    with pytest.raises(ExecPathUnavailable):
+        wait_pod_ready(_PodRead(_HANDSHAKE_REPR), "ns", "exec-pod", timeout_s=5)
+
+
+def test_waiting_for_a_pod_to_go_classifies_a_handshake_too():
+    """``wait_pod_gone`` treats 404 as the answer it wants and re-raised everything else as
+    it came, so the same condition escaped untyped by a second route."""
+    from robovast.execution.cluster_execution.kube_client import wait_pod_gone
+    with pytest.raises(ExecPathUnavailable):
+        wait_pod_gone(_PodRead(_HANDSHAKE_REPR), "ns", "exec-pod", timeout_s=5)
+
+
+def test_a_pod_read_that_failed_for_another_reason_names_that_wait():
+    """Not every read failure is the deployment refusing every exec. One that is not keeps
+    the operation's name, so a caller is not sent to look at an exec that never happened."""
+    from robovast.execution.cluster_execution.kube_client import wait_pod_ready
+    with pytest.raises(RuntimeError) as raised:
+        wait_pod_ready(_PodRead("etcdserver: request timed out"), "ns", "exec-pod", timeout_s=5)
+    assert not isinstance(raised.value, ExecPathUnavailable)
+    assert "could not read pod exec-pod" in str(raised.value)
