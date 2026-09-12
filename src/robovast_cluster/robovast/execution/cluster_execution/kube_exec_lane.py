@@ -159,7 +159,7 @@ class KubeExecLane:
                    slot: str = SLOT_USER) -> None:
         from kubernetes.client.rest import ApiException
 
-        from .kube_client import api_error_reason, wait_pod_ready
+        from .kube_client import raise_api_error, wait_pod_ready
         core = self._client()
         self.stop_held(slot)
         # An aux container stages nothing: its runner mirrors its own workspace through the
@@ -170,8 +170,7 @@ class KubeExecLane:
                 self._namespace, self._held_manifest(spec, deadline_s, prefix, slot))
         except ApiException as e:
             self._discard_staged(slot)
-            raise RuntimeError(
-                f"could not start exec pod: {api_error_reason(e)}") from e
+            raise_api_error(e, "could not start exec pod")
         try:
             wait_pod_ready(core, self._namespace, _pod_name(slot))
         except BaseException:

@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import re
+from typing import NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -319,24 +320,7 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
                       stderr=True, stdin=stdin_data is not None, stdout=True,
                       tty=False, _preload_content=False)
     except ApiException as exc:
-        from robovast.common.errors import \
-            ExecPathUnavailable  # noqa: PLC0415 - keeps the import cost local
-        handshake = _handshake_failure(str(getattr(exc, "reason", "") or ""))
-        if handshake:
-            # An upgrade the peer answered with an ordinary response refuses every exec on
-            # this deployment, not this one: raised as the deployment-wide verdict, with the
-            # consequence stated, because the cause alone leaves each caller to conclude on
-            # its own what it can still do -- and they concluded differently.
-            raise ExecPathUnavailable(
-                f"no command can run in a container on this deployment: {handshake}. "
-                "Nothing that has to ask a container a question can be answered here; "
-                "everything that needs none is unaffected") from exc
-        # Named here because this is the call that failed. The handshake is the one part of
-        # an exec that fails before the command exists, and unlabelled it was reported by
-        # whichever wrapper happened to enclose the call -- pointing a caller at an
-        # operation that had in fact succeeded.
-        raise RuntimeError(f"could not open an exec stream into {pod}/{container}: "
-                           f"{api_error_reason(exc)}") from exc
+        raise_api_error(exc, f"could not open an exec stream into {pod}/{container}")
     out, err = [], []
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
@@ -555,6 +539,36 @@ def api_error_reason(exc) -> str:
               or _first_segment(reason)
               or exc.__class__.__name__)
     return f"HTTP {status}: {detail}" if status else detail
+
+
+def raise_api_error(exc, context: str) -> NoReturn:
+    """Raise what a failed Kubernetes call means, and never return.
+
+    **Every ``ApiException`` a caller is meant to see goes through here.** One place
+    decides whether a failure belongs to the deployment or to the call, so a call site
+    cannot render a reason without also classifying it -- which is the failure mode this
+    replaces: two exec entry points rendered the same handshake and only one raised the
+    type every ``except`` downstream matches on, so which entry point met it first decided
+    whether the service degraded or reported a defect in itself.
+
+    A websocket upgrade the peer answered with an ordinary response refuses every exec on
+    this deployment, not the one that happened to ask: it is raised as that deployment-wide
+    verdict with the consequence stated, because the cause alone leaves each caller to
+    conclude on its own what it can still do -- and they concluded differently.
+
+    Anything else belongs to the call *context* names. Naming it here is what keeps a
+    failure from being reported by whichever wrapper happened to enclose the call, which
+    pointed callers at an operation that had in fact succeeded.
+    """
+    from robovast.common.errors import \
+        ExecPathUnavailable  # noqa: PLC0415 - keeps the import cost local
+    handshake = _handshake_failure(str(getattr(exc, "reason", "") or ""))
+    if handshake:
+        raise ExecPathUnavailable(
+            f"no command can run in a container on this deployment: {handshake}. "
+            "Nothing that has to ask a container a question can be answered here; "
+            "everything that needs none is unaffected") from exc
+    raise RuntimeError(f"{context}: {api_error_reason(exc)}") from exc
 
 
 def parse_resource(val):
