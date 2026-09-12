@@ -125,10 +125,10 @@ def test_a_source_checkout_needs_no_env(monkeypatch):
 
 # -- a corpus that reaches past this repository ----------------------------------
 
-"""The substrate a campaign runs on is documented in its own repository. Serving only
-robovast's pages meant an agent on the MCP path could not reach the world format, the
-plugin reference, or the scenario DSL at all -- and a search for them returned zero, which
-reads as "no such thing" rather than "not indexed here"."""
+# The substrate a campaign runs on is documented in its own repository. Serving only
+# robovast's pages meant an agent on the MCP path could not reach the world format, the
+# plugin reference, or the scenario DSL at all -- and a search for them returned zero, which
+# reads as "no such thing" rather than "not indexed here".
 
 
 def _corpus_dir(tmp_path, name, pages):
