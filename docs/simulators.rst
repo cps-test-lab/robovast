@@ -328,7 +328,10 @@ What is checked before anything runs
 `````````````````````````````````````
 
 A ``sim:`` destination is checked against the **backend's** schema at composition -- an unknown
-key, or a dotted path whose first segment is also a backend key, is refused there.
+key, or a dotted path whose first segment is also a backend key, is refused there. A backend
+that knows its simulator's document shape checks the path's root as well: a roqsim world has
+only ``sim:`` and ``components:``, so a destination rooted anywhere else is refused at
+composition rather than merged into overrides the simulator has nothing to apply them to.
 
 What a backend cannot answer is whether ``components.floorplan.size`` addresses a component
 *this world* has: that needs the world's ``extends`` chain resolved, which needs the simulator. A

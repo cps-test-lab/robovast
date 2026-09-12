@@ -9,7 +9,7 @@ import json
 import shlex
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
@@ -20,6 +20,10 @@ from robovast.common.variation.container_runner import ContainerSpec
 
 #: The ``SimulationInterface`` scenario-execution steps.
 ADAPTER = "roqsim.scenario_adapter:MujocoSim"
+
+#: Every top level a world document has, and therefore every root a ``sim:`` destination may
+#: address.
+_WORLD_ROOTS = ("sim", "components")
 
 #: The MuJoCo state recording each run writes, relative to its output directory. Named once
 #: and read twice — :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the
@@ -85,6 +89,26 @@ class RoqsimConfig(BaseModel):
     #: factors, so the subclass belongs to the experiment, next to the plugins it drives.
     #: Stepped shape only: with the ROS shape there is no in-process interface at all.
     adapter: Optional[str] = None
+
+    @field_validator("overrides")
+    @classmethod
+    def _addresses_the_world(cls, value):
+        """Refuse an override rooted at something a world document does not have.
+
+        A campaign's ``sim:`` destination is a path into the world, and one that starts anywhere
+        else names nothing: the world builds unchanged and every cell of the sweep runs the same
+        one, which reads as a factor with no effect rather than as a mistake. Checked here because
+        this is where a campaign is composed -- the alternative is the simulator refusing it once
+        the image is pulled and the pod is scheduled, per cell.
+        """
+        for root in sorted(value or {}):
+            if root not in _WORLD_ROOTS:
+                raise ValueError(
+                    f"'{root}' is no part of a roqsim world. A sim destination addresses a "
+                    f"settings key as 'sim.<key>' or a component's key as "
+                    f"'components.<name>.<key>'; a world declares no parameters for one to name."
+                )
+        return value
 
 
 class RoqsimBackend(SimulatorBackend):
@@ -286,7 +310,7 @@ class RoqsimBackend(SimulatorBackend):
         """``roqsim scenes describe``, in the image this campaign runs.
 
         What makes the ``sim`` channel checkable: a campaign writes
-        ``plugins.floorplan.floor.friction`` and nothing here can tell whether that plugin is in
+        ``components.floorplan.floor.friction`` and nothing here can tell whether that plugin is in
         the world without resolving its ``extends`` chain, which needs the simulator. Asked of
         the image that will run the campaign, so the answer describes the world that will load.
         """
