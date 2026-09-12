@@ -83,6 +83,10 @@ RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
 # it is. Refresh both with: make refresh-build-pins
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
+# A pipe reports the LAST command's status without this, so a checksum piped into a verifier
+# passes when the thing producing it failed. Stated for the stage rather than per RUN.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
 # download below interpolates an empty string and 404s -- so it is declared here
 # rather than left to the automatic build arg.

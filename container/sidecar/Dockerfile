@@ -15,6 +15,10 @@
 # it is. Refresh both with: make refresh-build-pins
 FROM python:3.12-alpine@sha256:d09d15e60962ca365d1cd544a48773bac9d33f2fb1b00f2aa0deec78ade7dc31
 
+# A pipe reports the LAST command's status without this, so a checksum piped into a verifier
+# passes when the thing producing it failed. Alpine's shell is ash, which has no bash to name.
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+
 RUN apk add --no-cache pigz==2.8-r1 \
  && pip install --no-cache-dir \
         boto3==1.42 google-auth==2.49.0 requests==2.32.5 paramiko==4.0.0 pyyaml==6.0.2
