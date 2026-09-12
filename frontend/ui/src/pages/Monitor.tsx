@@ -594,6 +594,10 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // the age is measured against the service's clock rather than this browser's, and refreshes
   // with the 1.5 s poll.
   const stalled = status.data?.stalled === true
+  // Sorted so the chip's hover lists the same machines in the same order on every poll.
+  const nodesSkipped = Object.entries(status.data?.nodes_skipped ?? {})
+    .map(([node, why]) => [node, String(why)] as const)
+    .sort(([a], [b]) => a.localeCompare(b))
   const progressAgeS = status.data?.progress_age_s ?? null
   const progressDeadline = status.data?.progress_deadline_s
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
@@ -934,6 +938,24 @@ function CampaignCard({ summary, newest, openedByLink }: {
               }
             >
               stalled {formatDuration(progressAgeS!)}
+            </Typography>
+          ) : null}
+          {/* A campaign running on fewer machines than the cluster has is slower than its plan
+              and looks entirely healthy: the runs it does place all pass, the progress bar just
+              moves less. Warning rather than error — nothing is wrong with the results, every
+              run is still sized from its own node — and the hover carries which machines and
+              why, since that is what decides whether to restart it staggered or let it run. */}
+          {nodesSkipped.length ? (
+            <Typography
+              variant="caption"
+              color="warning.main"
+              noWrap
+              title={
+                `Left out of this campaign, so it runs on fewer machines than the cluster ` +
+                `has:\n${nodesSkipped.map(([n, why]) => `${n} — ${why}`).join('\n')}`
+              }
+            >
+              {nodesSkipped.length} node(s) left out
             </Typography>
           ) : null}
           {/* A fixed column while FOLDED, a shrink-to-fit label while open: campaign ids carry a

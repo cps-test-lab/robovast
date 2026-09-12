@@ -3953,6 +3953,10 @@ export interface components {
             health_skipped: string[];
             /** Mode */
             mode: string | null;
+            /** Nodes Skipped */
+            nodes_skipped: {
+                [key: string]: unknown;
+            };
             /**
              * Phase
              * @default initializing
