@@ -2467,7 +2467,8 @@ def _carry_forward_provenance(path, execution_data: dict) -> None:
 
 
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
-                          image_digest=None, image_digests=None, image_labels=None):
+                          image_digest=None, image_digests=None, image_labels=None,
+                          nodes_skipped=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
@@ -2525,6 +2526,13 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # its exporter live in the SIMULATION image, not the scenario one.
     if image_digests:
         execution_data['image_revisions'] = dict(image_digests)
+
+    # Which machines this campaign did NOT use, and why. Here rather than only in the log
+    # because it is a fact about what the campaign ran on: a reader comparing two campaigns
+    # has to be able to see that one of them was short a node, and a log line is gone by then.
+    # Absent means none was left out, which is the normal case.
+    if nodes_skipped:
+        execution_data['nodes_skipped'] = dict(nodes_skipped)
 
     # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
     # only for as long as the registry keeps it; this is what a rebuild would start from.

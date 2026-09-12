@@ -163,7 +163,9 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
     monkeypatch.setattr(
         BatchJobRunner, "for_batch",
         classmethod(lambda cls, **kw: types.SimpleNamespace(
-            run_batch_in_pod=lambda campaign_root, whole_campaign=False: None)))
+            run_batch_in_pod=lambda campaign_root, whole_campaign=False: None,
+            # What the record asks a real runner for: which machines the campaign left out.
+            skipped_nodes=dict)))
 
     # The declared image is enough: resolution needs no env when the campaign names one.
     _backend().run_batch(

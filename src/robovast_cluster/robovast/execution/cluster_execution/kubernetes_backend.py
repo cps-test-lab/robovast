@@ -1821,14 +1821,18 @@ class BatchJobRunner:
 
         Reported rather than decided here: whether that ends the campaign is the caller's
         question, and this store does not know what a campaign is.
+
+        A node the campaign has SKIPPED is not sitting out -- it has been left out, which is a
+        decision already taken. Counting it again would re-ask a settled question and, since
+        the tally only ever grows, would report it for every remaining batch.
         """
         calibration = self._calibration
         if calibration is None or not getattr(self, "_calibration_applies", False):
             return []
         outcome = calibration.outcome()
-        measured = set(outcome.get("calibrated") or [])
+        settled = set(outcome.get("calibrated") or []) | set(outcome.get("skipped") or {})
         return sorted(n for n in (self._probes.values() if self._probes else ())
-                      if n not in measured)
+                      if n not in settled)
 
     def weigh_unmeasured_nodes(self) -> dict:
         """``{node_id: consecutive batches it has now gone unmeasured}``. Empty is the norm.
@@ -1847,6 +1851,35 @@ class BatchJobRunner:
         if not nodes or calibration is None:
             return {}
         return {node_id: calibration.unmeasured_batch(node_id) for node_id in nodes}
+
+    def skip_unmeasured_nodes(self, node_ids, reason: str) -> None:
+        """Leave *node_ids* out of this campaign for good.
+
+        The decision is the caller's -- how many unmeasured batches are too many is a campaign
+        policy, not a property of the store -- while what skipping MEANS is the store's.
+        """
+        calibration = self._calibration
+        if calibration is None:
+            return
+        for node_id in node_ids:
+            calibration.skip(node_id, reason)
+
+    def skipped_nodes(self) -> dict:
+        """``{node_id: why}`` for the machines this campaign left out. Empty is the norm."""
+        calibration = self._calibration
+        return calibration.skipped() if calibration is not None else {}
+
+    def has_usable_node(self) -> bool:
+        """Whether any node can still take a run.
+
+        A calibrated node can, and so can one whose probe is still out -- it is a node this
+        campaign has not given up on. Only when every one has been skipped is there nowhere
+        left, and that is a campaign that cannot run rather than a smaller one.
+        """
+        calibration = self._calibration
+        if calibration is None:
+            return True
+        return bool(calibration.outcome().get("calibrated") or self.unmeasured_nodes())
 
     def _probe_container_limits(self) -> dict:
         """``{container: declared cpu ceiling}`` -- what each container could at most use.
@@ -3672,26 +3705,37 @@ class KubernetesBackend(ExecutionBackend):
                 persistent = sorted(node_id for node_id, batches in unmeasured.items()
                                     if batches >= UNMEASURED_BATCH_LIMIT)
                 if persistent:
-                    raise CampaignConfigError(
-                        f"{', '.join(persistent)} could not be measured in "
-                        f"{UNMEASURED_BATCH_LIMIT} consecutive batches: their probes never "
-                        f"ran, so those machines took no work and the campaign would have "
-                        f"finished on the rest of the cluster without saying so. Held for "
-                        f"measuring, re-probed on the next batch, stopped by the same thing "
-                        f"and held again -- repeated, that is no longer a busy cluster. "
-                        f"What does NOT reach here is a probe too large for any node at all: "
-                        f"preflight refuses that before a single job exists. So the probe "
-                        f"does not fit alongside what else is running. It is the largest pod "
-                        f"the campaign asks for -- the DECLARED sizing summed over its "
-                        f"containers, or the bootstrap (ROBOVAST_BOOTSTRAP_CPU / _MEMORY) "
-                        f"where nothing is declared -- and, being pinned, it cannot spread, "
-                        f"so N calibrated campaigns starting together need one probe per node "
-                        f"EACH placed at once. On a cluster of unlike machines this lands on "
-                        f"the SMALLEST node first, where one probe can be half the machine: "
-                        f"preflight only asks whether it fits there empty, not whether it "
-                        f"fits there alongside anything else. The 'calibration probes' line "
-                        f"in this log has the queue's own reason. Stagger the campaigns, "
-                        f"lower the declared sizing, or set execution.sizing: fixed.")
+                    runner.skip_unmeasured_nodes(
+                        persistent,
+                        f"its probe did not run in {UNMEASURED_BATCH_LIMIT} consecutive "
+                        f"batches")
+                    # **A smaller campaign, not a failed one.** Every run still uses its own
+                    # node's measurement, so nothing here is sized two ways -- the campaign
+                    # loses the machine's capacity and keeps its comparability. What it must
+                    # not do is lose the machine SILENTLY, which is why this is said once per
+                    # node, on a `robovast.*` logger, and recorded in the calibration outcome.
+                    logger.info(
+                        "Batch %s: %s left out of this campaign -- held for measuring and "
+                        "never measured in %d consecutive batches. The probe is the largest "
+                        "pod the campaign asks for and is pinned, so it cannot spread; N "
+                        "calibrated campaigns starting together need one per node EACH at "
+                        "once, and on unlike machines the smallest node is where that fails. "
+                        "Those machines now take no work, so every run is still sized from "
+                        "its own node. To use them: stagger the campaigns, or lower the "
+                        "declared sizing so a probe fits alongside a neighbour.",
+                        batch_tag, ", ".join(persistent), UNMEASURED_BATCH_LIMIT)
+                    if not runner.has_usable_node():
+                        raise CampaignConfigError(
+                            f"Every node is now out of this campaign: "
+                            f"{', '.join(persistent)} could not be measured in "
+                            f"{UNMEASURED_BATCH_LIMIT} consecutive batches, and no node is "
+                            f"calibrated, so there is nowhere left to place a run. The probe "
+                            f"is the DECLARED sizing summed over the containers (or the "
+                            f"bootstrap, ROBOVAST_BOOTSTRAP_CPU / _MEMORY, where nothing is "
+                            f"declared) and is pinned, so it cannot spread. The 'calibration "
+                            f"probes' line in this log has the queue's own reason. Stagger "
+                            f"the campaigns, lower the declared sizing, or set "
+                            f"execution.sizing: fixed.")
                 if unmeasured:
                     # Loud, and on a `robovast.*` logger so it reaches the CAMPAIGN log: a
                     # machine sitting out a batch is part of what the campaign did, and the
@@ -3767,7 +3811,8 @@ class KubernetesBackend(ExecutionBackend):
                               context=self.kube_context,
                               image_digest=getattr(runner, "_resolved_image_digest", None),
                               image_digests=digests or None,
-                              image_labels=image_labels or None)
+                              image_labels=image_labels or None,
+                              nodes_skipped=runner.skipped_nodes() or None)
 
     def publish_execution_records(self, campaign_root: str) -> None:
         """Publish the directories only the driver writes, so a reader elsewhere has them.
