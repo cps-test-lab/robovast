@@ -230,11 +230,15 @@ def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
 
     Raises:
         RuntimeError: the pod reached a terminal phase before it could be used, *should_stop*
-            asked for the wait to end, or it was still not Running at *timeout_s* — in which
+            asked for the wait to end, it was still not Running at *timeout_s* — in which
             case the message carries :func:`pod_pending_reason` rather than only the elapsed
-            time.
+            time — or the pod could not be read.
+        ExecPathUnavailable: no command can run in a container here at all, which the read
+            is as entitled to discover as the exec it is waiting to make possible.
     """
     import time
+
+    from kubernetes.client.rest import ApiException
 
     deadline = time.monotonic() + timeout_s
     last = ""
@@ -242,7 +246,10 @@ def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
         if should_stop is not None and should_stop():
             raise RuntimeError(
                 f"stopped while waiting for pod {name} to be ready: {last or 'pending'}")
-        pod = core.read_namespaced_pod(name, namespace)
+        try:
+            pod = core.read_namespaced_pod(name, namespace)
+        except ApiException as exc:
+            raise_api_error(exc, f"could not read pod {name} while waiting for it to be ready")
         phase = pod.status.phase
         if phase == "Running":
             return
@@ -271,7 +278,9 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
             ``core.read_namespaced_pod``; pass more when a delete spans several kinds.
 
     Raises:
-        RuntimeError: something was still terminating at *timeout_s*.
+        RuntimeError: something was still terminating at *timeout_s*, or an object could not
+            be read.
+        ExecPathUnavailable: no command can run in a container here at all.
     """
     import time
 
@@ -285,7 +294,7 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
             except ApiException as e:
                 if e.status == 404:
                     break
-                raise
+                raise_api_error(e, f"could not read {name} while waiting for it to go")
             time.sleep(1)
         else:
             raise RuntimeError(
