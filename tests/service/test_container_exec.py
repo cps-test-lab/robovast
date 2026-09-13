@@ -71,6 +71,9 @@ class FakeLane:
     def held_workload_running(self, slot=ce.SLOT_USER):
         return self.busy
 
+    def held_container_alive(self, slot=ce.SLOT_USER):
+        return bool(self.live.get(slot, False))
+
     def sweep_held(self):
         gone = sorted(self.live)
         self.live.clear()
@@ -429,6 +432,73 @@ def test_a_stray_container_is_stopped_even_without_a_record():
     lane.alive = True
     mgr = ce.ContainerExecManager(lane)
     assert mgr.stop().stopped is True
+
+
+# -- a record is not a container --------------------------------------------
+
+
+def test_a_slot_whose_container_died_is_not_reused():
+    """A held container carries a deadline of its own and dies when it reaches it, leaving
+    a record behind that still says it is held. Trusting the record sends the next command
+    into a corpse, and the exec that fails there reports that nothing on this deployment
+    can exec at all -- a verdict about the cluster drawn from one dead pod."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    assert len(lane.starts) == 1
+
+    lane.alive = False                      # its deadline killed it; the record remains
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+
+    assert len(lane.starts) == 2, "a dead container was reused instead of replaced"
+
+
+def test_the_reaper_drops_a_slot_whose_container_is_gone():
+    """The other half: nothing else notices. The reaper's two clocks both assume the
+    container is there, so a slot that died on its own stayed in the map -- and its stopped
+    container stayed on the lane -- until the service restarted."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    lane.alive = False
+
+    deadline = time.monotonic() + 5
+    while mgr.state() is not None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert mgr.state() is None, "a slot whose container is gone was kept"
+
+
+def test_a_probe_that_cannot_answer_replaces_rather_than_reuses():
+    """The reuse decision takes the opposite default to the reaper's, because the risks are
+    not symmetric: replacing a container that was in fact fine costs a restart, while
+    reusing one that has died sends the next command into a corpse and reports that as the
+    deployment being unable to exec."""
+
+    class Unanswerable(FakeLane):
+        def held_container_alive(self, slot=ce.SLOT_USER):
+            raise RuntimeError("the lane could not be asked")
+
+    lane = Unanswerable()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    assert len(lane.starts) == 2, "an unconfirmable container was reused"
+
+
+def test_a_probe_that_cannot_answer_does_not_reap_a_live_container():
+    """Unanswerable reads as alive, for the same reason an unanswerable busyness probe
+    reads as busy: this decides whether to tear a container down, and a lane that cannot
+    answer is not evidence that there is nothing there."""
+
+    class Unanswerable(FakeLane):
+        def held_container_alive(self, slot=ce.SLOT_USER):
+            raise RuntimeError("the lane could not be asked")
+
+    lane = Unanswerable()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    time.sleep(0.3)
+    assert mgr.state() is not None, "a live container was reaped on a failed probe"
 
 
 # -- the reaper's two clocks ------------------------------------------------

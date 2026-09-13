@@ -136,6 +136,13 @@ class DockerExecLane:
         pids = [ln for ln in done.stdout.splitlines()[1:] if ln.strip().isdigit()]
         return len(pids) > 1
 
+    def held_container_alive(self, slot: str = SLOT_USER) -> bool:
+        """True while *slot*'s container is running; False once it is gone or stopped."""
+        name = container_name(slot)
+        code, out, _err, _timed_out = _capture(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name], _PROBE_TIMEOUT_S)
+        return code == 0 and out.strip() == "true"
+
     def sweep_held(self) -> list:
         """Remove every ``robovast-exec*`` container. Returns the names removed.
 

@@ -82,7 +82,7 @@ def test_neither_direction_uses_stdin_at_all(monkeypatch):
     with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
         fh.write("sim: {}\n")
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
     runner._copy_out()
@@ -100,7 +100,7 @@ def test_copy_in_uploads_then_mirrors_down(monkeypatch):
     with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
         fh.write("sim: {}\n")
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
@@ -130,7 +130,7 @@ def test_copy_in_creates_staged_empty_dirs_even_when_there_are_files(monkeypatch
     staged_out = os.path.join(runner.workspace, "artifacts", "hexagon")
     os.makedirs(staged_out)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
@@ -147,7 +147,7 @@ def test_copy_out_mirrors_up_then_downloads_forcing_a_refresh(monkeypatch):
     store = _FakeStore()
     runner = _runner(store)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_out()
 
@@ -162,7 +162,7 @@ def test_the_mirror_overwrites_rather_than_skipping_matching_files(monkeypatch):
     overwrote. Without ``--overwrite`` mc would quietly keep the stale copy."""
     runner = _runner()
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
     runner._copy_out()
     assert "--overwrite" in rec.calls[0][0][2]
 
@@ -176,7 +176,7 @@ def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch):
     store = _FakeStore()
     runner = _runner(store)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
@@ -201,7 +201,7 @@ def test_copy_in_of_a_workspace_holding_only_empty_dirs_transfers_nothing(monkey
     staged_out = os.path.join(runner.workspace, "out")
     os.makedirs(staged_out)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
@@ -218,7 +218,7 @@ def test_a_runner_without_a_store_refuses_instead_of_running_unstaged(monkeypatc
     runner = ClusterContainerRunner(spec, "pod-x", "ns", core_v1=object())
     with open(os.path.join(runner.workspace, "f.txt"), "w", encoding="utf-8") as fh:
         fh.write("x")
-    monkeypatch.setattr(runner, "_retrying_exec", _Recorder())
+    monkeypatch.setattr(runner, "_exec", _Recorder())
     with pytest.raises(RuntimeError, match="object store"):
         runner._copy_in()
 
@@ -537,7 +537,7 @@ def test_the_copy_inside_the_container_names_a_path_the_mirror_carries(tmp_path)
     runner.workspace = str(tmp_path / "ws")
     os.makedirs(runner.workspace)
     scripts = []
-    runner._retrying_exec = lambda command, **kwargs: scripts.append(command[-1])
+    runner._exec = lambda command, **kwargs: scripts.append(command[-1])
 
     runner.expose(str(project), "/config")
     runner._place_exposed()
@@ -594,7 +594,7 @@ def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch):
     """
     runner = _runner()
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
     runner.expose(f"{runner.workspace}/in/0/_config", "/config")
 
     runner._place_exposed()
@@ -618,7 +618,7 @@ def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
     """
     runner = _runner()
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
     staged = f"{runner.workspace}/in/2/overrides.yaml"
     runner.expose(staged, "/aux/roqsim_scene_overrides.yaml")
 

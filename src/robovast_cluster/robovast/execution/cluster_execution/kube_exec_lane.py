@@ -115,11 +115,8 @@ class KubeExecLane:
 
     def _client(self):
         if self._core is None:
-            from kubernetes import client
-
-            from .kube_client import load_kube_config
-            load_kube_config(context=self._kube_context)
-            self._core = client.CoreV1Api()
+            from .kube_client import core_v1_client
+            self._core = core_v1_client(self._kube_context)
         return self._core
 
     def _require_store(self):
@@ -245,7 +242,7 @@ class KubeExecLane:
         """
         from .kube_client import exec_stream
         pod, container = target
-        return exec_stream(self._client(), pod, self._namespace, container,
+        return exec_stream(pod, self._namespace, container,
                            list(argv), limit_s=limit_s)
 
     def exec_in_held(self, spec: ExecSpec, limit_s: int, detach: bool,
@@ -318,6 +315,30 @@ class KubeExecLane:
                 logger.warning("could not discard staged exec trees: %s", e)
         return deleted
 
+    def held_container_alive(self, slot: str = SLOT_USER) -> bool:
+        """True while *slot*'s pod is running -- read rather than exec'd into.
+
+        A read, because this is the question asked *before* the pod is trusted enough to
+        exec into: asked through an exec it would fail for the very condition it exists to
+        detect, and report that failure as the deployment's rather than this pod's.
+        """
+        from kubernetes.client.rest import ApiException
+
+        from .kube_client import raise_api_error
+        pod_name = _pod_name(slot)
+        try:
+            pod = self._client().read_namespaced_pod(pod_name, self._namespace)
+        except ApiException as e:
+            if e.status == 404:
+                return False
+            raise_api_error(e, f"could not read {pod_name} to see whether it is still up")
+        if (getattr(pod.status, "phase", "") or "") != "Running":
+            return False
+        for status in (pod.status.container_statuses or []):
+            if status.name == HELD_CONTAINER:
+                return bool(getattr(status.state, "running", None))
+        return False
+
     def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides the idle PID 1 runs in the pod.
 
@@ -331,7 +352,7 @@ class KubeExecLane:
         pod = _pod_name(slot)
         try:
             _code, out, _err, _timed_out = exec_stream(
-                self._client(), pod, self._namespace, HELD_CONTAINER,
+                pod, self._namespace, HELD_CONTAINER,
                 ["/bin/sh", "-c", self._PROCESS_COUNT_SH],
                 limit_s=_PROBE_TIMEOUT_S)
         except ApiException as e:
