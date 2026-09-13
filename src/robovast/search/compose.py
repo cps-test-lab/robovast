@@ -369,4 +369,8 @@ def preview_search_sample(vast_file: str, sample_size: int = 0, *,
                        for ps in param_sets if ps.id not in name_by_id],
         "configs": campaign_data.get("configs", []),
         "runs_per_config": campaign_data.get("execution", {}).get("runs", 1),
+        # Carried so the search arm of the pre-flight report can say which derived inputs
+        # went unproduced, exactly as the batch arm reads it off the composition. Without
+        # it a fix to one arm silently misses the other.
+        "_generated": campaign_data.get("_generated", []),
     }

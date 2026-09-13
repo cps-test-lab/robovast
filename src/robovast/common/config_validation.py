@@ -1403,6 +1403,29 @@ def _message_with_next_step(exc):
     return f"{message} Next: {step}" if step else message
 
 
+def _skipped_generator_problems(records):
+    """One ``unchecked`` problem per ``execution.generate`` entry that did not run.
+
+    A generator declaring a container cannot run where nothing can provide one, and the
+    count this report exists to give does not depend on what it would have written. Saying
+    so is what keeps the reply from reading as a campaign whose inputs are all present.
+    """
+    problems = []
+    for index, record in enumerate(records or []):
+        if not record.get("skipped"):
+            continue
+        name = record.get("name", "?")
+        problems.append(_problem(
+            "generate",
+            f"input generator {name!r} did NOT run: nothing here can provide the container "
+            f"it declares, so {record.get('out')!r} was not produced. Next: nothing about "
+            "the .vast changes this -- the counts below are the file's own expansion, which "
+            "needs no container, but the campaign cannot be run until one can.",
+            field=f"execution.generate[{index}].{name}",
+            severity="unchecked"))
+    return problems
+
+
 def _batch_composition_report(config_path):
     """Compose a batch-mode ``.vast`` and report its counts.
 
@@ -1427,8 +1450,14 @@ def _batch_composition_report(config_path):
         # the least informative case rather than the second-best one. Reported, because a
         # count that arrived without the run-file query is not the same answer as one that
         # ran it, and only the caller can know that if it is said.
-        campaign_data = generate_scenario_variations(
-            variation_file=config_path, output_dir=None, container_queries=False)
+        try:
+            campaign_data = generate_scenario_variations(
+                variation_file=config_path, output_dir=None, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        unchecked.extend(_skipped_generator_problems(campaign_data.get("_generated")))
         unchecked.append(_problem(
             "generation",
             f"the simulator's input-files query did NOT run: {e} Next: nothing about the "
@@ -1486,7 +1515,13 @@ def _search_composition_report(config_path):
         # As the batch report: the draws this preview exists to compose need no container,
         # and a deployment that cannot exec should lose the run-file query rather than the
         # whole preview.
-        sample = preview_search_sample(config_path, container_queries=False)
+        try:
+            sample = preview_search_sample(config_path, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        unchecked.extend(_skipped_generator_problems(sample.get("_generated")))
         unchecked.append(_problem(
             "generation",
             f"the simulator's input-files query did NOT run: {e} Next: nothing about the "

@@ -1735,10 +1735,17 @@ class ValidationReport(BaseModel):
     not look" and "it is fine" are different answers, and a caller that reads only
     ``valid`` must not be handed the second when the first is true.
 
-    ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks
-    that need a container: ``True`` it ran and passed, ``False`` it was asked for and
-    could not run, ``None`` it was not asked for (``check_world`` / ``check_scenario``
-    false, or -- for the scenario -- no scenario file to parse).
+    ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks a
+    caller *asks* for: ``True`` it ran and passed, ``False`` it was asked for and could not
+    run, ``None`` it was not asked for (``check_world`` / ``check_scenario`` false, or --
+    for the scenario -- no scenario file to parse).
+
+    They are not the only things here that need a container: composing the file runs an
+    ``execution.generate`` generator and any variation declaring a helper image. Those carry
+    no flag of their own because there is no request to answer -- nothing asks for them and
+    they are never skipped on request, so two of the three states could not arise. When one
+    cannot run it is reported the same way every unrunnable check is, as an ``unchecked``
+    problem that makes ``valid`` false.
     """
 
     valid: bool = False
