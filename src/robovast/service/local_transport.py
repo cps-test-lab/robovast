@@ -5108,7 +5108,8 @@ class LocalTransport(RobovastInterface):
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
-                               max_bytes=max_bytes, campaigns=campaigns)
+                               max_bytes=max_bytes, campaigns=campaigns,
+                               campaign_id=campaign_id)
         return DataQueryResult(campaign_id=campaign_id, **result)
 
     def stream_campaign_query_csv(self, campaign_id: str, sql: str):

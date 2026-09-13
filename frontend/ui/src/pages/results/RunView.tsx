@@ -444,11 +444,6 @@ export function RunView({
     }
   }, [provider, clock, tlTable, tlCol, capturePath, campaignId, run, preview])
 
-  // `run_view` needs only campaign.db, so this means the campaign has neither database. A campaign
-  // that never wrote a store is filtered out above; what is left is a store that exists but cannot be
-  // read right now (an unreachable object store, a deleted result dir), so it is still worth saying.
-  const noData = /campaign\.db/i.test((runs.error as Error | null)?.message ?? '')
-
   // The two dropdown dialogs are Popovers anchored to their trigger buttons.
   const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null)
 
@@ -632,15 +627,12 @@ export function RunView({
         </Alert>
       ) : panels.isPending || runs.isPending ? (
         <CircularProgress size={24} />
-      ) : noData ? (
-        <Alert severity="info" variant="outlined">
-          This campaign has no store to read: no <code>campaign.db</code>, so it either never
-          started or ended before recording anything.
-        </Alert>
       ) : runs.isError ? (
-        // Anything else that went wrong reading the runs, said rather than swallowed. Without this
-        // the branch below claims the campaign has nothing to replay, which is a statement about
-        // the campaign — when what actually happened is that we could not find out.
+        // Whatever went wrong reading the runs, said rather than swallowed. Without this the branch
+        // below claims the campaign has nothing to replay, which is a statement about the campaign —
+        // when what actually happened is that we could not find out. A campaign reaches this view
+        // only once it has recorded runs, so a failure here is always a failed read and never an
+        // empty store: it is reported as the error it is, in the words the service used.
         <Alert severity="error" variant="outlined">
           Could not read this campaign&apos;s runs: {(runs.error as Error).message}
         </Alert>
