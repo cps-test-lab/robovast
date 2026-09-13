@@ -465,7 +465,8 @@ _TABLE_DESCRIPTIONS = {
         "One row per entity per sample, written by the SIMULATOR itself during the run rather "
         "than derived from a bag -- so it exists even for a non-ROS run, which has no rosbag and "
         "therefore no 'poses' table at all. Same POSE CONTRACT columns as 'poses', and it holds "
-        "every free-standing body in the world, not only what TF happened to publish. " +
+        "every named body in the world -- links, wheels and attached tools included -- not only "
+        "what TF happened to publish. " +
         _POSE_CLOCKS_NATIVE + _POSE_ORIENTATION),
     ("main", "run_log"): (
         "One row per log EVENT, every container joined with /rosout, on the run's playback "
