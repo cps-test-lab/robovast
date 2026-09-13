@@ -200,9 +200,9 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
     # falling through to the scan below made a campaign read a **different experiment's**
     # ``results_processing`` config, silently, whenever its own was not the one the scan
     # happened to land on.
-    own = _vast_in_config_dir(root / "_config")
+    own = vast_in_config_dir(root / "_config")
     if own is not None:
-        return own
+        return str(own), str(root / "_config")
 
     # Otherwise scan the campaign directories under a results *root*, newest last-sorted
     # first. Note this orders by directory name, and a name is ``<experiment>-<timestamp>``
@@ -213,29 +213,7 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
         if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue
         config_dir = campaign_item / "_config"
-        if config_dir.is_dir():
-            vast_files = [f for f in sorted(config_dir.iterdir()) if f.is_file() and f.suffix == ".vast"]
-            if len(vast_files) > 1:
-                names = ", ".join(f.name for f in vast_files)
-                raise ValueError(
-                    f"Multiple .vast files found in {config_dir}: {names}. "
-                    "Expected exactly one."
-                )
-            if vast_files:
-                return str(vast_files[0]), str(config_dir)
+        found = vast_in_config_dir(config_dir)
+        if found is not None:
+            return str(found), str(config_dir)
     return None, None
-
-
-def _vast_in_config_dir(config_dir: Path) -> "Optional[tuple[str, str]]":
-    """The single ``.vast`` in one ``_config/``, or ``None`` if there is no such dir."""
-    if not config_dir.is_dir():
-        return None
-    vast_files = [f for f in sorted(config_dir.iterdir())
-                  if f.is_file() and f.suffix == ".vast"]
-    if len(vast_files) > 1:
-        names = ", ".join(f.name for f in vast_files)
-        raise ValueError(
-            f"Multiple .vast files found in {config_dir}: {names}. Expected exactly one.")
-    if not vast_files:
-        return None
-    return str(vast_files[0]), str(config_dir)

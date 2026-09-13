@@ -17,7 +17,7 @@ sim:
   timestep: 0.01
   # Sensor degradation is PRESENT but not searched. It is part of the problem -- and part of why
   # outcomes are stochastic -- without spending a search dimension on a variable whose effect is
-  # monotonic and unsurprising. `robot.lidar.range_stddev` is addressable if a campaign wants it.
+  # monotonic and unsurprising. `robot.rplidar.lidar.range_stddev` is addressable if a campaign wants it.
   seed: 0
 
 components:
@@ -25,9 +25,12 @@ components:
   - spawn_robot: {model: turtlebot4, pose: {position: {x: -2.5, y: 0.0}, orientation: {yaw: 0.0}}}
     name: robot
     components:
-      # The lidar the manifest already supplies, named here only to carry the noise. Nothing else
-      # is restated: rays, max_range and frame_id keep coming from the model.
-      - lidar: {range_stddev: 0.03, dropout_percent: 2.0}
+      # The scanner the manifest already mounts, named here only to carry the noise. Nothing else
+      # is restated: its pose, rays, max_range and frame_id keep coming from the model.
+      - spawn_sensor: {}
+        name: rplidar
+        components:
+          - lidar: {range_stddev: 0.03, dropout_percent: 2.0}
       # Ground truth for offline evaluation, deliberately OUT of the localization chain -- AMCL
       # runs off drifting wheel odometry. It is what the path, the trial duration and the
       # distance-to-goal are measured from -- NOT the clearance, which the simulator

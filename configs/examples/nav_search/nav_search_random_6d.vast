@@ -46,7 +46,7 @@ search:
       sim: components.pedestrian.speed
       values: [$walker_speed]
   - ParameterVariationList:
-      sim: components.robot.lidar.range_stddev
+      sim: components.robot.rplidar.lidar.range_stddev
       values: [$lidar_noise]
   # Both costmaps inflate by the same figure -- one factor, two destinations, one value.
   # ParameterVariationList pairs destinations with values POSITIONALLY and does not broadcast,
