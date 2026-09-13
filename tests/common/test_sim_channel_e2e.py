@@ -151,12 +151,12 @@ def test_an_override_sweep_keeps_one_world_and_varies_inside_it(tmp_path):
         - name: friction
           variations:
           - ParameterVariationList:
-              sim: plugins.floorplan.floor.friction
+              sim: components.floorplan.floor.friction
               values: [0.6, 1.4]
         """), "        ").lstrip())
     data = _compose(vast, tmp_path)
 
-    assert [c["sim"]["overrides"]["plugins"]["floorplan"]["floor"]["friction"]
+    assert [c["sim"]["overrides"]["components"]["floorplan"]["floor"]["friction"]
             for c in data["configs"]] == [0.6, 1.4]
     assert all(c["sim"]["config"] == "worlds/depot.yaml" for c in data["configs"])
 
@@ -166,7 +166,7 @@ def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
         - name: roofless
           parameters:
             sim:
-              overrides: {plugins: {ceiling: {enabled: false}}}
+              overrides: {components: {ceiling: {enabled: false}}}
           variations:
           - ParameterVariationList:
               scenario: goal_pose
@@ -175,7 +175,7 @@ def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
     data = _compose(vast, tmp_path)
 
     for config in data["configs"]:
-        assert config["sim"]["overrides"]["plugins"]["ceiling"]["enabled"] is False
+        assert config["sim"]["overrides"]["components"]["ceiling"]["enabled"] is False
         assert config["sim"]["config"] == "worlds/depot.yaml"
 
 
@@ -229,7 +229,7 @@ def test_the_world_reaches_the_container_that_runs_it(tmp_path):
               sim: config
               values: [worlds/depot.yaml, worlds/warehouse.yaml]
           - ParameterVariationList:
-              sim: plugins.floorplan.floor.friction
+              sim: components.floorplan.floor.friction
               values: [0.6]
         """), "        ").lstrip())
     data = _compose(vast, tmp_path)
@@ -242,7 +242,7 @@ def test_the_world_reaches_the_container_that_runs_it(tmp_path):
         # The overrides are a document, not argv: they are structured, and a command line
         # loses that to quoting while a file keeps it in the results.
         assert overlay["document"] == {
-            "plugins": {"floorplan": {"floor": {"friction": 0.6}}}}
+            "components": {"floorplan": {"floor": {"friction": 0.6}}}}
         assert "--override" in overlay["command"]
         assert SIM_OVERRIDES_MOUNT in overlay["command"]
 

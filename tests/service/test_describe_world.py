@@ -111,7 +111,7 @@ def test_the_pre_check_warns_when_it_could_not_check(caplog, monkeypatch):
     with caplog.at_level(logging.WARNING):
         _check_sim_against_world(
             {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
-            [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
+            [{"sim": {"overrides": {"components": {"floorplan": {"size": 3.0}}}}}], ".")
     assert "were not pre-checked" in caplog.text
     assert "could not be described" in caplog.text
 
@@ -212,7 +212,7 @@ def test_the_pre_check_stays_advisory_when_the_image_is_not_built(caplog, monkey
     with caplog.at_level(logging.WARNING):
         _check_sim_against_world(
             {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
-            [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
+            [{"sim": {"overrides": {"components": {"floorplan": {"size": 3.0}}}}}], ".")
     assert "were not pre-checked" in caplog.text
     assert "is not built" in caplog.text
     assert len(calls) == 1, "the second attempt needs the same image and fails the same way"
@@ -233,7 +233,7 @@ def test_the_pre_check_stays_advisory_when_nothing_can_exec(caplog, monkeypatch)
     with caplog.at_level(logging.WARNING):
         _check_sim_against_world(
             {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
-            [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
+            [{"sim": {"overrides": {"components": {"floorplan": {"size": 3.0}}}}}], ".")
     assert "were not pre-checked" in caplog.text
     assert "no command can run in a container" in caplog.text
 
