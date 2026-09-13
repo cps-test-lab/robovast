@@ -183,6 +183,17 @@ RUN apt-get update && \
 # ``build.sh --roqsim-src`` is the answer; the build log says which was used.
 COPY --from=roqsim-src / /opt/roqsim
 
+# No external asset roqsim lists in external/external_assets.yaml may enter the image: each is
+# fetched or generated locally and git-ignored, several under licences that forbid redistribution
+# (vendor CAD meshes, Spot's NVIDIA policy), and the package-data globs below would install them.
+# A clone never carries them; a --roqsim-src working tree can, so the build refuses one that does.
+RUN python3 -c 'import pathlib, sys, yaml; \
+root = pathlib.Path("/opt/roqsim"); \
+resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]; \
+found = [t for r in resources for t in r.get("targets", []) if (root / t).exists()]; \
+[print(f"refusing {t}: an external asset roqsim does not publish", file=sys.stderr) for t in found]; \
+sys.exit(1 if found else 0)'
+
 # Into the ROS **system** interpreter, with --break-system-packages, which is what
 # roqsim's own image does (container/Dockerfile.ros) and for the same reason: nodes are
 # launched by `ros2 launch` with /usr/bin/python3, and a package it cannot import is not
