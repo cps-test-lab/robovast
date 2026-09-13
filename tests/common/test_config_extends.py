@@ -233,8 +233,8 @@ def test_the_pointer_beats_alphabetical_order(tmp_path):
 
 
 def test_postprocessing_reads_the_pointer_too(tmp_path):
-    """``find_campaign_vast_file`` is how postprocessing finds the config; a campaign beside
-    its base is not ambiguous to it, whichever way the names sort."""
+    """``find_campaign_vast_file`` is how postprocessing finds the config; a campaign archived
+    beside its base resolves to the campaign, not to the base that sorts before it."""
     from robovast.common.results_utils import find_campaign_vast_file
     proj = tmp_path / "proj"
     _write(proj, "campaign.vast", CAMPAIGN)
