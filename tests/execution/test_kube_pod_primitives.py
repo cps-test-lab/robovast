@@ -218,8 +218,7 @@ def _patched_stream(monkeypatch, resp):
 def test_exec_stream_collects_both_streams_and_the_exit_code(monkeypatch):
     resp = _Resp([("hello\n", ""), ("", "warn\n")], returncode=3)
     _patched_stream(monkeypatch, resp)
-    core = type("C", (), {"connect_get_namespaced_pod_exec": object()})()
-    code, out, err, timed_out = exec_stream(core, "p", "ns", "c", ["true"], limit_s=5)
+    code, out, err, timed_out = exec_stream("p", "ns", "c", ["true"], limit_s=5)
     assert (code, out, err, timed_out) == (3, "hello\n", "warn\n", False)
     assert resp.closed
 
@@ -232,9 +231,7 @@ def test_exec_stream_bounds_a_command_that_never_finishes(monkeypatch):
     """
     resp = _Resp([], never_closes=True)
     _patched_stream(monkeypatch, resp)
-    core = type("C", (), {"connect_get_namespaced_pod_exec": object()})()
-    code, _out, _err, timed_out = exec_stream(core, "p", "ns", "c", ["sleep", "inf"],
-                                              limit_s=0.05)
+    code, _out, _err, timed_out = exec_stream("p", "ns", "c", ["sleep", "inf"], limit_s=0.05)
     assert timed_out is True
     assert code == 124, "same code the local lane's subprocess timeout reports"
     assert resp.closed, "a bounded exec still releases the channel"
@@ -244,17 +241,97 @@ def test_exec_stream_treats_a_missing_status_as_a_failure(monkeypatch):
     """Reporting 0 for a channel that closed without a status would invent a success."""
     resp = _Resp([("out", "")], returncode=None)
     _patched_stream(monkeypatch, resp)
-    core = type("C", (), {"connect_get_namespaced_pod_exec": object()})()
-    code, _out, _err, timed_out = exec_stream(core, "p", "ns", "c", ["x"], limit_s=5)
+    code, _out, _err, timed_out = exec_stream("p", "ns", "c", ["x"], limit_s=5)
     assert (code, timed_out) == (124, True)
 
 
 def test_exec_stream_writes_stdin_when_given(monkeypatch):
     resp = _Resp([("", "")])
     _patched_stream(monkeypatch, resp)
-    core = type("C", (), {"connect_get_namespaced_pod_exec": object()})()
-    exec_stream(core, "p", "ns", "c", ["cat"], limit_s=5, stdin_data="payload")
+    exec_stream("p", "ns", "c", ["cat"], limit_s=5, stdin_data="payload")
     assert resp.stdin == ["payload"]
+
+
+def test_an_exec_leaves_every_other_caller_s_client_alone(monkeypatch):
+    """``kubernetes.stream`` streams by rebinding ``ApiClient.request`` for the duration of
+    the call. A client shared with anything else therefore has that rebinding applied under
+    it, and an ordinary REST call issued through it meanwhile goes out as a websocket
+    handshake and is refused -- carrying whatever status the REST call would have returned,
+    so a read or a delete fails wearing the exec path's error and reads as the deployment
+    being unable to exec at all. Streaming on a client of its own is what keeps one
+    subsystem's exec from deciding what another subsystem's API call does.
+    """
+    import kubernetes.stream
+    shared = _shared_client()
+    observed = {}
+
+    # The rebinding is an *instance* attribute, which is also how it is detected here: a
+    # bound method is rebuilt on every attribute access, so comparing one to a previously
+    # read one answers about method objects rather than about the client.
+    def rebound(api) -> bool:
+        return "request" in vars(api)
+
+    def rebinding_stream(func, *_a, **_k):
+        # What the real helper does: swap the request method on the client it is given.
+        func.__self__.api_client.request = lambda *_x, **_y: None
+        observed["streamed_on_the_shared_client"] = func.__self__.api_client is shared.api_client
+        observed["shared_rebound_mid_stream"] = rebound(shared.api_client)
+        return _Resp([("", "")])
+
+    monkeypatch.setattr(kubernetes.stream, "stream", rebinding_stream)
+    exec_stream("p", "ns", "c", ["true"], limit_s=5)
+
+    assert observed["streamed_on_the_shared_client"] is False, (
+        "exec_stream must build its own client, not stream on one anybody else holds")
+    assert observed["shared_rebound_mid_stream"] is False, (
+        "an unrelated caller's client was rebound while the exec was open")
+    assert not rebound(shared.api_client), "the rebinding outlived the exec"
+
+
+def test_the_streaming_helper_is_confined_to_exec_stream():
+    """The rule, rather than one more instance of it. ``kubernetes.stream`` streams by
+    rebinding ``ApiClient.request`` on the client it is handed, so whoever calls it decides
+    what every other holder of that client gets for the duration. One call site, inside the
+    one function that builds a client of its own, is what keeps that blast radius at zero --
+    and a second call site elsewhere would reintroduce the fault silently, since it breaks
+    only under concurrency and only in whatever unrelated call happens to be in flight.
+    """
+    import ast
+    import pathlib as _pathlib
+
+    from robovast.execution.cluster_execution import kube_client
+
+    owner = _pathlib.Path(kube_client.__file__)
+    tree = ast.parse(owner.read_text())
+    exec_stream_def = next(n for n in ast.walk(tree)
+                           if isinstance(n, ast.FunctionDef) and n.name == "exec_stream")
+    allowed = set(ast.walk(exec_stream_def))
+    offenders = [n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "stream"
+                 and n not in allowed]
+    assert not offenders, (
+        f"{owner.name} lines {offenders}: stream() outside exec_stream, which is the only "
+        "place that owns a client nobody else holds")
+
+    # And nowhere else at all: a module that imports the helper can call it on a shared
+    # client without ever touching this file.
+    repo_src = _pathlib.Path(__file__).resolve().parents[2] / "src"
+    importers = []
+    for tree_root in (repo_src / "robovast", repo_src / "robovast_cluster" / "robovast"):
+        for path in tree_root.rglob("*.py"):
+            if path == owner:
+                continue
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                if "kubernetes.stream" in line and not line.lstrip().startswith("#"):
+                    importers.append(f"{path.name}:{lineno}")
+    assert not importers, (
+        "only kube_client.exec_stream may reach the streaming helper; found " + ", ".join(importers))
+
+
+def _shared_client():
+    """A ``CoreV1Api`` standing in for the one a lane caches and threads share."""
+    from kubernetes import client
+    return client.CoreV1Api(client.ApiClient())
 
 
 # --- which containers a pod actually runs -----------------------------------

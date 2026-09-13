@@ -82,7 +82,6 @@ import shutil
 import subprocess
 import tempfile
 import threading
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -476,11 +475,8 @@ class AuxPodSession:
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client
-
-            from .kube_client import load_kube_config
-            load_kube_config(context=self._kube_context)
-            self._core_v1 = client.CoreV1Api()
+            from .kube_client import core_v1_client
+            self._core_v1 = core_v1_client(self._kube_context)
         return self._core_v1
 
     def __enter__(self):
@@ -702,11 +698,8 @@ class ClusterContainerRunner:
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client
-
-            from .kube_client import load_kube_config
-            load_kube_config(context=self._kube_context)
-            self._core_v1 = client.CoreV1Api()
+            from .kube_client import core_v1_client
+            self._core_v1 = core_v1_client(self._kube_context)
         return self._core_v1
 
     # -- exec plumbing ------------------------------------------------------
@@ -725,7 +718,7 @@ class ClusterContainerRunner:
         stderr_sink = progress_update_callback or (
             lambda line: logger.debug("aux stderr: %s", line))
         code, out, err, timed_out = exec_stream(
-            self._client(), self._pod, self._namespace, self._container, command,
+            self._pod, self._namespace, self._container, command,
             limit_s=self._exec_limit_s, stdin_data=stdin_data,
             on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink)
         if timed_out:
@@ -738,22 +731,6 @@ class ClusterContainerRunner:
             raise subprocess.CalledProcessError(
                 code, command, output="\n".join(part for part in (out, err) if part))
         return out
-
-    def _retrying_exec(self, command, **kwargs):
-        """Exec, retrying transient 'container not ready yet' failures."""
-        last_exc = None
-        for attempt in range(10):
-            try:
-                return self._exec(command, **kwargs)
-            except subprocess.CalledProcessError:
-                raise  # a real non-zero exit — don't retry
-            except Exception as exc:  # pylint: disable=broad-except
-                last_exc = exc
-                logger.debug("exec into %s not ready yet (attempt %d): %s",
-                             self._container, attempt + 1, exc)
-                time.sleep(1)
-        raise RuntimeError(
-            f"Could not exec into aux container '{self._container}': {last_exc}")
 
     # -- workspace mirroring ------------------------------------------------
 
@@ -819,10 +796,10 @@ class ClusterContainerRunner:
             staged_files += len(names)
         quoted = " ".join(f"'{path}'" for path in staged_dirs)
         if not staged_files:
-            self._retrying_exec(["sh", "-c", f"mkdir -p {quoted}"])
+            self._exec(["sh", "-c", f"mkdir -p {quoted}"])
             return
         self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
-        self._retrying_exec(["sh", "-c", f"mkdir -p {quoted} && " + self._mirror(down=True)])
+        self._exec(["sh", "-c", f"mkdir -p {quoted} && " + self._mirror(down=True)])
 
     def _copy_out(self) -> None:
         """Mirror the container's workspace back over the local one, via the store.
@@ -831,7 +808,7 @@ class ClusterContainerRunner:
         up: a same-size regenerated file is a real case, and the default size check would
         keep the stale one.
         """
-        self._retrying_exec(["sh", "-c", self._mirror(down=False)])
+        self._exec(["sh", "-c", self._mirror(down=False)])
         self._require_store().download_prefix(self._bucket, self._prefix,
                                               self.workspace, force=True)
 
@@ -860,7 +837,7 @@ class ClusterContainerRunner:
             else:
                 script = (f"mkdir -p '{os.path.dirname(container_path)}' && "
                           f"cp -R '{staged}' '{container_path}'")
-            self._retrying_exec(["sh", "-c", script])
+            self._exec(["sh", "-c", script])
 
     def run(self, command, progress_update_callback=None) -> None:
         progress_update_callback = progress_update_callback or logger.debug

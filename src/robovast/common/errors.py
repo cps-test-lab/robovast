@@ -60,11 +60,15 @@ class ClusterUnreachableError(Exception):
 class ExecPathUnavailable(RuntimeError):
     """Raised when no command can be run in a container here at all.
 
-    A property of the *deployment*, never of the image, the command or the project: an API
-    server that does not serve the exec subresource as a stream -- or anything between the
-    client and it that answers the upgrade with an ordinary HTTP response -- refuses every
-    exec equally, before the command exists. So the pod and container one attempt named are
-    incidental, and naming them invites a caller to try another.
+    A property of the *deployment*, never of the image, the command or the project: an
+    upgrade request answered with an ordinary HTTP success means nothing serving it upgraded
+    the connection, so every exec is refused equally, before the command exists. The pod and
+    container one attempt named are therefore incidental, and naming them invites a caller
+    to try another.
+
+    A status that is *not* a success is not this: the API server answering ``404`` or
+    ``500`` is answering about the one target that was asked for, which a caller may retry
+    against another.
 
     Distinct from a command that ran and failed, which is the caller's own question
     answered, and from :class:`ClusterUnreachableError`, where the API server never answered
@@ -124,7 +128,9 @@ class IndexUnreachableError(RuntimeError):
     whole design exists to avoid. Say the index is unreachable and let the caller
     decide.
 
-    A ``RuntimeError`` so the service's ``_guard`` maps it to 503 like its sibling.
+    A ``RuntimeError`` like its sibling, but unlike it ``_guard`` carries no arm of its
+    own for this type: it falls through to the ``RuntimeError`` arm and reaches a client as
+    409 rather than 503. The routes that must tell it apart catch it themselves.
     """
 
     include_traceback = False

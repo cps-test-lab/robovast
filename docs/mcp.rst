@@ -1077,7 +1077,7 @@ Asking what a world offers an override
 --------------------------------------
 
 The ``sim`` channel is writable long before it is *discoverable*. A campaign writes
-``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod — and
+``components.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod — and
 only there is it refused, because resolving a world's ``extends`` chain needs the simulator.
 ``describe_world`` (and ``vast workspace world``) asks the simulator instead, up front:
 

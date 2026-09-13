@@ -714,7 +714,7 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     """Check every ``sim`` override addresses a plugin the world actually has.
 
     The ``sim`` channel is writable without this but not *discoverable*: a campaign writes
-    ``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod,
+    ``components.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod,
     and only then is refused by ``apply_overrides``. Nothing before the container could tell,
     because resolving a world's ``extends`` chain needs the simulator.
 

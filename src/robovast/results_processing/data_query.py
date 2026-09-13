@@ -736,25 +736,23 @@ def campaign_id_of(campaign_dir) -> str:
     one configuration, or one run -- the notebook surface routinely does, and has nothing
     else to go on.
 
-    **A caller that already knows the id should pass it instead**, and the service does.
-    Deriving it from a path asks the filesystem a question that ingestion has already
-    answered: the rows are in the index, so the campaign needs no directory here at all,
-    and on the cluster lane the "directory" is a cache the service deliberately never
-    fills. Measured: an imported campaign left an EMPTY cache dir, which exists -- so the
-    guard below does not fire -- and carries no ``campaign.db`` to walk up to, so every
-    query against it was refused while its 38838 rows sat in the index.
+    **A caller that already knows the id passes it instead**, and every caller in the
+    service does. Deriving it from a path asks the filesystem a question that ingestion has
+    already answered: the rows are in the index, so the campaign needs no directory here at
+    all, and on the cluster lane it has none. The answer then turns on what happens to be on
+    disk -- a scratch directory carries the campaign's name while holding only the objects
+    some reader fetched into it, so the walk below refuses a campaign whose rows are sitting
+    in the index. Passing the id keeps the question from being asked.
     """
     from robovast.common.analysis.db import (  # pylint: disable=import-outside-toplevel
         campaign_root)
 
     path = Path(campaign_dir)
     if not path.exists():
-        # The cluster lane resolves a query to the campaign's cache dir *without fetching
-        # it* -- there is nothing left to fetch, the rows are in the index -- so the path
-        # names a campaign that has no directory on this machine at all. Walking up for
-        # campaign.db would refuse every such query. A path that does not exist carries no
-        # structure to walk, so its name is the id; an existing path that is not a campaign
-        # still raises below.
+        # A path that does not exist carries no structure to walk, so its name is the id.
+        # That keeps "this campaign was never ingested" answerable -- the index reports it
+        # as such -- rather than refusing it as "not a campaign directory". An existing path
+        # that is not a campaign still raises below.
         return path.name
 
     return campaign_root(path).name

@@ -138,7 +138,7 @@ class DestinationConfig(VariationConfig):
             scenario:
               map: map_file                    # nav2 reads it at run time
             sim:
-              mesh: plugins.floorplan.mesh     # MuJoCo compiles it in
+              mesh: components.floorplan.mesh     # MuJoCo compiles it in
 
     Slots exist because a multi-output plugin's destinations cannot be spelled by one key,
     and because their *names* are often dynamic -- a mode flag picking ``goal_pose`` versus
