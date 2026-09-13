@@ -239,10 +239,7 @@ RUN apt-get update && \
 #
 # `moveit-msgs` is MESSAGES, not servers: a campaign whose scenario drives move_group is a CLIENT, so
 # it needs the message definitions and nothing else -- and this image is what such a container gets by
-# default. `pymoveit2` is the same side of that line: a Python client of move_group's actions and
-# services, depending on messages and rclpy alone. move_group itself is in the roqsim flavour
-# (Dockerfile.roqsim), because what executes a MoveIt trajectory here is roqsim's own bridge --
-# interfaces in the base, servers in the flavour.
+# default. 
 # hadolint ignore=DL3008,SC2086
 RUN \
     apt-get update && \
