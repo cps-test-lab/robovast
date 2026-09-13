@@ -153,10 +153,10 @@ RUN apt-get update && \
 # `moveit-msgs` for the other half of the split -- a scenario driving move_group as a client
 # needs the interfaces, not the servers.
 #
-# `moveit-planners-ompl` and `moveit-kinematics` are explicit rather than left to
-# `moveit-ros-move-group`'s dependencies: move_group loads the OMPL planner and the KDL
-# kinematics plugin BY NAME at run time, so a missing one surfaces as a planning request that
-# fails rather than as an image that fails to build.
+# `moveit-planners-ompl`, `pilz-industrial-motion-planner` and `moveit-kinematics` are explicit
+# rather than left to `moveit-ros-move-group`'s dependencies: move_group loads the OMPL and Pilz
+# planners and the KDL kinematics plugin BY NAME at run time, so a missing one surfaces as a
+# planning request that fails rather than as an image that fails to build.
 #
 # Not behind an ARG, unlike the torch packages below. The gate there is justified by several
 # hundred MB on an image every campaign pulls; this is a fraction of that, and the base
@@ -166,6 +166,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-"${ROS_DISTRO}"-moveit-ros-move-group \
         ros-"${ROS_DISTRO}"-moveit-planners-ompl \
+        ros-"${ROS_DISTRO}"-pilz-industrial-motion-planner \
         ros-"${ROS_DISTRO}"-moveit-kinematics \
         ros-"${ROS_DISTRO}"-moveit-simple-controller-manager && \
     rm -rf /var/lib/apt/lists/*
