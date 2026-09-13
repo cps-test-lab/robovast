@@ -64,11 +64,12 @@ def execution():
 
 def test_a_bare_backend_key_is_that_key_and_anything_else_is_an_override(backend):
     assert S.resolve_sim_path(backend, "config") == ("config",)
-    assert S.resolve_sim_path(backend, "plugins.floorplan.size") == (
-        "overrides", "plugins", "floorplan", "size")
+    assert S.resolve_sim_path(backend, "components.floorplan.size") == (
+        "overrides", "components", "floorplan", "size")
     # The explicit spelling stays valid, and is how a world key colliding with a backend
     # key would be reached.
-    assert S.resolve_sim_path(backend, "overrides.plugins.a") == ("overrides", "plugins", "a")
+    assert S.resolve_sim_path(backend, "overrides.components.a") == (
+        "overrides", "components", "a")
 
 
 def test_a_backend_with_no_dotted_root_refuses_an_unknown_key_naming_the_real_ones(backend):
@@ -76,8 +77,8 @@ def test_a_backend_with_no_dotted_root_refuses_an_unknown_key_naming_the_real_on
         DOTTED_ROOT = None
 
     with pytest.raises(ValueError) as err:
-        S.resolve_sim_path(NoRoot(), "plugins.floorplan.size", "noroot")
-    assert "plugins.floorplan.size" in str(err.value)
+        S.resolve_sim_path(NoRoot(), "components.floorplan.size", "noroot")
+    assert "components.floorplan.size" in str(err.value)
     assert "config" in str(err.value) and "overrides" in str(err.value)
 
 
@@ -106,8 +107,8 @@ def test_a_variation_writes_the_channel_its_key_names():
     assert [c["config"] for c in scenario_side] == [{"goal_pose": 1.0}, {"goal_pose": 2.0}]
     assert not any(c.get("sim") for c in scenario_side)
 
-    sim_side = run({"sim": "plugins.floorplan.size", "values": [3.0]})
-    assert sim_side[0]["sim"] == {"plugins.floorplan.size": 3.0}
+    sim_side = run({"sim": "components.floorplan.size", "values": [3.0]})
+    assert sim_side[0]["sim"] == {"components.floorplan.size": 3.0}
     assert sim_side[0]["config"] == {}
 
 
@@ -122,18 +123,18 @@ def test_both_channels_are_written_by_one_update_config_call():
     out = Variation.update_config(
         v, {"name": "c", "config": {}},
         {"obstacles": [{"x": 1}]},
-        sim_values={"plugins.boxes.instances": [{"pos": [1, 2]}]})
+        sim_values={"components.boxes.instances": [{"pos": [1, 2]}]})
     assert out["config"] == {"obstacles": [{"x": 1}]}
-    assert out["sim"] == {"plugins.boxes.instances": [{"pos": [1, 2]}]}
+    assert out["sim"] == {"components.boxes.instances": [{"pos": [1, 2]}]}
 
 
 # -- the campaign block is a default a configuration overlays --------------------------
 
 
 def test_a_configuration_overlays_the_campaign_default(backend, execution):
-    merged = S.merge_sim_block(execution, {"plugins.floorplan.size": 4.2})
+    merged = S.merge_sim_block(execution, {"components.floorplan.size": 4.2})
     assert merged == {"config": "worlds/depot.yaml",
-                      "overrides": {"plugins": {"floorplan": {"size": 4.2}}}}
+                      "overrides": {"components": {"floorplan": {"size": 4.2}}}}
 
 
 def test_a_configuration_may_replace_the_world_outright(backend, execution):
@@ -152,9 +153,9 @@ def test_a_generated_file_is_addressed_where_the_container_will_find_it(backend,
     deploy path IS the path in the container.
     """
     merged = S.merge_sim_block(
-        execution, {"plugins.floorplan.mesh": "3d-mesh/room.stl"},
+        execution, {"components.floorplan.mesh": "3d-mesh/room.stl"},
         deploy_paths={"3d-mesh/room.stl"})
-    assert (merged["overrides"]["plugins"]["floorplan"]["mesh"]
+    assert (merged["overrides"]["components"]["floorplan"]["mesh"]
             == "/config/3d-mesh/room.stl")
 
 
@@ -166,16 +167,16 @@ def test_the_addressed_path_is_absolute(backend, execution):
     resolved against whatever working directory that process happens to have.
     """
     merged = S.merge_sim_block(
-        execution, {"plugins.floorplan.mesh": "3d-mesh/room.stl"},
+        execution, {"components.floorplan.mesh": "3d-mesh/room.stl"},
         deploy_paths={"3d-mesh/room.stl"})
-    assert merged["overrides"]["plugins"]["floorplan"]["mesh"].startswith("/")
+    assert merged["overrides"]["components"]["floorplan"]["mesh"].startswith("/")
 
 
 def test_a_value_that_is_not_a_staged_file_is_left_alone(backend, execution):
     merged = S.merge_sim_block(
-        execution, {"plugins.floorplan.mesh": "roqsim_scenes:depot"},
+        execution, {"components.floorplan.mesh": "roqsim_scenes:depot"},
         deploy_paths={"3d-mesh/room.stl"})
-    assert merged["overrides"]["plugins"]["floorplan"]["mesh"] == "roqsim_scenes:depot"
+    assert merged["overrides"]["components"]["floorplan"]["mesh"] == "roqsim_scenes:depot"
 
 
 def test_an_unrecognised_key_becomes_an_override_path_when_a_root_exists(backend, execution):
@@ -187,8 +188,8 @@ def test_an_unrecognised_key_becomes_an_override_path_when_a_root_exists(backend
     without the simulator; today a typo there is refused by ``apply_overrides`` in the
     container. What this layer does catch is a misspelled *backend* key, below.
     """
-    merged = S.merge_sim_block(execution, {"plugins.floorplan.frixion": 1})
-    assert merged["overrides"] == {"plugins": {"floorplan": {"frixion": 1}}}
+    merged = S.merge_sim_block(execution, {"components.floorplan.frixion": 1})
+    assert merged["overrides"] == {"components": {"floorplan": {"frixion": 1}}}
 
 
 def test_a_backend_without_a_root_refuses_the_same_key(monkeypatch, execution):
@@ -204,11 +205,11 @@ def test_a_backend_without_a_root_refuses_the_same_key(monkeypatch, execution):
 
 
 def test_the_world_is_argv_and_the_overrides_are_a_document(backend, execution):
-    block = S.merge_sim_block(execution, {"plugins.floorplan.size": 4.2})
+    block = S.merge_sim_block(execution, {"components.floorplan.size": 4.2})
     overlay = S.sim_job_overlay(execution, block)
     assert overlay["command"] == ["sim", "worlds/depot.yaml",
                                   "--override", S.SIM_OVERRIDES_MOUNT]
-    assert overlay["document"] == {"plugins": {"floorplan": {"size": 4.2}}}
+    assert overlay["document"] == {"components": {"floorplan": {"size": 4.2}}}
     assert overlay["env"] == {"STUB_WORLD": "worlds/depot.yaml"}
 
 
@@ -258,8 +259,8 @@ def test_a_different_world_is_a_different_key():
 
 def test_a_different_override_is_a_different_key():
     """Overrides change the compiled model as much as the world file does."""
-    a = _item("c1", {"config": "w.yaml", "overrides": {"plugins": {"f": {"size": 3}}}})
-    b = _item("c2", {"config": "w.yaml", "overrides": {"plugins": {"f": {"size": 4}}}})
+    a = _item("c1", {"config": "w.yaml", "overrides": {"components": {"f": {"size": 3}}}})
+    b = _item("c2", {"config": "w.yaml", "overrides": {"components": {"f": {"size": 4}}}})
     assert a.sim_key != b.sim_key
 
 
