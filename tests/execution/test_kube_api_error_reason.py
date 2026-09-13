@@ -115,9 +115,9 @@ def test_a_handshake_failure_is_its_own_type_not_a_bare_runtime_error(monkeypatc
     reported by whichever wrapper enclosed the call, pointing a caller at an operation that
     had in fact succeeded.
     """
-    core = _refusing_stream(monkeypatch, _HANDSHAKE_REPR)
+    _refusing_stream(monkeypatch, _HANDSHAKE_REPR)
     with pytest.raises(ExecPathUnavailable) as raised:
-        exec_stream(core, "exec-pod", "ns", "held", ["true"], limit_s=5)
+        exec_stream("exec-pod", "ns", "held", ["true"], limit_s=5)
     message = str(raised.value)
     assert "no command can run in a container" in message
     assert "never upgraded" in message, "the cause travels with the verdict"
@@ -132,9 +132,9 @@ def test_an_exec_that_failed_for_any_other_reason_is_not_a_deployment_verdict(mo
     """Only the handshake says *nothing* can exec. A pod that went away between the check
     and the call is one pod, and reported as a deployment-wide outage it would send a
     caller to their cluster administrator over a race they can retry."""
-    core = _refusing_stream(monkeypatch, "pods 'exec-pod' not found")
+    _refusing_stream(monkeypatch, "pods 'exec-pod' not found")
     with pytest.raises(RuntimeError) as raised:
-        exec_stream(core, "exec-pod", "ns", "held", ["true"], limit_s=5)
+        exec_stream("exec-pod", "ns", "held", ["true"], limit_s=5)
     assert not isinstance(raised.value, ExecPathUnavailable)
     assert "exec stream into exec-pod/held" in str(raised.value)
 

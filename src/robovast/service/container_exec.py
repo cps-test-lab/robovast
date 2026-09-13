@@ -181,6 +181,18 @@ class ExecLane(Protocol):
     def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides *slot*'s idle PID 1 is still running."""
 
+    def held_container_alive(self, slot: str = SLOT_USER) -> bool:
+        """True while *slot*'s container exists and is running.
+
+        Distinct from :meth:`held_workload_running`, which asks whether anything is *busy*
+        inside a container it already assumes is there -- and which answers "busy" when it
+        cannot tell, so that an unanswerable probe never reaps a live run. That rule makes
+        it useless for this question, which is the opposite one: a held container carries a
+        deadline of its own and dies when it reaches it, so a record saying one is held is
+        not evidence that it still is. Exec'ing into what is left fails in a way that reads
+        as the deployment being unable to exec at all.
+        """
+
     def sweep_held(self) -> list:
         """Remove **every** exec container this lane owns; return what went.
 
@@ -751,12 +763,19 @@ class ContainerExecManager:
         """Start, reuse, or replace *slot*'s container. True if reused."""
         with self._lock:
             held = self._held.get(slot)
-            if held and held["identity"] == identity:
-                # The live container already has the right /config mounted; this call's
-                # freshly staged copy is redundant.
-                spec.close()
-                return True
-            if held:
+            matches = bool(held and held["identity"] == identity)
+        # Probed outside the lock, and probed at all because the record is not the
+        # container: a held one reaches its own deadline and dies, leaving a record that
+        # still says it is there. Reusing that sends the next command into a corpse, which
+        # fails as though nothing on this deployment could exec.
+        if matches and self._still_up(slot):
+            # The live container already has the right /config mounted; this call's
+            # freshly staged copy is redundant.
+            spec.close()
+            return True
+        with self._lock:
+            held = self._held.get(slot)
+            if held and not matches:
                 # Replacing would silently kill whatever is running in there — a
                 # destructive act inferred from a changed argument rather than asked
                 # for. Refuse and name the way through. Unreachable for a query slot,
@@ -812,6 +831,36 @@ class ContainerExecManager:
             logger.debug("could not probe %s workload: %s", container_name(slot), exc)
             return True
 
+    def _still_up(self, slot: str = SLOT_USER) -> bool:
+        """Whether *slot*'s container can be reused; ``False`` when the probe cannot say.
+
+        The opposite default to :meth:`_container_alive_locked`, for the opposite decision.
+        Replacing a container is safe -- ``start_held`` stops whatever is there and creates
+        it again -- while reusing one that has died sends the next command into a corpse.
+        So ignorance replaces here and spares there, and neither case propagates a probe
+        failure to a caller who asked only for a container to run in.
+        """
+        try:
+            return self._lane.held_container_alive(slot)
+        except Exception as exc:  # noqa: BLE001 - unanswerable means replace, never reuse
+            logger.debug("could not confirm %s is still up; replacing it: %s",
+                         container_name(slot), exc)
+            return False
+
+    def _container_alive_locked(self, slot: str = SLOT_USER) -> bool:
+        """Whether *slot*'s container is still up; ``True`` when the probe cannot say.
+
+        Unanswerable reads as alive for the same reason an unanswerable busyness probe
+        reads as busy: this decides whether to tear a container down, and a lane that
+        cannot answer is not evidence that there is nothing there.
+        """
+        try:
+            return self._lane.held_container_alive(slot)
+        except Exception as exc:  # noqa: BLE001 - a probe failure must not reap a live one
+            logger.debug("could not probe whether %s is still up: %s",
+                         container_name(slot), exc)
+            return True
+
     def _start_reaper(self) -> None:
         if self._reaper and self._reaper.is_alive():
             return
@@ -828,7 +877,11 @@ class ContainerExecManager:
                 now = time.monotonic()
                 due = []
                 for slot, held in self._held.items():
-                    if now >= held["deadline"]:
+                    if not self._container_alive_locked(slot):
+                        # Its own deadline killed it, or something else did. The record and
+                        # the stopped container both outlive it until someone says so.
+                        due.append((slot, "its container is gone"))
+                    elif now >= held["deadline"]:
                         due.append((slot, "hard deadline reached"))
                     elif (not self._workload_running_locked(slot)
                             and now >= held["idle_deadline"]):

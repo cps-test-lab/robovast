@@ -108,7 +108,7 @@ def load_kube_config(context: str | None = None) -> str:
     service deploy/cleanup path or the RBAC setup loading config directly runs its API
     calls with ``timeout=None``, which shows up as an off-cluster ``vast serve --backend
     cluster`` hanging for minutes on an unreachable cluster and then dying in a urllib3
-    traceback. A test enforces it (``tests/common/test_kube_loader_is_the_only_entry.py``).
+    traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
 
     Args:
         context: Host kubeconfig context to select when not running in-cluster.
@@ -143,6 +143,23 @@ def load_kube_config(context: str | None = None) -> str:
         loaded = f"host:{context or 'current-context'}"
         logger.debug("Loaded host Kubernetes config (%s)", loaded)
         return loaded
+
+
+def core_v1_client(context: str | None = None):
+    """A ``CoreV1Api`` for this process, configured through :func:`load_kube_config`.
+
+    One constructor rather than a copy per holder, because the two steps belong together:
+    the loader installs the connect-timeout policy, and a client built without having gone
+    through it runs every call with ``timeout=None``.
+
+    What it returns is meant to be **kept** by the caller that asked for it. It is not for
+    streaming -- :func:`exec_stream` builds its own and is handed none, since
+    ``kubernetes.stream`` rebinds the request method of whatever client it is given.
+    """
+    from kubernetes import client  # noqa: PLC0415 - keeps the import cost local
+
+    load_kube_config(context=context)
+    return client.CoreV1Api()
 
 
 def _waiting_reason(status) -> str:
@@ -301,7 +318,7 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
                 f"{name} did not finish terminating within {int(timeout_s)}s")
 
 
-def exec_stream(core, pod: str, namespace: str, container: str, command,
+def exec_stream(pod: str, namespace: str, container: str, command,
                 *, limit_s: float, stdin_data: str | None = None,
                 on_stdout_line=None, on_stderr_line=None):
     """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
@@ -317,18 +334,30 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
     Note on *stdin_data*: the stream can be written to but **cannot be half-closed**, so a
     receiver waiting for EOF never sees one. A sender must frame its payload by length (see
     ``ClusterContainerRunner._copy_in``); this function cannot do it for the caller.
+
+    It streams on a client **of its own**, and is deliberately handed none.
+    ``kubernetes.stream`` works by rebinding ``ApiClient.request`` for the duration of the
+    call, so any ordinary REST call issued through the same client meanwhile goes out as a
+    websocket handshake and is refused -- carrying whatever status that call would have
+    returned. Sharing one client between an exec and the rest of a threaded service
+    therefore breaks unrelated reads and deletes, and breaks them wearing this function's
+    error, which reads as the deployment being unable to exec at all.
     """
     import time
 
+    from kubernetes import client as kube
     from kubernetes.client.rest import ApiException
     from kubernetes.stream import stream
 
+    api = kube.ApiClient()
+    core = kube.CoreV1Api(api)
     try:
         resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
                       container=container, command=list(command),
                       stderr=True, stdin=stdin_data is not None, stdout=True,
                       tty=False, _preload_content=False)
     except ApiException as exc:
+        api.close()
         raise_api_error(exc, f"could not open an exec stream into {pod}/{container}")
     out, err = [], []
     deadline = time.monotonic() + max(1.0, float(limit_s))
@@ -372,6 +401,7 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
                 code = 126  # the shell's "command found but not executable" convention
     finally:
         resp.close()
+        api.close()
     if code is None:
         # Either the deadline fired, or the channel closed without a status — neither is a
         # success, and reporting 0 for the second would invent one.
@@ -501,19 +531,20 @@ def _status_message(body) -> str:
 
 
 def _handshake_failure(reason: str) -> str:
-    """A websocket upgrade answered with an ordinary HTTP response, stated as that.
+    """A websocket upgrade answered with an ordinary HTTP *success*, stated as that.
 
-    The API server serves exec as a stream, so an answer that is not a protocol switch
-    means the request never arrived at the exec subresource as one. ``200`` is both the
-    common case and the confusing one: read raw, the failure says "OK".
+    Only a 2xx earns this verdict. The API server answers an exec upgrade with ``101``, and
+    a 4xx or 5xx is its answer about the one call that asked -- ``404`` for a pod that is
+    gone, ``500`` for a container that is. Reported as "nothing can exec here" those send a
+    caller to their cluster administrator over a target they could simply ask about again,
+    which is why the status is read rather than the mere presence of a handshake failure.
     """
     found = _HANDSHAKE_STATUS.search(reason or "")
-    if not found:
+    if not found or not found.group(1).startswith("2"):
         return ""
     return ("the connection was never upgraded to a websocket -- the request for the "
             f"stream was answered with an ordinary HTTP {found.group(1)} response, so "
-            "either something between this client and the API server answered it, or the "
-            "API server does not serve that subresource as a stream")
+            "nothing serving this call upgraded it")
 
 
 def _first_segment(reason: str) -> str:
