@@ -295,17 +295,16 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
-A campaign does **record** which workspace and ``.vast`` it was launched from, on its
-``campaign`` row (``origin_*``, see :mod:`robovast.common.store`) and on
-``CampaignSummary.origin``. That is a *record*, not a link, and the difference is the whole
-of it: nothing resolves it to run anything — a retrigger relaunches from the campaign's own
-frozen ``_config/`` — so deleting the workspace it names still takes nothing with it. It
-answers "where did this come from?", which is a fact about the past; it does not answer
-"where do I re-run it from?", which is always the campaign itself. A **re-run** records the
-config version it read as well (``origin_config_version_from`` and the migration steps that
-got it there), because a re-run migrates a staged copy of the parent's frozen ``.vast``, and
-two runs of "the same campaign" that read different config versions are not the same
-experiment. See :ref:`web-ui-origin`.
+**A batch campaign reads the workspace only while it prepares.** It composes there,
+resolves what each configuration references, and stages those files; from then on it
+reads nothing but its own campaign directory, so the workspace can change underneath it
+without changing what it runs. It says so, and a bulk push waits only for that window —
+which closes before the first container starts.
+
+A **search** campaign is the exception, and holds the workspace for its whole life: it
+composes again for every generation, so a file edited between two generations would make
+them two different experiments under one campaign id. Giving a search the same freedom
+means giving it its own copy of the project to compose from, which is not yet done.
 
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
@@ -316,13 +315,19 @@ does. Omitting ``workspace_id`` is refused rather than resolved from somewhere e
 because such a fallback ignores ``config_path`` and so could run a different ``.vast``
 than the caller named.
 
-**Pinned (read-only) workspaces.** ``vast serve --workspace-dir DIR`` registers a
-directory as a workspace used *in place* rather than copied into the store: no
-upload, present at start-up, and stable across restarts (the id is derived from
-the resolved path). These entries live only in memory — never in
-``registry.json`` — carry ``read_only=True``, and every mutating store op refuses
-them (``WorkspaceStore._require_writable``); MCP/CLI/HTTP surface that as a clear
-error.
+**Pinned workspaces.** ``vast serve --workspace-dir DIR`` registers a directory as a
+workspace used *in place* rather than copied into the store: no upload, present at
+start-up, and stable across restarts (the id is derived from the resolved path). These
+entries live only in memory, never in ``registry.json``.
+
+The directory stays **writable**, and that is the point: an edit in the Config tab lands
+on the real file, so a git-tracked project is editable from the browser without copying
+it into the store and back. Two things are refused instead. *Deleting* the workspace —
+the directory is the caller's, not the store's, so unpinning it is a ``--workspace-dir``
+flag rather than a DELETE. And a **whole-tree sync** into it
+(``WorkspaceRegistry.require_syncable``), which would mirror a local directory over one
+the caller did not give this service to manage; individual edits are exactly what a pin
+is for.
 
 Exactly **one** directory may be pinned. It holds as many ``.vast`` files as you
 like — selected per campaign by ``config_path`` — so several pins would add no

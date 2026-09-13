@@ -75,7 +75,6 @@ variation_logger = logging.getLogger("robovast.variation")
 
 _BAR = "=" * 60
 
-
 #: Serialises id minting and remembers the last id handed out, so back-to-back
 #: launches of the *same* campaign name never collide (see ``campaign_id_for``).
 _campaign_id_lock = threading.Lock()
@@ -236,6 +235,37 @@ class CampaignController:
         self._batch_active = threading.Event()
         self._batch_baseline = 0
         self._batch_total = 0
+        #: Whether the project this campaign was launched from is free to change. Held
+        #: here as well as published on ``state`` so a controller driven without one (the
+        #: offline callers, the tests) still does this exactly once.
+        self._released_project = False
+        # Set on the options this controller drives rather than asked of the caller: the
+        # two lanes stage inside their own run_batch, and the controller is what both of
+        # them are staging for.
+        self.options.on_configs_staged = self._on_configs_staged
+
+    # -- the project this campaign reads ------------------------------------
+
+    def _on_configs_staged(self) -> None:
+        """Stop reading the project this campaign was launched from.
+
+        Called once a batch's configurations are staged -- the last thing a **batch**
+        campaign does with its project, and it happens before any of them runs. It
+        composed once and staged once; everything it reads afterwards is its own campaign
+        directory. So the project it came from can change without changing it, which is
+        what lets an author push to that workspace while the runs are still going.
+
+        A **search** campaign is deliberately not released here. It composes again for
+        every generation, so it goes on reading the project for its whole life, and
+        saying otherwise would let a push change an experiment already under way. Giving
+        a search the same freedom means giving it its own copy of the project to compose
+        from, which is a change of its own.
+        """
+        if self._released_project or self.mode == "search":
+            return
+        self._released_project = True
+        if self.state is not None:
+            self.state.release_project()
 
     # -- lifecycle ----------------------------------------------------------
 

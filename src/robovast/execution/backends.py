@@ -38,6 +38,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable, Optional
 
 from robovast.common import prepare_campaign_configs
 # Re-exported: config generation and campaign staging raise the same user-error
@@ -130,6 +131,14 @@ class RunOptions:
     # removes. A per-campaign option rather than an env var for the same reason as
     # ``postprocess``: the service drives many campaigns concurrently in one process.
     finalize_phase: bool = True
+    # -- a batch's configurations have been staged ----------------------------
+    # Called once a batch's configurations are staged and before any of them runs -- the
+    # last thing a batch campaign does with the project it was launched from, and so the
+    # moment it can stop reading it (see ``CampaignController._on_configs_staged``). A
+    # callback rather than a return value because both lanes stage inside their own
+    # run_batch, and per-campaign rather than per-process because the service drives many
+    # campaigns at once.
+    on_configs_staged: Optional[Callable[[], None]] = None
 
 
 def _scenario_image(execution: dict, options: RunOptions) -> str:
@@ -425,6 +434,8 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     # gui selects the execution.local.gui parameter overrides, so it has to reach both the
     # staged scenario.config and the packed job documents the local run actually mounts.
     prepare_campaign_configs(config_path_result, campaign_data, gui=options.gui)
+    if options.on_configs_staged is not None:
+        options.on_configs_staged()
 
     run_script = os.path.join(work_dir, "run.sh")
     generate_compose_run_script(

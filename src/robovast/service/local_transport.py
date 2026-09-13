@@ -919,28 +919,37 @@ class LocalTransport(RobovastInterface):
                 f"this refuses instead.")
 
     def list_workspaces(self) -> ListWorkspacesResponse:
-        busy = self._workspaces_in_use()
+        busy, preparing = self._workspaces_in_use()
         return ListWorkspacesResponse(workspaces=[
             WorkspaceInfo.model_validate(
-                {**e, "running_campaigns": busy.get(e["workspace_id"], [])})
+                {**e, "running_campaigns": busy.get(e["workspace_id"], []),
+                 "preparing_campaigns": preparing.get(e["workspace_id"], [])})
             for e in self.store.registry.list()])
 
-    def _workspaces_in_use(self) -> dict[str, list[str]]:
-        """Live campaigns per workspace — ``{workspace_id: [campaign_id, ...]}``.
+    def _workspaces_in_use(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """Live campaigns per workspace, and the ones still reading it.
 
-        A campaign reads its project out of the workspace for its whole life (a search
-        campaign re-composes from it every generation), so overwriting one mid-run
-        changes a running experiment underneath itself. Only this process knows the
-        pairing, and only while it lasts — which is exactly the question a client has
-        to be able to ask before it pushes.
+        ``({workspace_id: [campaign_id, ...]}, {workspace_id: [campaign_id, ...]})``. Both
+        are live state only this process knows, and only while it lasts — which is exactly
+        the question a client has to be able to ask before it pushes.
+
+        The two differ because a campaign stops reading its workspace part-way through: it
+        composes and stages out of it, and from then on it runs from its own copy (see
+        ``CampaignController._on_configs_staged``). Such a campaign is still live and still
+        came from here, but this workspace can change without changing it — so it is listed
+        as running and not as preparing, and only the latter refuses a push.
         """
         in_use: dict[str, list[str]] = {}
+        preparing: dict[str, list[str]] = {}
         with self._lock:
             entries = list(self._campaigns.values())
         for entry in entries:
-            if entry.workspace_id and not self._is_done(entry):
-                in_use.setdefault(entry.workspace_id, []).append(entry.campaign_id)
-        return in_use
+            if not entry.workspace_id or self._is_done(entry):
+                continue
+            in_use.setdefault(entry.workspace_id, []).append(entry.campaign_id)
+            if not entry.state.project_released:
+                preparing.setdefault(entry.workspace_id, []).append(entry.campaign_id)
+        return in_use, preparing
 
     def get_workspace(self, workspace_id: str) -> WorkspaceInfo:
         return WorkspaceInfo.model_validate(self.store.registry.require(workspace_id))

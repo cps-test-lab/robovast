@@ -46,12 +46,19 @@ them. Internally:
    is what keeps one per *project* rather than one per *launch*; pass
    ``--workspace NAME`` to push somewhere else.
 
-   A workspace a campaign is **currently running from** is refused, naming the
-   campaign: a campaign reads its project out of the workspace for its whole life (a
-   search campaign re-composes from it every generation), so a push would change an
-   experiment mid-flight. ``WorkspaceInfo.running_campaigns`` is what answers that —
-   live state held by the service driving the run, never a stored campaign→workspace
-   binding, because a *finished* campaign is workspace-independent.
+   A workspace a campaign is **still reading** is refused, naming the campaign: a
+   campaign composes and resolves files out of the workspace, so a push during that
+   would change an experiment as it is being set up — and a half-pushed tree read
+   mid-composition is worse than either version of it.
+
+   A **batch** campaign is finished reading once it has staged, which is before its
+   first container starts, so the refusal usually lasts moments; afterwards the push
+   goes through and says which running campaigns it will not reach. A **search**
+   campaign re-composes every generation and so is refused for its whole life.
+   ``WorkspaceInfo.preparing_campaigns`` is what answers the refusal and
+   ``running_campaigns`` the note — live state held by the service driving the run,
+   never a stored campaign→workspace binding, because a *finished* campaign is
+   workspace-independent.
 2. **Config upload + job creation** — The driver composes each batch, uploads the
    scenario configurations to the storage bucket, and creates one Kubernetes
    ``Job`` per packed job. Each job runs an ``initContainer`` that pulls its

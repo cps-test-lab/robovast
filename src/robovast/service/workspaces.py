@@ -156,7 +156,6 @@ class WorkspaceRegistry:
             "workspace_id": workspace_id,
             "name": name or p.name,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "read_only": False,
             "source_dir": str(p),
         }
         self._static[workspace_id] = entry

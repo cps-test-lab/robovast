@@ -94,6 +94,7 @@ class ControllerState:
         self._stop_events = {scope: threading.Event() for scope in STOP_SCOPES}
         self._progress_suspend = threading.Event()
         self._progress_mark = self._progress_signal()
+        self._project_released = threading.Event()
 
     def snapshot(self) -> Status:
         with self._lock:
@@ -241,6 +242,22 @@ class ControllerState:
     def share_stop_requested(self) -> bool:
         """Whether the **share upload** was asked to end (see :class:`UploadProgress`)."""
         return self.stop_requested_for(STOP_SHARE)
+
+    def release_project(self) -> None:
+        """Record that the campaign no longer reads the project it was launched from.
+
+        Set once the campaign has staged its configurations, which for a batch campaign
+        is the last thing it does with that project (see
+        ``CampaignController._on_configs_staged``). Never set for a search campaign,
+        which composes out of the project again for every generation. Until it is set,
+        editing that project changes what the campaign is about to run.
+        """
+        self._project_released.set()
+
+    @property
+    def project_released(self) -> bool:
+        """Whether the campaign has stopped reading the project it was launched from."""
+        return self._project_released.is_set()
 
     def suspend_progress(self) -> None:
         """Pause the run-progress poller (see CampaignController._poll).

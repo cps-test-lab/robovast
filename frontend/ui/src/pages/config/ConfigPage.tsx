@@ -141,7 +141,7 @@ export function ConfigPage({
   })
 
   const removeWorkspace = async () => {
-    if (!selected || selected.read_only) return
+    if (!selected) return
     const ok = await confirm({
       title: 'Delete workspace',
       message: (
@@ -219,14 +219,6 @@ export function ConfigPage({
               {list.map((w) => (
                 <MenuItem key={w.workspace_id} value={w.workspace_id}>
                   {w.name || w.workspace_id}
-                  {w.read_only ? (
-                    <Chip
-                      label="read-only"
-                      size="small"
-                      variant="outlined"
-                      sx={{ ml: 1, height: 18, fontSize: '0.65rem' }}
-                    />
-                  ) : null}
                 </MenuItem>
               ))}
             </TextField>
@@ -237,8 +229,7 @@ export function ConfigPage({
               size="small"
               color="error"
               onClick={removeWorkspace}
-              disabled={!selected || selected.read_only || deleteWs.isPending}
-              title={selected?.read_only ? 'Read-only workspaces cannot be deleted' : undefined}
+              disabled={!selected || deleteWs.isPending}
             >
               Delete workspace
             </Button>

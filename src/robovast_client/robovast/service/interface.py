@@ -1013,9 +1013,9 @@ class VersionInfo(BaseModel):
     #:
     #: ``/results/<campaign_id>/<path>`` is ``<results_root>/<campaign_id>/<path>``.
     #: ``/sources/<workspace_id>/<path>`` is
-    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a workspace
-    #: reporting ``read_only: true``, which is a directory pinned in place with
-    #: ``--workspace-dir`` and therefore lives outside this root.
+    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a directory
+    #: pinned in place with ``--workspace-dir``, which is used where it is and
+    #: therefore lives outside this root.
     results_root: Optional[str] = None
     sources_root: Optional[str] = None
     #: The origin to prefix a route or an address with, so a caller that cannot be handed
@@ -1477,16 +1477,21 @@ class WorkspaceInfo(BaseModel):
     workspace_id: str
     name: str = ""
     created_at: Optional[str] = None
-    #: True for a directory pinned read-only with ``vast serve --workspace-dir``:
-    #: used in place, so writes are refused — edit the files on disk instead.
-    read_only: bool = False
-    #: Campaigns running *right now* out of this workspace. A campaign reads its
-    #: project from here for its whole life, so writing to a workspace that has any is
-    #: changing a running experiment underneath itself. Live state, not a stored
+    #: Campaigns running *right now* out of this workspace. Live state, not a stored
     #: binding: a finished campaign is workspace-independent (which is why
     #: ``_execution/launch.yaml`` records no ``workspace_id``), and only the service
     #: driving the run can answer this at all. Empty on a service that tracks none.
     running_campaigns: list[str] = Field(default_factory=list)
+    #: The subset of those still *reading* this workspace. A batch campaign composes and
+    #: stages out of it and then reads only its own campaign directory, so it drops off
+    #: this list before its first container starts; a search campaign re-composes every
+    #: generation and stays on it for its whole life. So this — and not
+    #: ``running_campaigns`` — is what a bulk write has to wait for.
+    #:
+    #: ``None`` means the service does not report it and cannot be assumed to have the
+    #: behaviour: a client talking to one must fall back to ``running_campaigns``, where
+    #: every live campaign reads its workspace for its whole life.
+    preparing_campaigns: Optional[list[str]] = None
 
 
 class ListWorkspacesResponse(BaseModel):
