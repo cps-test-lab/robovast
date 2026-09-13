@@ -2235,7 +2235,7 @@ def read_job_links(campaign_dir) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def job_artifact_dir(campaign_dir, job_name) -> str:
+def job_artifact_dir(campaign_dir, job_name, links=None) -> str:
     """Resolve ``<config>/<run>``'s job-artifact dir (logs, sysinfo, resource monitor).
 
     Those artifacts are written per JOB under ``_jobs/``, never into the run dir, so
@@ -2250,6 +2250,10 @@ def job_artifact_dir(campaign_dir, job_name) -> str:
     Args:
         campaign_dir: The campaign's results directory.
         job_name: ``"<config>/<run>"``.
+        links: The campaign's manifest as :func:`read_job_links` returns it. A caller
+            resolving every run of a campaign passes it: the manifest holds one entry per
+            run, so reading it per call makes the walk quadratic in the run count. Omitted,
+            it is read here.
 
     Returns:
         str: Path to the job's artifact directory, relative to *campaign_dir*'s root
@@ -2260,8 +2264,10 @@ def job_artifact_dir(campaign_dir, job_name) -> str:
             the job's artifacts are unlocatable, which must not be reported as
             "no output".
     """
+    if links is None:
+        links = read_job_links(campaign_dir)
     try:
-        rel = resolve_job_artifact_rel(read_job_links(campaign_dir), job_name)
+        rel = resolve_job_artifact_rel(links, job_name)
     except FileNotFoundError as e:
         raise FileNotFoundError(f"{e} in {campaign_dir!r}") from None
     return os.path.normpath(os.path.join(campaign_dir, rel))

@@ -11,10 +11,55 @@ The manifest is **campaign-level** while it is written **per batch**, which is t
 hazard here. A four-batch campaign was found holding entries for its last two batches only.
 """
 
+from pathlib import Path
+
 import pytest
 import yaml
 
-from robovast.common.execution import JOB_LINKS_MANIFEST, read_job_links, write_job_links_manifest
+from robovast.common import execution
+from robovast.common.execution import (JOB_LINKS_MANIFEST, job_artifact_dir, read_job_links,
+                                       write_job_links_manifest)
+from robovast.results_processing import run_slices
+
+
+def _count_manifest_reads(monkeypatch) -> list:
+    reads = []
+    real = execution.read_job_links
+
+    def counting(campaign_dir):
+        reads.append(campaign_dir)
+        return real(campaign_dir)
+
+    monkeypatch.setattr(execution, "read_job_links", counting)
+    return reads
+
+
+def test_a_campaign_walk_reads_the_manifest_once(tmp_path, monkeypatch):
+    """The manifest holds one entry per run, so a read per run makes resolving a campaign
+    quadratic in its size -- hours of postprocessing for a campaign of ten thousand runs."""
+    configs = [f"cfg-{i}" for i in range(4)]
+    for config in configs:
+        for run in range(3):
+            (tmp_path / config / str(run)).mkdir(parents=True)
+    _write(tmp_path, [_Job(0, [_Item(c, r) for c in configs for r in range(3)])], "batch-0")
+
+    reads = _count_manifest_reads(monkeypatch)
+    slices = list(run_slices.iter_run_slices(tmp_path, run_slices.SliceStats()))
+
+    assert len(slices) == 12
+    assert {Path(s.job_dir) for s in slices} == {tmp_path / "_jobs" / "batch-0" / "job-0"}
+    assert len(reads) == 1
+
+
+def test_a_manifest_in_hand_is_resolved_without_reading_the_file(tmp_path, monkeypatch):
+    _write(tmp_path, [_job(0, "cfg-a")], "batch-0")
+    links = read_job_links(str(tmp_path))
+    reads = _count_manifest_reads(monkeypatch)
+    assert job_artifact_dir(str(tmp_path), "cfg-a/0", links=links) == str(
+        tmp_path / "_jobs" / "batch-0" / "job-0")
+    assert not reads
+    with pytest.raises(FileNotFoundError, match="cfg-b/0"):
+        job_artifact_dir(str(tmp_path), "cfg-b/0", links=links)
 
 
 class _Item:

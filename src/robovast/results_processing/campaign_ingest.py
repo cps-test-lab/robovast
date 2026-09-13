@@ -365,14 +365,16 @@ def _shm_info(campaign_path: Path, config_name: str, run_id: int) -> tuple:
     return used, total
 
 
-def _clock_map_info(campaign_path: Path, config_name: str, run_id: int):
+def _clock_map_info(campaign_path: Path, config_name: str, run_id: int, links: dict):
     """What relates this run's wall-stamped log to sim time, and how well.
 
     A run with no map reports :data:`clock_map.SOURCE_NONE`, which is a finding rather than
-    an error: its log is wall-time only.
+    an error: its log is wall-time only. *links* is the campaign's job-link manifest, read
+    once by the caller walking the campaign.
     """
     try:
-        job_dir = execution.job_artifact_dir(str(campaign_path), f"{config_name}/{run_id}")
+        job_dir = execution.job_artifact_dir(str(campaign_path), f"{config_name}/{run_id}",
+                                             links=links)
     except (FileNotFoundError, OSError):
         job_dir = None
     if job_dir:
@@ -675,6 +677,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
             for run_dir in campaign_data.list_run_dirs(config_dir)]
     advance = _walk_progress("building the run table", len(walk),
                              output or logger.info)
+    links = execution.read_job_links(str(root))
 
     rows = []
     for config_name, run_dir in walk:
@@ -685,7 +688,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
         outcome = (outcomes.get(config_name, {}).get(run_id)
                    or campaign_data.read_run_outcome(run_path, root))
         instance_type, node_label, cpu_name, cpus, mem = _sysinfo_fields(outcome)
-        clock = _clock_map_info(root, config_name, run_id)
+        clock = _clock_map_info(root, config_name, run_id, links)
         shm_peak, shm_limit = _shm_info(root, config_name, run_id)
         start_time = outcome["start_time"]
         duration = outcome["duration_s"]
