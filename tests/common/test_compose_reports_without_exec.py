@@ -15,6 +15,9 @@ and *said*, and the half that needs nothing is reported -- the same move the wor
 already makes when it is asked again without its overrides.
 """
 
+import pathlib
+import shutil
+
 import pytest
 
 from robovast.common import config_generation
@@ -29,6 +32,25 @@ SEARCH_VAST = "configs/examples/nav_search/nav_search_tpe_6d.vast"
 #: `image:`, so it needs a container of its own, and an `out` that is generated and
 #: therefore absent until something produces it.
 GENERATE_VAST = "configs/examples/ur5e_pick_place/ur5e_pick_place.vast"
+
+
+@pytest.fixture(autouse=True)
+def _compose_from_cold():
+    """No leftover cache decides what this file proves.
+
+    Composition caches beside the ``.vast``, and a warm cache returns the metadata without
+    running the variation loop at all -- so a test about what composition *does* passes on a
+    developer's second run and fails on CI's first, where the tree is always cold. The cache
+    is git-ignored and nothing else clears it between tests, which makes that difference
+    invisible until the two disagree.
+    """
+    def _clear():
+        for vast in (BATCH_VAST, SEARCH_VAST, GENERATE_VAST):
+            shutil.rmtree(pathlib.Path(vast).parent / ".cache", ignore_errors=True)
+
+    _clear()
+    yield
+    _clear()
 
 
 @pytest.fixture
@@ -50,7 +72,12 @@ def no_helper_container(monkeypatch):
     path refuses -- which is what a generator declaring an ``image:`` meets first, since
     composition runs the generators before it asks the simulator anything."""
 
-    def _refuse(*_a, **_k):
+    def _refuse(spec, *_a, **_k):
+        # Exactly where the real one would build a runner, and nowhere else: it returns
+        # None for a caller that declared no container, and the variation loop asks for
+        # every variation whether it declared one or not.
+        if spec is None:
+            return None
         raise ExecPathUnavailable(
             "no command can run in a container on this deployment: the connection was "
             "never upgraded to a websocket. Nothing that has to ask a container a "
@@ -81,7 +108,7 @@ def test_the_query_that_did_not_run_is_unchecked_rather_than_an_error(exec_path_
 
 
 def test_the_unchecked_problem_says_what_is_unanswered_not_that_the_vast_is_wrong(
-        no_helper_container):
+        exec_path_down):
     """A reader who acts on this must not go looking for a mistake in their file, and must
     not read the configuration count as fully checked."""
     message = _generation_problems(validate_project_file(BATCH_VAST))[0]["message"]
