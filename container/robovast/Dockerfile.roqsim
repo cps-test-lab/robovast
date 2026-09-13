@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=c8ed4d75f6a7b8616f0e656ef646bb06fa569396
+ARG ROQSIM_REF=dbd4522391956e8035de0396064201a6e4e6f70e
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -153,10 +153,10 @@ RUN apt-get update && \
 # `moveit-msgs` for the other half of the split -- a scenario driving move_group as a client
 # needs the interfaces, not the servers.
 #
-# `moveit-planners-ompl` and `moveit-kinematics` are explicit rather than left to
-# `moveit-ros-move-group`'s dependencies: move_group loads the OMPL planner and the KDL
-# kinematics plugin BY NAME at run time, so a missing one surfaces as a planning request that
-# fails rather than as an image that fails to build.
+# `moveit-planners-ompl`, `pilz-industrial-motion-planner` and `moveit-kinematics` are explicit
+# rather than left to `moveit-ros-move-group`'s dependencies: move_group loads the OMPL and Pilz
+# planners and the KDL kinematics plugin BY NAME at run time, so a missing one surfaces as a
+# planning request that fails rather than as an image that fails to build.
 #
 # Not behind an ARG, unlike the torch packages below. The gate there is justified by several
 # hundred MB on an image every campaign pulls; this is a fraction of that, and the base
@@ -166,6 +166,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-"${ROS_DISTRO}"-moveit-ros-move-group \
         ros-"${ROS_DISTRO}"-moveit-planners-ompl \
+        ros-"${ROS_DISTRO}"-pilz-industrial-motion-planner \
         ros-"${ROS_DISTRO}"-moveit-kinematics \
         ros-"${ROS_DISTRO}"-moveit-simple-controller-manager && \
     rm -rf /var/lib/apt/lists/*
@@ -182,6 +183,17 @@ RUN apt-get update && \
 # source fails in ways that look like the integration is broken rather than stale.
 # ``build.sh --roqsim-src`` is the answer; the build log says which was used.
 COPY --from=roqsim-src / /opt/roqsim
+
+# No external asset roqsim lists in external/external_assets.yaml may enter the image: each is
+# fetched or generated locally and git-ignored, several under licences that forbid redistribution
+# (vendor CAD meshes, Spot's NVIDIA policy), and the package-data globs below would install them.
+# A clone never carries them; a --roqsim-src working tree can, so the build refuses one that does.
+RUN python3 -c 'import pathlib, sys, yaml; \
+root = pathlib.Path("/opt/roqsim"); \
+resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]; \
+found = [t for r in resources for t in r.get("targets", []) if (root / t).exists()]; \
+[print(f"refusing {t}: an external asset roqsim does not publish", file=sys.stderr) for t in found]; \
+sys.exit(1 if found else 0)'
 
 # Into the ROS **system** interpreter, with --break-system-packages, which is what
 # roqsim's own image does (container/Dockerfile.ros) and for the same reason: nodes are
@@ -221,31 +233,33 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_manipulation \
         /opt/roqsim/roqsim_manipulation_assets \
         /opt/roqsim/roqsim_mobile_manipulation \
+        /opt/roqsim/roqsim_aerial \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_nav \
         /opt/roqsim/roqsim_walker \
         /opt/roqsim/roqsim_webctrl \
         /opt/roqsim/scenario_execution_roqsim
 
-# The learned-policy platforms, behind a switch because they pull CPU torch: quadruped +
-# humanoid are ~80 MB of assets and torch several hundred more, on an image that every
-# campaign pulls -- including the ones that never load a policy.
+# The learned-policy platforms: quadruped + humanoid, which pull CPU torch (several hundred MB
+# on top of ~80 MB of assets). On by default, so the published image carries every robot roqsim
+# ships and a campaign never has to know which platform needs which build. Build with
+# ``--build-arg INCLUDE_TORCH_PKGS=0`` for an image without them.
 #
-# Named and tested exactly as roqsim's own lean image does it (container/Dockerfile:
-# ``ARG INCLUDE_TORCH_PKGS=0`` and ``= "1"``), so "which image has the legged platforms"
-# reads the same in both repos. The ``= "1"`` rather than a non-empty test is deliberate:
+# Named and tested as roqsim's own lean image does it (container/Dockerfile:
+# ``INCLUDE_TORCH_PKGS`` and ``= "1"``), so "which image has the legged platforms" reads the
+# same in both repos. The ``= "1"`` rather than a non-empty test is deliberate:
 # ``--build-arg INCLUDE_TORCH_PKGS=0`` must mean off, which is what a reader expects it to
 # mean.
 #
-# Note the asymmetry with roqsim's *ROS* image, which installs torch unconditionally. This
-# image serves the ROS shape, so a legged-robot ROS campaign has to switch this on rather than
-# getting torch for free. That is the deliberate trade: the default image stays small for the
-# mobile campaigns that are the common case.
+# The humanoid policies ship inside roqsim_humanoid. Spot's does not: NVIDIA's asset licence
+# forbids redistributing it, so a Spot campaign supplies its own copy through
+# ``SPOT_POLICY_PATH`` or the plugin's ``policy_path``, and spot_locomotion refuses to load
+# without one.
 #
 # torch on its own line and with --index-url, not --extra-index-url: the CPU wheel index
 # does not carry the roqsim packages' other dependencies, so a single pass that mixed them
 # would resolve those against it and fail.
-ARG INCLUDE_TORCH_PKGS=0
+ARG INCLUDE_TORCH_PKGS=1
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     if [ "${INCLUDE_TORCH_PKGS}" = "1" ]; then \
       echo "legged platforms: installing quadruped + humanoid (CPU torch)" && \
