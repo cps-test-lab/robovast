@@ -221,13 +221,14 @@ remember and map onto their situation:
   **names** out of that directory: metadata, not an import, because
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
   this process is long-lived.
-* A variation declaring an auxiliary container is exercised by ``preview_configurations`` and
-  not by ``validate_project`` — because the difference between them is that preview
-  **composes**. Composing is what asks a variation to produce what it varies, and a variation
-  may need a helper image to do it; ``validate_project`` never gets that far, so it reports the
-  variation tier as unchecked rather than pretending. Preview's reply names what it ran in
-  ``aux_containers``, and the composition is cached, so a following ``start_campaign`` reuses
-  the work.
+* A variation declaring an auxiliary container is exercised by **both**, because both
+  compose: composing is what asks a variation to produce what it varies, and a variation may
+  need a helper image to do it. Each arranges a runner for one first — see
+  ``LocalTransport.validate_project`` and ``preview_configurations``, which enter the same
+  held aux-runner span. What separates them is what they *report*: preview names the cells
+  the sweep resolves to and the images it ran in ``aux_containers``, where validation reports
+  only the counts. The composition is cached either way, so a following ``start_campaign``
+  reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
   span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
   gets one held by the container-exec manager and reaped on idleness, and a local service

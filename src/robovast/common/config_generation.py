@@ -1073,7 +1073,7 @@ def _backend_cfg(backend, execution, name):
     return _validated_cfg(backend, dict(block), name)
 
 
-def _generated_run_files(vast_dir, parameters, records):
+def _generated_run_files(vast_dir, parameters, records, container_queries=True):
     """Files produced by ``execution.generate``, as paths relative to the ``.vast``.
 
     Derived from each entry's declared ``out`` rather than from *records*, so the
@@ -1091,6 +1091,11 @@ def _generated_run_files(vast_dir, parameters, records):
         out_dir = resolve_out_dir(params.get("out"), vast_dir,
                                   f"execution.generate[{index}].{name}")
         if not os.path.isdir(out_dir):
+            if not container_queries:
+                # Composing a report, where a generator needing a container was skipped: no
+                # directory is the expected outcome, not a `.vast` naming a file that is not
+                # there. Composing to RUN still passes True and still fails here.
+                continue
             raise missing_input_error(
                 [(f"execution.generate[{index}].{name}.out", params.get("out"), out_dir)])
         found.extend(collect_output_files(out_dir, vast_dir))
@@ -1803,6 +1808,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             progress_update_callback,
             container_runner_factory=_container_runner_factory.get(),
             use_cache=use_cache,
+            container_queries=container_queries,
         )
 
     run_files = []
@@ -1846,7 +1852,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # -- treats them exactly like hand-written inputs, with no second code path. In the
     # isolated subprocess this re-derives them from `out` on disk without loading any
     # generator (generated_records is empty there).
-    for rel in _generated_run_files(vast_dir, parameters, generated_records):
+    for rel in _generated_run_files(vast_dir, parameters, generated_records,
+                                    container_queries=container_queries):
         if rel not in run_files:
             run_files.append(rel)
 
