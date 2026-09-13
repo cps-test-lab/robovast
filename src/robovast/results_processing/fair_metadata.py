@@ -335,8 +335,10 @@ def _build_vast_config(vast_config, campaign_ns):
             _ID: campaign_ns[config.get("name")],
             _TYPE: [PROV["Entity"], SCENARIOS["LogicalScenario"]],
         }
+        # Read the `.vast` without changing it: configurations may share one variation
+        # list through a YAML alias, which loads as the same objects.
         for variation in config.get("variations", []):
-            var_type, params = variation.popitem()
+            var_type, params = next(iter(variation.items()))
             var_config = {
                 _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
@@ -350,10 +352,8 @@ def _build_vast_config(vast_config, campaign_ns):
                 elif k == "floorplans":
                     var_config[k] = [campaign_ns[m] for m in v]
                 elif k == "obstacle_configs":
-                    for p in v:
-                        file_path = p["model"][8:]
-                        p["model"] = campaign_ns[f"_{file_path}"]
-                    var_config[k] = v
+                    var_config[k] = [{**p, "model": campaign_ns[f"_{p['model'][8:]}"]}
+                                     for p in v]
                 elif k == "name":
                     param_name = var_config.setdefault("param_name", [])
                     if isinstance(v, list):
@@ -389,7 +389,7 @@ def _build_vast_config(vast_config, campaign_ns):
                     # TODO Need a better way to handle potentially nested OneOfVariation
                     var_within_var = []
                     for vv_conf in v:
-                        vv_type, vv_params = vv_conf.popitem()
+                        vv_type, vv_params = next(iter(vv_conf.items()))
                         _vvar_config = {
                             _ID: campaign_ns[
                                 config.get("name")
