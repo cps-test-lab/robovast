@@ -177,7 +177,7 @@ def obstacle_markers(config: dict) -> list[SceneMarker]:
 def _instances_of(config: dict) -> list:
     """The ``instances`` list this configuration wrote to the ``sim`` channel, if any.
 
-    The destination is the campaign's to choose (``sim: {instances: plugins.boxes.instances}``),
+    The destination is the campaign's to choose (``sim: {instances: components.boxes.instances}``),
     so it is found by shape -- a list of mappings carrying a placement -- rather than by a key
     name this module would otherwise have to know.
 

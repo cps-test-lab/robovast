@@ -174,7 +174,7 @@ class ObstacleVariationConfig(DestinationConfig):
     #: ``yaw`` per obstacle, shaped for a list-valued placement plugin::
     #:
     #:     scenario: {objects: static_objects}
-    #:     sim:      {instances: plugins.obstacles.instances}
+    #:     sim:      {instances: components.obstacles.instances}
     #:
     #: Both, from one call, because they are one fact: MuJoCo does not recompile mid-run and
     #: ``sim_interfaces`` serves no ``SpawnEntity``, so an obstacle the trial drives must be
