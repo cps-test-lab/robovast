@@ -401,7 +401,7 @@ happens to have:
          initial_population: 123
          goal_pose: {position: {x: 10.0, y: 5.0}}
        sim:                          # what it runs in: nested, against the backend's schema
-         overrides: {plugins: {ceiling: {enabled: false}}}
+         overrides: {components: {ceiling: {enabled: false}}}
        sut:                          # how the stack is configured: FLAT <source>.<path> keys
          nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
 
@@ -501,7 +501,7 @@ slots**, and the same two keys take a *slot to destination* mapping:
    - FloorplanGeneration:
        floorplans: [environments/secorolab/secorolab.fpm]
        scenario: {map: map_file}
-       sim:      {mesh: plugins.floorplan.mesh}
+       sim:      {mesh: components.floorplan.mesh}
 
 The floorplan case is why a plugin may use **both** keys at once: nav2 reads the occupancy
 map at run time, while the simulator has to compile the mesh into its model — the two

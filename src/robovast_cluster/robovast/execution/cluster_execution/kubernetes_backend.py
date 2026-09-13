@@ -3734,6 +3734,11 @@ class KubernetesBackend(ExecutionBackend):
                         "its own node. To use them: stagger the campaigns, or lower the "
                         "declared sizing so a probe fits alongside a neighbour.",
                         batch_tag, ", ".join(persistent), UNMEASURED_BATCH_LIMIT)
+                    # Onto the status too, for whoever is watching the campaign RIGHT NOW: the
+                    # record in execution.yaml answers the same question after it ends, and a
+                    # campaign that quietly shrinks mid-flight is the case that started this.
+                    if self._state is not None:
+                        self._state.update(nodes_skipped=runner.skipped_nodes())
                     if not runner.has_usable_node():
                         raise CampaignConfigError(
                             f"Every node is now out of this campaign: "

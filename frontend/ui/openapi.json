@@ -3515,6 +3515,11 @@
             ],
             "title": "Mode"
           },
+          "nodes_skipped": {
+            "additionalProperties": true,
+            "title": "Nodes Skipped",
+            "type": "object"
+          },
           "phase": {
             "default": "initializing",
             "title": "Phase",
@@ -3713,6 +3718,7 @@
           "health",
           "health_skipped",
           "mode",
+          "nodes_skipped",
           "phase",
           "phase_since",
           "postprocessed",

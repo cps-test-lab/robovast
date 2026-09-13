@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=4848f49e5bf68e8783cf7bf6391ae87adb0d5c05
+ARG ROQSIM_REF=2f6dfe7536f9d7730d6481e7f0ef88a58fe58a7c
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -249,7 +249,7 @@ ARG INCLUDE_TORCH_PKGS=0
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     if [ "${INCLUDE_TORCH_PKGS}" = "1" ]; then \
       echo "legged platforms: installing quadruped + humanoid (CPU torch)" && \
-      pip install --break-system-packages torch --index-url https://download.pytorch.org/whl/cpu && \
+      pip install --break-system-packages torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu && \
       pip install --break-system-packages \
         /opt/roqsim/roqsim_quadruped \
         /opt/roqsim/roqsim_humanoid ; \

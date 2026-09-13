@@ -1412,11 +1412,30 @@ def _batch_composition_report(config_path):
     """
     from robovast.common.config_generation import \
         generate_scenario_variations  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import \
+        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
     from robovast.common.variation.base_variation import \
         VariationInfeasibleError  # pylint: disable=import-outside-toplevel
+    unchecked = []
     try:
         campaign_data = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
+    except ExecPathUnavailable as e:
+        # Composed again without the queries that need one, exactly as the world query is
+        # asked again without its overrides: the cartesian expansion this report exists to
+        # count needs no container, and losing it would make a deployment that cannot exec
+        # the least informative case rather than the second-best one. Reported, because a
+        # count that arrived without the run-file query is not the same answer as one that
+        # ran it, and only the caller can know that if it is said.
+        campaign_data = generate_scenario_variations(
+            variation_file=config_path, output_dir=None, container_queries=False)
+        unchecked.append(_problem(
+            "generation",
+            f"the simulator's input-files query did NOT run: {e} Next: nothing about the "
+            ".vast changes this -- the configurations below are the file's own expansion, "
+            "which needs no container, but whether a world made of several files brings "
+            "all of them is unanswered until a command can run in one.",
+            severity="unchecked"))
     except VariationInfeasibleError as e:
         # The message already names the config block and the plugin's reason; say
         # explicitly that the rest was never reached, so "one problem" is not read
@@ -1435,8 +1454,9 @@ def _batch_composition_report(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-    return {"valid": True,
-            "problems": (_build_context_advisories(config_path)
+    return {"valid": not unchecked,
+            "problems": (unchecked
+                         + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
                          + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
@@ -1455,16 +1475,31 @@ def _search_composition_report(config_path):
     space, and the campaign tolerates it (skipping that param set) rather than
     dying.
     """
+    from robovast.common.errors import \
+        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
     from robovast.search.compose import \
         preview_search_sample  # pylint: disable=import-outside-toplevel
+    unchecked = []
     try:
         sample = preview_search_sample(config_path)
+    except ExecPathUnavailable as e:
+        # As the batch report: the draws this preview exists to compose need no container,
+        # and a deployment that cannot exec should lose the run-file query rather than the
+        # whole preview.
+        sample = preview_search_sample(config_path, container_queries=False)
+        unchecked.append(_problem(
+            "generation",
+            f"the simulator's input-files query did NOT run: {e} Next: nothing about the "
+            ".vast changes this -- the sample below is the search space's own expansion, "
+            "which needs no container, but whether a world made of several files brings "
+            "all of them is unanswered until a command can run in one.",
+            severity="unchecked"))
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
                 "problems": [_problem("generation", _message_with_next_step(e))],
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
 
-    problems = []
+    problems = list(unchecked)
     if sample["infeasible"]:
         listed = "; ".join(f"{item['name']} {item['params']}"
                            for item in sample["infeasible"])
@@ -1493,7 +1528,7 @@ def _search_composition_report(config_path):
     # infeasible, neither of which is knowable before it runs.
     configs = sample["composed"]
     runs_per_config = sample["runs_per_config"]
-    return {"valid": True,
+    return {"valid": not unchecked,
             "problems": (problems + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
                          + _calibration_role_advisories(config_path)

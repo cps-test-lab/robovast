@@ -81,7 +81,7 @@ ARG ROS_BASE_DIGEST
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 RUN test -d "/opt/ros/${ROS_DISTRO}" || { \
       echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not a ros:${ROS_DISTRO} image."; \
-      echo "  It carries: $(ls /opt/ros 2>/dev/null | tr '\\n' ' ')"; \
+      echo "  It carries: $(find /opt/ros -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null)"; \
       echo "  Docker ignores the tag when a digest is given, so the digest decides. Pass a"; \
       echo "  matching --build-arg ROS_BASE_DIGEST, or refresh both with make refresh-build-pins."; \
       exit 1; }
@@ -136,6 +136,10 @@ ARG UBUNTU_SNAPSHOT_MIRROR=https://snapshot.ubuntu.com/ubuntu
 #
 # Removal is by URL rather than by filename because the filename has already moved upstream once
 # (ros2-latest.list -> ros2.sources), and guessing it wrong fails silently.
+# The lists this update writes are not spare: every apt-get install below reads them, and each
+# of those removes them in its own layer. Dropping them here would only make the next layer
+# fetch them again.
+# hadolint ignore=DL3009
 RUN . /etc/os-release \
  && grep -Rl -e archive.ubuntu.com -e security.ubuntu.com -e packages.ros.org \
       /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f \
