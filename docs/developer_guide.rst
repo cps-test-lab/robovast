@@ -2191,6 +2191,15 @@ test-<subtree>``, e.g. ``make test-service``, to re-run only what you are editin
 ``make test`` too, so the command a developer runs and the one that gates a merge cannot
 drift apart.
 
+The Python suite needs a Postgres, because campaign results live in one, and it provides its
+own rather than asking you for one: a container named ``robovast-test-pg`` (see
+``tests/pg_provision``), started on the first run that finds it absent and left running
+afterwards so later runs cost a ``CREATE DATABASE`` instead of a container start. Each
+session works in its own database inside it, so two suites can run at once, and drops it on
+the way out. ``export ROBOVAST_TEST_PG_DSN=...`` to use a server you already have instead,
+and ``docker rm -f robovast-test-pg`` to take the suite's back. Without a Docker daemon and
+without that variable, the tests that need a database skip and say so in their reason.
+
 **One colour scheme.** Every colour the UI paints that is not a one-off comes from
 ``frontend/ui/src/colors.ts``. A ``Style`` object holds them; ``buildTheme(style)`` in
 ``src/theme.ts`` maps one onto MUI's palette roles, so a component reaching for
