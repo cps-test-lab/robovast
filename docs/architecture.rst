@@ -812,21 +812,34 @@ directly.
 
 **Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
 run: config, status, duration, params, search round, host record) and ``config_view`` (the ``.vast`` as
-one row per key) are created on the query connection as ``TEMP`` views, and are queried
-unqualified. They exist because a forgotten join does not raise — ``run_id`` is unique only
-*within* a configuration, so a query filtering on ``run_id`` alone silently returns rows
-from every configuration and averages across them. Making the join part of the schema
-removes that failure mode rather than documenting it.
+one row per key) are objects in the index, queried unqualified. They exist because a
+forgotten join does not raise — ``run_id`` is unique only *within* a configuration, so a
+query filtering on ``run_id`` alone silently returns rows from every configuration and
+averages across them. Making the join part of the schema removes that failure mode rather
+than documenting it. Each is created ``WITH (security_invoker = true)``, so the row-level
+security on the tables underneath applies to whoever queries the view rather than to its
+owner — without it an unscoped ``FROM run_view`` answers with every campaign's runs.
 
-They are views on the *connection*, not objects in the file, because ``campaign.db`` is
-attached read-only (nothing may be written to it), because a store predating the ``job``
-table would otherwise carry a view over a table it does not have, and because a change to
-a view then never needs a schema migration. Where the underlying tables are missing,
-``run_view`` keeps its column set and reports NULL for the host and ``batch`` columns — one
-query shape for every store version, with "not recorded" reading as NULL rather than as a
-broken query. That the views are computed per query is also what makes a *new* column
-retroactive: adding ``batch`` gave every campaign already on disk its search history back,
-with no migration and no re-postprocessing.
+Every ingest rebuilds them (:func:`index_views.create_views`), because which views the index
+can support depends on which tables it holds: the first campaign to record a probe is what
+brings the view over it. Where an underlying table is missing, ``run_view`` keeps its column
+set and reports NULL for the host and ``batch`` columns — one query shape whatever the index
+holds, with "not recorded" reading as NULL rather than as a broken query. A view gaining a
+column therefore needs no migration and no re-postprocessing of the campaigns it serves: the
+next ingest of any campaign rebuilds the views, and every campaign already in the index has
+the column.
+
+**One index is shared by every campaign, so its DDL is serialized.** Two postprocessing runs
+can be rebuilding the views, or creating the table a stem needs, at the same time, and none
+of the spellings that look safe are: ``IF NOT EXISTS`` checks the catalog and then creates,
+a ``DROP`` before a ``CREATE`` leaves a window between them, and ``CREATE AGGREGATE`` and
+``CREATE POLICY`` have neither. The writer that loses such a race is refused with a duplicate
+key on ``pg_type`` — a message naming neither the relation nor the concurrency — so every
+``CREATE``/``DROP``/``ALTER`` against the index is issued under one session-level advisory
+lock (:func:`index_schema.ddl_lock`), and the paths that hold it ask what is missing first,
+so an ingest with nothing to change takes no lock at all. The view rebuild is one transaction
+as well as locked: a reader that arrives mid-rebuild waits for the swap instead of being told
+``run_view`` does not exist, which would read as a campaign with no runs.
 
 ``describe_campaign_data`` lists both views first and carries the canonical query for each
 question a caller is likely to ask — the per-run lookup, a configuration's parameters, how

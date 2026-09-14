@@ -243,7 +243,18 @@ def secure_table(conn, table: str, schema: str = index_schema.METRIC_SCHEMA) -> 
     enabled with no policy denies everything, so enabling it there would only break
     ``describe``. ``_campaigns`` does carry ``campaign_id`` and is scoped like the rest --
     a scoped session has no business enumerating the corpus.
+
+    Under the index's DDL lock, which is re-entrant, so the caller above holding it for the
+    ``CREATE TABLE`` pays nothing here: ``CREATE POLICY`` has no ``IF NOT EXISTS`` and the
+    check before it is a separate statement, so two writers securing the same table at once
+    would both pass the check and one would be refused.
     """
+    with index_schema.ddl_lock(conn):
+        _secure_table(conn, table, schema)
+
+
+def _secure_table(conn, table: str, schema: str) -> None:
+    """Grant, enable RLS and put the policy on. Caller holds the DDL lock."""
     ensure_reader_role(conn)
     name = index_schema.qualified(table, schema)
     # The metric schema is the empty string -- "wherever search_path points" -- and it

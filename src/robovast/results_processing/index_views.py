@@ -330,12 +330,25 @@ def metric_view_sql(conn) -> dict:
 def create_views(conn) -> list:
     """Create the views this index can support; return their names.
 
-    Ordinary views rather than temporary ones. ``data.db`` had to use TEMP views because it
-    was attached read-only and a store predating a table would carry a view referencing it;
-    here there is one index whose shape the ingest controls, so defining them once means a
-    reader does not pay to rebuild them per connection -- including the plugin panels, which
-    open their own.
+    Objects in the index rather than views on each connection: there is one index whose
+    shape the ingest controls, so defining them once means a reader does not pay to rebuild
+    them per connection -- including the plugin panels, which open their own.
+
+    One index is shared by every campaign, so this runs at the end of *every* ingest and
+    two of them can be in it at once. Both things that makes hard are handled here: the
+    :func:`~robovast.results_processing.index_schema.ddl_lock` serialises the writers, and
+    the whole rebuild is one transaction so a reader never observes the state between the
+    ``DROP`` and the ``CREATE`` -- it waits for the swap and then sees the new view, rather
+    than being told the relation does not exist, which reads as a campaign with no runs.
     """
+    with index_schema.ddl_lock(conn), conn.transaction():
+        created = _rebuild(conn)
+    logger.debug("index: created views %s", ", ".join(created) or "(none)")
+    return created
+
+
+def _rebuild(conn) -> list:
+    """Drop and recreate every supported view. Caller holds the lock and the transaction."""
     created = []
     definitions = {**campaign_view_sql(conn), **metric_view_sql(conn)}
     for name, body in definitions.items():
@@ -349,7 +362,9 @@ def create_views(conn) -> list:
         #
         # Deliberately narrow: only "that relation/column is not there" is tolerated. A
         # syntax error or a type mismatch is this module's own defect and must still raise,
-        # or a view could quietly stop existing everywhere and read as "no data".
+        # or a view could quietly stop existing everywhere and read as "no data". A
+        # SAVEPOINT rather than a transaction, since the caller opened one: an unsupported
+        # view rolls back to here and the views around it still commit together.
         try:
             with conn.transaction():
                 # security_invoker is not decoration. A view runs with its OWNER's rights
@@ -367,5 +382,4 @@ def create_views(conn) -> list:
                         str(exc).splitlines()[0])
             continue
         created.append(name)
-    logger.debug("index: created views %s", ", ".join(created) or "(none)")
     return created
