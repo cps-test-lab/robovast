@@ -548,6 +548,26 @@ def test_growth_resumes_as_the_new_nodes_take_the_work():
     assert c.drain() == 3, "the rest go once the earlier ones stopped being in flight"
 
 
+def test_a_calibration_probe_is_never_created_unpinned_on_a_growable_cluster():
+    """A probe measures ONE machine, and its output is recorded as that machine's figure.
+
+    Submitted exactly as ``BatchJobRunner`` submits a probe -- under the campaign's
+    ``#probes`` owner, pinned to the node it measures. On a growable cluster where that node
+    is too full, the autoscaler exception used to create it without a selector: it landed
+    wherever the scheduler put it, and every later job on the pinned node was sized from a
+    figure measured on a different one. It must wait for its node instead.
+    """
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MIB, 0), ("b", 16.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(16.0, 10240 * MIB)], growable=True)
+    c = _controller(p)
+    seen = []
+    c.submit("camp#probes", [("probe-a", JobSizing(4.0, MIB), seen.append)],
+             started_at=0.0, priority=1, campaign="camp", pin="a")
+    assert c.drain() == 0
+    assert seen == [], "a pinned probe was created somewhere other than its node"
+    assert "autoscaler" not in c.refusal("camp#probes")
+
+
 def test_a_static_cluster_never_creates_unpinned():
     """The same shape without the flag must refuse. Creating unpinned on a full static cluster
     is precisely the over-admission per-node budgets exist to prevent."""

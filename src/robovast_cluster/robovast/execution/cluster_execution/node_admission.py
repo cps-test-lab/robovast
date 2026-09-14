@@ -484,7 +484,11 @@ class AdmissionController:
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
-                if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
+                # Never for a pinned item: created unpinned, a calibration probe lands on any
+                # node and its output is still recorded as the pinned node's measurement.
+                may_grow = (item.pin is None and growable
+                            and unpinned < GROWTH_UNPINNED_LIMIT)
+                if chosen is None and not may_grow:
                     # **This owner's items, not the queue's.** The count spanned every owner,
                     # so a campaign with a handful of jobs queued was told the whole cluster's
                     # queue depth, reported into its own log as though it were its own.
@@ -510,7 +514,7 @@ class AdmissionController:
                     if usable:
                         emptiest = max(usable, key=lambda n: n.free_cpu)
                         need = item.sizing_on(emptiest.node_id)
-                    if chosen is None and growable:
+                    if item.pin is None and growable:
                         self._refusals[item.owner] = (
                             f"{waiting}: {unpinned} already created for a node the "
                             f"autoscaler has not produced yet (limit "
