@@ -573,22 +573,6 @@ def _node_labels(pairs, flag):
     return labels
 
 
-def _amended_node_labels(pairs, flag):
-    """What ``upgrade`` was told about a node-label setting: ``None`` for nothing.
-
-    ``upgrade`` amends where ``setup`` declares, so an omitted flag keeps what the cluster
-    has. Clearing therefore needs a spelling of its own -- the flag given once, empty.
-    """
-    if not pairs:
-        return None
-    if "" in pairs:
-        if len(pairs) > 1:
-            raise click.BadParameter("an empty value clears the setting and cannot be "
-                                     "combined with KEY=VALUE", param_hint=flag)
-        return {}
-    return _node_labels(pairs, flag)
-
-
 def _echo_job_node_aliases(changes, *, whole=False):
     """Say what reconciling ``ROBOVAST_JOB_NODE_ALIASES`` changed, one line per alias.
 
@@ -1065,12 +1049,7 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
 @click.option('--yes', '-y', is_flag=True, default=False,
               help='Do not ask before rolling over live campaigns. For scripts; without it '
                    'a non-interactive run aborts rather than rolling silently.')
-@click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
-              help='Replace the campaign job node pool with these labels; repeatable. '
-                   'Omitted, the pool the deployment already has is kept -- an upgrade '
-                   'amends where setup declares. Pass it once with an empty value to clear '
-                   'the pool.')
-def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
+def upgrade(namespace, kube_context, timeout, no_restart, yes):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1104,11 +1083,11 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
 
-    The campaign job node pool is kept as the deployment has it unless
-    ``--jobs-node-label`` replaces it (once, empty, to clear it). The job node aliases are
-    reconciled, like setup does, to exactly what ``ROBOVAST_JOB_NODE_ALIASES`` in the
-    environment states -- so an upgrade from a shell without it removes them, and says so --
-    after checking every alias against the pool the upgrade leaves, before anything changes.
+    The campaign job node pool is kept as the deployment has it; ``vast cluster setup
+    --jobs-node-label`` is what changes it. The job node aliases are reconciled, like setup
+    does, to exactly what ``ROBOVAST_JOB_NODE_ALIASES`` in the environment states -- so an
+    upgrade from a shell without it removes them, and says so -- after checking every alias
+    against that pool, before anything changes.
     ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
     starts, not the pod's environment.
 
@@ -1166,11 +1145,6 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
         job_node_aliases = job_node_aliases_from_env()
     except ValueError as e:
         raise click.UsageError(str(e)) from e
-    jobs_node_labels = _amended_node_labels(jobs_node_label, '--jobs-node-label')
-    if no_restart and jobs_node_labels is not None:
-        # The pool lives in the service's env, which only a roll re-reads.
-        raise click.UsageError("--jobs-node-label changes the service's environment, which "
-                               "--no-restart leaves as it is; drop one of them")
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1198,8 +1172,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
         # back. That cluster needs cleanup + setup, and must hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
 
-        # Every alias the environment states, checked against the pool this upgrade leaves,
-        # before anything changes. Nothing to check -- and no node list to read -- when it
+        # Every alias the environment states, checked against the deployment's pool, which an
+        # upgrade keeps, before anything changes. Nothing to check -- and no node list to read -- when it
         # states none; the reconcile below still removes whatever is registered.
         from .node_placement import (  # pylint: disable=import-outside-toplevel
             apply_job_node_aliases, check_job_node_aliases)
@@ -1207,8 +1181,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
         if job_node_aliases:
             from .service_deploy import \
                 job_node_pool_from_cluster  # pylint: disable=import-outside-toplevel
-            alias_pool = (jobs_node_labels if jobs_node_labels is not None
-                          else job_node_pool_from_cluster(namespace, kube_context))
+            alias_pool = job_node_pool_from_cluster(namespace, kube_context)
             try:
                 check_job_node_aliases(job_node_aliases, alias_pool, kube_context=kube_context)
             except ValueError as e:
@@ -1298,16 +1271,12 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
         # password back from this same Secret, so it cannot recover one after an upgrade has
         # dropped it.
         registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
-        # `job_node_labels=None` when the flag was not given: deploy_service then carries the
-        # live pool forward rather than rendering none.
+        # No `job_node_labels`: deploy_service then carries the live pool forward rather than
+        # rendering none. Only setup changes the pool.
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, registry_password=registry_password,
-                       public_origin=public_origin, job_node_labels=jobs_node_labels)
-        if jobs_node_labels is not None:
-            click.echo("  campaign job node pool: "
-                       + (", ".join(f"{k}={v}" for k, v in jobs_node_labels.items())
-                          if jobs_node_labels else "cleared (every node)"))
+                       public_origin=public_origin)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #

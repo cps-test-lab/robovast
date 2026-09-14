@@ -184,8 +184,8 @@ Both are repeatable, and both are written on **every** setup. Omitting one there
 the command the whole truth about the cluster. With neither given, pods schedule wherever
 Kubernetes puts them.
 
-``vast service upgrade`` keeps the job node pool the deployment has unless it is given
-``--jobs-node-label`` itself (once, empty, to clear it).
+``vast service upgrade`` keeps the job node pool the deployment has. Changing it is a
+``setup`` (``--force`` over a live service).
 
 .. _cluster-node-alias:
 
@@ -217,8 +217,8 @@ itself is not copied into the service's environment; the node names stay in the 
 it.
 
 **An alias narrows the job node pool and cannot leave it.** A node must be schedulable by a
-campaign job and inside the job node pool — the ``--jobs-node-label`` setup declares, or for
-an upgrade the one it was given or else the one the deployment has — and the whole set is
+campaign job and inside the job node pool — the ``--jobs-node-label`` setup declares, which an
+upgrade keeps — and the whole set is
 refused, before the command changes anything, if one alias fails or the variable is not valid
 JSON. The same check runs again when a campaign that names the alias starts, because a node can
 be cordoned, a pool changed or a second node labelled by hand in between. A campaign refused

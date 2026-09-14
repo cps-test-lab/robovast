@@ -380,8 +380,8 @@ def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
     except ValueError as exc:
         return [Check("job node pool", False, str(exc)[:120],
                       "The service's recorded pool cannot be parsed, so admission refuses "
-                      "to guess. 'vast service upgrade --jobs-node-label KEY=VALUE' rewrites "
-                      "it (once, empty, to clear it).")]
+                      "to guess. 'vast cluster setup <config> --force --jobs-node-label "
+                      "KEY=VALUE' rewrites it; without the flag it clears it.")]
     except Exception:  # noqa: BLE001 - an unreachable cluster is check_cluster's to report
         return []
 
@@ -400,9 +400,9 @@ def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
         checks = [Check(
             "job node pool", False, f"{described}: matches no node",
             "Admission counts capacity only inside the pool, so no campaign job can start. "
-            "'kubectl get nodes --show-labels' shows what the nodes carry; 'vast service "
-            "upgrade --jobs-node-label KEY=VALUE' sets a pool that matches (once, empty, to "
-            "clear it).")]
+            "'kubectl get nodes --show-labels' shows what the nodes carry; 'vast cluster "
+            "setup <config> --force --jobs-node-label KEY=VALUE' sets a pool that matches; "
+            "without the flag it clears it.")]
     elif not eligible:
         checks = [Check(
             "job node pool", False,

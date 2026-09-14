@@ -537,39 +537,11 @@ def _upgrade(monkeypatch, *args):
     return result, deploy
 
 
-def test_an_upgrade_without_the_flag_asks_deploy_service_to_keep_the_pool(monkeypatch):
+def test_an_upgrade_asks_deploy_service_to_keep_the_pool(monkeypatch):
     """`None` is "recover": the pool is recorded nowhere but the live Deployment."""
     result, deploy = _upgrade(monkeypatch)
     assert result.exit_code == 0, result.output
-    assert deploy.call_args.kwargs["job_node_labels"] is None
-
-
-def test_an_upgrade_may_change_the_pool(monkeypatch):
-    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "node-pool=primary",
-                              "--jobs-node-label", "tier=batch")
-    assert result.exit_code == 0, result.output
-    assert deploy.call_args.kwargs["job_node_labels"] == {"node-pool": "primary",
-                                                          "tier": "batch"}
-
-
-def test_an_upgrade_clears_the_pool_with_an_empty_flag(monkeypatch):
-    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "")
-    assert result.exit_code == 0, result.output
-    assert deploy.call_args.kwargs["job_node_labels"] == {}
-
-
-def test_an_empty_flag_beside_a_label_is_refused(monkeypatch):
-    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "",
-                              "--jobs-node-label", "node-pool=primary")
-    assert result.exit_code != 0
-    assert not deploy.called
-
-
-def test_a_pool_change_without_a_restart_is_refused(monkeypatch):
-    """The pool is in the pod's env, so --no-restart could only ignore the argument."""
-    result, deploy = _upgrade(monkeypatch, "--no-restart", "--jobs-node-label", "a=b")
-    assert result.exit_code != 0
-    assert not deploy.called
+    assert deploy.call_args.kwargs.get("job_node_labels") is None
 
 
 class _Captured(Exception):
@@ -665,7 +637,6 @@ def test_a_failed_read_is_not_mistaken_for_no_pool(monkeypatch):
         service_deploy.job_node_pool_from_cluster("default")
 
 
-
 # -- the job node alias registry ---------------------------------------------------------
 
 def _upgrade_with_nodes(monkeypatch, nodes, *args, aliases=None, live_pool=None):
@@ -737,16 +708,6 @@ def test_an_alias_outside_the_live_pool_is_refused_before_anything_changes(monke
     assert "outside" in result.output
     assert core.patches == [] and not deploy.called
     assert not cluster_setup.apply_controller_rbac.called
-
-
-def test_aliases_are_checked_against_the_pool_the_upgrade_is_given(monkeypatch):
-    """Not the live one: the pool the deployment will have is the one they must stay in."""
-    result, deploy, core = _upgrade_with_nodes(
-        monkeypatch, _alias_nodes(), "--jobs-node-label", "node-pool=other",
-        aliases={"bench": "node-a"})
-    assert result.exit_code != 0
-    assert "'bench'" in result.output
-    assert core.patches == [] and not deploy.called
 
 
 def test_a_malformed_variable_fails_the_upgrade_before_it_starts(monkeypatch):

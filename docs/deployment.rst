@@ -318,14 +318,14 @@ Where a node setting comes from decides what each command does with it:
      - ``vast service upgrade``
    * - Campaign job node pool (a flag)
      - ``--jobs-node-label``; omitted, no pool
-     - kept; ``--jobs-node-label KEY=VALUE`` replaces it, ``--jobs-node-label ''`` clears it
+     - kept as the deployment has it
    * - Job node aliases (``ROBOVAST_JOB_NODE_ALIASES`` in ``.env``,
        :ref:`cluster-node-alias`)
      - applied from the environment; unset, none
      - applied from the environment, ``--no-restart`` included; unset, every alias is removed
 
-A flag is a statement about one run, so ``setup`` writes what it is given and ``upgrade`` keeps
-what it is not told. A ``.env`` entry is the standing statement, so both commands apply it
+A flag is a statement about one run, so ``setup`` writes what it is given; ``upgrade`` takes no
+pool flag and keeps the pool. A ``.env`` entry is the standing statement, so both commands apply it
 whole — run them from the shell that has the deployment's ``.env``.
 
 .. _deployment-disk-reserve:
