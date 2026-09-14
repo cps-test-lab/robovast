@@ -87,10 +87,11 @@ def test_a_deploy_that_names_no_config_still_carries_the_rest():
     assert env["ROBOVAST_KUBE_CONTEXT"] == "local"
 
 
-def test_setup_states_an_empty_pool_rather_than_leaving_it_unstated():
-    """`None` asks `deploy_service` to recover the live pool, which is right for an upgrade
-    and wrong for setup: setup declares, so no flag must reach the deploy as `{}`."""
-    from robovast.execution.cluster_execution.cli import _node_labels
+def test_an_unset_pool_is_stated_as_empty_rather_than_left_unstated(monkeypatch):
+    """`None` asks `deploy_service` to recover the live pool. Setup and upgrade apply the
+    environment whole, so an unset variable must reach the deploy as `{}`."""
+    from robovast.execution.cluster_execution.node_placement import job_node_pool
 
-    assert _node_labels((), "--jobs-node-label") == {}
+    monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
+    assert job_node_pool() == {}
     assert _env(job_node_labels={})[JOB_NODE_POOL_ENV] == ""

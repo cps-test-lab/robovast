@@ -524,24 +524,61 @@ def _stub_upgrade(monkeypatch, deploy):
                         lambda *a, **k: {})
 
 
-def _upgrade(monkeypatch, *args):
+def _upgrade(monkeypatch, *args, pool_env=None):
+    """`upgrade` with ROBOVAST_JOB_NODE_LABELS set to *pool_env*, unset for ``None``."""
     from unittest import mock
 
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
 
     deploy = mock.Mock()
     _stub_upgrade(monkeypatch, deploy)
+    if pool_env is None:
+        monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(JOB_NODE_POOL_ENV, pool_env)
     result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default", "--yes", *args])
     return result, deploy
 
 
-def test_an_upgrade_asks_deploy_service_to_keep_the_pool(monkeypatch):
-    """`None` is "recover": the pool is recorded nowhere but the live Deployment."""
+def test_an_upgrade_applies_the_pool_the_environment_states(monkeypatch):
+    result, deploy = _upgrade(monkeypatch, pool_env='{"node-pool": "primary"}')
+    assert result.exit_code == 0, result.output
+    assert deploy.call_args.kwargs["job_node_labels"] == {"node-pool": "primary"}
+    assert "node-pool=primary" in result.output
+
+
+def test_an_upgrade_from_a_shell_without_the_variable_clears_the_pool_and_says_so(monkeypatch):
+    """Stated as `{}`, never left to `None`: a `.env` entry is the standing statement, so an
+    upgrade applies it whole rather than recovering the live pool."""
     result, deploy = _upgrade(monkeypatch)
     assert result.exit_code == 0, result.output
-    assert deploy.call_args.kwargs.get("job_node_labels") is None
+    assert deploy.call_args.kwargs["job_node_labels"] == {}
+    assert "every node" in result.output
+
+
+def test_a_malformed_pool_fails_the_upgrade_before_it_starts(monkeypatch):
+    from robovast.execution.cluster_execution import cluster_setup
+    result, deploy = _upgrade(monkeypatch, pool_env="node-pool=primary")
+    assert result.exit_code != 0
+    assert "ROBOVAST_JOB_NODE_LABELS" in result.output
+    assert not deploy.called and not cluster_setup.apply_controller_rbac.called
+
+
+def test_an_upgrade_without_a_restart_says_the_pool_is_not_applied(monkeypatch):
+    """The pool is in the pod's environment, which only a roll re-reads."""
+    result, deploy = _upgrade(monkeypatch, "--no-restart", pool_env='{"node-pool": "primary"}')
+    assert result.exit_code == 0, result.output
+    assert not deploy.called
+    assert "ROBOVAST_JOB_NODE_LABELS" in result.output
+
+
+def test_an_upgrade_has_no_pool_flag(monkeypatch):
+    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "node-pool=primary")
+    assert result.exit_code == 2
+    assert not deploy.called
 
 
 class _Captured(Exception):
@@ -659,6 +696,8 @@ def _upgrade_with_nodes(monkeypatch, nodes, *args, aliases=None, live_pool=None)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
     monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster",
                         lambda *a, **k: POOL if live_pool is None else live_pool)
+    monkeypatch.setenv(node_placement.JOB_NODE_POOL_ENV,
+                       json.dumps(POOL if live_pool is None else live_pool))
     if aliases is None:
         monkeypatch.delenv(node_placement.JOB_NODE_ALIASES_ENV, raising=False)
     else:

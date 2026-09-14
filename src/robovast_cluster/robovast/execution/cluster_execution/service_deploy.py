@@ -2328,9 +2328,8 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
 def job_node_pool_from_cluster(namespace="default", kube_context=None) -> dict:
     """The campaign job node pool the live Deployment carries, or ``{}`` for none.
 
-    ``--jobs-node-label`` arrives as a ``setup`` flag and is recorded nowhere but the
-    Deployment's env, so a deploy that was not told the pool reads it back from there rather
-    than rendering "no pool" -- which would widen every campaign onto machines the operator
+    The deployed pool is recorded nowhere but the Deployment's env, so a deploy that was not
+    told the pool reads it back from there rather than rendering "no pool" -- which would widen every campaign onto machines the operator
     excluded. ``{}`` when there is no Deployment yet; a failed read and an unparseable value
     both raise, for the reason :func:`service_storage_from_cluster` gives.
     """

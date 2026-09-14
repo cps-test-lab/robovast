@@ -857,8 +857,8 @@ def validate_job_node_alias(value: str) -> str:
     if "=" in value:
         raise ValueError(
             f"execution.kubernetes.jobs.node {value!r} is a label selector, not an alias. The "
-            f"pool every campaign may use is set with `vast cluster setup <config> "
-            f"--jobs-node-label KEY=VALUE`; to confine this campaign to one node in it, "
+            f"pool every campaign may use is ROBOVAST_JOB_NODE_LABELS in the operator's .env, "
+            f"applied by `vast cluster setup` and `vast service upgrade`; to confine this campaign to one node in it, "
             f"{_REGISTER_ALIAS}.")
     if "/" in value:
         raise ValueError(
@@ -896,8 +896,8 @@ class JobsConfig(BaseModel):
         if isinstance(data, dict) and "node_labels" in data:
             raise ValueError(
                 "execution.kubernetes.jobs.node_labels is not a campaign setting. The node "
-                "pool every campaign's jobs may use is set on the cluster with `vast cluster "
-                "setup <config> --jobs-node-label KEY=VALUE`. To confine this campaign's jobs "
+                "pool every campaign's jobs may use is set for the cluster in "
+                "ROBOVAST_JOB_NODE_LABELS in the operator's .env. To confine this campaign's jobs "
                 f"to one node inside that pool, {_REGISTER_ALIAS}.")
         return data
 

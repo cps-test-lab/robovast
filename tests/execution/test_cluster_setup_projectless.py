@@ -9,8 +9,9 @@ read only from a config named with ``vast -V``, never an ambient project -- beca
 ``.robovast_project`` is found by walking *up* to the filesystem root, so one ten
 directories above an unrelated CWD could otherwise decide a cluster's node pools.
 
-Both are now settled by construction: the labels are command-line options, so there is no
-file to consult and no ambient project to guard against. These tests pin that the
+Both are now settled by construction: the job pool comes from the operator's
+environment and the control labels are command-line options, so there is no ``.vast`` to
+consult and no ambient project to guard against. These tests pin that the
 configuration reaches what enforces it, and that omitting an option CLEARS rather than
 preserves -- which is what keeps the command the whole truth about the cluster.
 """

@@ -573,6 +573,12 @@ def _node_labels(pairs, flag):
     return labels
 
 
+def _echo_job_node_pool(pool):
+    """Say which nodes campaign jobs may use, as the command just wrote it."""
+    described = ", ".join(f"{k}={v}" for k, v in pool.items()) if pool else "every node"
+    click.echo(f"  campaign job node pool (ROBOVAST_JOB_NODE_LABELS): {described}")
+
+
 def _echo_job_node_aliases(changes, *, whole=False):
     """Say what reconciling ``ROBOVAST_JOB_NODE_ALIASES`` changed, one line per alias.
 
@@ -749,13 +755,6 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    'cluster is on a tailnet is decided here, because one .env and two '
                    'contexts would otherwise publish whichever was current. Written on '
                    'every setup: omitting it removes a node a previous setup deployed.')
-@click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
-              help='Confine campaign job pods to nodes carrying this label; repeatable. '
-                   'The admission controller counts free capacity only on matching nodes '
-                   'and stamps the labels on every job pod, so accounting and placement '
-                   'agree. Cluster-wide and lasting: it is recorded in the service and '
-                   'applies to every campaign until the next setup changes it. Pass none '
-                   'to clear a previously configured pool.')
 @click.option('--control-node-label', 'control_node_label', multiple=True,
               metavar='KEY=VALUE',
               help="Run RoboVAST's own infrastructure pods on nodes carrying this label; "
@@ -770,7 +769,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, performance_governor, tailnet,
-          jobs_node_label,
           control_node_label,
           cluster_config):
     """Set up the Kubernetes cluster for execution.
@@ -790,14 +788,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     Cluster-specific options can be passed using ``--option key=value``.
 
     Reads no project and no ``.vast``: this deploys into a cluster and runs from any
-    directory. Which nodes the cluster's pods may use is a property of the cluster, so the
-    pools are given here as flags::
-
-        vast cluster setup rke2 --jobs-node-label node-pool=primary
-
-    ``--jobs-node-label`` and ``--control-node-label`` are written on every run, so omitting
-    one clears what a previous setup configured; ``vast service upgrade`` keeps the job pool
-    unless told otherwise.
+    directory. Which nodes the cluster's pods may use is a property of the cluster. The
+    campaign job node pool comes from ``ROBOVAST_JOB_NODE_LABELS`` in the environment, a JSON
+    object of label -> value; setup and upgrade both write it into the service, so unset
+    means every node. ``--control-node-label`` is written on every run, so omitting it clears
+    what a previous setup configured.
 
     The job node aliases a campaign may confine itself to (``execution.kubernetes.jobs.node``)
     come from ``ROBOVAST_JOB_NODE_ALIASES`` in the environment, a JSON object of alias -> node
@@ -899,6 +894,13 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'storage_size': buildkit_storage_size,
         **buildkit_settings,
     }
+    # The job node pool is the operator's standing statement, read before anything is applied.
+    from .node_placement import job_node_pool  # pylint: disable=import-outside-toplevel
+    try:
+        jobs_node_labels = job_node_pool()
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's
         # `-o` channel and is persisted as the cluster's recorded config, and it swallows
@@ -908,8 +910,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
-                                 jobs_node_labels=_node_labels(jobs_node_label,
-                                                               '--jobs-node-label'),
+                                 jobs_node_labels=jobs_node_labels,
                                  control_node_labels=_node_labels(control_node_label,
                                                                   '--control-node-label'),
                                  cpu_governor=performance_governor,
@@ -922,6 +923,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # naming it -- and a decision nobody sees is how this deployment ended up on a
         # node nobody picked, with the disk meter reporting a machine nobody expected.
         _echo_placement(placement or {})
+        _echo_job_node_pool(jobs_node_labels)
         _echo_job_node_aliases((placement or {}).get("job_node_aliases"), whole=True)
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
@@ -1083,11 +1085,11 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
 
-    The campaign job node pool is kept as the deployment has it; ``vast cluster setup
-    --jobs-node-label`` is what changes it. The job node aliases are reconciled, like setup
-    does, to exactly what ``ROBOVAST_JOB_NODE_ALIASES`` in the environment states -- so an
-    upgrade from a shell without it removes them, and says so -- after checking every alias
-    against that pool, before anything changes.
+    The campaign job node pool and the job node aliases are applied, like setup does, from
+    ``ROBOVAST_JOB_NODE_LABELS`` and ``ROBOVAST_JOB_NODE_ALIASES`` in the environment -- so an
+    upgrade from a shell without them clears the pool and removes the aliases, and says so --
+    after checking every alias against that pool, before anything changes. With
+    ``--no-restart`` the pool is not applied, since it lives in the pod's environment.
     ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
     starts, not the pod's environment.
 
@@ -1138,11 +1140,12 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
     # deployment. Checked before anything is applied, so a typo fails the upgrade rather than
     # stopping it half way.
     from .buildkitd_deploy import settings_from_env  # pylint: disable=import-outside-toplevel
-    from .node_placement import \
-        job_node_aliases_from_env  # pylint: disable=import-outside-toplevel
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        job_node_aliases_from_env, job_node_pool)
     try:
         buildkit_settings = settings_from_env()
         job_node_aliases = job_node_aliases_from_env()
+        jobs_node_labels = job_node_pool()
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
@@ -1172,16 +1175,18 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         # back. That cluster needs cleanup + setup, and must hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
 
-        # Every alias the environment states, checked against the deployment's pool, which an
-        # upgrade keeps, before anything changes. Nothing to check -- and no node list to read -- when it
-        # states none; the reconcile below still removes whatever is registered.
+        # Every alias the environment states, checked against the pool the service will have --
+        # the environment's, or the live one where --no-restart leaves the pod's env alone --
+        # before anything changes. Nothing to check, and no node list to read, when it states
+        # none; the reconcile below still removes whatever is registered.
         from .node_placement import (  # pylint: disable=import-outside-toplevel
             apply_job_node_aliases, check_job_node_aliases)
-        alias_pool = {}
+        alias_pool = jobs_node_labels
         if job_node_aliases:
-            from .service_deploy import \
-                job_node_pool_from_cluster  # pylint: disable=import-outside-toplevel
-            alias_pool = job_node_pool_from_cluster(namespace, kube_context)
+            if no_restart:
+                from .service_deploy import \
+                    job_node_pool_from_cluster  # pylint: disable=import-outside-toplevel
+                alias_pool = job_node_pool_from_cluster(namespace, kube_context)
             try:
                 check_job_node_aliases(job_node_aliases, alias_pool, kube_context=kube_context)
             except ValueError as e:
@@ -1238,6 +1243,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
             click.echo("✓ reconciled RBAC and the ingress route")
             click.echo("  the pod was NOT restarted: the running version is unchanged and "
                        "its env Secrets were not re-read")
+            click.echo("  nor was the job node pool (ROBOVAST_JOB_NODE_LABELS) applied: it is "
+                       "part of the pod's environment")
             click.echo("  run 'vast service upgrade' without --no-restart to move the "
                        "image, pick up changed Secrets, or apply the build daemon's settings")
             return
@@ -1271,12 +1278,13 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         # password back from this same Secret, so it cannot recover one after an upgrade has
         # dropped it.
         registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
-        # No `job_node_labels`: deploy_service then carries the live pool forward rather than
-        # rendering none. Only setup changes the pool.
+        # The pool the environment states, `{}` included: like the aliases, a `.env` entry is
+        # the standing statement, so an upgrade applies it whole.
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, registry_password=registry_password,
-                       public_origin=public_origin)
+                       public_origin=public_origin, job_node_labels=jobs_node_labels)
+        _echo_job_node_pool(jobs_node_labels)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #

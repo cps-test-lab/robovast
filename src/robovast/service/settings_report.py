@@ -153,9 +153,8 @@ KNOWN: dict[str, Known] = {
         _CLUSTER, "Days a fetched campaign nobody reads is kept before it is removed; "
         "0 keeps it until the cache is cleared."),
     "ROBOVAST_JOB_NODE_LABELS": Known(
-        _CLUSTER, "JSON node labels restricting where campaign Jobs are scheduled. Not read "
-        "from .env: set by 'vast cluster setup --jobs-node-label' and kept by "
-        "'vast service upgrade'."),
+        _CLUSTER, "JSON node labels restricting where campaign Jobs are scheduled. Set in the "
+        "operator's .env and applied by 'vast cluster setup' and 'vast service upgrade'."),
     "ROBOVAST_JOB_NODE_ALIASES": Known(
         _CLUSTER, "JSON object of alias -> node name a campaign may confine its jobs to with "
         "execution.kubernetes.jobs.node. Read from the operator's environment by 'vast "

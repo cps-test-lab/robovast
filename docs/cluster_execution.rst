@@ -158,18 +158,21 @@ The setup command:
 Pinning pods to a node pool
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Both node pools are set on the **setup command**, never in a ``.vast``. A ``.vast``
-describes a campaign; which machines a cluster's pods may run on is a property of the
-cluster, and carrying it in a campaign file put a deploy's lasting, cluster-wide decisions
-somewhere that travels with an experiment.
+Both node pools are set by the operator, never in a ``.vast``. A ``.vast`` describes a
+campaign; which machines a cluster's pods may run on is a property of the cluster, and
+carrying it in a campaign file put a deploy's lasting, cluster-wide decisions somewhere that
+travels with an experiment.
+
+The campaign job pool is ``ROBOVAST_JOB_NODE_LABELS`` in the ``.env``, a JSON object of label
+to value; the control pool is a setup flag:
 
 .. code-block:: bash
 
-   vast cluster setup rke2 \
-       --jobs-node-label node-pool=primary \
-       --control-node-label node-pool=extra
+   ROBOVAST_JOB_NODE_LABELS={"node-pool": "primary"}
 
-``--jobs-node-label`` confines campaign jobs. It is recorded in the service's environment,
+   vast cluster setup rke2 --control-node-label node-pool=extra
+
+``ROBOVAST_JOB_NODE_LABELS`` confines campaign jobs. It is recorded in the service's environment,
 because the admission controller is what enforces it: the controller counts free capacity
 only on nodes inside the pool, and every job pod carries the labels as a ``nodeSelector``
 so kube-scheduler is bound by the same rule the accounting assumed. Neither half suffices
@@ -179,13 +182,13 @@ stamping alone would have admission reserving room on nodes the pods cannot reac
 ``--control-node-label`` places RoboVAST's own infrastructure pods. It narrows rather than
 decides: these are ANDed with the node-local data placement setup chooses (see below).
 
-Both are repeatable, and both are written on **every** setup. Omitting one therefore
-*clears* what a previous setup configured rather than preserving it, which is what keeps
-the command the whole truth about the cluster. With neither given, pods schedule wherever
-Kubernetes puts them.
-
-``vast service upgrade`` keeps the job node pool the deployment has. Changing it is a
-``setup`` (``--force`` over a live service).
+``vast cluster setup`` and ``vast service upgrade`` both write the job pool from the
+environment and print it, so a command run from a shell whose ``.env`` lacks the variable
+clears the pool — run them from the shell that has the deployment's ``.env``. A value that is
+not a JSON object of strings fails the command before it changes anything.
+``upgrade --no-restart`` does not apply it, because it lives in the pod's environment.
+``--control-node-label`` is repeatable and written on every setup, so omitting it clears what
+a previous setup configured. With neither set, pods schedule wherever Kubernetes puts them.
 
 .. _cluster-node-alias:
 
@@ -217,8 +220,7 @@ itself is not copied into the service's environment; the node names stay in the 
 it.
 
 **An alias narrows the job node pool and cannot leave it.** A node must be schedulable by a
-campaign job and inside the job node pool — the ``--jobs-node-label`` setup declares, which an
-upgrade keeps — and the whole set is
+campaign job and inside the job node pool — ``ROBOVAST_JOB_NODE_LABELS`` — and the whole set is
 refused, before the command changes anything, if one alias fails or the variable is not valid
 JSON. The same check runs again when a campaign that names the alias starts, because a node can
 be cordoned, a pool changed or a second node labelled by hand in between. A campaign refused

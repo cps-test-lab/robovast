@@ -84,14 +84,13 @@ CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "N
 #: chosen".
 NODE_ID_LABEL = "robovast.io/node-id"
 
-#: The node pool campaign jobs may run on, as ``{label: value}`` -- what
-#: ``execution.kubernetes.jobs.node_labels`` means now.
+#: The node pool campaign jobs may run on, as ``{label: value}``.
 #:
 #: It reaches the running service through this env var rather than through a ``.vast``,
 #: because it is a property of the CLUSTER and not of a campaign: a per-campaign override
-#: would let one campaign widen the pool every other one is confined to. ``setup_server``
-#: reads the operator's file and stamps it here, which is the same path the headroom figures
-#: take.
+#: would let one campaign widen the pool every other one is confined to. The operator sets
+#: the same variable in the ``.env`` that ``vast cluster setup`` and ``vast service upgrade``
+#: read, and both stamp it into the service's environment.
 #:
 #: Two consumers, and both are needed for it to mean anything. The budget provider counts
 #: only matching nodes, so nothing outside the pool is ever offered as capacity; and every

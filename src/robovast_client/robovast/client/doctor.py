@@ -352,7 +352,7 @@ def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
     """Whether campaign jobs have anywhere to go, and every job node alias somewhere to point.
 
     :func:`_check_capacity` lists every node, so a job node pool that matches none -- a
-    typo in ``--jobs-node-label``, a relabelled node pool -- still reads green there while
+    typo in ``ROBOVAST_JOB_NODE_LABELS``, a relabelled node pool -- still reads green there while
     admission counts zero capacity and no campaign ever starts. The pool is read from the
     live Deployment, the only place it is recorded.
 
@@ -380,8 +380,8 @@ def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
     except ValueError as exc:
         return [Check("job node pool", False, str(exc)[:120],
                       "The service's recorded pool cannot be parsed, so admission refuses "
-                      "to guess. 'vast cluster setup <config> --force --jobs-node-label "
-                      "KEY=VALUE' rewrites it; without the flag it clears it.")]
+                      "to guess. Fix ROBOVAST_JOB_NODE_LABELS in the deployment's .env "
+                      "and run 'vast service upgrade'.")]
     except Exception:  # noqa: BLE001 - an unreachable cluster is check_cluster's to report
         return []
 
@@ -400,9 +400,9 @@ def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
         checks = [Check(
             "job node pool", False, f"{described}: matches no node",
             "Admission counts capacity only inside the pool, so no campaign job can start. "
-            "'kubectl get nodes --show-labels' shows what the nodes carry; 'vast cluster "
-            "setup <config> --force --jobs-node-label KEY=VALUE' sets a pool that matches; "
-            "without the flag it clears it.")]
+            "'kubectl get nodes --show-labels' shows what the nodes carry; set "
+            "ROBOVAST_JOB_NODE_LABELS in the deployment's .env to a pool that matches and run "
+            "'vast service upgrade'.")]
     elif not eligible:
         checks = [Check(
             "job node pool", False,

@@ -1465,7 +1465,7 @@ class BatchJobRunner:
         unlabelled node -- the node the campaign is confined to, so a confined campaign's pod
         is confined on every path that creates it. Both ANDed onto whatever the spec already
         carried, through :func:`~.node_placement.job_node_selector`. The pool is the
-        operator's ``--jobs-node-label``, which is a pod ``nodeSelector``.
+        operator's ``ROBOVAST_JOB_NODE_LABELS``, which is a pod ``nodeSelector``.
 
         The pool must reach the pod, not just the accounting: the budget provider counts only
         nodes inside it, so a pod free to land outside would be running on capacity nothing

@@ -73,7 +73,7 @@ def test_jobs_node_labels_names_the_setup_option_and_the_alias():
     with pytest.raises(ValueError) as exc:
         validate_config(_cfg({"jobs": {"node_labels": {"pool": "a"}}}))
     text = str(exc.value)
-    assert "--jobs-node-label KEY=VALUE" in text
+    assert "ROBOVAST_JOB_NODE_LABELS" in text
     assert "execution.kubernetes.jobs.node" in text
     assert "Extra inputs are not permitted" not in text
 
@@ -115,7 +115,7 @@ def test_a_lenient_read_still_refuses_a_bad_alias():
 
 
 def test_a_strict_read_does_not_drop_anything():
-    with pytest.raises(ValueError, match="--jobs-node-label"):
+    with pytest.raises(ValueError, match="ROBOVAST_JOB_NODE_LABELS"):
         validate_config(_cfg({"jobs": {"node_labels": {"pool": "a"}}}))
 
 

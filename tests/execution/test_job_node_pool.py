@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The campaign job node pool -- ``vast exec cluster setup --jobs-node-label KEY=VALUE``.
+"""The campaign job node pool -- ``ROBOVAST_JOB_NODE_LABELS`` in the operator's ``.env``.
 
 A property of the CLUSTER rather than of a campaign, carried to the service in
 ``ROBOVAST_JOB_NODE_LABELS``: a ``nodeSelector`` on each job pod, backed by an admission
@@ -304,3 +304,54 @@ def test_probes_are_only_considered_for_the_confined_node(monkeypatch):
     assert r._probe_node_ids(10) == ["node-x"]
     assert seen == [1], "calibration_applies is asked about one node, not three"
     assert isinstance(store[r.campaign], NodeCalibration)
+
+
+# -- where setup takes the pool from -----------------------------------------------------
+
+def _setup_cli(monkeypatch, *args, pool_env=None):
+    """`vast cluster setup rke2` with ROBOVAST_JOB_NODE_LABELS set to *pool_env*."""
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import cluster_setup
+
+    server = mock.Mock(return_value={})
+    monkeypatch.setattr(cluster_setup, "setup_server", server)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.buildkitd_deploy.settings_from_env",
+        lambda: {})
+    monkeypatch.delenv("ROBOVAST_JOB_NODE_ALIASES", raising=False)
+    if pool_env is None:
+        monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(JOB_NODE_POOL_ENV, pool_env)
+    return CliRunner().invoke(cluster_cli.setup, ["rke2", *args]), server
+
+
+def test_setup_writes_the_pool_the_environment_states(monkeypatch):
+    result, server = _setup_cli(monkeypatch, pool_env='{"node-pool": "primary"}')
+    assert result.exit_code == 0, result.output
+    assert server.call_args.kwargs["jobs_node_labels"] == {"node-pool": "primary"}
+    assert "node-pool=primary" in result.output
+
+
+def test_setup_without_the_variable_writes_no_pool(monkeypatch):
+    result, server = _setup_cli(monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert server.call_args.kwargs["jobs_node_labels"] == {}
+    assert "every node" in result.output
+
+
+def test_setup_refuses_a_malformed_pool_before_anything_is_applied(monkeypatch):
+    result, server = _setup_cli(monkeypatch, pool_env="node-pool=primary")
+    assert result.exit_code != 0
+    assert JOB_NODE_POOL_ENV in result.output
+    assert not server.called
+
+
+def test_setup_has_no_pool_flag(monkeypatch):
+    result, server = _setup_cli(monkeypatch, "--jobs-node-label", "node-pool=primary")
+    assert result.exit_code == 2
+    assert not server.called

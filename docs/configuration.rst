@@ -1785,7 +1785,7 @@ only the alias, so a ``.vast`` never carries a machine's name and runs on any cl
 registers the same alias. See :ref:`cluster-node-alias`.
 
 **It narrows, never widens.** The alias is ANDed onto the cluster's job pool
-(``vast cluster setup --jobs-node-label``, :ref:`cluster-node-labels`): registering an alias
+(``ROBOVAST_JOB_NODE_LABELS``, :ref:`cluster-node-labels`): registering an alias
 for a node outside the pool is refused, and the pool is checked again when a campaign starts.
 Admission counts capacity on that node only.
 
@@ -1811,7 +1811,7 @@ Node pools are not campaign settings
 ``execution.kubernetes.jobs.node_labels`` and ``execution.kubernetes.control`` are refused.
 Which nodes jobs and RoboVAST's own pods may use is decided for the whole cluster:
 
-- ``jobs.node_labels`` → ``vast cluster setup <config> --jobs-node-label KEY=VALUE`` for the
+- ``jobs.node_labels`` → ``ROBOVAST_JOB_NODE_LABELS`` in the operator's ``.env`` for the
   pool, and ``execution.kubernetes.jobs.node`` to confine one campaign to a node inside it.
 - ``control.node_labels`` → ``vast cluster setup <config> --control-node-label KEY=VALUE``.
 
