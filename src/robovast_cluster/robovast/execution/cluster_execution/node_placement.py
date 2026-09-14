@@ -109,10 +109,20 @@ def job_node_pool() -> dict:
     "every node" would scatter a campaign across machines the operator had excluded, and the
     symptom appears nowhere near the cause.
     """
-    import json  # noqa: PLC0415
     import os  # noqa: PLC0415
 
-    raw = (os.environ.get(JOB_NODE_POOL_ENV) or "").strip()
+    return parse_job_node_pool(os.environ.get(JOB_NODE_POOL_ENV))
+
+
+def parse_job_node_pool(raw) -> dict:
+    """The pool as written in :data:`JOB_NODE_POOL_ENV`, ``""``/``None`` being ``{}``.
+
+    Shared by the service reading its own environment and by a deploy reading the live
+    Deployment's, so both refuse the same malformed value rather than one of them guessing.
+    """
+    import json  # noqa: PLC0415
+
+    raw = (raw or "").strip()
     if not raw:
         return {}
     try:

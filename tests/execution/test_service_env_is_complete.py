@@ -85,3 +85,12 @@ def test_a_deploy_that_names_no_config_still_carries_the_rest():
     assert "ROBOVAST_CLUSTER_CONFIG_NAME" not in env
     assert env["ROBOVAST_NAMESPACE"] == "default"
     assert env["ROBOVAST_KUBE_CONTEXT"] == "local"
+
+
+def test_setup_states_an_empty_pool_rather_than_leaving_it_unstated():
+    """`None` asks `deploy_service` to recover the live pool, which is right for an upgrade
+    and wrong for setup: setup declares, so no flag must reach the deploy as `{}`."""
+    from robovast.execution.cluster_execution.cli import _node_labels
+
+    assert _node_labels((), "--jobs-node-label") == {}
+    assert _env(job_node_labels={})[JOB_NODE_POOL_ENV] == ""

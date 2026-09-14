@@ -165,7 +165,9 @@ def test_omitting_the_option_clears_a_previously_configured_pool(deploy_stubs):
 
     setup_server(config_name="rke2", namespace="default")
 
-    assert service_deploy.deploy_service.call_args.kwargs["job_node_labels"] is None
+    # `{}`, not `None`: `None` asks deploy_service to recover the live pool, which is what
+    # an upgrade wants and precisely what a setup must not do.
+    assert service_deploy.deploy_service.call_args.kwargs["job_node_labels"] == {}
 
 
 def test_control_node_labels_reach_the_placement_resolver(deploy_stubs):

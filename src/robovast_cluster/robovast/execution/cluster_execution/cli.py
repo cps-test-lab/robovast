@@ -555,12 +555,12 @@ def _echo_placement(placement):
 
 
 def _node_labels(pairs, flag):
-    """``KEY=VALUE`` occurrences as a dict, or ``None`` for none given.
+    """``KEY=VALUE`` occurrences as a dict, ``{}`` for none given.
 
-    ``None`` and ``{}`` mean the same thing to setup -- no pool -- but the distinction is
-    kept out of the CLI entirely: setup writes the resulting configuration on every run,
-    so omitting the flag CLEARS a pool a previous setup configured rather than preserving
-    it. That is the property that keeps the command the whole truth about the cluster.
+    Always a statement, never ``None``: setup writes the resulting configuration on every
+    run, so omitting the flag CLEARS a pool a previous setup configured rather than having
+    it recovered from the live deployment. That is the property that keeps the command the
+    whole truth about the cluster.
     """
     labels = {}
     for pair in pairs or ():
@@ -570,7 +570,23 @@ def _node_labels(pairs, flag):
         if not key or not value:
             raise click.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint=flag)
         labels[key] = value
-    return labels or None
+    return labels
+
+
+def _amended_node_labels(pairs, flag):
+    """What ``upgrade`` was told about a node-label setting: ``None`` for nothing.
+
+    ``upgrade`` amends where ``setup`` declares, so an omitted flag keeps what the cluster
+    has. Clearing therefore needs a spelling of its own -- the flag given once, empty.
+    """
+    if not pairs:
+        return None
+    if "" in pairs:
+        if len(pairs) > 1:
+            raise click.BadParameter("an empty value clears the setting and cannot be "
+                                     "combined with KEY=VALUE", param_hint=flag)
+        return {}
+    return _node_labels(pairs, flag)
 
 
 @click.command()
@@ -1015,7 +1031,12 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
 @click.option('--yes', '-y', is_flag=True, default=False,
               help='Do not ask before rolling over live campaigns. For scripts; without it '
                    'a non-interactive run aborts rather than rolling silently.')
-def upgrade(namespace, kube_context, timeout, no_restart, yes):
+@click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
+              help='Replace the campaign job node pool with these labels; repeatable. '
+                   'Omitted, the pool the deployment already has is kept -- an upgrade '
+                   'amends where setup declares. Pass it once with an empty value to clear '
+                   'the pool.')
+def upgrade(namespace, kube_context, timeout, no_restart, yes, jobs_node_label):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1100,6 +1121,11 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         buildkit_settings = settings_from_env()
     except ValueError as e:
         raise click.UsageError(str(e)) from e
+    jobs_node_labels = _amended_node_labels(jobs_node_label, '--jobs-node-label')
+    if no_restart and jobs_node_labels is not None:
+        # The pool lives in the service's env, which only a roll re-reads.
+        raise click.UsageError("--jobs-node-label changes the service's environment, which "
+                               "--no-restart leaves as it is; drop one of them")
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1204,10 +1230,16 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         # password back from this same Secret, so it cannot recover one after an upgrade has
         # dropped it.
         registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
+        # `job_node_labels=None` when the flag was not given: deploy_service then carries the
+        # live pool forward rather than rendering none.
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, registry_password=registry_password,
-                       public_origin=public_origin)
+                       public_origin=public_origin, job_node_labels=jobs_node_labels)
+        if jobs_node_labels is not None:
+            click.echo("  campaign job node pool: "
+                       + (", ".join(f"{k}={v}" for k, v in jobs_node_labels.items())
+                          if jobs_node_labels else "cleared (every node)"))
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #

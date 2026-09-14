@@ -479,3 +479,170 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     assert kwargs.get("public_origin") == "http://robovast.example.org"
     # And the host still reaches the registry config, which is what it was read for first.
     assert kwargs.get("registry_host") == "robovast.example.org"
+
+
+# -- the campaign job node pool ----------------------------------------------------------
+
+def _stub_upgrade(monkeypatch, deploy):
+    """Everything `upgrade` reaches for except `deploy_service`, which the test inspects."""
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, tailnet_deploy
+
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: ("rke2", {"namespace": "default"}))
+    monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
+    monkeypatch.setattr(service_deploy, "deploy_service", deploy)
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:a")
+    monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
+    monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
+    monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster",
+                        lambda *a, **k: {})
+
+
+def _upgrade(monkeypatch, *args):
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+
+    deploy = mock.Mock()
+    _stub_upgrade(monkeypatch, deploy)
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default", "--yes", *args])
+    return result, deploy
+
+
+def test_an_upgrade_without_the_flag_asks_deploy_service_to_keep_the_pool(monkeypatch):
+    """`None` is "recover": the pool is recorded nowhere but the live Deployment."""
+    result, deploy = _upgrade(monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert deploy.call_args.kwargs["job_node_labels"] is None
+
+
+def test_an_upgrade_may_change_the_pool(monkeypatch):
+    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "node-pool=primary",
+                              "--jobs-node-label", "tier=batch")
+    assert result.exit_code == 0, result.output
+    assert deploy.call_args.kwargs["job_node_labels"] == {"node-pool": "primary",
+                                                          "tier": "batch"}
+
+
+def test_an_upgrade_clears_the_pool_with_an_empty_flag(monkeypatch):
+    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "")
+    assert result.exit_code == 0, result.output
+    assert deploy.call_args.kwargs["job_node_labels"] == {}
+
+
+def test_an_empty_flag_beside_a_label_is_refused(monkeypatch):
+    result, deploy = _upgrade(monkeypatch, "--jobs-node-label", "",
+                              "--jobs-node-label", "node-pool=primary")
+    assert result.exit_code != 0
+    assert not deploy.called
+
+
+def test_a_pool_change_without_a_restart_is_refused(monkeypatch):
+    """The pool is in the pod's env, so --no-restart could only ignore the argument."""
+    result, deploy = _upgrade(monkeypatch, "--no-restart", "--jobs-node-label", "a=b")
+    assert result.exit_code != 0
+    assert not deploy.called
+
+
+class _Captured(Exception):
+    """Raised by a stubbed `service_manifests`, carrying what `deploy_service` handed it."""
+
+
+def _deploy_capturing_manifests(monkeypatch, live_pool, **kwargs):
+    """Drive `deploy_service` up to rendering, against a cluster whose pool is *live_pool*."""
+    from unittest.mock import MagicMock
+
+    from kubernetes import client as kclient
+
+    from robovast.execution.cluster_execution import kube_client
+
+    for api in ("CoreV1Api", "RbacAuthorizationV1Api", "AppsV1Api", "NetworkingV1Api"):
+        monkeypatch.setattr(kclient, api, lambda *a, **k: MagicMock())
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
+    monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")
+    monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster",
+                        lambda *a, **k: dict(live_pool))
+
+    def _capture(**kw):
+        raise _Captured(kw)
+
+    monkeypatch.setattr(service_deploy, "service_manifests", _capture)
+    with pytest.raises(_Captured) as caught:
+        service_deploy.deploy_service(namespace="default", config_name="rke2", **kwargs)
+    return caught.value.args[0]
+
+
+def test_deploy_service_carries_the_live_pool_forward_when_not_told(monkeypatch):
+    """The regression: an unstated pool was rendered as an explicitly empty variable, so
+    every upgrade widened campaigns onto every node."""
+    rendered = _deploy_capturing_manifests(monkeypatch, {"node-pool": "primary"})
+    assert rendered["job_node_labels"] == {"node-pool": "primary"}
+
+
+def test_deploy_service_obeys_a_stated_empty_pool(monkeypatch):
+    rendered = _deploy_capturing_manifests(monkeypatch, {"node-pool": "primary"},
+                                           job_node_labels={})
+    assert rendered["job_node_labels"] == {}
+
+
+def _cluster_with(monkeypatch, *, dep=None, error=None):
+    from kubernetes import client as kclient
+
+    from robovast.execution.cluster_execution import kube_client
+
+    class _Apps:
+        def read_namespaced_deployment(self, name, namespace):
+            if error is not None:
+                raise error
+            return dep
+
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: _Apps())
+
+
+def _live_deployment(pool):
+    """A deployed service Deployment carrying *pool*, as the API would return it."""
+    import json
+
+    from kubernetes.client import ApiClient
+
+    env = service_deploy._cluster_env("default", "rke2", {}, job_node_labels=pool)
+    manifest = service_deploy._deployment_manifest("default", "img:latest", env=env)
+
+    class _Response:
+        data = json.dumps(manifest)
+
+    return ApiClient().deserialize(_Response(), "V1Deployment")
+
+
+def test_the_pool_is_read_back_from_the_live_deployment(monkeypatch):
+    _cluster_with(monkeypatch, dep=_live_deployment({"node-pool": "primary"}))
+    assert service_deploy.job_node_pool_from_cluster("default") == {"node-pool": "primary"}
+
+
+def test_no_deployment_yet_has_no_pool(monkeypatch):
+    from kubernetes.client.exceptions import ApiException
+    _cluster_with(monkeypatch, error=ApiException(status=404))
+    assert service_deploy.job_node_pool_from_cluster("default") == {}
+
+
+def test_a_failed_read_is_not_mistaken_for_no_pool(monkeypatch):
+    """Defaulting here would be the silent widening this reader exists to prevent."""
+    from kubernetes.client.exceptions import ApiException
+    _cluster_with(monkeypatch, error=ApiException(status=500))
+    with pytest.raises(ApiException):
+        service_deploy.job_node_pool_from_cluster("default")

@@ -594,7 +594,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # failed with "the service must be deployed by 'vast exec cluster setup'".
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   job_node_labels=jobs_node_labels,
+                   # Stated, `{}` included: setup declares the pool, so an omitted flag
+                   # clears one rather than being recovered from the live Deployment.
+                   job_node_labels=jobs_node_labels or {},
                    registry_password=registry_password,
                    **service_kwargs)
     # Reconciled on every setup, asked for or not, for the reason the governor DaemonSet
