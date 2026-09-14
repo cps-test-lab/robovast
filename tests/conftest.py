@@ -166,19 +166,19 @@ def pytest_collection_modifyitems(config, items):
 
 # --- the suite's own Postgres -------------------------------------------------------
 #
-# The index tests are gated on ``ROBOVAST_TEST_PG_DSN``; unset, ~240 of them skipped and
-# the migration's whole correctness coverage silently did not run. The suite now provides
+# The index tests are gated on ``ROBOVAST_TEST_PG_DSN``; unset, ~240 of them skip and the
+# whole correctness coverage of campaign results silently does not run. The suite provides
 # the database itself (see ``tests/pg_provision``), so no test depends on a service a
-# human started. Started once here and torn down once in ``pytest_unconfigure``: 240 tests
-# must not pay per-test container startup.
+# human started. Claimed once here and given back once in ``pytest_unconfigure``: 240 tests
+# must not pay per-test setup.
 #
 # This must happen in ``pytest_configure`` rather than a session fixture -- the gates are
 # module-level ``skipif``/``os.environ.get`` evaluated at import time, i.e. during
 # collection, by which point any fixture has not run yet.
 
-# Module state on purpose: pytest_configure starts the container, pytest_unconfigure
-# stops it and pytest_report_header reports it, and hooks cannot share a fixture.
-_pg_container = None  # pylint: disable=invalid-name
+# Module state on purpose: pytest_configure claims the database, pytest_unconfigure drops
+# it and pytest_report_header reports it, and hooks cannot share a fixture.
+_pg_session = None  # pylint: disable=invalid-name
 _pg_unavailable: str | None = None  # pylint: disable=invalid-name
 
 
@@ -192,13 +192,13 @@ def pytest_configure(config):
         "reaches_a_cluster: deliberately sends requests to a Kubernetes API server; "
         "exempt from the guard in _no_test_reaches_a_real_cluster")
 
-    global _pg_container, _pg_unavailable  # pylint: disable=global-statement
+    global _pg_session, _pg_unavailable  # pylint: disable=global-statement
     from tests import pg_provision  # pylint: disable=import-outside-toplevel
 
     if config.option.collectonly:
         return
     try:
-        dsn, _pg_container = pg_provision.start()
+        dsn, _pg_session = pg_provision.start()
     except pg_provision.ProvisionError as error:
         _pg_unavailable = str(error)
         return
@@ -207,14 +207,17 @@ def pytest_configure(config):
 
 def pytest_unconfigure(config):  # pylint: disable=unused-argument
     from tests import pg_provision  # pylint: disable=import-outside-toplevel
-    pg_provision.stop(_pg_container)
+    pg_provision.stop(_pg_session)
 
 
 def pytest_report_header(config):  # pylint: disable=unused-argument
+    from tests import pg_provision  # pylint: disable=import-outside-toplevel
+
     if _pg_unavailable:
         return f"postgres: NOT provisioned -- {_pg_unavailable}"
-    if _pg_container:
-        return "postgres: provisioned by the suite (throwaway container)"
+    if _pg_session:
+        return (f"postgres: provisioned by the suite (database {_pg_session.database} "
+                f"in the shared {pg_provision.CONTAINER_NAME} container)")
     return "postgres: ROBOVAST_TEST_PG_DSN was set; using it as-is"
 
 
