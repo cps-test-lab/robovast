@@ -10,26 +10,6 @@ jobs:
   build-and-test:
     name: 'Build with Poetry and test commands'
     runs-on: ubuntu-latest
-    # Campaign results live in a Postgres index, and every test that touches one skips
-    # without a database to point at -- so the ingest, the schema and the flat views were
-    # tested nowhere but on a developer's machine. A service container is what makes that
-    # suite part of the verdict. The major version the deployments run.
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: robovast
-          POSTGRES_PASSWORD: robovast
-          POSTGRES_DB: robovast
-        ports:
-          - 5432:5432
-        # Without the health gate the first test connects before the server is listening,
-        # which fails as "index unreachable" rather than as what it is.
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -71,9 +51,6 @@ jobs:
       # `make test`, not a bare pytest: the target is what a developer runs, and a
       # workflow spelling the command itself is how the two drift apart.
       - name: Run unit tests
-        env:
-          ROBOVAST_TEST_PG_DSN: >-
-            host=localhost port=5432 dbname=robovast user=robovast password=robovast
         run: make test
 
       # Two questions review does not reliably answer: did the config schema change without
