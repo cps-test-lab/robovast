@@ -56,8 +56,8 @@ from robovast.common.quantity import to_bytes, to_cores
 
 from .kube_client import api_transport_errors
 from . import postprocess_usage
-from .node_placement import (CAMPAIGN_NODE_TOLERATIONS, NODE_ID_LABEL,
-                             job_node_pool)
+from .node_placement import (CAMPAIGN_NODE_TOLERATIONS, job_node_pool,
+                             job_node_selector)
 
 logger = logging.getLogger(__name__)
 
@@ -365,12 +365,11 @@ def _pin_to(manifest: dict, node_id) -> dict:
     machine, and a pod free to land anywhere can still arrive at a full one -- which is the
     ``Unschedulable`` this path exists to avoid. The pool must reach the pod for the reason
     the trial path gives: the budget provider counts only nodes inside it, so a pod outside
-    would run on capacity nothing reserved.
+    would run on capacity nothing reserved. The same merge the trial path uses
+    (:func:`~.node_placement.job_node_selector`), so the two cannot disagree about it.
     """
     spec = manifest["spec"]["template"]["spec"]
-    selector = {**(spec.get("nodeSelector") or {}), **job_node_pool()}
-    if node_id:
-        selector[NODE_ID_LABEL] = node_id
+    selector = job_node_selector(spec.get("nodeSelector"), node_id, job_node_pool())
     if selector:
         spec["nodeSelector"] = selector
     return manifest
@@ -2188,6 +2187,10 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image,
         if not granted:
             return False, message
         admitted = True
+        # The job node pool and the granted node only -- never the campaign's
+        # `execution.kubernetes.jobs.node`, deliberately. Postprocessing has no calibration to
+        # stay comparable with, it is the largest single pod a campaign asks for, and on its
+        # campaign's node it would queue behind that campaign's own trials.
         _pin_to(manifest, node_id)
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —

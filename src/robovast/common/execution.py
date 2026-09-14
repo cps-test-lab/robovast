@@ -1563,6 +1563,23 @@ UPLOAD_EOF
     fi"""
 
 
+def job_node_alias(campaign_data) -> str | None:
+    """The node alias this campaign's cluster jobs are confined to, or ``None`` for the pool.
+
+    The single reader of ``execution.kubernetes.jobs.node``. The alias narrows the cluster's
+    job pool to the one node registered under it; resolving it to that node is the cluster
+    lane's job, and the local lane never asks.
+
+    Accepts either the raw mapping or a validated model at each level, matching the two
+    shapes callers already pass around.
+    """
+    def field(obj, name):
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+    node = field(field(field(field(campaign_data, "execution"), "kubernetes"), "jobs"), "node")
+    return node or None
+
+
 def local_parameter_overrides(campaign_data, *, gui: bool) -> list:
     """The scenario-parameter overrides a **local** run applies, in precedence order.
 

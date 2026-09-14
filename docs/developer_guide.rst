@@ -1974,6 +1974,20 @@ The controller keeps an in-flight ledger and stops subtracting a reservation the
 instant the measurement starts counting the real pod, which needs no timer and
 leaves no window where the same cores are counted twice or not at all.
 
+**A pin narrows, and only a probe claims its node.** A ``WorkItem`` may carry a
+``pin`` (the one node id it may use) and an ``accepts_node`` gate (whether its owner's
+work may go to a node yet); ``may_use`` requires both, and a pinned item never takes a
+node without an identity label. Two kinds of work are pinned. A calibration probe is
+pinned to the node it measures and, when it does not fit, **claims** that node for the
+rest of the drain pass, so smaller lower-ranked work cannot keep taking the room it is
+waiting for. A campaign confined with ``execution.kubernetes.jobs.node`` is pinned to
+its node with ``reserves=False``: it always has another job queued, so a claim would
+renew every pass for its whole life and shut every lower-ranked campaign out of that
+node. It waits for room like any other work, and ``preflight`` judges it against its own
+node's capacity instead, since no claim stands behind it. The alias is resolved inside
+the job node pool before a Job of the campaign exists, and ``_pin`` falls back to the
+campaign's node wherever the queue granted none. Postprocessing is not confined.
+
 **Waiting for capacity is not a failure, and is not a stall.** A job that has not
 been created yet is ``PLANNED`` in the controller — a fact it holds, not something
 inferred from a pod. ``list_campaign_jobs`` reports it ``waiting``; the no-progress

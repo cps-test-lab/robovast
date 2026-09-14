@@ -709,15 +709,119 @@ def test_a_pinned_item_goes_to_its_node_or_waits_for_it():
     assert c.drain() == 1 and seen == ["busy"]
 
 
-def test_a_pin_overrides_the_accepts_node_gate():
-    """The gate exists to keep campaign work off a node until its probe reports. The probe
-    itself must be exempt, or it would be waiting for its own measurement."""
+def test_a_pin_is_anded_with_the_accepts_node_gate():
+    """A calibrated campaign confined to one node is pinned to it AND gated on that node's
+    measurement. Either-or would place its trials on the node while the node's own probe is
+    still out, sized from nothing. A probe carries no gate, which is what exempts it."""
     p = FakeProvider(per_node=[("n1", 8.0, 10240 * MIB, 0)])
     c = _controller(p)
     seen = []
-    c.submit("a", [("probe", JobSizing(2.0, MIB), lambda n=None: seen.append(n))],
-             started_at=0.0, pin="n1", accepts_node=lambda node: False)
+    measured = {"n1": False}
+    c.submit("a", [("job", JobSizing(2.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0, pin="n1", reserves=False,
+             accepts_node=lambda node: measured[node])
+    assert c.drain() == 0 and seen == [], "its node is still being measured"
+    assert "the one node it may use is being measured" in c.refusal("a"), c.refusal("a")
+
+    measured["n1"] = True
     assert c.drain() == 1 and seen == ["n1"]
+
+
+def test_a_probe_with_no_gate_goes_to_its_node():
+    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a#probes", [("probe", JobSizing(2.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0, priority=1, pin="n1")
+    assert c.drain() == 1 and seen == ["n1"]
+
+
+def test_a_pinned_item_never_takes_an_unlabelled_node():
+    """An unlabelled node takes unpinned work, so a cluster predating the identity label still
+    runs. A pinned item names a node id, and a node with none is not that node -- however much
+    room it has."""
+    p = FakeProvider(per_node=[(None, 64.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("pinned", [("p-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("p", n)))],
+             started_at=0.0, pin="n1", reserves=False, accepts_node=lambda node: True)
+    assert c.drain() == 0 and seen == []
+    assert "not among the 1 node(s)" in c.refusal("pinned"), c.refusal("pinned")
+
+    c.submit("free", [("f-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("f", n)))],
+             started_at=1.0, accepts_node=lambda node: False)
+    assert c.drain() == 1 and seen == [("f", None)], "unpinned work still takes it"
+
+
+def test_may_use_composes_pin_and_gate():
+    from robovast.execution.cluster_execution.node_admission import WorkItem
+
+    def item(**kw):
+        return WorkItem(key="k", sizing=JobSizing(1.0, MIB), create=lambda n=None: None, **kw)
+
+    assert item().may_use(None) is True
+    assert item(accepts_node=lambda n: False).may_use(None) is True, \
+        "an unpinned item still takes an unlabelled node"
+    assert item(pin="n1").may_use(None) is False
+    assert item(pin="n1").may_use("n2") is False
+    assert item(pin="n1", accepts_node=lambda n: False).may_use("n1") is False
+    assert item(pin="n1", accepts_node=lambda n: True).may_use("n1") is True
+
+
+def test_a_confined_campaign_does_not_hold_its_node_against_other_campaigns():
+    """``reserves=False`` is the difference between confining a campaign and a denial of service.
+
+    A confined campaign always has another job queued, so a claim would renew every pass for
+    its whole life and its node would take nothing from any lower-ranked campaign. Its jobs
+    wait for room on the node like any other work; everyone else's still goes there."""
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1")])
+    c = _controller(p)
+    c.submit("confined", [("big", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, pin="n1", reserves=False)
+    made = _items(c, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
+
+    assert c.drain() == 2 and made == ["other-0", "other-1"], \
+        "lower-ranked work still reaches the confined campaign's node"
+    assert "holding that node open" not in c.refusal("confined")
+
+
+def test_a_reserving_pin_still_holds_its_node():
+    """The same shape with the default: a probe claims its node, so the smaller work waits."""
+    p = FakeProvider(per_node=[("n1", 5.0, 10240 * MIB, 0)],
+                     nodes=[Capacity(12.0, 10240 * MIB, 0, "n1")])
+    c = _controller(p)
+    c.submit("camp#probes", [("probe", JobSizing(5.85, MIB), lambda _n=None: None)],
+             started_at=0.0, priority=1, pin="n1", reserves=True)
+    made = _items(c, "other", 2, cpu=2.0, memory=MIB, started_at=1.0)
+    assert c.drain() == 0 and made == []
+    assert "holding that node open" in c.refusal("camp#probes")
+
+
+def test_preflight_judges_a_confined_campaign_by_its_own_node():
+    """Without a claim there is no drain-side guard, so "that node could never hold this" has
+    to be refused before a single job exists -- even where a bigger node would."""
+    p = FakeProvider(nodes=[Capacity(4.0, 8192 * MIB, 0, "small"),
+                            Capacity(64.0, 8192 * MIB, 0, "large")])
+    c = _controller(p)
+    c.preflight(JobSizing(8.0, MIB))                      # some node holds it
+    with pytest.raises(AdmissionRefused, match="confined to") as err:
+        c.preflight(JobSizing(8.0, MIB), node_id="small")
+    assert "small" not in str(err.value), "the refusal names no node"
+    c.preflight(JobSizing(4.0, MIB), node_id="small")     # exactly fits: allowed
+
+
+def test_preflight_refuses_a_confined_node_the_cluster_does_not_offer():
+    p = FakeProvider(nodes=[Capacity(64.0, 8192 * MIB, 0, "large")])
+    with pytest.raises(AdmissionRefused, match="not among the nodes"):
+        _controller(p).preflight(JobSizing(1.0, MIB), node_id="gone")
+
+
+def test_preflight_for_a_node_stays_permissive_without_node_ids():
+    """A provider that carries no node ids cannot answer the per-node question, and an
+    unknowable answer is not a verdict -- the same rule the drain-side guard follows."""
+    p = FakeProvider(nodes=[Capacity(64.0, 8192 * MIB)])
+    _controller(p).preflight(JobSizing(8.0, MIB), node_id="anything")
 
 
 def test_node_ids_lists_only_what_can_be_pinned_to():

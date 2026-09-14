@@ -141,8 +141,8 @@ Available cluster configs (``--list``):
    vast cluster setup --list
 
 Setup acts on the *cluster*, not on a project: it reads nothing ambient and runs from any
-directory. Its one optional input from a ``.vast`` is the control-pod node labels, taken
-only from a config you name explicitly with ``--vast`` (:ref:`below <cluster-node-labels>`).
+directory. It reads no ``.vast`` either: which nodes the cluster's pods may use is given as
+flags (:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
@@ -183,6 +183,51 @@ Both are repeatable, and both are written on **every** setup. Omitting one there
 *clears* what a previous setup configured rather than preserving it, which is what keeps
 the command the whole truth about the cluster. With neither given, pods schedule wherever
 Kubernetes puts them.
+
+``vast service upgrade`` keeps the job node pool the deployment has unless it is given
+``--jobs-node-label`` itself (once, empty, to clear it).
+
+.. _cluster-node-alias:
+
+Naming a node a campaign may be held to
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A campaign can confine all of its jobs to one machine with
+``execution.kubernetes.jobs.node: <alias>`` — for a measurement whose cells must not be
+compared across different hardware. The ``.vast`` names an **alias**, never a node: the
+operator states which machine each alias means in ``ROBOVAST_JOB_NODE_ALIASES``, in the same
+``.env`` as the other standing settings of the deployment. The value is a JSON object of alias
+to node name:
+
+.. code-block:: bash
+
+   ROBOVAST_JOB_NODE_ALIASES={"bench": "node-a", "gpu": "node-b"}
+
+An alias is lowercase letters, digits, ``-`` and ``_``, starting and ending with a letter or
+digit, at most 63 characters — the same rule the ``.vast`` key is held to.
+
+``vast cluster setup`` and ``vast service upgrade`` both apply it. Each reconciles the node label
+``robovast.io/job-node-alias=<alias>`` to exactly what the variable states — an alias it no
+longer names is removed, and a command run from a shell whose ``.env`` lacks the variable
+removes them all — and prints every alias it adds, moves or removes. ``upgrade --no-restart``
+applies it too: a campaign reads the labels when it starts, so no pod has to roll. The variable
+itself is not copied into the service's environment; the node names stay in the operator's
+``.env`` and on the nodes. Like the placement labels, the registry survives ``cleanup``
+(including ``--forget-placement``). ``kubectl get nodes -L robovast.io/job-node-alias`` shows
+it.
+
+**An alias narrows the job node pool and cannot leave it.** A node must be schedulable by a
+campaign job and inside the job node pool — the ``--jobs-node-label`` setup declares, or for
+an upgrade the one it was given or else the one the deployment has — and the whole set is
+refused, before the command changes anything, if one alias fails or the variable is not valid
+JSON. The same check runs again when a campaign that names the alias starts, because a node can
+be cordoned, a pool changed or a second node labelled by hand in between. A campaign refused
+there is told which alias failed and why — unregistered (with the aliases that are),
+registered on several nodes, not schedulable, outside the pool, or on a node without its
+identity label — but never the node.
+
+``vast doctor`` fails a pool that matches no schedulable node and every registered alias a
+campaign could not use.
 
 .. _cluster-cpu-governor:
 
@@ -599,8 +644,9 @@ than a sweep: the campaign Jobs and their pods, the image-warm DaemonSet, buildk
 ``robovast-service`` Deployment and Service, the controller RBAC, the CPU governor DaemonSet,
 the NVIDIA device plugin, and whatever the cluster config's own ``cleanup_cluster`` owns.
 Deliberately kept: the object store (the durable data home), buildkitd's volume claim, the
-node identity labels, and the placement labels — see :ref:`cluster-node-local-storage`, and
-``--forget-placement`` for the last of those. The one thing it cannot undo is the CPU
+node identity labels, the job node aliases (:ref:`cluster-node-alias`), and the placement
+labels — see :ref:`cluster-node-local-storage`, and ``--forget-placement`` for the last of
+those. The one thing it cannot undo is the CPU
 governor setting itself; see :ref:`cluster-cpu-governor`.
 
 
@@ -1506,6 +1552,12 @@ Per-node container sizing
 :ref:`declaring the sizing mode <config-sizing>`). Before it places work on a node, one *calibration probe* runs there;
 what it measured becomes that node's figures, and every run of that campaign on that node is
 sized from them. A campaign that says nothing keeps ``fixed`` and its declared sizing.
+
+Sizing and ``execution.kubernetes.jobs.node`` answer different questions and compose.
+``sizing: calibrated`` makes each node's allocation right for that node; ``node`` holds the
+machine fixed across all of a campaign's cells, so no comparison between cells is also a
+comparison between machines (:ref:`cluster-node-alias`). A pinned, calibrated campaign
+probes its one node once and sizes every run from that.
 
 The cluster's part is the **bootstrap**: what a container asks for before anything has been
 measured for it, which is what the probe itself runs at.

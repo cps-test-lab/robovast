@@ -165,6 +165,7 @@ def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
 
     installed = []
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    monkeypatch.setattr(cluster_setup, "apply_job_node_aliases", mock.Mock(return_value=None))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda *a, **k: installed.append("gpu-plugin"))
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",

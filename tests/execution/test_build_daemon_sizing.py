@@ -62,6 +62,8 @@ def converge(monkeypatch):
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(cluster_cli, "_live_campaigns", lambda: [])
     return applied
 

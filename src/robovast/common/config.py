@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import logging
 import math
 import re
@@ -829,7 +830,151 @@ RESERVED_ENV_NAMES = frozenset({
 })
 
 
+#: What a job node alias may look like: a Kubernetes label value (it is matched against the
+#: ``robovast.io/job-node-alias`` node label) narrowed to lowercase and no dots, so an alias
+#: can never be mistaken for the node name it stands for.
+JOB_NODE_ALIAS_PATTERN = re.compile(r"[a-z0-9]([-_a-z0-9]*[a-z0-9])?")
+
+#: The longest label value Kubernetes accepts.
+JOB_NODE_ALIAS_MAX_LEN = 63
+
+_REGISTER_ALIAS = ("have the operator register one in ROBOVAST_JOB_NODE_ALIASES (applied by "
+                   "`vast cluster setup` and `vast service upgrade`) and set "
+                   "execution.kubernetes.jobs.node: ALIAS")
+
+
+def validate_job_node_alias(value: str) -> str:
+    """Refuse anything that is not a job node alias, naming what it looks like instead.
+
+    Each refused shape is a different mistake with a different remedy -- a label selector, a
+    label key, a node's own name -- so each gets its own sentence rather than a pattern the
+    reader has to decode.
+    """
+    if not value:
+        raise ValueError(
+            f"execution.kubernetes.jobs.node is empty. Omit it to let jobs use the whole "
+            f"cluster pool, or {_REGISTER_ALIAS}.")
+    if "=" in value:
+        raise ValueError(
+            f"execution.kubernetes.jobs.node {value!r} is a label selector, not an alias. The "
+            f"pool every campaign may use is set with `vast cluster setup <config> "
+            f"--jobs-node-label KEY=VALUE`; to confine this campaign to one node in it, "
+            f"{_REGISTER_ALIAS}.")
+    if "/" in value:
+        raise ValueError(
+            f"execution.kubernetes.jobs.node {value!r} is a label key, not an alias. "
+            f"Name a registered alias instead: {_REGISTER_ALIAS}.")
+    if "." in value or value != value.lower():
+        raise ValueError(
+            f"execution.kubernetes.jobs.node {value!r} looks like a node name, and a campaign "
+            f"names an alias rather than a machine, so the same file runs on any cluster that "
+            f"registers it. Aliases are lowercase without dots: {_REGISTER_ALIAS}.")
+    if len(value) > JOB_NODE_ALIAS_MAX_LEN:
+        raise ValueError(
+            f"execution.kubernetes.jobs.node is {len(value)} characters; an alias is a "
+            f"Kubernetes label value and may have at most {JOB_NODE_ALIAS_MAX_LEN}.")
+    if not JOB_NODE_ALIAS_PATTERN.fullmatch(value):
+        raise ValueError(
+            f"execution.kubernetes.jobs.node {value!r} is not a valid alias: use lowercase "
+            f"letters, digits, '-' and '_', starting and ending with a letter or digit.")
+    return value
+
+
+class JobsConfig(BaseModel):
+    """``execution.kubernetes.jobs``: where this campaign's job pods may run."""
+    model_config = ConfigDict(extra='forbid')
+
+    #: A node alias the operator registered in ``ROBOVAST_JOB_NODE_ALIASES``.
+    #: Narrows the cluster's job pool to that one node; it never widens it. Unset means the
+    #: whole pool. Read through :func:`robovast.common.execution.job_node_alias`.
+    node: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_node_labels(cls, data):
+        """``node_labels`` is a cluster setting, and a file carrying it would read as pinned."""
+        if isinstance(data, dict) and "node_labels" in data:
+            raise ValueError(
+                "execution.kubernetes.jobs.node_labels is not a campaign setting. The node "
+                "pool every campaign's jobs may use is set on the cluster with `vast cluster "
+                "setup <config> --jobs-node-label KEY=VALUE`. To confine this campaign's jobs "
+                f"to one node inside that pool, {_REGISTER_ALIAS}.")
+        return data
+
+    @field_validator("node")
+    @classmethod
+    def validate_node(cls, v: Optional[str]) -> Optional[str]:
+        return v if v is None else validate_job_node_alias(v)
+
+
+class KubernetesConfig(BaseModel):
+    """``execution.kubernetes``: settings only the cluster lane reads; the local lane ignores
+    the block."""
+    model_config = ConfigDict(extra='forbid')
+
+    jobs: Optional[JobsConfig] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_control(cls, data):
+        """Where RoboVAST's own pods run is the cluster's decision, not a campaign's."""
+        if isinstance(data, dict) and "control" in data:
+            raise ValueError(
+                "execution.kubernetes.control is not a campaign setting. RoboVAST's own "
+                "infrastructure pods are placed on the cluster with `vast cluster setup "
+                "<config> --control-node-label KEY=VALUE`; remove the block.")
+        return data
+
+
+def archived_kubernetes_drops(config: dict) -> list[tuple[str, ...]]:
+    """Key paths an *archived* ``execution.kubernetes`` block loses before it is validated.
+
+    Serves :func:`validate_config`'s lenient mode and the retrigger's staged copy, which must
+    agree. The rule is what the block did when the campaign ran. ``jobs.node`` is the only
+    key any lane reads, so a block without it changed nothing and is dropped whole when it
+    does not validate. A block with it ran pinned and keeps the pin; only the keys refused
+    by name (``jobs.node_labels``, ``control``) go, and anything else in it is validated as
+    usual.
+    """
+    execution = config.get("execution") if isinstance(config, dict) else None
+    if not isinstance(execution, dict) or execution.get("kubernetes") is None:
+        return []
+    block = execution["kubernetes"]
+    jobs = block.get("jobs") if isinstance(block, dict) else None
+    if isinstance(jobs, dict) and "node" in jobs:
+        drops = []
+        if "node_labels" in jobs:
+            drops.append(("execution", "kubernetes", "jobs", "node_labels"))
+        if "control" in block:
+            drops.append(("execution", "kubernetes", "control"))
+        return drops
+    try:
+        KubernetesConfig.model_validate(block)
+    except ValidationError:
+        return [("execution", "kubernetes")]
+    return []
+
+
+def _drop_archived_kubernetes_keys(config: dict) -> dict:
+    """A copy of *config* without :func:`archived_kubernetes_drops`, each logged."""
+    drops = archived_kubernetes_drops(config)
+    if not drops:
+        return config
+    config = copy.deepcopy(config)
+    for path in drops:
+        parent = config
+        for key in path[:-1]:
+            parent = parent[key]
+        del parent[path[-1]]
+        logger.warning(
+            "%s is not a campaign setting; the campaign ran with it ignored and it is dropped "
+            "here too", ".".join(path))
+    return config
+
+
 class ExecutionConfig(BaseModel):
+    #: Settings only the cluster lane reads. See :class:`KubernetesConfig`.
+    kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
     #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
     #: names have a defined meaning (:data:`CONTAINER_ROLES`); anything else is an
@@ -2500,6 +2645,7 @@ def validate_config(config: dict, strict: bool = True):
     logger.debug(f"Config version {version} is supported")
     if not strict:
         config = _drop_unknown_configuration_keys(config)
+        config = _drop_archived_kubernetes_keys(config)
     return get_validated_config(config, ConfigV1)
 
 

@@ -167,6 +167,8 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     # even when none is configured.
     monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
@@ -178,6 +180,7 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    monkeypatch.setattr(cluster_setup, "apply_job_node_aliases", mock.Mock(return_value=None))
     # Setup reports which image and digest the pod came up on, once it is serving. Two more
     # reads against the API server, and reporting-only -- they swallow their own errors, so
     # unstubbed they cost a connect timeout apiece and say nothing.
@@ -221,6 +224,8 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     # even when none is configured.
     monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
@@ -235,6 +240,7 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    monkeypatch.setattr(cluster_setup, "apply_job_node_aliases", mock.Mock(return_value=None))
     # Setup reports which image and digest the pod came up on, once it is serving. Two more
     # reads against the API server, and reporting-only -- they swallow their own errors, so
     # unstubbed they cost a connect timeout apiece and say nothing.
@@ -278,6 +284,8 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     # even when none is configured.
     monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
@@ -292,6 +300,7 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
+    monkeypatch.setattr(cluster_setup, "apply_job_node_aliases", mock.Mock(return_value=None))
     # Setup reports which image and digest the pod came up on, once it is serving. Two more
     # reads against the API server, and reporting-only -- they swallow their own errors, so
     # unstubbed they cost a connect timeout apiece and say nothing.
@@ -357,6 +366,8 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     # even when none is configured.
     monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
@@ -394,6 +405,8 @@ def test_upgrade_reconciles_a_tailnet_node_that_already_exists(monkeypatch):
 
     ensure = mock.Mock(return_value="robovast")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", ensure)
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: ("rke2", {"namespace": "default"}))
@@ -462,6 +475,8 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     # even when none is configured.
     monkeypatch.setattr(tailnet_deploy, "ensure_tailnet", lambda *a, **k: "")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(tailnet_deploy, "remove", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
@@ -502,6 +517,8 @@ def _stub_upgrade(monkeypatch, deploy):
                         lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", lambda *a, **k: "")
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
+                        lambda *a, **k: None)
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster",
                         lambda *a, **k: {})
@@ -646,3 +663,106 @@ def test_a_failed_read_is_not_mistaken_for_no_pool(monkeypatch):
     _cluster_with(monkeypatch, error=ApiException(status=500))
     with pytest.raises(ApiException):
         service_deploy.job_node_pool_from_cluster("default")
+
+
+
+# -- the job node alias registry ---------------------------------------------------------
+
+def _upgrade_with_nodes(monkeypatch, nodes, *args, aliases=None, live_pool=None):
+    """`upgrade` with ROBOVAST_JOB_NODE_ALIASES set to *aliases*, against a fake node list."""
+    import json
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import kube_client, node_placement
+    from tests.execution.test_job_node_alias import POOL, _Core
+
+    apply_job_node_aliases = node_placement.apply_job_node_aliases
+    deploy = mock.Mock()
+    _stub_upgrade(monkeypatch, deploy)
+    monkeypatch.setattr(node_placement, "apply_job_node_aliases", apply_job_node_aliases)
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    core = _Core(*nodes)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+    monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster",
+                        lambda *a, **k: POOL if live_pool is None else live_pool)
+    if aliases is None:
+        monkeypatch.delenv(node_placement.JOB_NODE_ALIASES_ENV, raising=False)
+    else:
+        monkeypatch.setenv(node_placement.JOB_NODE_ALIASES_ENV, json.dumps(aliases))
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default", "--yes", *args])
+    return result, deploy, core
+
+
+def _alias_nodes():
+    from tests.execution.test_job_node_alias import ALIAS, _pooled
+    return [_pooled("node-a", labels={ALIAS: "bench"}), _pooled("node-b"), _pooled("node-c")]
+
+
+def test_an_upgrade_reconciles_the_aliases_the_environment_states(monkeypatch):
+    from robovast.execution.cluster_execution import node_placement
+    result, deploy, core = _upgrade_with_nodes(
+        monkeypatch, _alias_nodes(), aliases={"bench": "node-c", "gpu": "node-b"})
+    assert result.exit_code == 0, result.output
+    assert node_placement.registered_aliases(core) == {"bench": ["node-c"], "gpu": ["node-b"]}
+    assert "job node alias bench: node-a -> node-c" in result.output
+    assert "job node alias gpu: added on node-b" in result.output
+    assert deploy.called
+
+
+def test_an_upgrade_from_a_shell_without_the_variable_says_it_removes_them(monkeypatch):
+    from robovast.execution.cluster_execution import node_placement
+    result, _deploy, core = _upgrade_with_nodes(monkeypatch, _alias_nodes())
+    assert result.exit_code == 0, result.output
+    assert node_placement.registered_aliases(core) == {}
+    assert "job node alias bench: removed from node-a" in result.output
+
+
+def test_an_unchanged_registry_is_not_mentioned(monkeypatch):
+    result, _deploy, core = _upgrade_with_nodes(monkeypatch, _alias_nodes(),
+                                                aliases={"bench": "node-a"})
+    assert result.exit_code == 0, result.output
+    assert core.patches == []
+    assert "job node alias" not in result.output
+
+
+def test_an_alias_outside_the_live_pool_is_refused_before_anything_changes(monkeypatch):
+    from robovast.execution.cluster_execution import cluster_setup
+    from tests.execution.test_job_node_alias import _Node
+    result, deploy, core = _upgrade_with_nodes(
+        monkeypatch, [*_alias_nodes(), _Node("node-out")], aliases={"far": "node-out"})
+    assert result.exit_code != 0
+    assert "outside" in result.output
+    assert core.patches == [] and not deploy.called
+    assert not cluster_setup.apply_controller_rbac.called
+
+
+def test_aliases_are_checked_against_the_pool_the_upgrade_is_given(monkeypatch):
+    """Not the live one: the pool the deployment will have is the one they must stay in."""
+    result, deploy, core = _upgrade_with_nodes(
+        monkeypatch, _alias_nodes(), "--jobs-node-label", "node-pool=other",
+        aliases={"bench": "node-a"})
+    assert result.exit_code != 0
+    assert "'bench'" in result.output
+    assert core.patches == [] and not deploy.called
+
+
+def test_a_malformed_variable_fails_the_upgrade_before_it_starts(monkeypatch):
+    from robovast.execution.cluster_execution import cluster_setup, node_placement
+    monkeypatch.setenv(node_placement.JOB_NODE_ALIASES_ENV, "bench=node-a")
+    result, deploy = _upgrade(monkeypatch)
+    assert result.exit_code != 0
+    assert node_placement.JOB_NODE_ALIASES_ENV in result.output
+    assert not deploy.called and not cluster_setup.apply_controller_rbac.called
+
+
+def test_aliases_are_reconciled_without_a_restart(monkeypatch):
+    """Node labels read at campaign start, so the running pod needs no roll to see them."""
+    from robovast.execution.cluster_execution import node_placement
+    result, deploy, core = _upgrade_with_nodes(monkeypatch, _alias_nodes(), "--no-restart",
+                                               aliases={"gpu": "node-b"})
+    assert result.exit_code == 0, result.output
+    assert node_placement.registered_aliases(core) == {"gpu": ["node-b"]}
+    assert not deploy.called

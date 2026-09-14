@@ -1627,8 +1627,9 @@ splitting *any* container, and neither is visible in one run:
   running the **static** CPU manager that is what makes the SUT ineligible for exclusive
   cores, and it weakens the Memory Manager's guarantees too. It costs nothing where
   ``cpuManagerPolicy`` is ``none`` — no container is eligible for exclusive cores there
-  whatever its class — which is why the effect is latent rather than absent. ``vast doctor``
-  reports the policy per node.
+  whatever its class — which is why the effect is latent rather than absent. The policy of
+  each node is read when a campaign starts and recorded in its ``execution.yaml`` under
+  ``cluster_info.cpu_manager_policies`` (``execution_json`` in the campaign data).
 - **Bursts correlate.** Forty simulators reserving 0.5 and permitted 6 are placed against 20
   cores while able to demand 240, and they burst *together* — world compile happens at
   startup, and a batch starts at once. Whether a given run gets its burst then depends on its
@@ -1759,55 +1760,63 @@ kubernetes
 
 **Applies to:** Cluster execution only (ignored for local runs)
 
-Configuration options that apply only when running tests on a Kubernetes cluster (e.g. ``vast workspace run``).
+Settings only the cluster lane reads. The local Docker lane ignores the block, as it ignores
+``sizing``, so the same ``.vast`` runs locally unchanged.
 
-kubernetes.jobs
-"""""""""""""""
+kubernetes.jobs.node
+""""""""""""""""""""
 
-**Type:** Dictionary
+**Type:** String (a node alias)
 
 **Required:** No
 
-Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
+Confines every job of this campaign to the one node the operator registered under this alias:
 
-kubernetes.jobs.node_labels
-''''''''''''''''''''''''''''
+.. code-block:: yaml
 
-**Removed from the** ``.vast``. The node pool campaign jobs may run on is now a setup
-option::
+   execution:
+     kubernetes:
+       jobs:
+         node: bench-a
 
-   vast cluster setup <config> --jobs-node-label KEY=VALUE
+The operator registers the alias on the cluster — in ``ROBOVAST_JOB_NODE_ALIASES`` in the
+``.env`` that ``vast cluster setup`` and ``vast service upgrade`` read — and the campaign names
+only the alias, so a ``.vast`` never carries a machine's name and runs on any cluster that
+registers the same alias. See :ref:`cluster-node-alias`.
 
-Repeatable, and written on every setup — omitting it *clears* a previously configured pool
-rather than preserving it.
+**It narrows, never widens.** The alias is ANDed onto the cluster's job pool
+(``vast cluster setup --jobs-node-label``, :ref:`cluster-node-labels`): registering an alias
+for a node outside the pool is refused, and the pool is checked again when a campaign starts.
+Admission counts capacity on that node only.
 
-It moved because it is a property of the **cluster**, not of a campaign. Carrying it here
-put a deploy's lasting, cluster-wide decisions in a file that travels with an experiment,
-and it let one campaign's file describe which machines every other campaign could use.
+**An unresolvable alias refuses the campaign** when it starts, before any job exists — an alias
+nobody registered, or one whose node has left the pool. A campaign never falls back to the
+whole pool, because its results would then describe machines it did not ask for.
 
-What it does is unchanged, and both halves are enforced: the admission controller counts
-free capacity only on nodes inside the pool, so it never promises room on a machine the
-jobs may not use; and each pod carries the labels as a ``nodeSelector``, so kube-scheduler
-is bound by the same rule the accounting assumed. The per-run node pin is ANDed onto the
-pool, narrowing it rather than replacing it. See :ref:`cluster-node-labels`.
+**It is per campaign**, like the rest of ``execution``. A sweep across CPU levels on one node is
+one campaign per level, each extending a shared base (``extends:``) and naming the same alias.
 
-kubernetes.control.node_labels
-'''''''''''''''''''''''''''''''
+**It does not isolate a job from its neighbours.** A pinned job shares the node with whatever
+else runs there, and a CPU request is a share of the node rather than a reservation of cores.
+``run_validity_view.contended`` says per run whether contention affected it.
 
-**Removed from the** ``.vast``, for the same reason and at the same time::
+The alias must be lowercase letters, digits, ``-`` and ``_``, start and end with a letter or
+digit, and be at most 63 characters (it is matched as a Kubernetes label value). A label
+selector (``KEY=VALUE``), a label key (``prefix/name``) or a node name (anything with a dot
+or an uppercase letter) is refused with a message naming the fix.
 
-   vast cluster setup <config> --control-node-label KEY=VALUE
+Node pools are not campaign settings
+""""""""""""""""""""""""""""""""""""
 
-Places RoboVAST's own infrastructure pods, as opposed to the campaign's job pods. Narrows
-rather than decides: these are ANDed with the node-local data placement setup chooses (see
-:ref:`cluster-node-local-storage`). On their own they would still let the pod float within
-the pool, which is the same problem at a smaller scale.
+``execution.kubernetes.jobs.node_labels`` and ``execution.kubernetes.control`` are refused.
+Which nodes jobs and RoboVAST's own pods may use is decided for the whole cluster:
 
-**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)::
+- ``jobs.node_labels`` → ``vast cluster setup <config> --jobs-node-label KEY=VALUE`` for the
+  pool, and ``execution.kubernetes.jobs.node`` to confine one campaign to a node inside it.
+- ``control.node_labels`` → ``vast cluster setup <config> --control-node-label KEY=VALUE``.
 
-   vast cluster setup rke2 \
-       --jobs-node-label node-pool=primary \
-       --control-node-label node-pool=extra
+An archived campaign carrying either key still reads, retriggers and seeds a workspace: the
+keys never affected its run, so they are dropped from the copy with a log line.
 
 
 Results Processing Section

@@ -22,7 +22,7 @@ from importlib.metadata import entry_points
 
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
-from .node_placement import apply_node_id_labels
+from .node_placement import apply_job_node_aliases, apply_node_id_labels
 
 logger = logging.getLogger(__name__)
 
@@ -264,8 +264,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
                  jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
-                 tailnet=False,
-                
+                 tailnet=False, job_node_aliases=None,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -289,6 +288,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
         buildkit_node (str): Node to hold the build cache, where it belongs on a different
             disk from the rest. Empty follows the data node rather than auto-separating,
             because separating puts a 150 GB cache on whichever node was left over.
+        job_node_aliases (dict, optional): The whole job node alias registry,
+            ``{alias: node}``, as :data:`.node_placement.JOB_NODE_ALIASES_ENV` states it.
+            ``None`` and ``{}`` both mean "no aliases" and remove any a previous run
+            registered. Every alias is checked against *jobs_node_labels* before the cluster
+            is changed at all, and one problem refuses the whole set.
         **cluster_kwargs: Cluster-specific options to pass to setup_cluster()
 
     Named parameters rather than ``cluster_kwargs`` entries on purpose: ``cluster_kwargs``
@@ -303,7 +307,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
             was placed, which rule decided it, and the node it was taken off if this run
             moved it, so the caller can state all three. Values are ``None`` where nothing
             is pinned (a provisioned volume or an external bucket keeps nothing on a node)
-            or where nothing moved.
+            or where nothing moved. ``"job_node_aliases"`` is the
+            :class:`.node_placement.AliasChanges` the registry reconcile made.
 
     Raises:
         RuntimeError: If cluster is already set up
@@ -407,6 +412,16 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_governor import ensure_cpu_governor  # noqa: PLC0415
 
+    # The aliases are checked here, before the first thing setup changes, because a refused
+    # alias is an argument error and must not leave a governor, RBAC or half a registry
+    # behind it. Only a named alias needs the node list; "no aliases" is checked by nothing.
+    job_node_aliases = dict(job_node_aliases or {})
+    if job_node_aliases:
+        from .node_placement import \
+            refuse_job_node_aliases  # pylint: disable=import-outside-toplevel
+        refuse_job_node_aliases(client.CoreV1Api(), job_node_aliases,
+                                jobs_node_labels or {})
+
     # None means "nobody said": on by default, and a cluster that refuses it is warned
     # about rather than failed, so setup stays possible on managed Kubernetes. Naming the
     # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
@@ -445,6 +460,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     labelled = apply_node_id_labels(kube_context=kube_context)
     if labelled:
         logger.info("Labelled %d node(s) with their identity", len(labelled))
+    # After the identity labels, which are what an alias resolves to at campaign start.
+    # Reconciled on every setup, aliases stated or not: the environment states the whole
+    # registry, so one a previous run registered and it no longer names is removed.
+    alias_changes = apply_job_node_aliases(job_node_aliases, jobs_node_labels or {},
+                                           kube_context=kube_context)
 
     # Where this deployment's node-local state lives, decided ONCE, here, for every workload
     # that keeps something on a node -- and recorded as a node label so a later `cleanup` +
@@ -657,6 +677,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
         "build_node": build_placement.node if build_placement else None,
         "build_source": build_placement.source if build_placement else None,
         "build_previous": build_placement.previous if build_placement else None,
+        "job_node_aliases": alias_changes,
     }
 
 
