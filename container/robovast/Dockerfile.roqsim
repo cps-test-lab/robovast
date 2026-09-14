@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=86dd151fb0d8e96b58a197a7f21d7d2937d2f1df
+ARG ROQSIM_REF=b350bb01226a147ba501131a12923df802b9dc61
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -153,10 +153,10 @@ RUN apt-get update && \
 # `moveit-msgs` for the other half of the split -- a scenario driving move_group as a client
 # needs the interfaces, not the servers.
 #
-# `moveit-planners-ompl` and `moveit-kinematics` are explicit rather than left to
-# `moveit-ros-move-group`'s dependencies: move_group loads the OMPL planner and the KDL
-# kinematics plugin BY NAME at run time, so a missing one surfaces as a planning request that
-# fails rather than as an image that fails to build.
+# `moveit-planners-ompl`, `pilz-industrial-motion-planner` and `moveit-kinematics` are explicit
+# rather than left to `moveit-ros-move-group`'s dependencies: move_group loads the OMPL and Pilz
+# planners and the KDL kinematics plugin BY NAME at run time, so a missing one surfaces as a
+# planning request that fails rather than as an image that fails to build.
 #
 # Not behind an ARG, unlike the torch packages below. The gate there is justified by several
 # hundred MB on an image every campaign pulls; this is a fraction of that, and the base
@@ -166,6 +166,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-"${ROS_DISTRO}"-moveit-ros-move-group \
         ros-"${ROS_DISTRO}"-moveit-planners-ompl \
+        ros-"${ROS_DISTRO}"-pilz-industrial-motion-planner \
         ros-"${ROS_DISTRO}"-moveit-kinematics \
         ros-"${ROS_DISTRO}"-moveit-simple-controller-manager && \
     rm -rf /var/lib/apt/lists/*
