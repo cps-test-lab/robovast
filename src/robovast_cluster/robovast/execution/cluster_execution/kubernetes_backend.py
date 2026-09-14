@@ -96,7 +96,7 @@ from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL, JOB_TEMPLATE, MAIN_
 # so there is no cycle to route around by importing late.
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_admission import PLANNED as _ADMIT_PLANNED
-from .node_placement import NODE_ID_LABEL, job_node_pool
+from .node_placement import job_node_pool, job_node_selector
 
 logger = logging.getLogger(__name__)
 
@@ -612,6 +612,10 @@ def all_jobs_waiting_for_capacity(remaining, contended) -> bool:
     return all(job in contended for job in remaining)
 
 
+#: See :attr:`BatchJobRunner._campaign_node`.
+_NOT_RESOLVED = object()
+
+
 class BatchJobRunner:
     """Build, submit and clean up the Kubernetes Jobs for **one** batch.
 
@@ -674,6 +678,11 @@ class BatchJobRunner:
     #: How often a batch that is blocked repeats why, so a long wait for
     #: capacity stays visible in the log instead of scrolling past.
     _BLOCKED_LOG_INTERVAL_SECONDS = 60.0
+
+    #: The campaign's job node id once :meth:`_campaign_node_id` has resolved it, ``None`` for
+    #: a campaign that is not confined. The sentinel marks "not asked yet", because ``None``
+    #: is itself an answer. Class-level default for runners not built via :meth:`for_batch`.
+    _campaign_node = _NOT_RESOLVED
 
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
@@ -1390,7 +1399,7 @@ class BatchJobRunner:
         # nothing said. Checked here for the same reason the batch's own sizing is checked
         # before it is enqueued.
         try:
-            admission.preflight(sizing)
+            admission.preflight(sizing, node_id=self._campaign_node_id())
         except Exception as exc:  # noqa: BLE001 - re-raised with what makes it actionable
             raise CampaignConfigError(
                 f"A calibration probe needs {sizing.cpu:g} cpu and no node can hold it. Under "
@@ -1416,17 +1425,54 @@ class BatchJobRunner:
                         self._batch_tag, node_id)
         return calibration
 
-    def _pin(self, manifest, node_id):
-        """Confine the pod to the operator's node pool, then to the node admission chose.
+    def _campaign_alias(self):
+        """The campaign's ``execution.kubernetes.jobs.node`` alias, or ``None``."""
+        from robovast.common.execution import job_node_alias  # noqa: PLC0415
 
-        Both, in that order, and both ANDed onto whatever the spec already carried. The pool
-        is ``execution.kubernetes.jobs.node_labels``, which is a pod ``nodeSelector``.
+        return job_node_alias(getattr(self, "campaign_data", None) or {})
+
+    def _campaign_node_id(self):
+        """The node id every job of this campaign is confined to, or ``None`` for the pool.
+
+        Resolved from the alias once per runner, against the cluster as it is now: a node's
+        standing moves underneath the registry, so a check made when the alias was
+        registered does not hold at launch. Narrowing only -- the node is looked for inside
+        the job node pool, and the result is ANDed onto it (:meth:`_pin`).
+
+        An alias that names no usable node is a :class:`CampaignConfigError`, raised before
+        a single Job of the campaign exists; the message names the alias and never a node.
+        """
+        if self._campaign_node is not _NOT_RESOLVED:
+            return self._campaign_node
+        alias = self._campaign_alias()
+        if alias is None:
+            self._campaign_node = None
+            return None
+        from .node_placement import AliasUnresolved, resolve_job_node_alias  # noqa: PLC0415
+
+        self._ensure_k8s_initialized()
+        try:
+            node_id = resolve_job_node_alias(self.k8s_client, alias, pool=job_node_pool())
+        except AliasUnresolved as exc:
+            raise CampaignConfigError(f"execution.kubernetes.jobs.node: {exc}") from exc
+        self._campaign_node = node_id
+        return node_id
+
+    def _pin(self, manifest, node_id):
+        """Confine the pod to the operator's node pool, then to one node.
+
+        The node is the one admission granted, or -- where nothing granted one: no queue, an
+        unlabelled node -- the node the campaign is confined to, so a confined campaign's pod
+        is confined on every path that creates it. Both ANDed onto whatever the spec already
+        carried, through :func:`~.node_placement.job_node_selector`. The pool is the
+        operator's ``ROBOVAST_JOB_NODE_LABELS``, which is a pod ``nodeSelector``.
 
         The pool must reach the pod, not just the accounting: the budget provider counts only
         nodes inside it, so a pod free to land outside would be running on capacity nothing
         reserved. The pin then narrows the pool rather than widening it -- a selector that
         replaced the pool would defeat the very confinement it was placed inside.
         """
+        node_id = node_id or self._campaign_node_id()
         pool = job_node_pool()
         if not pool and not node_id:
             # Nothing to confine. Returned untouched rather than reaching into the manifest:
@@ -1435,10 +1481,7 @@ class BatchJobRunner:
             return manifest
         spec = manifest.setdefault('spec', {}).setdefault(
             'template', {}).setdefault('spec', {})
-        selector = {**(spec.get('nodeSelector') or {}), **pool}
-        if node_id:
-            selector[NODE_ID_LABEL] = node_id
-        spec['nodeSelector'] = selector
+        spec['nodeSelector'] = job_node_selector(spec.get('nodeSelector'), node_id, pool)
         return manifest
 
     def _create_probe(self, base, key, output_dir, node_id=None):
@@ -2020,6 +2063,12 @@ class BatchJobRunner:
         if admission is None:
             return []
         node_ids = admission.node_ids()
+        # Narrowed to the campaign's node BEFORE the question below, so whether a probe is
+        # worth running is judged against the one machine this campaign will use rather than
+        # the whole cluster -- and no other node is measured for work it will never get.
+        confined = self._campaign_node_id()
+        if confined is not None:
+            node_ids = [n for n in node_ids if n == confined]
         calibration = admission.calibration(self.campaign, NodeCalibration)
         # Whether this campaign ASKED to be measured is `execution.sizing`, in its own
         # `.vast`. Whether the cluster and the campaign's shape make a probe worth running
@@ -2942,6 +2991,9 @@ class BatchJobRunner:
         fetched with a single prefix download instead of the per-config enumeration
         that search mode needs to scope ``_jobs/`` to the current batch."""
         self._ensure_k8s_initialized()
+        # Before anything is uploaded, probed or created: a job node alias that names no
+        # usable node refuses the campaign here, so no Job of it ever exists.
+        self._campaign_node_id()
         _, _, _, bucket_name, campaign_prefix = self._s3_settings()
         storage = in_pod_storage.storage_client_for(self.cluster_config)
 
@@ -3035,8 +3087,9 @@ class BatchJobRunner:
             from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
 
             sizing = self._job_sizing(jobs[0], total_jobs)
+            campaign_node = self._campaign_node_id()
             try:
-                admission.preflight(sizing)
+                admission.preflight(sizing, node_id=campaign_node)
             except AdmissionRefused as exc:
                 # Before a single job exists, because a request no node can hold otherwise
                 # leaves the campaign waiting forever having created nothing -- and every
@@ -3048,13 +3101,19 @@ class BatchJobRunner:
             # under admission and an index recovered by counting would be wrong.
             self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
             calibration = self._start_probes(jobs, total_jobs, campaign_prefix)
+            # A confined campaign is pinned to its node and does NOT reserve it: it always
+            # has another job queued, so a claim would renew for its whole life and shut
+            # every lower-ranked campaign out of that node. See WorkItem.reserves.
+            confinement = ({"pin": campaign_node, "reserves": False}
+                           if campaign_node is not None else {})
             admission.submit(
                 self.campaign,
                 [(name, sizing, partial(_create_job, job, name))
                  for job, name in pending],
                 started_at=campaign_start_key(self.campaign),
                 sizing_for_node=self._sizing_for_node(jobs[0], total_jobs, calibration),
-                accepts_node=(calibration.accepts_work if calibration else None))
+                accepts_node=(calibration.accepts_work if calibration else None),
+                **confinement)
             created_names = []
             planned_count = len(pending)
             logger.info("Batch %s: queued %d of %d job(s) for admission; creating as "

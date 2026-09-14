@@ -85,3 +85,13 @@ def test_a_deploy_that_names_no_config_still_carries_the_rest():
     assert "ROBOVAST_CLUSTER_CONFIG_NAME" not in env
     assert env["ROBOVAST_NAMESPACE"] == "default"
     assert env["ROBOVAST_KUBE_CONTEXT"] == "local"
+
+
+def test_an_unset_pool_is_stated_as_empty_rather_than_left_unstated(monkeypatch):
+    """`None` asks `deploy_service` to recover the live pool. Setup and upgrade apply the
+    environment whole, so an unset variable must reach the deploy as `{}`."""
+    from robovast.execution.cluster_execution.node_placement import job_node_pool
+
+    monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
+    assert job_node_pool() == {}
+    assert _env(job_node_labels={})[JOB_NODE_POOL_ENV] == ""

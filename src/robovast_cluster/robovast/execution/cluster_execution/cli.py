@@ -555,12 +555,12 @@ def _echo_placement(placement):
 
 
 def _node_labels(pairs, flag):
-    """``KEY=VALUE`` occurrences as a dict, or ``None`` for none given.
+    """``KEY=VALUE`` occurrences as a dict, ``{}`` for none given.
 
-    ``None`` and ``{}`` mean the same thing to setup -- no pool -- but the distinction is
-    kept out of the CLI entirely: setup writes the resulting configuration on every run,
-    so omitting the flag CLEARS a pool a previous setup configured rather than preserving
-    it. That is the property that keeps the command the whole truth about the cluster.
+    Always a statement, never ``None``: setup writes the resulting configuration on every
+    run, so omitting the flag CLEARS a pool a previous setup configured rather than having
+    it recovered from the live deployment. That is the property that keeps the command the
+    whole truth about the cluster.
     """
     labels = {}
     for pair in pairs or ():
@@ -570,7 +570,43 @@ def _node_labels(pairs, flag):
         if not key or not value:
             raise click.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint=flag)
         labels[key] = value
-    return labels or None
+    return labels
+
+
+def _echo_job_node_pool(pool):
+    """Say which nodes campaign jobs may use, as the command just wrote it."""
+    described = ", ".join(f"{k}={v}" for k, v in pool.items()) if pool else "every node"
+    click.echo(f"  campaign job node pool (ROBOVAST_JOB_NODE_LABELS): {described}")
+
+
+def _echo_job_node_aliases(changes, *, whole=False):
+    """Say what reconciling ``ROBOVAST_JOB_NODE_ALIASES`` changed, one line per alias.
+
+    Every addition, move and removal is said, in the manner of the build daemon's setting
+    changes -- a removal most of all, since running from a shell whose ``.env`` lacks the
+    variable removes every alias, and that must not pass unnoticed. *whole* also lists the
+    aliases left as they were, for ``setup``, which states the deployment it made.
+
+    The one place a node name is printed next to its alias: the operator who wrote the
+    variable already knows both, while everything a campaign sees names the alias alone.
+    """
+    if changes is None:
+        return
+    from .node_placement import JOB_NODE_ALIASES_ENV  # pylint: disable=import-outside-toplevel
+
+    if whole and not changes.registry and not changes.unlabelled:
+        click.echo("  job node aliases: none")
+    for alias, node in changes.registry.items():
+        previous = [n for n in changes.unlabelled.get(alias, []) if n != node]
+        if alias in changes.labelled:
+            click.echo(f"  job node alias {alias}: "
+                       + (f"{', '.join(previous)} -> {node}" if previous else f"added on {node}"))
+        elif whole:
+            click.echo(f"  job node alias {alias}: {node}")
+    for alias, nodes in changes.unlabelled.items():
+        if alias not in changes.registry:
+            click.echo(f"  job node alias {alias}: removed from {', '.join(nodes)} "
+                       f"(not in {JOB_NODE_ALIASES_ENV})")
 
 
 @click.command()
@@ -719,26 +755,13 @@ def _node_labels(pairs, flag):
                    'cluster is on a tailnet is decided here, because one .env and two '
                    'contexts would otherwise publish whichever was current. Written on '
                    'every setup: omitting it removes a node a previous setup deployed.')
-@click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
-              help='Confine campaign job pods to nodes carrying this label; repeatable. '
-                   'The admission controller counts free capacity only on matching nodes '
-                   'and stamps the labels on every job pod, so accounting and placement '
-                   'agree. Cluster-wide and lasting: it is recorded in the service and '
-                   'applies to every campaign until the next setup changes it. Pass none '
-                   'to clear a previously configured pool.')
 @click.option('--control-node-label', 'control_node_label', multiple=True,
               metavar='KEY=VALUE',
               help="Run RoboVAST's own infrastructure pods on nodes carrying this label; "
                    'repeatable. Narrows rather than decides: these are ANDed with the '
                    "node-local data placement setup chooses. Pass none to clear.")
 @click.argument('cluster_config', required=False)
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='Read node-label selectors for job and control pods from this .vast '
-                   '(execution.kubernetes.{jobs,control}.node_labels), and refuse if it '
-                   'declares per-cluster resource lists for several contexts while '
-                   '--context is unset. Omitted, no node labels are applied.')
-def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
+def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           data_root, store_path, store_class, store_size,
           index_storage_class, index_storage_size,
@@ -746,7 +769,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, performance_governor, tailnet,
-          jobs_node_label,
           control_node_label,
           cluster_config):
     """Set up the Kubernetes cluster for execution.
@@ -765,16 +787,18 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 
     Cluster-specific options can be passed using ``--option key=value``.
 
-    Reads no project: this deploys into a cluster and runs from any directory. Node
-    label selectors for job and control pods therefore come only from a ``.vast`` you
-    name explicitly, under ``execution.kubernetes.jobs.node_labels`` and
-    ``execution.kubernetes.control.node_labels``::
+    Reads no project and no ``.vast``: this deploys into a cluster and runs from any
+    directory. Which nodes the cluster's pods may use is a property of the cluster. The
+    campaign job node pool comes from ``ROBOVAST_JOB_NODE_LABELS`` in the environment, a JSON
+    object of label -> value; setup and upgrade both write it into the service, so unset
+    means every node. ``--control-node-label`` is written on every run, so omitting it clears
+    what a previous setup configured.
 
-        vast cluster setup rke2 --vast my_campaign.vast
-
-    Without ``--vast`` no node labels are applied (logged at INFO) and pods schedule
-    wherever Kubernetes puts them. A named ``.vast`` that cannot be read is an error
-    rather than a silent "no labels".
+    The job node aliases a campaign may confine itself to (``execution.kubernetes.jobs.node``)
+    come from ``ROBOVAST_JOB_NODE_ALIASES`` in the environment, a JSON object of alias -> node
+    name. Setup and upgrade both reconcile the node labels to exactly what it states -- unset,
+    every alias is removed -- and refuse the whole set, before anything is changed, if an
+    alias is not legal or its node is not schedulable inside the job pool.
 
     Share credentials (``ROBOVAST_SHARE_TYPE`` and its provider variables — e.g.
     ``ROBOVAST_GCS_BUCKET`` / ``ROBOVAST_GCS_KEY_FILE``) are read from the host
@@ -836,8 +860,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     # The build daemon's tuning comes from the environment (a `.env`), like every standing
     # setting of the deployment; checked here, before anything is applied.
     from .buildkitd_deploy import settings_from_env  # pylint: disable=import-outside-toplevel
+    from .node_placement import \
+        job_node_aliases_from_env  # pylint: disable=import-outside-toplevel
     try:
         buildkit_settings = settings_from_env()
+        job_node_aliases = job_node_aliases_from_env()
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -867,6 +894,13 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'storage_size': buildkit_storage_size,
         **buildkit_settings,
     }
+    # The job node pool is the operator's standing statement, read before anything is applied.
+    from .node_placement import job_node_pool  # pylint: disable=import-outside-toplevel
+    try:
+        jobs_node_labels = job_node_pool()
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's
         # `-o` channel and is persisted as the cluster's recorded config, and it swallows
@@ -876,12 +910,12 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
-                                 jobs_node_labels=_node_labels(jobs_node_label,
-                                                               '--jobs-node-label'),
+                                 jobs_node_labels=jobs_node_labels,
                                  control_node_labels=_node_labels(control_node_label,
                                                                   '--control-node-label'),
                                  cpu_governor=performance_governor,
                                  tailnet=tailnet,
+                                 job_node_aliases=job_node_aliases,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -889,6 +923,8 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # naming it -- and a decision nobody sees is how this deployment ended up on a
         # node nobody picked, with the disk meter reporting a machine nobody expected.
         _echo_placement(placement or {})
+        _echo_job_node_pool(jobs_node_labels)
+        _echo_job_node_aliases((placement or {}).get("job_node_aliases"), whole=True)
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
             click.echo(f"  RoboVAST is at {scheme}://{ingress_host}")
@@ -1049,6 +1085,14 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
 
+    The campaign job node pool and the job node aliases are applied, like setup does, from
+    ``ROBOVAST_JOB_NODE_LABELS`` and ``ROBOVAST_JOB_NODE_ALIASES`` in the environment -- so an
+    upgrade from a shell without them clears the pool and removes the aliases, and says so --
+    after checking every alias against that pool, before anything changes. With
+    ``--no-restart`` the pool is not applied, since it lives in the pod's environment.
+    ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
+    starts, not the pod's environment.
+
     Before the roll it asks the service which campaigns are live and names them, for the
     reason ``--no-restart`` exists: the pod being replaced is where their controller runs.
     ``--yes`` skips the question. A service that cannot be reached is reported and the roll
@@ -1096,8 +1140,12 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
     # deployment. Checked before anything is applied, so a typo fails the upgrade rather than
     # stopping it half way.
     from .buildkitd_deploy import settings_from_env  # pylint: disable=import-outside-toplevel
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        job_node_aliases_from_env, job_node_pool)
     try:
         buildkit_settings = settings_from_env()
+        job_node_aliases = job_node_aliases_from_env()
+        jobs_node_labels = job_node_pool()
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
@@ -1126,6 +1174,23 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         # cluster whose store pod predates the move it would take both away and put neither
         # back. That cluster needs cleanup + setup, and must hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
+
+        # Every alias the environment states, checked against the pool the service will have --
+        # the environment's, or the live one where --no-restart leaves the pod's env alone --
+        # before anything changes. Nothing to check, and no node list to read, when it states
+        # none; the reconcile below still removes whatever is registered.
+        from .node_placement import (  # pylint: disable=import-outside-toplevel
+            apply_job_node_aliases, check_job_node_aliases)
+        alias_pool = jobs_node_labels
+        if job_node_aliases:
+            if no_restart:
+                from .service_deploy import \
+                    job_node_pool_from_cluster  # pylint: disable=import-outside-toplevel
+                alias_pool = job_node_pool_from_cluster(namespace, kube_context)
+            try:
+                check_job_node_aliases(job_node_aliases, alias_pool, kube_context=kube_context)
+            except ValueError as e:
+                raise click.ClickException(str(e)) from e
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
@@ -1156,6 +1221,13 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
             raise click.ClickException(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - see above
             click.echo(f"  could not reconcile the tailnet node: {exc}", err=True)
+        # Above the --no-restart line too: node labels, read when a campaign starts, so the
+        # running pod needs no roll to see them.
+        try:
+            _echo_job_node_aliases(apply_job_node_aliases(job_node_aliases, alias_pool,
+                                                          kube_context=kube_context))
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
         # --no-restart stops here, and everything above this line is why it can: RBAC is
         # evaluated by the API server per request, and
         # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
@@ -1171,6 +1243,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
             click.echo("✓ reconciled RBAC and the ingress route")
             click.echo("  the pod was NOT restarted: the running version is unchanged and "
                        "its env Secrets were not re-read")
+            click.echo("  nor was the job node pool (ROBOVAST_JOB_NODE_LABELS) applied: it is "
+                       "part of the pod's environment")
             click.echo("  run 'vast service upgrade' without --no-restart to move the "
                        "image, pick up changed Secrets, or apply the build daemon's settings")
             return
@@ -1204,10 +1278,13 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         # password back from this same Secret, so it cannot recover one after an upgrade has
         # dropped it.
         registry_password = ensure_registry_htpasswd(namespace, kube_context, ingress_host)
+        # The pool the environment states, `{}` included: like the aliases, a `.env` entry is
+        # the standing statement, so an upgrade applies it whole.
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, registry_password=registry_password,
-                       public_origin=public_origin)
+                       public_origin=public_origin, job_node_labels=jobs_node_labels)
+        _echo_job_node_pool(jobs_node_labels)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #

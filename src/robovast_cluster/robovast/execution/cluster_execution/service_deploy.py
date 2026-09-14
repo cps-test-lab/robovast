@@ -2325,6 +2325,33 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
     return settings
 
 
+def job_node_pool_from_cluster(namespace="default", kube_context=None) -> dict:
+    """The campaign job node pool the live Deployment carries, or ``{}`` for none.
+
+    The deployed pool is recorded nowhere but the Deployment's env, so a deploy that was not
+    told the pool reads it back from there rather than rendering "no pool" -- which would widen every campaign onto machines the operator
+    excluded. ``{}`` when there is no Deployment yet; a failed read and an unparseable value
+    both raise, for the reason :func:`service_storage_from_cluster` gives.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        JOB_NODE_POOL_ENV, parse_job_node_pool)
+
+    load_kube_config(kube_context)
+    try:
+        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+        return {}
+    containers = dep.spec.template.spec.containers or []
+    raw = next((e.value for c in containers for e in (c.env or [])
+                if e.name == JOB_NODE_POOL_ENV), None)
+    return parse_job_node_pool(raw)
+
+
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    job_node_labels=None,
                    config_name=None, config_kwargs=None, dry_run=False,
@@ -2371,6 +2398,11 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         node_selector = _resolve_data_node(
             core, workspaces_storage_class=workspaces_storage_class,
             deployed_selector=deployed.get("node_selector"))
+    if job_node_labels is None and env is None:
+        # Same convention as `node_selector`: `None` is "recover", `{}` is "no pool". The env
+        # is rendered on every deploy, empty included, so an unstated pool is not an omission
+        # a patch would preserve -- it is an overwrite that clears it.
+        job_node_labels = job_node_pool_from_cluster(namespace, kube_context)
 
     # The service's own image may need registry auth. The Secret is usually NOT created
     # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,

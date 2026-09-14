@@ -265,9 +265,21 @@ class WorkItem:
     last_error: str = ""
 
     #: When set, the ONLY node this item may go to. A calibration probe measures one machine,
-    #: so placing it anywhere else answers a question about the wrong node. Everything else
-    #: leaves it unset and is placed wherever it fits.
+    #: so placing it anywhere else answers a question about the wrong node; a campaign
+    #: confined with ``execution.kubernetes.jobs.node`` may use its one node and no other.
+    #: Everything else leaves it unset and is placed wherever it fits.
     pin: "str | None" = None
+
+    #: Whether a pinned item that does not fit **claims its node** for the rest of the pass
+    #: (see :meth:`AdmissionController.drain`). Meaningless without *pin*.
+    #:
+    #: ``True`` is right for a calibration probe: it is transient, one per node, and its node
+    #: must drain for it or it is never placed. ``False`` is what a confined campaign submits,
+    #: and it is not an optimisation. A campaign always has another job queued, so its claim
+    #: would renew on every pass for the campaign's whole life: its node would take nothing
+    #: from any lower-ranked campaign for as long as it ran, which is a denial of service
+    #: against every other campaign, not a reservation.
+    reserves: bool = True
 
     @property
     def ranks_under(self) -> str:
@@ -275,11 +287,23 @@ class WorkItem:
         return self.campaign or self.owner
 
     def may_use(self, node_id) -> bool:
-        if self.pin is not None:
-            return node_id == self.pin
-        # An unlabelled node is allowed: it cannot be measured, so there is nothing for the
-        # gate to wait for, and refusing it would make an unlabelled cluster unusable.
-        return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
+        """Whether this item may be placed on *node_id*: the pin AND the owner's gate.
+
+        Both, never either. A calibrated campaign confined to one node is pinned to it and
+        gated on that node's measurement, and it must wait for its node's probe exactly as an
+        unconfined campaign does. A probe is submitted with no gate, so it is never waiting
+        for its own measurement.
+
+        A pinned item never takes an unlabelled node: its pin names a node id, and a node
+        with none is not that node. An unpinned item does take one -- it cannot be measured,
+        so there is nothing for the gate to wait for, and refusing it would make a cluster
+        predating the identity label unusable.
+        """
+        if self.pin is not None and node_id != self.pin:
+            return False
+        if node_id is None:
+            return True
+        return self.accepts_node is None or self.accepts_node(node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
         """What this job needs *on that node*, falling back to what it declared."""
@@ -369,7 +393,8 @@ class AdmissionController:
     def submit(self, owner: str,
                items: "Iterable[Tuple[str, JobSizing, Callable[[Optional[str]], None]]]",
                *, started_at: float, priority: int = 0, campaign: str = "",
-               sizing_for_node=None, accepts_node=None, pin=None) -> int:
+               sizing_for_node=None, accepts_node=None, pin=None,
+               reserves: bool = True) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
@@ -390,7 +415,13 @@ class AdmissionController:
         *pin* restricts these items to one node. A calibration probe measures a particular
         machine, so placing it elsewhere answers a question about the wrong one -- and it
         waits for that node rather than settling for another, which is the opposite of how
-        ordinary work is placed.
+        ordinary work is placed. It composes with *accepts_node* rather than replacing it:
+        a pinned item goes to its node only once that node accepts its work.
+
+        *reserves* is whether a pinned item that does not fit holds its node open against
+        lower-ranked work -- see :attr:`WorkItem.reserves`. ``False`` for a campaign confined
+        to one node, which always has more work queued and would otherwise hold that node
+        for its whole life.
 
         *accepts_node* is ``(node_id) -> bool``: whether this owner's work may go there yet.
         A node being measured for this campaign answers ``False`` until its figures are in, so
@@ -413,7 +444,8 @@ class AdmissionController:
                                             campaign=campaign, priority=priority,
                                             started_at=started_at, seq=next(self._seq),
                                             sizing_for_node=sizing_for_node,
-                                            accepts_node=accepts_node, pin=pin)
+                                            accepts_node=accepts_node, pin=pin,
+                                            reserves=reserves)
                 added += 1
             return added
 
@@ -439,7 +471,10 @@ class AdmissionController:
         So a pinned item that does not fit **claims its node** for the rest of the pass:
         nothing further is placed there, the node drains as its work finishes, and the item
         goes on the pass where it fits. Only where the wait can end -- see
-        :meth:`_could_ever_hold_locked`.
+        :meth:`_could_ever_hold_locked` -- and only for an item that :attr:`~WorkItem.reserves`.
+        A campaign confined to one node is pinned but does not reserve: it waits for room on
+        its node like any other work, because a claim that renews for as long as it has jobs
+        queued would shut every lower-ranked campaign out of that node for the campaign's life.
 
         On a growable cluster a job that fits no node may still be created unpinned, but only
         up to :data:`GROWTH_UNPINNED_LIMIT` of them at a time -- see there for why the cap is
@@ -484,7 +519,11 @@ class AdmissionController:
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
-                if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
+                # Never for a pinned item: created unpinned, a calibration probe lands on any
+                # node and its output is still recorded as the pinned node's measurement.
+                may_grow = (item.pin is None and growable
+                            and unpinned < GROWTH_UNPINNED_LIMIT)
+                if chosen is None and not may_grow:
                     # **This owner's items, not the queue's.** The count spanned every owner,
                     # so a campaign with a handful of jobs queued was told the whole cluster's
                     # queue depth, reported into its own log as though it were its own.
@@ -510,11 +549,22 @@ class AdmissionController:
                     if usable:
                         emptiest = max(usable, key=lambda n: n.free_cpu)
                         need = item.sizing_on(emptiest.node_id)
-                    if chosen is None and growable:
+                    if item.pin is None and growable:
                         self._refusals[item.owner] = (
                             f"{waiting}: {unpinned} already created for a node the "
                             f"autoscaler has not produced yet (limit "
                             f"{GROWTH_UNPINNED_LIMIT})")
+                    elif not usable and item.pin is not None and item.pin in by_id:
+                        # Pinned, and its one node is present but not accepting this work.
+                        # Named as "its node" and never by id: the refusal reaches the
+                        # campaign's log, which travels with its results.
+                        self._refusals[item.owner] = (
+                            f"{waiting}: the one node it may use is being measured before "
+                            f"work is placed on it")
+                    elif not usable and item.pin is not None:
+                        self._refusals[item.owner] = (
+                            f"{waiting}: the one node it may use is not among the "
+                            f"{len(by_id)} node(s) this queue currently measures for work")
                     elif not usable:
                         self._refusals[item.owner] = (
                             f"{waiting}: no node is accepting work yet "
@@ -526,12 +576,17 @@ class AdmissionController:
                             f"{waiting}: next needs {need.cpu:g} cpu / "
                             f"{need.memory // (1024 ** 2)}Mi and no node has that free "
                             f"(most free of {len(usable)} usable: {biggest:g} cpu)")
-                    # **Claim the node, so the wait can end.** Only for a pinned item, only
-                    # where the node could hold it empty, and only if nothing has claimed it
-                    # already -- the first claimant is the highest-priority one, since the
-                    # queue is walked in priority order, and a second claim on the same node
-                    # would change nothing but the bookkeeping.
-                    if item.pin is not None and item.pin not in held_for_pin \
+                    # **Claim the node, so the wait can end.** Only for a pinned item that
+                    # reserves, only where the node could hold it empty, and only if nothing
+                    # has claimed it already -- the first claimant is the highest-priority
+                    # one, since the queue is walked in priority order, and a second claim on
+                    # the same node would change nothing but the bookkeeping.
+                    #
+                    # `reserves` gates it because a confined campaign always has another job
+                    # behind this one: its claim would renew every pass for its whole life and
+                    # hold its node against every lower-ranked campaign. See WorkItem.reserves.
+                    if item.pin is not None and item.reserves \
+                            and item.pin not in held_for_pin \
                             and self._could_ever_hold_locked(item.pin, item.sizing_on(item.pin)):
                         held_for_pin.add(item.pin)
                         self._refusals[item.owner] = (
@@ -724,8 +779,17 @@ class AdmissionController:
 
     # -- invariants --------------------------------------------------------------------
 
-    def preflight(self, sizing: JobSizing) -> None:
+    def preflight(self, sizing: JobSizing, node_id: "str | None" = None) -> None:
         """Raise if no node could ever run this, however empty the cluster gets.
+
+        With *node_id*, the question is about that one node: a campaign confined to it can
+        use no other, so "some node is large enough" says nothing about whether it will ever
+        run. It matters more there than for a probe, because a confined campaign does not
+        claim its node (:attr:`WorkItem.reserves`) and so has no drain-side guard either --
+        a job its node could never hold would simply never be placed. Permissive when the
+        provider carries no node ids, as :meth:`_could_ever_hold_locked` is: that is an
+        unknowable answer, not a verdict. A provider that does carry them and does not list
+        the node is refused, since nothing could then be placed on it.
 
         Checked once before a batch is enqueued. Without it a campaign sits in the admit loop
         forever having created **zero** jobs, and every diagnosis path downstream is pod-based
@@ -756,6 +820,23 @@ class AdmissionController:
                 "would admit the entire plan at once. Declare "
                 "execution.containers.<name>.resources.cpu.")
         capacities = self._provider.capacities()
+        if node_id is not None and any(getattr(c, "node_id", None) for c in capacities):
+            # Named as "the node it is confined to", never by id: this becomes a campaign
+            # error, which the campaign's record carries.
+            own = [c for c in capacities if getattr(c, "node_id", None) == node_id]
+            if not own:
+                raise AdmissionRefused(
+                    "the node this campaign is confined to (execution.kubernetes.jobs.node) "
+                    "is not among the nodes this cluster offers for campaign jobs, so none "
+                    "of its jobs could ever be placed. Check that the node is ready and "
+                    "inside the job node pool.")
+            if own[0].holds(sizing):
+                return
+            raise AdmissionRefused(
+                f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and the "
+                f"node this campaign is confined to (execution.kubernetes.jobs.node) holds "
+                f"{own[0].cpu:g} cpu / {own[0].memory // (1024 ** 2)}Mi. Reduce "
+                "execution.containers.*.resources, or confine it to a larger node.")
         if any(c.holds(sizing) for c in capacities):
             return
         if not capacities:

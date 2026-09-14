@@ -184,3 +184,35 @@ def test_no_queue_means_create_directly():
 
     for func in (pj.run_conversion_job, pj.postprocess_campaign):
         assert inspect.signature(func).parameters["admission"].default is None
+
+
+# -- a campaign confined to one node --------------------------------------------------
+
+
+def test_postprocessing_is_not_confined_to_the_campaigns_node():
+    """A deliberate decision, asserted so that changing it is one too.
+
+    ``execution.kubernetes.jobs.node`` confines a campaign's trials and probes, never its
+    postprocessing: there is no calibration it must stay comparable with, it is the largest
+    single pod a campaign asks for, and on the campaign's own node it would queue behind that
+    campaign's trials. So it is queued unpinned and without a claim, and its pod carries only
+    the pool and the node it was granted.
+    """
+    import inspect  # noqa: PLC0415
+
+    admission = AdmissionController(_Provider(free_cpu=8.0), budget_ttl=0.0)
+    submitted = []
+    real_submit = admission.submit
+
+    def _record(owner, items, **kw):
+        submitted.append(kw)
+        return real_submit(owner, items, **kw)
+
+    admission.submit = _record
+    ok, node_id, _ = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                                        timeout=2.0, poll=0.01)
+    assert ok and node_id == "node-a"
+    assert submitted and all(kw.get("pin") is None for kw in submitted)
+    assert all(kw.get("reserves", True) is True for kw in submitted)
+    assert "job_node_alias" not in inspect.getsource(pj), \
+        "postprocessing reads no campaign node; confining it is a decision to make on purpose"

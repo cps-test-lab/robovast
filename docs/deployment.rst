@@ -307,6 +307,27 @@ The lifecycle verbs are deliberately distinct:
 Campaign data lives in the object store and survives all three. Plain ``setup`` over
 a live service is refused (``Cluster is already set up``).
 
+Where a node setting comes from decides what each command does with it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Setting
+     - ``vast cluster setup``
+     - ``vast service upgrade``
+   * - Campaign job node pool (``ROBOVAST_JOB_NODE_LABELS`` in ``.env``,
+       :ref:`cluster-node-labels`)
+     - applied from the environment; unset, every node
+     - applied from the environment, not with ``--no-restart``; unset, every node
+   * - Job node aliases (``ROBOVAST_JOB_NODE_ALIASES`` in ``.env``,
+       :ref:`cluster-node-alias`)
+     - applied from the environment; unset, none
+     - applied from the environment, ``--no-restart`` included; unset, every alias is removed
+
+A ``.env`` entry is the standing statement, so both commands apply it whole — run them from the
+shell that has the deployment's ``.env``.
+
 .. _deployment-disk-reserve:
 
 Keeping free space

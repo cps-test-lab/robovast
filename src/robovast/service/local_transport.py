@@ -908,8 +908,15 @@ class LocalTransport(RobovastInterface):
         # The strict policy refused, so seeding a workspace from any older campaign failed -- the
         # same mistake the retrigger path had. The archived file is not rewritten; the workspace
         # gets the upgraded shape, which is what someone editing it should see.
-        retrigger.reconstruct_project(source_dir, project_dir,
-                                      validate_config(load_config(str(vast_path), upgrade=True)))
+        # Lenient for the same reason: `load_config` returns the raw document, and a strict
+        # pass would refuse a key the campaign ran without.
+        retrigger.reconstruct_project(
+            source_dir, project_dir,
+            validate_config(load_config(str(vast_path), upgrade=True), strict=False))
+        for dropped in retrigger.strip_archived_kubernetes_keys(project_dir / vast_path.name):
+            logger.info("workspace %s from campaign %s: removed %s from its config, which is "
+                        "not a campaign setting and did not affect the run",
+                        workspace_id, campaign_id, dropped)
         missing = retrigger.missing_run_files(source_dir, project_dir)
         if missing:
             raise ValueError(

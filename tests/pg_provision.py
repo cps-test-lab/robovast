@@ -103,7 +103,7 @@ def _reap_stale_databases(admin_dsn: str) -> None:
     except psycopg.Error:
         # Reaping is housekeeping: a server that will not answer it is a problem this
         # run is about to hit anyway, with a message that says so.
-        return
+        pass
 
 
 def _drop_database(conn, name: str) -> None:
