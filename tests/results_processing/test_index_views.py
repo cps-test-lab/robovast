@@ -13,6 +13,7 @@ Set ``ROBOVAST_TEST_PG_DSN`` to run these; without it they skip.
 import json
 import os
 import sqlite3
+import threading
 
 import pytest
 
@@ -212,3 +213,70 @@ def test_views_are_created_for_what_the_index_actually_has(index):
         names = set(index_views.campaign_view_sql(conn))
 
     assert {"run_view", "config_view"} <= names
+
+
+def _rebuild_views_concurrently(writers: int, rounds: int) -> list:
+    """Rebuild the views from *writers* connections at once; return what they raised."""
+    failures = []
+    at_once = threading.Barrier(writers, timeout=30)
+
+    def rebuild():
+        try:
+            with index_query.open_index(readonly=False) as conn:
+                at_once.wait()
+                for _ in range(rounds):
+                    index_views.create_views(conn)
+        except Exception as exc:  # noqa: BLE001 - the thread's failure is the assertion
+            failures.append(exc)
+
+    threads = [threading.Thread(target=rebuild) for _ in range(writers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    return failures
+
+
+def test_two_campaigns_can_be_ingested_at_once(index):
+    """Every ingest rebuilds the views, and the index is shared by every campaign.
+
+    Two postprocessing jobs finishing together therefore issue the same ``CREATE VIEW``
+    concurrently, which Postgres refuses with a duplicate key on ``pg_type`` rather than
+    with anything naming a view -- taking down a postprocessing run that had already done
+    all of its work.
+    """
+    failures = _rebuild_views_concurrently(writers=4, rounds=5)
+
+    assert not failures, f"concurrent ingests failed: {failures[:2]}"
+    assert index_query.query_index("SELECT count(*) AS n FROM run_view")["rows"]
+
+
+def test_a_reader_never_finds_the_views_missing(index):
+    """The rebuild drops before it creates, and a panel reads the index while it runs.
+
+    Between the two statements ``run_view`` does not exist, so a reader gets "relation
+    does not exist" -- which reads as a campaign with no runs rather than as a rebuild in
+    progress.
+    """
+    reads = []
+    done = threading.Event()
+
+    def read():
+        try:
+            while not done.is_set():
+                index_query.query_index("SELECT count(*) FROM run_view")
+                reads.append(None)
+        except Exception as exc:  # noqa: BLE001 - the thread's failure is the assertion
+            reads.append(exc)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    try:
+        failures = _rebuild_views_concurrently(writers=2, rounds=10)
+    finally:
+        done.set()
+        reader.join(timeout=120)
+
+    assert not failures
+    assert not [r for r in reads if r is not None], (
+        f"a reader saw the index mid-rebuild: {[r for r in reads if r is not None][:2]}")
