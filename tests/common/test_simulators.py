@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from robovast.common.containers import plan_containers
 from robovast.common.execution import scenario_env
 from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED, SimulatorBackend, apply_backend,
-                                        shape_for)
+                                        shape_for, simulator_image)
 
 
 class StageConfig(BaseModel):
@@ -53,6 +53,16 @@ class RosOnlyBackend(SimulatorBackend):
 
     def containers(self, cfg, execution):
         return {"simulation": {"image": "gz:harmonic", "command": ["gz", "sim", "-s"]}}
+
+
+class _ContainerSpec:
+    """Only what a query carries: an image, and a name derived from it."""
+
+    def __init__(self, image):
+        self.image = image
+
+    def container_name(self):
+        return "aux-" + self.image.split("/")[-1].split(":")[0]
 
 
 class PanelBackend(StubBackend):
@@ -124,6 +134,31 @@ def test_an_authored_image_beats_the_backend_default():
     ex = apply_backend({"mode": "ros2", "containers": {
         "simulation": {"backend": "stub", "stage": "s", "image": "mine:1"}}})
     assert plan_containers(ex).by_name("simulation").image == "mine:1"
+
+
+def test_a_query_is_asked_in_the_image_the_run_will_use():
+    """``simulator_image`` and ``apply_backend`` answer one question, so they answer it alike.
+
+    A campaign names an image for ``scenario`` because that is where scenario-execution runs.
+    In the ROS shape the simulator has a container of its own, so that image is a different
+    program's: answering with it sends ``input_files`` and ``describe_query`` into an image
+    with no simulator in it, and the exec never starts.
+    """
+    authored = {"mode": "ros2", "containers": {
+        "simulation": {"backend": "stub", "stage": "cell.usd"},
+        "scenario": {"image": "robovast:1"}}}
+    declared = StubBackend().containers(StageConfig(stage="cell.usd"), authored)
+    ran = plan_containers(apply_backend(authored)).by_name("simulation").image
+    assert simulator_image(authored, declared) == ran == "vendor/sim:1"
+
+
+def test_a_folded_simulator_is_asked_in_the_container_it_folded_into():
+    """The stepped shape moves the author's image onto ``scenario``; the query follows it."""
+    authored = {"mode": "base", "containers": {
+        "simulation": {"backend": "stub", "stage": "cell.usd", "image": "mine:1"}}}
+    declared = StubBackend().containers(StageConfig(stage="cell.usd"), authored)
+    ran = plan_containers(apply_backend(authored)).by_name("simulation").image
+    assert simulator_image(authored, declared) == ran == "mine:1"
 
 
 def test_an_authored_env_value_beats_the_backend():
@@ -332,6 +367,41 @@ def test_no_backend_means_no_extra_run_files(tmp_path):
 
     params = {"execution": {"containers": {"scenario": {"image": "img:1"}}}}
     assert _backend_run_files(str(tmp_path), params) == []
+
+
+def test_a_query_that_never_started_reports_what_the_container_said(tmp_path):
+    """An exec that does not start states its reason on the exception and nowhere else.
+
+    The runner raises ``CalledProcessError``, which renders as an exit status and no reason
+    at all -- so a missing simulator in the image reached the caller as a bare number, with
+    the sentence naming it discarded.
+    """
+    import subprocess
+
+    import robovast.common.config_generation as cg
+    from robovast.common.simulators import ContainerQuery
+
+    class Exploding:
+        workspace = str(tmp_path)
+
+        def run(self, command, callback=None):
+            raise subprocess.CalledProcessError(
+                126, command,
+                output='exec did not start: invalid literal for int() with base 10: '
+                       '\'exec: "sim": executable file not found in $PATH\'')
+
+        def close(self):
+            pass
+
+    query = ContainerQuery(_ContainerSpec("vendor/sim:1"), ["sim", "inputs", "/config/w.yaml"])
+    token = cg.set_container_runner_factory(lambda spec: Exploding())
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            cg._run_input_files_query(query, str(tmp_path))
+    finally:
+        cg._container_runner_factory.reset(token)
+    assert "executable file not found" in str(caught.value)
+    assert "vendor/sim:1" in str(caught.value)
 
 
 # -- the panels no .vast has to write -----------------------------------------------

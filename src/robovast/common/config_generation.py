@@ -374,6 +374,17 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
                 CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
             expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
+    except subprocess.CalledProcessError as exc:
+        # The container's own words, not the runner's exit status. ``CalledProcessError``
+        # renders as "returned non-zero exit status N" and nothing else, and the failure this
+        # query meets most -- an image with no simulator in it, so the exec never starts --
+        # states its reason ONLY on the exception, never through the line callback. Dropping
+        # it leaves a bare number standing for a cause that names itself.
+        spoke = (_command_failure(str(exc.output or "").splitlines())
+                 or _command_failure(lines))
+        raise RuntimeError(
+            "the simulator backend's input-files query failed in "
+            f"{getattr(query.spec, 'image', '') or 'its image'}: {spoke or exc}") from exc
     finally:
         runner.close()
 
