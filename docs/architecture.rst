@@ -859,6 +859,19 @@ NaN has no SQLite representation, so accepting it would delete data instead of t
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
 caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
 
+**A non-finite value is a measurement, so it is stored rather than dropped.** A range with
+no return, a path length for a trial where no path came back, a ratio with no denominator:
+these reach the ingest both as CSV text and as Python floats, from a ``.jsonl`` file or from
+the campaign record's own parameters. Each is stored as its spelling — ``"inf"``,
+``"-inf"``, ``"nan"`` — which ``float()`` reads back and which Postgres accepts as
+``double precision`` input, in a column that is ``TEXT`` for the same reason the string
+spellings make it text. ``NULL`` is left to mean that nothing was measured, which is the one
+distinction the record could otherwise not carry. A container is JSON-encoded with the same
+substitution and with ``allow_nan=False``: Python's ``json`` otherwise writes ``Infinity``,
+``-Infinity`` and ``NaN``, which JSON has no tokens for and which Postgres refuses when the
+column is cast — failing the **whole query** rather than the row that holds one, so a single
+censored field costs every field of every run the query asked for.
+
 **The declaration never outlives the evidence.** A column is declared by the first run that
 writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
 or a numeric column textual. A stale declaration is not cosmetic: a schema claiming ``REAL``

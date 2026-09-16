@@ -141,6 +141,37 @@ def test_a_container_value_is_json_encoded(conn):
     assert conn.execute("SELECT goal FROM params").fetchone()[0] == "[1.0, 2.0]"
 
 
+def test_a_censored_measurement_reaches_the_index_as_a_number(conn):
+    """A sensor with no return, ingested: the value is there and is not a NULL.
+
+    The column is text, because that is what holds all three spellings, and the cast
+    back to a number is what an analysis writes -- so the row that was censored is
+    still in the answer instead of being indistinguishable from one nobody measured.
+    """
+    sink = PostgresRowSink(conn, campaign_id="camp-1")
+    rows = [{"distance": "1.5"}, {"distance": ""}, {"distance": float("inf")}]
+
+    sink.write("out", rows, context={"config_name": "goal-1", "run_id": 0})
+
+    got = conn.execute('SELECT distance::double precision FROM out '
+                       'WHERE distance IS NOT NULL ORDER BY 1').fetchall()
+    assert got == [(1.5,), (float("inf"),)]
+    assert conn.execute(
+        "SELECT count(*) FROM out WHERE distance IS NULL").fetchone()[0] == 1
+
+
+def test_a_non_finite_value_in_a_container_leaves_the_column_castable(conn):
+    """The failure this closes is not one row: ``::jsonb`` fails the whole query, so a
+    single censored field would cost every field of every run the query asked for."""
+    sink = PostgresRowSink(conn, campaign_id="camp-1")
+    sink.write("params", [{"goal": {"path_length": float("inf"), "gaps": [1.0]}}],
+               context={"config_name": "goal-1", "run_id": 0},
+               types={"goal": TEXT})
+
+    got = conn.execute("SELECT goal::jsonb ->> 'path_length' FROM params").fetchone()[0]
+    assert got == "inf"
+
+
 def test_two_campaigns_share_one_table(conn):
     """The point of the central index: a campaign is a WHERE clause, not an ATTACH."""
     PostgresRowSink(conn, campaign_id="camp-a").write(
