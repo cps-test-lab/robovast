@@ -219,7 +219,8 @@ def sql_value(value, col_type: str):
     """
     if isinstance(value, (list, dict)):
         return json_text(value)
-    return as_stored(coerce(value, col_type))
+    converted = coerce(value, col_type)
+    return as_stored(converted) if isinstance(converted, float) else converted
 
 
 def column_def(name: str, col_type: str) -> str:
