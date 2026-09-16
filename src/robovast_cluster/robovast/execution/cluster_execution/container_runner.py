@@ -636,6 +636,10 @@ class ClusterContainerRunner:
         self._prefix = aux_workspace_prefix(owner_id or namespace,
                                             os.path.basename(self.workspace))
         self._exposed: dict = {}
+        #: True once the workspace has been mirrored into the container, so ``close`` knows
+        #: whether there is anything there to drop. A runner that never transferred must not
+        #: pay an exec -- and must not need a live pod -- just to remove nothing.
+        self._staged = False
 
     def expose(self, host_path: str, container_path: str) -> None:
         """Also make *host_path* visible at the fixed *container_path* in the aux container.
@@ -797,9 +801,11 @@ class ClusterContainerRunner:
         quoted = " ".join(f"'{path}'" for path in staged_dirs)
         if not staged_files:
             self._exec(["sh", "-c", f"mkdir -p {quoted}"])
+            self._staged = True
             return
         self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
         self._exec(["sh", "-c", f"mkdir -p {quoted} && " + self._mirror(down=True)])
+        self._staged = True
 
     def _copy_out(self) -> None:
         """Mirror the container's workspace back over the local one, via the store.
@@ -855,12 +861,30 @@ class ClusterContainerRunner:
                 logger.warning("Could not copy aux workspace back: %s", e)
 
     def close(self):
-        """Drop this runner's mirrored prefix and its local scratch.
+        """Drop this runner's copy in the container, its mirrored prefix and its local scratch.
 
-        The aux pod itself is torn down with the campaign by ``AuxPodSession``. Both of
+        The aux pod itself is torn down with the campaign by ``AuxPodSession``. All three of
         these are per-*variation*, though — a search campaign builds a runner per
-        generation — so leaving them would accumulate for the campaign's whole life.
+        configuration it composes — so leaving them would accumulate for the campaign's
+        whole life.
+
+        The container's copy is the one that accumulates where nothing is watching. Each
+        runner mirrors to a workspace path of its own, so the next one does not overwrite
+        it; that path is in the container's writable layer, which is ephemeral storage the
+        Pod reserves none of. A long composition therefore fills the node it landed on and
+        the kubelet evicts the aux Pod out from under the very campaign that is composing
+        against it.
+
+        Best-effort, and for a reason beyond the usual one: the pod may be gone by now
+        (that is one of the ways a composition ends), and a teardown that raised over a
+        container it cannot reach would replace the real failure with its own.
         """
+        if self._staged:
+            try:
+                self._exec(["sh", "-c", f"rm -rf '{self.workspace}'"])
+            except Exception as e:  # noqa: BLE001 - cleanup never fails a variation
+                logger.warning("Could not drop the aux container's copy of %s: %s",
+                               self.workspace, e)
         if self._storage is not None and self._bucket:
             try:
                 self._storage.delete_prefix(self._bucket, self._prefix)

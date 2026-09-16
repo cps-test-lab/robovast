@@ -15,7 +15,8 @@ The transfer now goes through the object store instead, the way a campaign Job a
 container-exec lane already stage: no stdin in either direction, so that failure mode is
 gone by construction rather than by a correct byte count. What is pinned here is that
 *absence*, the empty-workspace short-circuit that the hang was first seen on, and the
-cleanup — a per-variation runner that leaked its prefix would accumulate all campaign long.
+cleanup — a per-variation runner that leaked its prefix, or its copy inside the container,
+would accumulate all campaign long.
 """
 
 import os
@@ -241,6 +242,59 @@ def test_close_drops_the_mirror_and_the_local_scratch():
     runner.close()
     assert store.deleted == [("robovast-image-builds", runner._prefix)]
     assert not os.path.exists(workspace), "the service's temp dir is not the pod's problem"
+
+
+def test_close_also_drops_the_copy_inside_the_container(monkeypatch):
+    """The mirrored workspace is removed from the container, not only from here.
+
+    Each runner mirrors to a workspace path of its own, so a copy left behind is never
+    overwritten by the next runner's: it accumulates for the pod's whole life, in the
+    container's writable layer, which is ephemeral storage the Pod reserves none of. A
+    composition long enough to fill the node has the kubelet evict the aux Pod it is
+    composing against.
+    """
+    runner = _runner()
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_exec", rec)
+    runner._copy_in()
+    workspace = runner.workspace
+    rec.calls.clear()
+
+    runner.close()
+
+    (cmd, _), = rec.calls
+    assert f"rm -rf '{workspace}'" in cmd[2]
+
+
+def test_close_execs_nothing_when_nothing_was_transferred(monkeypatch):
+    """A runner may be built and closed without ever reaching the container -- the query it
+    was made for failed before it ran, say -- and then there is no pod to remove anything
+    from, and possibly no pod at all."""
+    runner = _runner()
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_exec", rec)
+
+    runner.close()
+
+    assert rec.calls == []
+
+
+def test_a_failing_remove_in_the_container_does_not_fail_the_variation(monkeypatch):
+    """The pod being gone is one of the ways a composition ends; a teardown that raised
+    over it would replace the real failure with its own."""
+    runner = _runner()
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    monkeypatch.setattr(runner, "_exec", _Recorder())
+    runner._copy_in()
+
+    def _gone(*_args, **_kwargs):
+        raise RuntimeError("could not open an exec stream")
+
+    monkeypatch.setattr(runner, "_exec", _gone)
+    runner.close()   # must not raise
 
 
 def test_a_failing_delete_does_not_fail_the_variation():
