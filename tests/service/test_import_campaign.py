@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Taking a campaign *in* is a tracked operation, not a call that blocks until it is over.
 
-Three properties this defends, each of which was a wrong answer at some point:
+Four properties this defends, each of which was a wrong answer at some point:
 
 * the campaign is registered **before** any bytes move, so it appears in the campaign view
   at ``importing`` while it is still arriving rather than materialising at the end;
 * postprocessing is chained exactly when the archive arrived **raw**, because a campaign
   with no metric tables is not one anybody can query -- and a postprocessed one must not be
   recomputed;
+* the campaign is made **durable before** that postprocess rather than after it, because a
+  lane whose durable home is elsewhere is where the postprocess reads the campaign from;
 * a failed import is **kept**, as a failed campaign. Deleting the tree was tried and was
   strictly worse: registering the campaign is what makes it visible while it arrives, and
   that entry outlives the failure, so removing the directory left it listed as ``failed``
@@ -366,23 +368,23 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
 
 def test_the_report_survives_a_lane_that_drops_its_scratch_copy(service, tmp_path,
                                                                monkeypatch):
-    """A lane whose durable home is elsewhere DELETES the tree once it is published.
+    """A lane whose durable home is elsewhere DELETES the tree once the import is over.
 
     The cluster service does exactly that -- a multi-gigabyte campaign left on a pod's
     scratch is how the pod fills its disk -- so anything that reads the campaign after
-    publishing reads a directory that is gone and reconstructs zeros. That is the empty
-    report this whole adoption exists to prevent, and the local lane cannot catch it:
-    publishing is a no-op there, so the tree survives whatever the order.
+    that reads a directory that is gone and reconstructs zeros. That is the empty report
+    this whole adoption exists to prevent, and the local lane cannot catch it: the tree
+    survives there whatever the order.
     """
     import shutil
 
     dropped = []
 
-    def _publish_and_drop(self, campaign_id, target):
+    def _finish_and_drop(self, campaign_id, target):
         dropped.append(campaign_id)
         shutil.rmtree(target, ignore_errors=True)
 
-    monkeypatch.setattr(type(service), "_publish_imported_campaign", _publish_and_drop)
+    monkeypatch.setattr(type(service), "_finish_imported_campaign", _finish_and_drop)
     ref = service.import_campaign(ImportCampaignRequest(
         archive_path=str(_archive(tmp_path, postprocessed=True, runs=26))))
     status = _wait_done(service, ref.campaign_id)
@@ -390,6 +392,33 @@ def test_the_report_survives_a_lane_that_drops_its_scratch_copy(service, tmp_pat
     assert dropped == [ref.campaign_id], "the lane under test must have dropped the tree"
     assert status.runs.total == 26
     assert status.postprocessed is True
+
+
+def test_the_campaign_is_durable_before_anything_postprocesses_it(service, tmp_path,
+                                                                 monkeypatch):
+    """Publishing precedes the postprocess, because the postprocess reads what it publishes.
+
+    On a lane whose durable home is an object store, postprocessing stages the campaign
+    into its own pod out of that store -- so a campaign published only at the end of the
+    import is one the postprocess found nothing to stage, and on a per-campaign-bucket
+    deployment not even a bucket to list. The local lane cannot catch it: publishing is a
+    no-op there and the postprocess reads the tree on disk either way.
+    """
+    order = []
+
+    monkeypatch.setattr(type(service), "_publish_imported_campaign",
+                        lambda self, cid, target: order.append("publish"))
+    monkeypatch.setattr(type(service), "_postprocess_campaign",
+                        lambda self, cid, d, **k: (order.append("postprocess"),
+                                                   (True, "ok"))[1])
+    monkeypatch.setattr(type(service), "_finish_imported_campaign",
+                        lambda self, cid, target: order.append("finish"))
+
+    ref = service.import_campaign(ImportCampaignRequest(
+        archive_path=str(_archive(tmp_path, runs=26))))
+    _wait_done(service, ref.campaign_id)
+
+    assert order == ["publish", "postprocess", "finish"]
 
 
 def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):
