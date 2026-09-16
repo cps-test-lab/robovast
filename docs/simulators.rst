@@ -288,10 +288,10 @@ explicit spelling ``sim: overrides.components....`` stays valid, and is how a wo
 collided with a backend key would be reached.
 
 **Between these two channels, a factor lands where the simulator can still act on it.**
-MuJoCo does not recompile mid-run, and roqsim's ``simulation_interfaces`` serves no
-``SpawnEntity``: *which* entities exist is settled when the model compiles, and a scenario
-only moves and observes them. So the boundary here is the compile -- not "the world" versus
-"the trial", since a world is not static during a run either.
+MuJoCo does not recompile mid-run, and roqsim's ``simulation_interfaces`` spawns an entity
+the model already carries: *which* entities exist is settled when the model compiles, and a
+scenario only activates, moves and observes them. So the boundary here is the compile -- not
+"the world" versus "the trial", since a world is not static during a run either.
 
 That rule decides how one artifact splits across ``sim:`` and ``scenario:``; it is not how
 you choose among all three channels. For that, see :ref:`the destination reference
@@ -370,10 +370,10 @@ model values a run may change while it is running, and their current values -- s
 :ref:`mcp-describe-world`.
 
 **Entities the trial drives must be entities the world compiled.** Nothing creates one at run
-time -- roqsim does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``
--- so a scenario naming ``obstacle_9`` against a world with four obstacles fails on a service
-call, mid-trial. Which parameters name entities is not guessed: the scenario file declares it
-(``static_objects: list of spawn_entity``), and the values of those parameters carry
+time -- roqsim does not recompile mid-run and ``SpawnEntity`` activates an entity the model
+already carries -- so a scenario naming ``obstacle_9`` against a world with four obstacles fails
+on a service call, mid-trial. Which parameters name entities is not guessed: the scenario file
+declares it (``static_objects: list of spawn_entity``), and the values of those parameters carry
 ``entity_name``. Checked against the same description, which then also reports the entities the
 world compiles -- asked for only when a campaign names any, since answering it means building
 the model.
