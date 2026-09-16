@@ -21,7 +21,7 @@ import pathlib
 
 import pytest
 
-from robovast.common.errors import ExecPathUnavailable
+from robovast.common.errors import ExecPathUnavailable, ExecTargetGone
 from robovast.execution.cluster_execution import kube_client, kube_exec_lane
 from robovast.execution.cluster_execution.kube_client import api_error_reason, exec_stream
 
@@ -89,6 +89,28 @@ def test_an_unrecognised_reason_still_comes_through_short():
     assert api_error_reason(_Odd()) == "something new"
 
 
+#: The same shape with a status that is the API server answering about the one target.
+#: ``500`` is what it says for a container that is no longer running in a pod that is.
+_GONE_REPR = _HANDSHAKE_REPR.replace("Handshake status 200 OK",
+                                     "Handshake status 500 Internal Server Error")
+
+
+class _Gone:
+    status = 0
+    reason = _GONE_REPR
+    body = None
+
+
+def test_a_handshake_the_server_answered_about_says_the_container_was_not_there():
+    """A bare status line is not a diagnosis either. ``Handshake status 500`` reads as an
+    internal error in the cluster, when what it states is that the container the stream
+    named is not running -- which is a different thing to go and look at."""
+    reason = api_error_reason(_Gone())
+    assert "not there to exec into" in reason
+    assert "500" in reason
+    assert "-+-+-" not in reason
+
+
 def _refusing_stream(monkeypatch, reason):
     """``kubernetes.stream.stream`` failing the way the generated client fails it."""
     import kubernetes.stream
@@ -102,6 +124,24 @@ def _refusing_stream(monkeypatch, reason):
 
     monkeypatch.setattr(kubernetes.stream, "stream", _refuse)
     return _Core()
+
+
+def test_a_target_that_is_gone_is_its_own_type_and_names_the_target(monkeypatch):
+    """The opposite verdict to the one below, and it has to be told apart by class.
+
+    A 4xx or 5xx on the upgrade is the API server answering about the pod and container
+    that were asked for, so the caller holding that name is the one that can act -- make it
+    again and repeat what it was doing. That is why this one DOES name the target, where a
+    deployment-wide refusal must not: here it is the subject.
+    """
+    _refusing_stream(monkeypatch, _GONE_REPR)
+    with pytest.raises(ExecTargetGone) as raised:
+        exec_stream("aux-pod", "ns", "aux-img", ["true"], limit_s=5)
+    message = str(raised.value)
+    assert "aux-pod/aux-img" in message, "the target is what a caller acts on"
+    assert "not there to exec into" in message
+    assert not isinstance(raised.value, ExecPathUnavailable), (
+        "one target being gone is not the deployment refusing every exec")
 
 
 def test_a_handshake_failure_is_its_own_type_not_a_bare_runtime_error(monkeypatch):

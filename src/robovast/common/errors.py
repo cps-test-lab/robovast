@@ -89,6 +89,25 @@ class ExecPathUnavailable(RuntimeError):
     include_traceback = False
 
 
+class ExecTargetGone(RuntimeError):
+    """Raised when the pod or container an exec named is no longer there.
+
+    The other half of the read :class:`ExecPathUnavailable` describes: the API server
+    answered about *the one target that was asked for* rather than refusing every exec, so
+    the deployment needs no attention and the target can simply be made again. A pod ends
+    without its span ending -- an eviction, a drained node, a deadline -- and the next exec
+    into it is the first thing that notices.
+
+    Its own type because the caller that can act on it cannot act on a message: a runner
+    holding a name that no longer resolves recreates the container and repeats what it was
+    doing, which is only correct for *this* cause. A command that ran and failed, or a
+    deployment that can exec nothing, must not be retried that way.
+
+    A ``RuntimeError`` for the reason its siblings are: callers that already catch one keep
+    working unchanged, and only the one that knows how to recover matches the subclass.
+    """
+
+
 class ObjectStoreUnreachableError(RuntimeError):
     """Raised when the campaign object store did not answer at all.
 

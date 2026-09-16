@@ -83,6 +83,8 @@ import subprocess
 import tempfile
 import threading
 
+from robovast.common.errors import ExecTargetGone
+
 logger = logging.getLogger(__name__)
 
 #: Default wall-clock cap for an aux pod, so a leaked one always dies by itself.
@@ -494,7 +496,8 @@ class AuxPodSession:
             return ClusterContainerRunner(
                 spec, self._pod_for(spec), self.namespace, self._client(),
                 storage=self._storage, bucket=self._bucket,
-                owner_id=self.campaign_id, kube_context=self._kube_context)
+                owner_id=self.campaign_id, kube_context=self._kube_context,
+                reprovision=self.replace)
         return factory
 
     def provision(self, spec):
@@ -521,6 +524,22 @@ class AuxPodSession:
             pod_name = self._create_pod(spec, aux_pod_name(self.campaign_id, name))
             self._pods[name] = pod_name
             return pod_name
+
+    def replace(self, spec):
+        """Make *spec*'s pod again, after the one handed out went away. Returns its name.
+
+        The memo exists so a second ask in one span costs no create and no image pull, and
+        that is exactly what makes it wrong once the pod it names has ended: every later
+        ask is handed a container nothing can exec into. Forgetting the entry is what turns
+        the next ask back into a create.
+
+        The name is derived from the campaign, so the create meets the remains of the old
+        pod as a 409 — which :meth:`_create_pod` already waits out rather than adopting.
+        """
+        name = spec.container_name()
+        with self._lock:
+            self._pods.pop(name, None)
+        return self._pod_for(spec)
 
     def _record_created(self, pod_name):
         """Note that *pod_name* now exists, before anything asks whether it works.
@@ -616,7 +635,8 @@ class ClusterContainerRunner:
     def __init__(self, spec, pod_name, namespace, core_v1=None,
                  exec_limit_s: float = AUX_EXEC_LIMIT_S, storage=None,
                  bucket: str = "", owner_id: str = "",
-                 kube_context: str | None = None, container: str = ""):
+                 kube_context: str | None = None, container: str = "",
+                 reprovision=None):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
@@ -636,6 +656,11 @@ class ClusterContainerRunner:
         self._prefix = aux_workspace_prefix(owner_id or namespace,
                                             os.path.basename(self.workspace))
         self._exposed: dict = {}
+        #: ``reprovision(spec) -> pod name``: make this spec's container again, for a
+        #: :meth:`run` that found the one it was handed gone. Whoever owns the pod's
+        #: lifetime provides it, because only they can replace it; without one a vanished
+        #: container is simply reported, which is what a caller that cannot recover needs.
+        self._reprovision = reprovision
         #: True once the workspace has been mirrored into the container, so ``close`` knows
         #: whether there is anything there to drop. A runner that never transferred must not
         #: pay an exec -- and must not need a live pod -- just to remove nothing.
@@ -846,8 +871,37 @@ class ClusterContainerRunner:
             self._exec(["sh", "-c", script])
 
     def run(self, command, progress_update_callback=None) -> None:
+        """Run *command* in the aux container, making that container again if it is gone.
+
+        A pod can end without the span that created it ending — an eviction, a drained
+        node — and then the exec that notices is the one in the middle of a composition
+        that may have been running for hours. Reporting it loses all of that over a
+        container that costs seconds to replace, so the attempt is made a second time
+        against a fresh one.
+
+        **Repeating the whole attempt is what makes it correct**, not just the exec: a new
+        container has an empty workspace and empty mounts, so the transfer has to happen
+        again. And repeating the *command* is sound for this cause alone — the container it
+        ran in no longer exists, so nothing it did survived to be done twice. A command
+        that ran and failed is the caller's answer and is never retried.
+
+        Once. A second vanishing is no longer something to sit out.
+        """
         progress_update_callback = progress_update_callback or logger.debug
         full_cmd = list(self._spec.command_prefix) + list(command)
+        try:
+            self._attempt(full_cmd, progress_update_callback)
+        except ExecTargetGone as gone:
+            if self._reprovision is None:
+                raise
+            logger.warning("Aux container %s/%s is gone (%s); making it again and "
+                           "repeating the command", self._pod, self._container, gone)
+            self._pod = self._reprovision(self._spec)
+            self._staged = False
+            self._attempt(full_cmd, progress_update_callback)
+
+    def _attempt(self, full_cmd, progress_update_callback) -> None:
+        """One transfer-run-transfer against whichever container :attr:`_pod` names."""
         self._copy_in()
         self._place_exposed()
         try:
