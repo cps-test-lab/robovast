@@ -4810,18 +4810,22 @@ class ClusterService(LocalTransport):
         self._unmark_campaign(campaign_id)
 
     def _publish_imported_campaign(self, campaign_id: str, target) -> None:
-        """Upload the imported tree to the object store and index it; drop the scratch.
+        """Upload the arrived tree to the object store and index it.
 
         Without this an import would land on a pod's ephemeral disk and be gone with the
         pod — and invisible even before that, since ``_durable_campaign_ids`` answers from
         the index rather than from what happens to be on disk.
+
+        It is also what a raw import's postprocessing reads: the Job stages the campaign
+        into its pod out of the store, so this upload — which creates the campaign's bucket
+        — has to precede it. The scratch copy therefore stays until
+        :meth:`_finish_imported_campaign`.
 
         ``upload_dir`` walks without following symlinks, so the ``<config>/<run>/job``
         links are not uploaded — correct, because the object store has no symlinks and the
         download side rebuilds them from ``_transient/job_links.yaml``, which is a real
         file and does travel.
         """
-        import shutil  # pylint: disable=import-outside-toplevel
         from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
 
         from robovast.common.store import \
@@ -4844,8 +4848,23 @@ class ClusterService(LocalTransport):
         in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
         with self._index_lock:
             self._index_cache = None
-        # The pod's copy has served its purpose; the durable home is the store, and a
-        # multi-gigabyte campaign left on scratch is how a service pod fills its disk.
+
+    def _finish_imported_campaign(self, campaign_id: str, target) -> None:
+        """Publish the account postprocessing wrote here, and drop the pod's copy.
+
+        The campaign itself went up before the postprocess
+        (:meth:`_publish_imported_campaign`) and the Job published the outputs it computed,
+        so what lives in this tree and nowhere else is ``_execution/``: the verdict
+        ``_postprocess_after_import`` recorded from the Job's outcome, beside the import's
+        own log and report. Publishing it is what makes an imported campaign read the same
+        through ``list_files`` — which answers from the store — as it does here.
+
+        Then the copy goes: the durable home is the store, and a multi-gigabyte campaign
+        left on scratch is how a service pod fills its disk.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+
+        self._publish_execution(campaign_id, target)
         shutil.rmtree(target, ignore_errors=True)
 
     def _publish_failed_import(self, campaign_id: str, target) -> None:

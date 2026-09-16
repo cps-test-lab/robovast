@@ -1566,13 +1566,9 @@ class LocalTransport(RobovastInterface):
         """Chain postprocessing when the imported campaign has none of its own.
 
         Asked of postprocessing's provenance record, which is what says a campaign has
-        derived data now that the rows go to the central index.
-
-        It used to ask whether ``_execution/data.db`` existed. That file no longer exists
-        anywhere, so the test was permanently false and EVERY import re-postprocessed --
-        including archives that arrived complete, whose rows the import had just finished
-        ingesting. On a cluster that also dispatched the rosbag steps into the service pod,
-        where there is no Docker to run them.
+        derived data now that the rows go to the central index. An archive that arrived
+        complete must not be recomputed: its rows were just ingested, and on a lane with no
+        Docker the rosbag steps have nothing to run in.
         """
         from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
             record_step_outcome, reconstruct_status_from_disk)
@@ -1580,6 +1576,13 @@ class LocalTransport(RobovastInterface):
         from robovast.common.campaign_data import \
             campaign_has_derived_data  # pylint: disable=import-outside-toplevel
 
+        # Durable BEFORE postprocessing, because postprocessing reads the campaign from
+        # wherever the lane keeps it: a lane whose durable home is an object store stages
+        # the campaign into the postprocessing pod out of that store, so a campaign
+        # published afterwards is one the postprocess had nothing to read. What it computes
+        # still reaches the store -- the pod publishes its own outputs, and
+        # ``_finish_imported_campaign`` publishes the verdict recorded here.
+        self._publish_imported_campaign(campaign_id, target)
         if campaign_has_derived_data(target):
             logger.info("%s arrived postprocessed; nothing to compute", campaign_id)
         else:
@@ -1587,14 +1590,6 @@ class LocalTransport(RobovastInterface):
             state.set_phase(Phase.POSTPROCESSING)
             ok, message = self._postprocess_campaign(campaign_id, target, state=state)
             record_step_outcome(target, postprocessing=(ok, message))
-        # Read what the campaign says about itself BEFORE publishing, because publishing is
-        # where the tree stops being readable: on a lane whose durable home is elsewhere,
-        # `_publish_imported_campaign` drops the pod's copy once it is in the object store
-        # (a multi-gigabyte campaign left on scratch is how a service pod fills its disk).
-        # Reading after it reconstructs from a directory that is gone, which yields zeros --
-        # exactly the empty report this is here to prevent, and invisible to a test on the
-        # local lane, where publishing is a no-op and the tree survives either way.
-        #
         # The tracked entry an import runs under is constructed EMPTY -- it exists to make
         # the campaign visible while its bytes arrive -- and it shadows the durable
         # ``outcome.json`` for as long as it lives. Without this an import ends reporting
@@ -1603,11 +1598,16 @@ class LocalTransport(RobovastInterface):
         # it. Both arrival paths need it: the raw one records only the postprocessing
         # verdict, never the run tally, and the postprocessed one records nothing at all --
         # having nothing to *compute* is not having nothing to *report*.
+        #
+        # Read BEFORE the import is finished, because finishing is where the tree stops
+        # being readable: on a lane whose durable home is elsewhere,
+        # ``_finish_imported_campaign`` drops the working copy (a multi-gigabyte campaign
+        # left on scratch is how a service pod fills its disk). Reading after it
+        # reconstructs from a directory that is gone, which yields zeros -- exactly the
+        # empty report this is here to prevent, and invisible to a test on the local lane,
+        # where the tree survives whatever the order.
         status = reconstruct_status_from_disk(target)
-        # After postprocessing rather than before: this is where the campaign actually
-        # becomes durable, and publishing first would publish a campaign without the
-        # tables just computed.
-        self._publish_imported_campaign(campaign_id, target)
+        self._finish_imported_campaign(campaign_id, target)
         state.update(mode=status.mode, runs=status.runs,
                      batches_done=status.batches_done,
                      best_objective=status.best_objective,
@@ -1616,11 +1616,11 @@ class LocalTransport(RobovastInterface):
                      share_error=status.share_error)
         state.set_phase(Phase.FINISHED)
 
-    # -- the four things an import means something different by, per lane ------
+    # -- the five things an import means something different by, per lane ------
     #
-    # Local disk is both the working area and the durable home, so all four are trivial
+    # Local disk is both the working area and the durable home, so all five are trivial
     # here. A lane whose home is an object store overrides them; nothing else in the
-    # import differs, which is why they are four small questions rather than a second
+    # import differs, which is why they are five small questions rather than a second
     # copy of the sequence.
 
     def _campaign_is_here(self, campaign_id: str) -> bool:
@@ -1635,7 +1635,22 @@ class LocalTransport(RobovastInterface):
         """
 
     def _publish_imported_campaign(self, campaign_id: str, target: Path) -> None:
-        """Make the imported campaign durable. Locally it already is."""
+        """Make the arrived campaign durable. Locally it already is.
+
+        Its moment is before postprocessing, not after: see
+        :meth:`_postprocess_after_import`.
+        """
+
+    def _finish_imported_campaign(self, campaign_id: str, target: Path) -> None:
+        """The import is over: publish what it left, and release the working copy.
+
+        Locally the working copy *is* the durable campaign, so neither applies.
+
+        Separate from :meth:`_publish_imported_campaign` because the two publish at
+        different moments and publish different things: that one makes the campaign
+        readable to the postprocess that follows it, this one carries up the verdict that
+        postprocess produced.
+        """
 
     def _publish_failed_import(self, campaign_id: str, target: Path) -> None:
         """Make a FAILED import's account of itself durable. Locally it already is.
