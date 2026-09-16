@@ -176,9 +176,9 @@ class ObstacleVariationConfig(DestinationConfig):
     #:     scenario: {objects: static_objects}
     #:     sim:      {instances: components.obstacles.instances}
     #:
-    #: Both, from one call, because they are one fact: MuJoCo does not recompile mid-run
-    #: and ``sim_interfaces`` spawns an entity the model already carries, so an obstacle
-    #: the trial drives must be one the world compiled. Optional because a simulator that
+    #: Both, from one call, because they are one fact: a backend whose ``sim_interfaces``
+    #: only activates entities the world declares cannot be handed a new one mid-trial, so
+    #: an obstacle the trial drives must be one the world declared. Optional because a simulator that
     #: spawns at run time (Gazebo) needs only the first, and requiring it would make every
     #: such campaign bind a destination it has none for.
     OPTIONAL_OUTPUT_SLOTS = ("instances",)
