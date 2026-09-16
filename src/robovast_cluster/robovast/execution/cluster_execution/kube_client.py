@@ -547,6 +547,24 @@ def _handshake_failure(reason: str) -> str:
             "nothing serving this call upgraded it")
 
 
+def _handshake_target_gone(reason: str) -> str:
+    """A websocket upgrade answered about ONE TARGET, stated as that.
+
+    The other half of the read :func:`_handshake_failure` makes. A 2xx says nothing
+    upgraded the request and so every exec here is refused; a 4xx or 5xx is the API server
+    answering about the pod and container that were asked for -- ``404`` for a pod that is
+    gone, ``500`` for a container that is. That target can be made again, which is why it
+    is worth telling a caller which of the two it met rather than handing over a bare
+    status line to interpret.
+    """
+    found = _HANDSHAKE_STATUS.search(reason or "")
+    if not found or found.group(1).startswith("2"):
+        return ""
+    return ("the container was not there to exec into -- the request for the stream was "
+            f"answered with HTTP {found.group(1)}, which is the API server answering "
+            "about this pod and container rather than refusing every exec")
+
+
 def _first_segment(reason: str) -> str:
     """The head of a reason string: its first line, up to the client's own separator.
 
@@ -576,6 +594,7 @@ def api_error_reason(exc) -> str:
     reason = str(getattr(exc, "reason", "") or "")
     detail = (_status_message(getattr(exc, "body", None))
               or _handshake_failure(reason)
+              or _handshake_target_gone(reason)
               or _first_segment(reason)
               or exc.__class__.__name__)
     return f"HTTP {status}: {detail}" if status else detail
@@ -596,18 +615,27 @@ def raise_api_error(exc, context: str) -> NoReturn:
     verdict with the consequence stated, because the cause alone leaves each caller to
     conclude on its own what it can still do -- and they concluded differently.
 
+    An upgrade answered with a 4xx or 5xx is the opposite verdict and gets its own type
+    too: the API server is answering about the pod and container that were asked for, so
+    the caller holding that name is the one that can do something -- make the target again
+    and repeat what it was doing. Left as a bare ``RuntimeError`` that recovery is not
+    available without matching on a message.
+
     Anything else belongs to the call *context* names. Naming it here is what keeps a
     failure from being reported by whichever wrapper happened to enclose the call, which
     pointed callers at an operation that had in fact succeeded.
     """
-    from robovast.common.errors import \
-        ExecPathUnavailable  # noqa: PLC0415 - keeps the import cost local
-    handshake = _handshake_failure(str(getattr(exc, "reason", "") or ""))
+    from robovast.common.errors import (  # noqa: PLC0415 - keeps the import cost local
+        ExecPathUnavailable, ExecTargetGone)
+    reason = str(getattr(exc, "reason", "") or "")
+    handshake = _handshake_failure(reason)
     if handshake:
         raise ExecPathUnavailable(
             f"no command can run in a container on this deployment: {handshake}. "
             "Nothing that has to ask a container a question can be answered here; "
             "everything that needs none is unaffected") from exc
+    if _handshake_target_gone(reason):
+        raise ExecTargetGone(f"{context}: {api_error_reason(exc)}") from exc
     raise RuntimeError(f"{context}: {api_error_reason(exc)}") from exc
 
 

@@ -1210,13 +1210,27 @@ class ClusterService(LocalTransport):
                     slots[name] = self._exec_manager.hold(held, identity, AUX_HOLD_LIMIT_S)
                 return slots[name]
 
+        def rehold(spec):
+            """``AuxPodSession.replace`` for this lane: drop the dead slot, hold again.
+
+            Stopped rather than released, because release starts an idle window and the
+            next hold of the same identity would reuse the record — which names the
+            container that just went away.
+            """
+            name = spec.container_name()
+            with lock:
+                slot = slots.pop(name, None)
+            if slot is not None:
+                self._exec_manager.stop(slot)
+            return container_name(hold(spec))
+
         try:
             def factory(spec):
                 return ClusterContainerRunner(
                     spec, container_name(hold(spec)), self.namespace,
                     self._k8s(), storage=store["storage"], bucket=store["bucket"],
                     owner_id=str(tag), kube_context=self.kube_context,
-                    container=HELD_CONTAINER)
+                    container=HELD_CONTAINER, reprovision=rehold)
 
             yield factory
         finally:

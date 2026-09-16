@@ -23,6 +23,7 @@ import os
 
 import pytest
 
+from robovast.common.errors import ExecTargetGone
 from robovast.common.variation.container_runner import ContainerSpec
 from robovast.execution.cluster_execution.container_runner import (AuxPodSession,
                                                                    ClusterContainerRunner,
@@ -319,6 +320,135 @@ def test_the_session_sweeps_what_a_crashed_runner_left(monkeypatch):
                             "delete_namespaced_pod": lambda *a, **k: None})())
     session.__exit__(None, None, None)
     assert store.deleted == [("b", aux_owner_prefix("c-2026-08-06-000000"))]
+
+
+# -- a container that went away -----------------------------------------------
+
+
+class _VanishingOnce:
+    """Execs that report the container gone until the runner is given a new pod."""
+
+    def __init__(self, runner, fail_pods=("pod-x",)):
+        self.runner, self.fail_pods, self.calls = runner, set(fail_pods), []
+
+    def __call__(self, command, stdin_data=None, progress_update_callback=None):
+        self.calls.append((self.runner._pod, command))
+        if self.runner._pod in self.fail_pods:
+            raise ExecTargetGone(
+                f"could not open an exec stream into {self.runner._pod}/aux: "
+                "the container was not there to exec into")
+        return ""
+
+    def scripts_on(self, pod):
+        return [cmd[2] for seen, cmd in self.calls if seen == pod and len(cmd) > 2]
+
+
+def _staged_runner(reprovision=None, store=None):
+    runner = _runner(store)
+    runner._reprovision = reprovision
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    return runner
+
+
+def test_a_vanished_container_is_made_again_and_the_command_repeated(monkeypatch):
+    """An eviction mid-composition costs a container, not the composition.
+
+    A pod can end without the span that created it ending, and the exec that notices is
+    the one in the middle of work that may have been running for hours.
+    """
+    runner = _staged_runner(reprovision=lambda spec: "pod-y")
+    execs = _VanishingOnce(runner)
+    monkeypatch.setattr(runner, "_exec", execs)
+
+    runner.run(["roqsim", "scenes", "inputs", "/config/world.yaml"])
+
+    assert runner._pod == "pod-y"
+    ran = [cmd for pod, cmd in execs.calls
+           if pod == "pod-y" and cmd[:1] == ["roqsim"]]
+    assert ran == [["roqsim", "scenes", "inputs", "/config/world.yaml"]]
+
+
+def test_the_whole_transfer_is_repeated_not_just_the_exec(monkeypatch):
+    """A new container has an empty workspace and empty mounts, so re-running the command
+    alone would run it against nothing. This is the half that is easy to leave out."""
+    runner = _staged_runner(reprovision=lambda spec: "pod-y")
+    runner.expose(runner.workspace, "/config")
+    execs = _VanishingOnce(runner)
+    monkeypatch.setattr(runner, "_exec", execs)
+
+    runner.run(["true"])
+
+    on_new = execs.scripts_on("pod-y")
+    assert any("mirror" in script for script in on_new), "the workspace travels again"
+    assert any("/config" in script for script in on_new), "the mounts are filled again"
+
+
+def test_a_second_vanishing_is_reported_rather_than_sat_out(monkeypatch):
+    """Once. A container that keeps going away is not something to keep waiting for, and a
+    loop here would hide a cluster that cannot hold one at all."""
+    runner = _staged_runner(reprovision=lambda spec: "pod-y")
+    execs = _VanishingOnce(runner, fail_pods=("pod-x", "pod-y"))
+    monkeypatch.setattr(runner, "_exec", execs)
+
+    with pytest.raises(ExecTargetGone):
+        runner.run(["true"])
+
+
+def test_without_a_way_to_replace_the_pod_the_failure_is_reported(monkeypatch):
+    """A runner whose caller does not own the pod's lifetime cannot invent one, and must
+    say what happened rather than retry against the same dead name."""
+    runner = _staged_runner()
+    monkeypatch.setattr(runner, "_exec", _VanishingOnce(runner))
+
+    with pytest.raises(ExecTargetGone):
+        runner.run(["true"])
+
+
+def test_a_command_that_ran_and_failed_is_never_retried(monkeypatch):
+    """The caller's question, answered. Repeating it would run a plugin's command twice
+    for a reason that has nothing to do with the container."""
+    import subprocess
+
+    runner = _staged_runner(reprovision=lambda spec: "pod-y")
+    calls = []
+
+    def _exec(command, stdin_data=None, progress_update_callback=None):
+        calls.append(command)
+        if command[:1] == ["roqsim"]:
+            raise subprocess.CalledProcessError(2, command, output="bad world")
+        return ""
+
+    monkeypatch.setattr(runner, "_exec", _exec)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.run(["roqsim"])
+
+    assert len([c for c in calls if c[:1] == ["roqsim"]]) == 1
+    assert runner._pod == "pod-x", "no pod was replaced"
+
+
+def test_the_session_forgets_a_pod_it_replaces():
+    """The memo is what keeps a second ask from paying a create and an image pull, and
+    exactly what makes it wrong once the pod it names has ended."""
+    session = AuxPodSession("c-2026-08-06-000000", "ns", core_v1=object(),
+                            storage=_FakeStore(), bucket="b", s3=_S3)
+    spec = ContainerSpec(image="example/img:1")
+    created = []
+
+    def _create(_spec, pod_name):
+        created.append(pod_name)
+        return pod_name
+
+    session._create_pod = _create
+
+    first = session._pod_for(spec)
+    assert session._pod_for(spec) == first and len(created) == 1, "memoised"
+
+    again = session.replace(spec)
+
+    assert again == first, "the name is derived from the campaign, so it is the same one"
+    assert len(created) == 2, "and it was created again rather than handed out again"
 
 
 def test_partial_store_wiring_is_refused_at_construction():
