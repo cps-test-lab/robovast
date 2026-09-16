@@ -15,13 +15,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import csv
 import json
 import math
 import os
 import re
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+
+import numpy as np
 
 # -- how much CPU this process may actually use -------------------------------
 
@@ -239,7 +243,100 @@ def write_provenance_entry(
         json.dump({"entries": existing}, f, indent=2)
 
 
+# -- numeric array fields -----------------------------------------------------
+#
+# A message's numeric arrays are its bulk: a scan is hundreds of ranges, an image is its
+# pixels, a covariance is 36 doubles. A column per element makes a table wider than an
+# index will hold, and a column holding one element of one array is not the array anyway.
+# So a field *declared* as an array of a primitive number becomes one cell, encoded the way
+# :class:`~rosbags_process.CostmapToCsvHandler` encodes an occupancy grid: the raw values,
+# zlib, base64. The declaration decides it and not the values, so the table's shape follows
+# the message definition rather than what a run happened to record, and two runs of the
+# same topic are one table.
+#
+# The cell is self-describing where the costmap's is not. That column holds one known type;
+# any topic can be named here, so the element type and the count travel with the bytes and
+# :func:`decode_numeric_array` needs nothing but the string.
+#
+# Keeping the values as bytes is also what keeps a non-finite one a number. ``inf`` is what
+# a laser reports for a beam that returned nothing; spelled out as text it makes the whole
+# column text, and a text column holds no numbers at all. In the payload it is an IEEE-754
+# bit pattern like every other value and comes back as ``inf``.
+
+#: Opens an encoded cell, so a reader can tell one from a string a topic itself carried.
+ARRAY_CELL_TAG = "num1"
+
+#: ROS IDL primitive -> the numpy dtype code the cell carries. Byte order is written into
+#: the dtype at both ends, so the payload means the same on either kind of host.
+_ARRAY_ELEMENT_DTYPES = {
+    "float": "f4", "double": "f8",
+    "int8": "i1", "uint8": "u1", "octet": "u1",
+    "int16": "i2", "uint16": "u2",
+    "int32": "i4", "uint32": "u4",
+    "int64": "i8", "uint64": "u8",
+    "boolean": "b1",
+}
+_ARRAY_DTYPE_CODES = frozenset(_ARRAY_ELEMENT_DTYPES.values())
+
+#: The three ways a message declares an array -- an unbounded sequence, a bounded one, and
+#: a fixed-size array -- whose element type then decides whether it is a numeric one.
+_ARRAY_FIELD_RE = re.compile(r"^(?:sequence<\s*(\w+)\s*(?:,\s*\d+\s*)?>|(\w+)\[\d+\])$")
+
+
+def numeric_array_dtype(field_type: str) -> Optional[str]:
+    """The dtype code for a field declared as an array of numbers, else ``None``."""
+    match = _ARRAY_FIELD_RE.match(field_type)
+    if match is None:
+        return None
+    return _ARRAY_ELEMENT_DTYPES.get(match.group(1) or match.group(2))
+
+
+def encode_numeric_array(values, dtype: str) -> str:
+    """*values* as one cell: ``num1:<dtype>:<count>:<base64 of zlib of the raw values>``."""
+    if isinstance(values, (bytes, bytearray)):
+        # An ``octet`` array arrives as bytes, which numpy reads as one string to parse.
+        values = np.frombuffer(values, dtype="<u1")
+    raw = np.asarray(values, dtype="<" + dtype).tobytes()
+    payload = base64.b64encode(zlib.compress(raw, 9)).decode("ascii")
+    return f"{ARRAY_CELL_TAG}:{dtype}:{len(values)}:{payload}"
+
+
+def is_numeric_array_cell(value) -> bool:
+    """Whether *value* is a cell :func:`encode_numeric_array` wrote."""
+    return isinstance(value, str) and value.startswith(ARRAY_CELL_TAG + ":")
+
+
+def decode_numeric_array(cell: str) -> "np.ndarray":
+    """The array back out of *cell*, in the dtype it was written with.
+
+    Raises :class:`ValueError` on anything else: a column read with the wrong expectation
+    says so, instead of answering with a plausible empty array.
+    """
+    if not is_numeric_array_cell(cell):
+        raise ValueError(f"not an encoded numeric array: {repr(cell)[:48]}")
+    parts = cell.split(":", 3)
+    if len(parts) != 4:
+        raise ValueError(f"truncated numeric array cell: {repr(cell)[:48]}")
+    _, dtype, count, payload = parts
+    if dtype not in _ARRAY_DTYPE_CODES:
+        raise ValueError(f"unknown element type {dtype!r}")
+    values = np.frombuffer(zlib.decompress(base64.b64decode(payload)), dtype="<" + dtype)
+    if len(values) != int(count):
+        raise ValueError(f"cell declares {count} values, payload holds {len(values)}")
+    return values
+
+
 def gen_msg_values(msg, prefix=""):
+    """Yield ``(column, value)`` per field of *msg*, flattening nested messages by name.
+
+    A field declared as an array of numbers is one column carrying the whole array (see
+    :func:`encode_numeric_array`); a sequence of sub-messages keeps a column per element
+    per field, which is what a handful of waypoints or a diagnostic array is read as.
+
+    A non-finite float is ``None``, which a CSV writes as an empty cell and the ingest
+    stores as ``NULL``: no number an index can hold means no reading, and writing the word
+    would turn the column and every number already in it into text.
+    """
     if isinstance(msg, list):
         for i, val in enumerate(msg):
             yield from gen_msg_values(val, f"{prefix}[{i}]")
@@ -247,11 +344,16 @@ def gen_msg_values(msg, prefix=""):
         for field, type_ in msg.get_fields_and_field_types().items():
             val = getattr(msg, field)
             full_field_name = prefix + "." + field if prefix else field
-            if type_.startswith("sequence<"):
+            dtype = numeric_array_dtype(type_)
+            if dtype is not None:
+                yield full_field_name, encode_numeric_array(val, dtype)
+            elif type_.startswith("sequence<"):
                 for i, aval in enumerate(val):
                     yield from gen_msg_values(aval, f"{full_field_name}[{i}]")
             else:
                 yield from gen_msg_values(val, full_field_name)
+    elif isinstance(msg, float) and not math.isfinite(msg):
+        yield prefix, None
     else:
         yield prefix, msg
 

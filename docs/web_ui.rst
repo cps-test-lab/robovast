@@ -2130,8 +2130,8 @@ least-recently-used). Two consequences worth knowing:
 
 .. _costmap-delivery:
 
-**Costmap data delivery.** Occupancy grids cannot be flattened into table columns
-usefully (a grid becomes thousands of per-cell columns). Instead the
+**Costmap data delivery.** A grid reaches the browser through a step of its own, because
+the panel needs the frame whole and with the geometry to draw it against. The
 ``rosbags_costmap_to_csv`` postprocessing step stores each grid **losslessly and
 compactly** — its int8 cells zlib-compressed — into a ``costmaps`` table, together with
 the geometry (resolution in m/cell, width/height in cells, so the map spans
