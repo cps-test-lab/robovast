@@ -42,6 +42,23 @@ reached by overflow, so ``"1e999"`` is text too — and an integer past 8 bytes.
 Accepting any of them would *delete* data under the guise of typing it. In every
 such case the whole column stays ``TEXT`` and the raw strings survive for
 inspection.
+
+**A non-finite float is a measurement, so it is stored rather than dropped.** "No
+return", "no trajectory came back, so the path length is infinite" and "the ratio
+had no denominator" are results a query has to be able to find, and they arrive
+both as CSV text and as Python floats. Each is stored as its own spelling —
+``"inf"``, ``"-inf"``, ``"nan"`` (:data:`NON_FINITE_TEXT`) — which ``float()``
+reads back and Postgres accepts as ``double precision`` input, and which stays
+distinct from the ``NULL`` that means nothing was measured. The column is ``TEXT``
+for the same reason the string spellings make it ``TEXT``, so the declaration and
+the stored value agree.
+
+**A container is encoded with those substitutions and with** ``allow_nan=False``.
+Python's ``json`` writes three tokens JSON does not have — ``Infinity``,
+``-Infinity``, ``NaN`` — and reads them back without complaint, so a record that
+carries one looks right everywhere until SQL casts the column: Postgres rejects
+the token and fails the *whole query*, not the offending row, taking every other
+field of every other run with it.
 """
 
 import json
@@ -89,7 +106,9 @@ def value_type(value) -> str:
         if isinstance(value, int):
             return INTEGER if _INT64_MIN <= value <= _INT64_MAX else TEXT
         if isinstance(value, float):
-            return REAL
+            # A non-finite float is stored as its spelling, so the column must be text
+            # too -- the same verdict "inf" and "nan" get when they arrive as strings.
+            return REAL if math.isfinite(value) else TEXT
         return TEXT
     if not _NUMBER_RE.match(value) or _LEADING_ZERO_RE.match(value):
         return TEXT
@@ -155,11 +174,53 @@ def coerce(value, col_type: str):
         return value
 
 
+#: The spelling each non-finite float is stored under, in the order
+#: ``+inf``, ``-inf``, ``nan``. These are what :func:`float` parses and what Postgres
+#: accepts for ``double precision``, so the stored value is readable as a number by the
+#: analysis and by SQL, and is still distinguishable from a ``NULL`` that means the value
+#: was never measured.
+NON_FINITE_TEXT = ("inf", "-inf", "nan")
+_POSITIVE_INFINITY, _NEGATIVE_INFINITY, _NOT_A_NUMBER = NON_FINITE_TEXT
+
+
+def as_stored(value):
+    """*value* with every non-finite float replaced by its :data:`NON_FINITE_TEXT` spelling.
+
+    Recurses into lists, tuples and dicts: one such float nested in a JSON-encoded
+    container makes the column as unreadable as a bare one does.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return _NOT_A_NUMBER
+        return _POSITIVE_INFINITY if value > 0 else _NEGATIVE_INFINITY
+    if isinstance(value, dict):
+        return {as_stored(key): as_stored(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [as_stored(item) for item in value]
+    return value
+
+
+def json_text(value, **dumps_kwargs) -> str:
+    """*value* JSON-encoded for a column SQL casts to ``jsonb``.
+
+    ``allow_nan=False`` is the guard behind :func:`as_stored`: a float that reaches the
+    encoder non-finite raises here, inside the ingest and naming the value, instead of
+    being written as a token that breaks every later query over the column.
+    """
+    return json.dumps(as_stored(value), allow_nan=False, **dumps_kwargs)
+
+
 def sql_value(value, col_type: str):
-    """A CSV or param value ready to insert: containers JSON-encoded, numbers typed."""
+    """A CSV or param value ready to insert: containers JSON-encoded, numbers typed.
+
+    Nothing non-finite reaches the driver, in a container or on its own: it goes in as
+    its :data:`NON_FINITE_TEXT` spelling, which is what :func:`value_type` types the
+    column for.
+    """
     if isinstance(value, (list, dict)):
-        return json.dumps(value)
-    return coerce(value, col_type)
+        return json_text(value)
+    converted = coerce(value, col_type)
+    return as_stored(converted) if isinstance(converted, float) else converted
 
 
 def column_def(name: str, col_type: str) -> str:

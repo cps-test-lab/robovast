@@ -67,7 +67,7 @@ from robovast.common.store import RUNLESS_UNIT_STATUSES
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
                                          index_scope, index_views, resource_usage,
                                          run_health)
-from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, widen
+from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, json_text, widen
 # Reused rather than reimplemented: these decide what a data file *is* -- the JSONL format
 # registry, the yaw derivation, the table-name rule -- and a second copy of any of them
 # would be a second answer to "what does this file contain?". Now that the ``data.db``
@@ -608,7 +608,7 @@ def _param_types(param_keys, param_sources) -> dict:
             value = params[key]
             verdict = widen(
                 verdict,
-                json.dumps(value) if isinstance(value, (list, dict)) else value)
+                json_text(value) if isinstance(value, (list, dict)) else value)
         types[f"param_{key}"] = verdict
     return types
 
@@ -801,8 +801,8 @@ def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict,
             "plugin": entry.get("plugin") or None,
             "output": output or None,
             "table_name": name_map.get(Path(output).stem) if output else None,
-            "sources_json": json.dumps(entry.get("sources") or [], default=str),
-            "params_json": json.dumps(entry.get("params") or {}, default=str),
+            "sources_json": json_text(entry.get("sources") or [], default=str),
+            "params_json": json_text(entry.get("params") or {}, default=str),
         })
     # A campaign with no such file ran no postprocessing, or it produced nothing. The table
     # is still created (zero rows), because absent and empty say different things.

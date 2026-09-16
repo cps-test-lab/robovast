@@ -2,11 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for CSV column-type inference (``robovast.results_processing.csv_types``)."""
 
+import json
+
 import pytest
 
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr, coerce,
-                                                   column_def, infer_column_types, sql_value,
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, as_stored,
+                                                   cast_expr, coerce, column_def,
+                                                   infer_column_types, json_text, sql_value,
                                                    value_type, widest)
+
+
+def _refuse_constant(token):
+    raise AssertionError(f"{token} is not JSON and no strict parser accepts it")
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -145,3 +152,89 @@ def test_the_declaration_and_the_value_agree_for_a_boolean_column():
 
     assert declared == INTEGER
     assert all(isinstance(sql_value(r["is_active"], declared), int) for r in rows)
+
+
+# -- non-finite floats, which JSON has no token for --------------------------
+
+
+@pytest.mark.parametrize("value,stored", [
+    (float("inf"), "inf"),
+    (float("-inf"), "-inf"),
+    (float("nan"), "nan"),
+])
+def test_a_non_finite_float_is_stored_as_its_own_spelling(value, stored):
+    """A censored measurement is a result, so it keeps a value of its own.
+
+    ``float()`` reads all three back and Postgres takes them as ``double precision``
+    input, so the number survives; ``NULL`` is left to mean that nothing was measured,
+    which is a different answer and the only one the record could otherwise not tell it
+    apart from.
+    """
+    for declared in (REAL, TEXT, UNKNOWN):
+        assert sql_value(value, declared) == stored, f"declared {declared}"
+        assert sql_value(value, declared) is not None
+
+
+def test_a_non_finite_float_is_typed_like_the_string_that_spells_it():
+    """Already-typed values reach the ingest as floats -- from a ``.jsonl``, or from a
+    param the campaign record holds -- and are judged by the same rule as CSV text."""
+    assert value_type(float("inf")) == TEXT
+    assert value_type(float("-inf")) == TEXT
+    assert value_type(float("nan")) == TEXT
+    assert value_type(1.5) == REAL
+
+
+def test_the_declaration_and_the_value_agree_for_a_censored_column():
+    """The column says text and holds text: the invariant the boolean case also pins."""
+    rows = [{"clearance": 1.5}, {"clearance": float("inf")}]
+
+    declared = infer_column_types(rows, ["clearance"])["clearance"]
+
+    assert declared == TEXT
+    assert sql_value(rows[1]["clearance"], declared) == "inf"
+    assert isinstance(sql_value(rows[1]["clearance"], declared), str)
+
+
+def test_a_declared_numeric_column_is_not_given_a_non_finite_float_either():
+    """A bag declares its types, so no value was read to widen the column first.
+
+    ``"1e999"`` is the same value by another spelling: it overflows to an infinity on
+    conversion, which is why both have to be caught after the coercion and not before.
+    """
+    assert sql_value("inf", REAL) == "inf"
+    assert sql_value("-inf", REAL) == "-inf"
+    assert sql_value("nan", REAL) == "nan"
+    assert sql_value("1e999", REAL) == "inf"
+
+
+def test_a_non_finite_float_in_a_container_never_becomes_a_json_token():
+    """One of them anywhere in the value makes every query casting the column fail --
+    the whole query, not the row -- so the substitution has to reach into the value."""
+    encoded = sql_value({"path_length": float("inf"),
+                         "gaps": [1.0, float("nan"), float("-inf")]}, TEXT)
+
+    assert json.loads(encoded, parse_constant=_refuse_constant) == {
+        "path_length": "inf", "gaps": [1.0, "nan", "-inf"]}
+
+
+def test_json_text_writes_what_a_strict_parser_accepts():
+    assert json.loads(json_text({"a": [float("nan")]}),
+                      parse_constant=_refuse_constant) == {"a": ["nan"]}
+    assert json_text([1.0, 2.0]) == "[1.0, 2.0]"
+
+
+def test_as_stored_leaves_everything_finite_alone():
+    value = {"speed": 0.5, "name": "goal-1", "steps": [1, 2], "ok": True, "gap": None}
+
+    assert as_stored(value) == value
+
+
+def test_a_finite_value_is_unaffected():
+    """The ordinary path, which the substitution must not touch."""
+    assert sql_value("1.5", REAL) == pytest.approx(1.5)
+    assert sql_value(1.5, REAL) == pytest.approx(1.5)
+    assert sql_value("1e308", REAL) == pytest.approx(1e308)
+    assert sql_value("2", INTEGER) == 2
+    assert sql_value("passed", TEXT) == "passed"
+    assert sql_value("", REAL) is None
+    assert sql_value([1.0, {"x": 2.0}], TEXT) == '[1.0, {"x": 2.0}]'
