@@ -173,7 +173,16 @@ def topic_to_filename(topic: str) -> str:
 
 
 class ToCsvHandler(RosbagHandler):
-    """Extract arbitrary ROS topics to CSV files (one file per topic per bag)."""
+    """Extract arbitrary ROS topics to CSV files (one file per topic per bag).
+
+    A scalar field is a column. A field declared as an array of numbers -- a scan's ranges,
+    an image's pixels, a covariance -- is *one* column holding the whole array, packed by
+    :func:`~rosbags_common.encode_numeric_array` and read back with
+    :func:`~rosbags_common.decode_numeric_array`. A non-finite float, which is how a laser
+    spells "no return", is an empty cell: the column stays numeric, and the columns it
+    happened in are named on stdout so a reader knows those NULLs are the sensor's and not
+    a gap in the recording.
+    """
 
     def __init__(self, topics_list: List[str]) -> None:
         self._topics = list(dict.fromkeys(topics_list))  # dedup, preserve order
@@ -208,8 +217,12 @@ class ToCsvHandler(RosbagHandler):
                 print(f"  ✗ {self._bag_name} [{topic}]: no messages")
                 continue
             fieldnames_set: set = set()
+            nulled: Dict[str, int] = {}
             for r in records:
                 fieldnames_set.update(r.keys())
+                for field, value in r.items():
+                    if value is None:
+                        nulled[field] = nulled.get(field, 0) + 1
             other_fields = sorted(fieldnames_set - set(base_fields))
             fieldnames = base_fields + other_fields
             output_file = os.path.join(
@@ -222,6 +235,12 @@ class ToCsvHandler(RosbagHandler):
                 for r in records:
                     writer.writerow(r)
             print(f"  ✓ {output_file}: {len(records)} messages")
+            if nulled:
+                named = [f"{field} ({count})" for field, count in sorted(nulled.items())]
+                shown = ", ".join(named[:8])
+                if len(named) > 8:
+                    shown += f", and {len(named) - 8} more"
+                print(f"    ℹ non-finite values stored as NULL: {shown}")
             total += len(records)
             output_files.append(output_file)
         return total, output_files
@@ -990,11 +1009,14 @@ class CostmapToCsvHandler(RosbagHandler):
     Each grid's int8 cells (-1..100, row-major) are stored losslessly as zlib-compressed raw
     bytes, base64-encoded, alongside its pose metadata -- one row per message in ``costmaps.csv``
     (a ``topic`` column keeps several layers, e.g. global/local/map, in one file). The web costmap
-    panel fetches the frame nearest the playback time and inflates it in the browser. Occupancy
-    grids are highly uniform, so this is far smaller than the per-cell flatten ``to_csv`` would
-    produce (which also blows past SQLite's column limit for any real map) while keeping full
-    precision. Not a batchable-by-default step: enable it with ``rosbags_costmap_to_csv`` naming
-    the costmap topics recorded by the scenario's ``bag_record(...)``.
+    panel fetches the frame nearest the playback time and inflates it in the browser, and that is
+    what a table of its own buys over a column in the topic's: the geometry a frame is drawn
+    against sits beside its cells, and the payload carries no type tag because this column holds
+    int8 cells by definition and the browser reads an ``Int8Array`` straight out of it -- where a
+    topic table's array column has to say what it holds
+    (:func:`~rosbags_common.encode_numeric_array`). Not a batchable-by-default step: enable it
+    with ``rosbags_costmap_to_csv`` naming the costmap topics recorded by the scenario's
+    ``bag_record(...)``.
     """
 
     _FIELDNAMES = ["topic", "timestamp", "frame_id", "resolution", "width", "height",
