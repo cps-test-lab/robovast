@@ -726,9 +726,10 @@ A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``invalid`` means a container the trial ran against **crashed and was restarted under it**.
-The simulator (or the system under test) came back with no memory of the run and the
-scenario carried on regardless, so whatever verdict that trial reached describes a process
-that had lost its state.
+The simulator (or the system under test) took the run's state with it; the container the
+kubelet starts in its place runs no workload, and the runner ends the job as soon as it reads
+the restart off the pod. Whatever verdict the scenario reached in between describes a trial
+that had already lost its process.
 
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
