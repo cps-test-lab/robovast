@@ -852,7 +852,14 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 ``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
 one row per process per ~1 s, one file per container. For a packed job these span the whole
 job; the ``resource_usage`` post-processing step slices them to each run (see
-:ref:`per-run-resource-usage`).
+:ref:`per-run-resource-usage`). Both files span every *instance* of the container as well: a
+container the kubelet restarts runs the sampler again against the same file, which continues
+the record under its one header rather than replacing it, so the samples of the instance that
+died — the high-water mark climbing towards its limit — are kept beside the ones of the
+instance that came after. The seam shows as the cumulative counters going backwards: the
+calibration reader drops that tick as a cgroup replaced, and a run whose container crashed is
+``invalid`` in the intervention ledger (:doc:`architecture`), so its per-run aggregates are never
+compared with a run that kept one instance throughout.
 
 ``system_usage_*.csv`` is the sibling for figures belonging to the **container as a whole**
 rather than to a process — one row per ~1 s, no ``pid``. It is separate because
