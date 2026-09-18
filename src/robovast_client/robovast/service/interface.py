@@ -2219,7 +2219,13 @@ class ServiceError(OSError):
     :data:`robovast.mcp_server.data_access._REPORTED`, which relies on it to turn a
     service-side SQL rejection into a reported error rather than a traceback — keeps
     working unchanged.
+
+    ``include_traceback = False``: what the service said is the whole of the report -- a
+    bug on its side already arrives rendered with the frames it broke in -- and the frames
+    on this side are the HTTP transport's, which name nothing.
     """
+
+    include_traceback = False
 
     def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
         self.status = status
