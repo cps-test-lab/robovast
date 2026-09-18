@@ -257,6 +257,71 @@ not importable. Anything the client needs must live in the client: a wire consta
 ``COMMAND_LIMIT_S`` belongs in ``interface.py``, not in the server module that enforces it.
 
 
+.. _releasing:
+
+Releasing to PyPI
+-----------------
+
+The five distributions are released as **one set at one version**, because ``robovast``
+requires ``robovast-client`` and ``robovast-sim-roqsim`` at *exactly* the version being
+released, and ``robovast-nav`` and ``robovast-cluster`` require ``robovast``. A version
+that exists for some of them and not the others is a set nobody can install, so the
+version is never edited by hand: ``.github/workflows/publish.yml`` stamps it into every
+manifest from the git tag.
+
+**Every release goes to TestPyPI first, and is tested by hand there.** An upload cannot be
+taken back — a version can be yanked, never replaced, and ``pip`` still installs a yanked
+wheel when pinned exactly — so the only cheap place to find a packaging mistake is an index
+nothing depends on. The two triggers of the workflow are the two halves of that rule:
+
+``workflow_dispatch`` → TestPyPI
+   ``gh workflow run publish.yml -f version=2.1.0rc1`` publishes the whole set as that
+   version to TestPyPI. Pre-release numbers (``rc1``, ``rc2``, …) are the convention, since
+   ``pip`` does not pick them up unless pinned. Install it in a fresh venv and try it:
+
+   .. code-block:: bash
+
+      pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
+          "robovast[nav,roqsim]==2.1.0rc1" "robovast-cluster==2.1.0rc1"
+      vast serve          # the web UI must come up, not "API only"
+
+   Something wrong is a fix on ``main`` and ``rc2``; nothing has been consumed.
+
+a ``v*`` tag → PyPI
+   ``git tag v2.1.0 && git push origin v2.1.0``, on the commit the rc was built from. The
+   same workflow, the same wheels, the real index. The tag also produces the versioned
+   container images (``image.yml``), so the wheels and the images a deployment runs carry
+   the same number.
+
+**What the workflow does, and why in that order.** One ``build`` job makes and checks all
+five wheels before anything is uploaded: it verifies the lock against the manifest, builds
+both frontend bundles (``make frontend``) and stages them (``make ui-stage``), stamps the
+version, rewrites the root's path dependencies to ``==<version>``
+(``tools/pin_released_siblings.py`` — a path dependency reaches the metadata as a direct
+reference, which the index refuses), and then opens every wheel to confirm it carries no
+such reference and does carry its package data (``robovast/_ui/index.html``,
+``robovast_nav/web/dist/remoteEntry.js``). Everything that can fail for a reason inside
+this repository fails there, at no cost. The publish jobs then upload the artifacts in
+dependency order — client and sim-roqsim, then robovast, then nav and cluster — with
+``skip-existing`` so that a re-run of the same tag after a transient failure continues past
+the wheels already on the index. A last job installs the set from the index it went to and
+checks the same things in what was installed, so a break that reached the index is named
+by the workflow rather than by a user.
+
+**Authentication is trusted publishing.** Each index holds one publisher per distribution,
+naming this repository, ``publish.yml`` and the ``pypi`` or ``testpypi`` environment; the
+jobs mint a short-lived OIDC token and no API token exists anywhere. A distribution not yet
+on an index is created by its first upload through a *pending* publisher, registered the
+same way.
+
+**Rehearsing without CI.** ``make publish-test`` uploads the set to TestPyPI from your
+checkout, stamped with a post-release of the tree's version that is free on all five
+histories at once (``tools/next_testpypi_version.py``), and ``make publish-test-venv``
+installs it into a fresh venv and checks the bundles, the entry points and the CLI. Every
+manifest is restored afterwards, including on failure. ``DRY_RUN=1`` builds without
+uploading.
+
+
 Container Image Compatibility Version
 -------------------------------------
 

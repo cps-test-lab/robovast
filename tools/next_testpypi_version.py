@@ -7,7 +7,8 @@ would otherwise cost a version bump per attempt -- and the version that reaches
 real PyPI must be the one the tree was released at, not one inflated by
 rehearsals. So the rehearsal carries a POST-release of the tree's version:
 2.1.0, then 2.1.0.post1, .post2, ... one past the highest TestPyPI already
-holds.
+holds -- on every distribution named, when several are: the set requires itself at
+exactly one version, so the stamp has to be free on all of their histories at once.
 
 A post-release rather than `.devN` because pip skips pre-releases unless asked:
 `pip install robovast-client` in publish-client-test-venv would resolve a .devN
@@ -33,12 +34,13 @@ def released_versions(name: str) -> set[str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} <distribution> <base-version>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(f"usage: {sys.argv[0]} <base-version> <distribution> [<distribution> ...]",
+              file=sys.stderr)
         return 2
-    name, base = sys.argv[1], sys.argv[2]
+    base, names = sys.argv[1], sys.argv[2:]
 
-    taken = released_versions(name)
+    taken = set().union(*(released_versions(name) for name in names))
     if base not in taken:
         print(base)
         return 0
