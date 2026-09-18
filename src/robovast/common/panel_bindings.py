@@ -124,83 +124,66 @@ class DeclaredMarker(BaseModel):
         return self
 
 
-def _read_pose(value) -> tuple[Optional[list], Optional[float]]:
-    """``([x, y] or [x, y, z], yaw)`` from a pose-shaped value: ``{position: {x, y}, orientation:
-    {yaw}}``, or a bare ``{x, y}``, which is what a hand-written ``.vast`` pose often is."""
-    if not isinstance(value, dict):
-        return None, None
-    position = value["position"] if isinstance(value.get("position"), dict) else value
-    orientation = value.get("orientation")
-    yaw = orientation.get("yaw") if isinstance(orientation, dict) else None
-    yaw = float(yaw) if isinstance(yaw, (int, float)) else None
-    x, y, z = position.get("x"), position.get("y"), position.get("z")
-    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-        return None, yaw
-    pos = [float(x), float(y)] if not isinstance(z, (int, float)) else [float(x), float(y), float(z)]
-    return pos, yaw
-
-
 def _translate(pos: Optional[list], offset: Optional[list]) -> Optional[list]:
     if pos is None or not offset:
         return pos
     return [v + (offset[i] if i < len(offset) else 0.0) for i, v in enumerate(pos)]
 
 
-def declared_markers(bindings: Optional[dict], config: dict) -> list[dict]:
+def declared_markers(bindings: Optional[dict], config: dict) -> list:
     """The markers a panel's bindings declare, resolved against one configuration.
 
     The Python twin of the panel kit's ``declaredMarkers`` -- the web UI resolves the same
     declaration in the browser, and this is what a reader outside it (a video overlay, a report)
     uses, so ``param:`` and ``offset:`` mean one thing wherever a declared marker is drawn.
 
-    *config* is a configuration as ``configurations.yaml`` records it: the scenario parameters
-    under ``config`` and the ``_``-prefixed keys a variation left at the top level, which is the
-    shape every Python reader of that file already consumes. Returns ``SceneMarker``-shaped
-    mappings (``kind``, ``pos``, ``yaw``, ``points``, ``label``, ``color``, ``group``, ...).
+    *config* is a configuration as ``configurations.yaml`` records it -- the scenario parameters
+    under ``config`` and the ``_``-prefixed keys a variation left at the top level, which is what
+    the service hands the browser as ``parameters`` and ``internals``. Each entry is validated as a
+    :class:`DeclaredMarker`; the result is a list of :class:`SceneMarker`.
 
     A ``param:`` naming something the configuration does not have yields no marker rather than a
     marker at the origin: a pose silently drawn at (0, 0) is a wrong answer, and an absent one is a
     visible question.
     """
+    from robovast.common.scene_markers import SceneMarker, read_pose  # pylint: disable=import-outside-toplevel
+
     declared = (bindings or {}).get("markers")
     if not isinstance(declared, list):
         return []
     parameters = config.get("config") or {}
-    out: list[dict] = []
+    out: list = []
     for entry in declared:
-        if not isinstance(entry, dict):
-            continue
-        rest = {k: v for k, v in entry.items() if k not in ("param", "internal", "offset")}
-        rest.setdefault("group", "declared")
-        param, internal, offset = entry.get("param"), entry.get("internal"), entry.get("offset")
-        if not param and not internal:
-            pos = _translate(rest.get("pos"), offset)
-            geometry = rest.get("points") if rest.get("kind") == "path" else pos
-            if geometry:
-                out.append({**rest, "pos": pos})
+        marker = DeclaredMarker.model_validate(entry)
+        fields = marker.model_dump(exclude={"param", "internal", "offset"}, exclude_none=True)
+        fields.setdefault("group", "declared")
+        if not marker.param and not marker.internal:
+            pos = _translate(marker.pos, marker.offset)
+            if marker.points if marker.kind == "path" else pos:
+                out.append(SceneMarker(**{**fields, "pos": pos}))
             continue
         # `param:` and `internal:` are the same question -- where does this position come from.
         # A path reads the value as its polyline; every other kind reads it as a pose, and a list
         # of them yields one numbered marker each.
-        value = parameters.get(param) if param else config.get(internal)
-        name = param or internal
-        if rest.get("kind") == "path":
-            points = [_translate(p, offset) for p in (_read_pose(p)[0] for p in (value or [])) if p]
+        name = marker.param or marker.internal
+        value = parameters.get(marker.param) if marker.param else config.get(marker.internal)
+        if marker.kind == "path":
+            points = [_translate(p, marker.offset) for p in (read_pose(p)[0] for p in (value or [])) if p]
             if points:
-                out.append({**rest, "points": points, "label": rest.get("label") or name})
+                out.append(SceneMarker(**{**fields, "points": points, "label": marker.label or name}))
             continue
         values = value if isinstance(value, list) else [value]
         for i, one in enumerate(values):
-            pos, yaw = _read_pose(one)
-            moved = _translate(pos, offset)
+            pos, yaw = read_pose(one)
+            moved = _translate(pos, marker.offset)
             if moved is None:
                 continue
-            label = rest.get("label") or name
-            out.append({
-                **rest, "pos": moved,
-                "yaw": rest["yaw"] if rest.get("yaw") is not None else yaw,
+            label = marker.label or name
+            out.append(SceneMarker(**{
+                **fields, "pos": moved,
+                "yaw": marker.yaw if marker.yaw is not None else yaw,
                 "label": f"{label} {i + 1}" if len(values) > 1 else label,
-            })
+            }))
     return out
 
 

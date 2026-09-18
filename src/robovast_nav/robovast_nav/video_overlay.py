@@ -54,7 +54,6 @@ import yaml
 from PIL import Image, ImageDraw
 
 from robovast.common.panel_bindings import declared_markers
-from robovast.common.scene_markers import SceneMarker
 
 from .config_view import GOAL_COLOR, obstacle_markers, path_markers
 
@@ -264,9 +263,9 @@ def configurations(campaign_dir: Path) -> dict:
         return yaml.safe_load(fh) or {}
 
 
-def configuration_entry(campaign_dir: Path, config_name: str) -> dict:
+def configuration_entry(campaign_dir: Path, config_name: str, doc: dict | None = None) -> dict:
     """The configuration's entry in the campaign's ``_transient/configurations.yaml``."""
-    doc = configurations(campaign_dir)
+    doc = configurations(campaign_dir) if doc is None else doc
     path = campaign_dir / "_transient" / "configurations.yaml"
     for entry in doc.get("configs") or []:
         if entry.get("name") == config_name:
@@ -278,7 +277,7 @@ def configuration_entry(campaign_dir: Path, config_name: str) -> dict:
     )
 
 
-def map2d_declaration(campaign_dir: Path) -> dict:
+def map2d_declaration(campaign_dir: Path, doc: dict | None = None) -> dict:
     """The ``map2d`` config-view panel's bindings, from the campaign's frozen ``.vast``.
 
     ``configurations.yaml`` names the file the campaign ran; the campaign keeps a copy under
@@ -286,7 +285,7 @@ def map2d_declaration(campaign_dir: Path) -> dict:
     inset is -- so its declaration is what the inset draws; ``scene3d``'s are world-frame and
     carry offsets a map cannot undo.
     """
-    named = configurations(campaign_dir).get("vast")
+    named = (configurations(campaign_dir) if doc is None else doc).get("vast")
     if not named:
         return {}
     path = campaign_dir / "_config" / Path(str(named)).name
@@ -488,7 +487,8 @@ class CostmapOverlay:
 
         if self.planned_path or self.obstacles or self.goal or self.markers:
             campaign = run.parent.parent
-            entry = configuration_entry(campaign, run.parent.name)
+            doc = configurations(campaign)
+            entry = configuration_entry(campaign, run.parent.name, doc)
             markers = []
             if self.planned_path or self.goal:
                 for m in path_markers(entry):
@@ -499,8 +499,9 @@ class CostmapOverlay:
                     markers.append(m)
             if self.obstacles:
                 markers += obstacle_markers(entry)
-            declaration = {"markers": self.markers} if self.markers is not None else map2d_declaration(campaign)
-            markers += [SceneMarker(**m) for m in declared_markers(declaration, entry)]
+            declaration = ({"markers": self.markers} if self.markers is not None
+                           else map2d_declaration(campaign, doc))
+            markers += declared_markers(declaration, entry)
             self._markers = markers
 
         self._fit(width, height)
