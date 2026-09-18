@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=1899d864a31e74e8045c4d8fd27916fe3108bbce
+ARG ROQSIM_REF=357d21c53be5f4c9bbc464e8c7cd5314e0ba181c
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -141,6 +141,23 @@ RUN apt-get update && \
         libglib2.0-0 \
         libgomp1 \
         ros-"${ROS_DISTRO}"-simulation-interfaces && \
+    rm -rf /var/lib/apt/lists/*
+
+##############################################################
+####            The Create 3 / TurtleBot 4 stack            ####
+##############################################################
+# What roqsim_create3_toolbox (built below) launches over the TurtleBot 4 model, unchanged from
+# its release: the Create 3 API nodes, the simulator adapters (the gz toolbox pulls only message
+# packages, not a Gazebo runtime), and the TurtleBot 4's own node. In the family image rather
+# than per campaign, so a campaign that runs the robot's own stack names this image as its SUT
+# and builds nothing.
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-"${ROS_DISTRO}"-irobot-create-msgs \
+        ros-"${ROS_DISTRO}"-irobot-create-nodes \
+        ros-"${ROS_DISTRO}"-irobot-create-gz-toolbox \
+        ros-"${ROS_DISTRO}"-turtlebot4-node && \
     rm -rf /var/lib/apt/lists/*
 
 ##############################################################
@@ -271,12 +288,14 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
       echo "legged platforms: skipped (build with --build-arg INCLUDE_TORCH_PKGS=1)" ; \
     fi
 
-# The ROS bridge, its navigation actions and the nav2 example are colcon packages, not pip
-# ones: they register the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks
-# for transport. `roqsim_nav_ros` serves a navigator's or walker's goal endpoints (nav2's
-# NavigateToPose / NavigateThroughPoses, and StartRoute from `roqsim_nav_interfaces` for a
-# mover with a configured route). A world that declares an endpoint nothing here serves stops
-# the bridge at start-up, so without these a scenario cannot send traffic anywhere.
+# The ROS bridge, its navigation actions, the nav2 example and the Create 3 toolbox are colcon
+# packages, not pip ones: they register the `ros2_bridge` / `sim_interfaces` plugins a world
+# gets when a run asks for transport. `roqsim_nav_ros` serves a navigator's or walker's goal
+# endpoints (nav2's NavigateToPose / NavigateThroughPoses, and StartRoute from
+# `roqsim_nav_interfaces` for a mover with a configured route). A world that declares an
+# endpoint nothing here serves stops the bridge at start-up, so without these a scenario cannot
+# send traffic anywhere. `roqsim_create3_toolbox` launches the Create 3 / TurtleBot 4 stack
+# installed above over the TurtleBot 4 model.
 #
 # Built into **/ws**, the overlay the RoboVAST entrypoint already sources -- not into a
 # second workspace of their own. A separate overlay has to be sourced by something, and
@@ -293,10 +312,12 @@ RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge &&
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_interfaces /ws/src/roqsim_nav_interfaces && \
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_ros /ws/src/roqsim_nav_ros && \
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav2_example /ws/src/roqsim_nav2_example && \
+    ln -s /opt/roqsim/ros2_ws/src/roqsim_create3_toolbox /ws/src/roqsim_create3_toolbox && \
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
     colcon build --packages-select \
-      roqsim_ros_bridge roqsim_nav_interfaces roqsim_nav_ros roqsim_nav2_example
+      roqsim_ros_bridge roqsim_nav_interfaces roqsim_nav_ros roqsim_nav2_example \
+      roqsim_create3_toolbox
 
 # Back to the archive the base image shipped, whatever this build fetched through. An image that
 # kept a site's mirror would carry a host nobody outside that network can resolve, so every
