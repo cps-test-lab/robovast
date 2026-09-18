@@ -875,6 +875,27 @@ def test_a_held_aux_container_is_reaped_on_idleness_like_a_query_one():
     assert mgr._idle_cap_s(slot) == ce.QUERY_IDLE_WAIT_CAP_S
 
 
+def test_a_held_container_is_not_idle_until_its_last_holder_lets_go(monkeypatch):
+    """A holder's commands do not pass through the manager -- the runner execs into the
+    container directly -- so between two of them nothing distinguishes it from an idle one.
+    Idleness is measured from the release, however long the hold."""
+    monkeypatch.setattr(ce, "QUERY_IDLE_REAP_S", 0.2)
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    identity = ("aux", "preview-abc", "aux-builder")
+    outer = mgr.hold(_held_aux(), identity, 300)
+    inner = mgr.hold(_held_aux(), identity, 300)
+    assert mgr.state(outer).idle_expires_in_s is None, "no idle countdown while held"
+    mgr.release_hold(inner)
+    time.sleep(0.6)
+    assert lane.live.get(outer) is True, "one holder is still composing against it"
+    mgr.release_hold(outer)
+    deadline = time.monotonic() + 5
+    while mgr.state(outer) is not None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert mgr.state(outer) is None, "released by every holder, it is idle and reaped"
+
+
 # -- one container's /config is one configuration's -------------------------------------
 
 

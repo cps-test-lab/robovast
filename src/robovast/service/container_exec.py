@@ -581,7 +581,7 @@ class ContainerExecManager:
                 return None
             running = self._workload_running_locked(slot)
             idle_in = None
-            if not running:
+            if not running and not held["holders"]:
                 idle_in = max(0, int(held["idle_deadline"] - time.monotonic()))
             return ExecContainerState(
                 kept=True, reused=held["reused"], image=held["image"],
@@ -684,6 +684,7 @@ class ContainerExecManager:
         with self._lock:
             if slot in self._held:
                 self._held[slot]["reused"] = reused
+                self._held[slot]["holders"] += 1
         self._touch(slot)
         return slot
 
@@ -694,7 +695,17 @@ class ContainerExecManager:
         container, and the reaper owns its death. Stopping here would also make two
         concurrent holders of one slot destroy each other's container, which is exactly the
         failure a per-call session had.
+
+        The idle window starts here: a held container is in use for as long as anything
+        holds it, whether or not a command is running in it at the moment the reaper looks.
+        Its commands do not pass through this manager -- the runner execs into the container
+        directly -- so between two of them nothing here can tell it from an idle one. The hard
+        deadline still bounds a holder that never lets go.
         """
+        with self._lock:
+            held = self._held.get(slot)
+            if held is not None:
+                held["holders"] = max(0, held["holders"] - 1)
         self._touch(slot)
 
     def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
@@ -796,7 +807,7 @@ class ContainerExecManager:
             self._held[slot] = {
                 "identity": identity, "image": spec.image_identity,
                 "config": spec.config_name, "slot": slot,
-                "reused": False, "started": now,
+                "reused": False, "started": now, "holders": 0,
                 "idle_deadline": now + self._idle_reap_s(slot),
                 "deadline": now + deadline,
                 # Kept so the mounted /config outlives this call and is removed with
@@ -883,7 +894,8 @@ class ContainerExecManager:
                         due.append((slot, "its container is gone"))
                     elif now >= held["deadline"]:
                         due.append((slot, "hard deadline reached"))
-                    elif (not self._workload_running_locked(slot)
+                    elif (not held["holders"]
+                            and not self._workload_running_locked(slot)
                             and now >= held["idle_deadline"]):
                         due.append((slot, "idle"))
             # Outside the lock: stop() takes it, and a lane teardown is slow enough that
