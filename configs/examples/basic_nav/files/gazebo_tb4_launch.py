@@ -36,13 +36,16 @@ against roqsim's ~107 s, an asymmetry with nothing to do with either simulator
 world with SceneBroadcaster made unconditional, which decouples the two; ``use_rviz`` is
 off for the same reason, and because the roqsim half has no viewer either.
 
-One parameter is rewritten on the way in. ``files/nav2_params.yaml`` drives the robot as
-the TurtleBot 4 is driven: a ``TwistStamped`` on ``cmd_vel`` (``enable_stamped_cmd_vel``
-on every node), which is what the roqsim model takes. nav2's minimal TB4 simulation
-bridges a plain ``Twist`` on ``cmd_vel`` (nav2_minimal_tb4_sim/configs/tb4_bridge.yaml)
-and takes no bridge override, so this half flips the flag back -- with nav2's own
-``RewrittenYaml``, the way its bring-up rewrites parameters, rather than carrying a
-second copy of the file that would drift from the first.
+One parameter is rewritten on the way in. ``files/nav2_params.yaml`` sends a
+``TwistStamped`` on ``cmd_vel`` (``enable_stamped_cmd_vel`` on every node), which is
+what the real TurtleBot 4 takes (turtlebot4_bringup remaps the Create 3's stamped input
+onto ``cmd_vel``; turtlebot4_navigation's nav2.yaml sets the flag the same way) and what
+the TurtleBot 4's own Gazebo simulator takes (create3_sim's motion_control). nav2's
+minimal TB4 simulation is neither: it bridges a plain ``Twist`` on ``cmd_vel``
+(nav2_minimal_tb4_sim/configs/tb4_bridge.yaml) and takes no bridge override, so this
+half flips the flag back -- with nav2's own ``RewrittenYaml``, the way its bring-up
+rewrites parameters, rather than carrying a second copy of the file that would drift
+from the first.
 """
 
 import os
