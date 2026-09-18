@@ -35,6 +35,14 @@ against roqsim's ~107 s, an asymmetry with nothing to do with either simulator
 (roqsim's campaign runs with no viewer at all). ``files/depot_gt.sdf`` is upstream's
 world with SceneBroadcaster made unconditional, which decouples the two; ``use_rviz`` is
 off for the same reason, and because the roqsim half has no viewer either.
+
+One parameter is rewritten on the way in. ``files/nav2_params.yaml`` drives the robot as
+the TurtleBot 4 is driven: a ``TwistStamped`` on ``cmd_vel`` (``enable_stamped_cmd_vel``
+on every node), which is what the roqsim model takes. nav2's minimal TB4 simulation
+bridges a plain ``Twist`` on ``cmd_vel`` (nav2_minimal_tb4_sim/configs/tb4_bridge.yaml)
+and takes no bridge override, so this half flips the flag back -- with nav2's own
+``RewrittenYaml``, the way its bring-up rewrites parameters, rather than carrying a
+second copy of the file that would drift from the first.
 """
 
 import os
@@ -45,6 +53,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from nav2_common.launch import RewrittenYaml
 
 # The gz world whose pose feed carries the robot: fixed by the map this campaign runs.
 _WORLD = "depot"
@@ -58,6 +67,12 @@ def generate_launch_description():
         get_package_share_directory("nav2_bringup"), "launch", "tb4_simulation_launch.py")
     # Beside this file: both are campaign run_files, mounted together under /config/files.
     world = os.path.join(os.path.dirname(os.path.abspath(__file__)), "depot_gt.sdf")
+    # The shared parameters, with the command type nav2's minimal sim bridges (see above).
+    params_file = RewrittenYaml(
+        source_file=LaunchConfiguration("params_file"),
+        param_rewrites={"enable_stamped_cmd_vel": "false"},
+        convert_types=True,
+    )
 
     return LaunchDescription([
         # Declared so the scenario's key_value arguments reach the include below. Defaults
@@ -71,7 +86,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(tb4_sim),
             launch_arguments={
                 "map": LaunchConfiguration("map"),
-                "params_file": LaunchConfiguration("params_file"),
+                "params_file": params_file,
                 "headless": LaunchConfiguration("headless"),
                 "autostart": LaunchConfiguration("autostart"),
                 "robot_name": _ROBOT_NAME,

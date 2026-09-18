@@ -41,7 +41,8 @@ components:
       # docs/architecture.rst).
       - ground_truth_pose: {}
   # Publishes /clock, /odom, odom->base_link, /scan (rplidar_link), /joint_states, and subscribes
-  # /cmd_vel -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
+  # /cmd_vel (a TwistStamped, as the robot takes it; files/nav2_params.yaml enables stamped commands)
+  # -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
   # robot_state_publisher over the TB4 URDF, which publishes base_link and every link below it
   # (including the sensor mounts) from the model; two publishers for one static transform is a TF
   # conflict. The bridge keeps what only the simulator knows: odom->base_link and the clock.
