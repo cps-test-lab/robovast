@@ -177,8 +177,14 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
           `${unchecked.length} check${unchecked.length === 1 ? '' : 's'} did not run`}
       </Typography>
       <Divider sx={{ my: 0.5 }} />
+      {/* pre-wrap: a plugin that broke reports the frames it broke in, one per line. */}
       {report.problems.map((p, i) => (
-        <Typography key={i} variant="caption" component="div" sx={{ fontFamily: 'monospace' }}>
+        <Typography
+          key={i}
+          variant="caption"
+          component="div"
+          sx={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}
+        >
           <b>{p.stage}</b>
           {p.severity === 'error' ? '' : ` (${p.severity})`}
           {p.config ? ` [${p.config}]` : ''}
