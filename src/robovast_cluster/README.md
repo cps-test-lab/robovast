@@ -1,41 +1,33 @@
 # robovast-cluster
 
-**Run [RoboVAST](https://github.com/cps-test-lab/robovast) campaigns across a Kubernetes
-cluster — hundreds of simulation runs in parallel, the same `.vast` you ran on your laptop —
-and the operator commands that stand the service up and keep it running.**
+**Run your robot software through hundreds of simulated runs at once, on a Kubernetes
+cluster.**
+
+[RoboVAST](https://cps-test-lab.github.io/robovast/) tests robotics stacks by running them
+through varied, recorded simulation runs. On one machine those runs go one after another; with
+`robovast-cluster` the same campaign — the same file, unchanged — becomes jobs spread across a
+cluster, as many in parallel as the cluster has room for. Bags, screenshots and logs come back
+to one place, and the results are queryable as before.
 
 ```bash
 pip install robovast robovast-cluster
-vast cluster setup my-cluster.yaml       # deploys the service, its ingress and TLS
-vast serve --backend cluster             # or run the service locally against the cluster
 ```
 
 ## What it adds
 
-- **The `cluster` execution lane.** Each run becomes a Kubernetes Job; the campaign
-  controller schedules them across the nodes, pulls the pinned images, collects bags,
-  screenshots and logs, and publishes the results to the campaign store. Node placement,
-  resource requests and per-cluster storage are configuration, not code.
-- **`vast cluster setup / cleanup / jobs-cleanup / monitor`** — deploy the service with an
-  Ingress and certificate, tear it down, sweep finished Jobs, watch a campaign's Jobs.
-- **`vast service upgrade / token`** — roll the deployed service to a new image, mint access
-  tokens.
-- **Cluster configurations as plugins** — `minikube` for a laptop, `rke2` for your own
-  machines, `gcp` and `azure` for the clouds — each knowing its object store (S3-compatible or
-  Google Cloud Storage), its registry and its node shapes, with credentials as cluster Secrets.
-  Another cluster flavour is another entry point.
+The Kubernetes execution lane, the commands that deploy the RoboVAST service onto a cluster
+with its ingress and certificate and keep it running, and ready-made configurations for the
+clusters people have: a laptop's minikube, your own machines under RKE2, Google Cloud, Azure.
+Object storage, registry and node shapes are settings, not code, and another cluster flavour is
+another plugin.
 
-Everything a user does — launching campaigns, waiting, fetching results, the web UI, the MCP
-endpoint — is unchanged; a campaign does not know which lane it runs on. Users need only
-[`robovast-client`](https://pypi.org/project/robovast-client/); this package is for the
-operator who has the kubeconfig.
+## Is this the package for me?
 
-## Where it fits
-
-It is a separate distribution so that `pip install robovast` carries no Kubernetes client:
-without it, the service runs the local Docker lane and says so — `vast serve --backend cluster`
-names the lanes that are installed, and `vast doctor` reports the cluster lane as absent rather
-than broken. It ships into the `robovast` namespace, so import paths do not change.
+Yes, if you are the person with the kubeconfig — the one who sets the service up for a team.
+The people using it need only [`robovast-client`](https://pypi.org/project/robovast-client/);
+they launch campaigns and fetch results without knowing which lane runs them. If you only run
+campaigns on your own Docker host, [`robovast`](https://pypi.org/project/robovast/) alone does
+that, and says so if you ask it for a cluster.
 
 Documentation: [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/),
 "Cluster execution" and "Deployment".

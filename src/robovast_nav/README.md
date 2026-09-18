@@ -1,42 +1,32 @@
 # robovast-nav
 
-**Mobile-robot navigation for [RoboVAST](https://github.com/cps-test-lab/robovast): the
-variation types that generate the worlds, routes and obstacles a navigation stack is tested
-against, and the panels that show what it did.**
+**Test a mobile robot's navigation across the environments it will actually meet.**
+
+A navigation stack that works in one map has been demonstrated, not tested. `robovast-nav`
+extends [RoboVAST](https://cps-test-lab.github.io/robovast/) — the framework that runs your
+robot software through hundreds of varied, recorded simulation runs — with the variation
+that matters for navigation: **generated indoor floorplans** with different rooms and
+connectivity, **start and goal poses** drawn across the free space, **static obstacles**, and
+**obstacles that appear** as the robot approaches them, the case that forces re-planning.
+Cross them in one campaign, and the framework does the rest.
 
 ```bash
 pip install "robovast[nav]"
 ```
 
-## Variation types
+## Seeing what the robot did
 
-Declared in a `.vast` like any other factor, each one turns into a sweep:
+Each run comes back with a web view of the trajectory on the map, the costmap as the stack
+saw it, and the Nav2 behaviour tree as it ticked; a health check flags a control loop that
+could not keep its rate. An AI agent connected to the service can read the same map,
+trajectory and path deviation for any run.
 
-| Type | Varies |
-|---|---|
-| `FloorplanVariation` / `FloorplanGeneration` | the indoor environment itself — rooms, sizes, connectivity — from a [Floorplan-DSL](https://secorolab.github.io/FloorPlan-DSL/) model |
-| `PathVariationRandom` / `PathVariationRasterized` | start and goal poses, drawn at random or on a raster over the free space |
-| `ObstacleVariation` | static obstacles placed in the environment |
-| `ObstacleVariationWithDistanceTrigger` | an obstacle that appears when the robot comes within a distance — the re-planning case |
+## Is this the package for me?
 
-A campaign that crosses floorplans with routes with obstacles is a few lines; the framework
-does the expansion, the repetitions and the bookkeeping.
-
-## Seeing a run
-
-Three web panels for the run view, served by the RoboVAST web UI: the **2D map** with the
-trajectory, the **costmap** as the stack saw it, and the **Nav2 behaviour tree** as it ticked.
-A postprocessing command extracts the behaviour-tree trace from a run's bags, and a health
-check flags a control loop that fell below its rate. The MCP plugin gives an agent the map, the
-obstacles, the trajectory and the path deviation of any run.
-
-## Where it fits
-
-`robovast-nav` is one of RoboVAST's extension packages: variation types, panels, postprocessing
-commands, health checks and MCP tools are all entry points, and this package provides the
-navigation set. It requires `robovast`; a service without it simply lists no navigation
-variation types. Nav2 is the reference stack, and the RoboVAST dataset of environments and
-scenarios is built on these types.
+Yes, if your robot drives and you want to know where its navigation breaks. Nav2 is the
+reference stack, and RoboVAST's ready-made set of environments and scenarios is built on these
+variation types. If your robot does not drive, RoboVAST without this package still varies
+everything else; the navigation-specific parts are here so nobody else has to carry them.
 
 Documentation: [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/).
 
