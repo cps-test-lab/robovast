@@ -61,6 +61,12 @@ IPC_DIR="${IPC_DIR:-/ipc}"
 # says so, keeps the evidence the dead one left in /out, and waits to be ended: the runner reads
 # the restart off the pod and deletes the job, recording the run as invalid with what the
 # container died of.
+#
+# It HOLDS rather than exiting, and that is forensic rather than cosmetic. The runner reads what
+# the container died of from the pod's `last_state.terminated`, which names the first instance's
+# end (OOMKilled, exit 137) for exactly as long as this instance keeps running. An exit here would
+# be followed by another kubelet restart, after which that field names this script's own exit
+# and the record says the guard died, not the simulator.
 _STARTED_MARKER="${IPC_DIR}/.${CONTAINER_NAME}.started"
 if [ -e "${_STARTED_MARKER}" ]; then
     log "ERROR: ${CONTAINER_NAME} is a restarted container: an earlier instance started at $(cat "${_STARTED_MARKER}") and died, and the trial died with it. Not starting the workload again; waiting for the runner to end this job."
