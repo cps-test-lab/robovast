@@ -352,7 +352,7 @@ def _config_view_contribution(config: dict, vast_dir: str) -> dict:
         collect_contributions  # pylint: disable=import-outside-toplevel
     block = config.get("_config_block") or {}
     try:
-        classes = [cls for cls, _params in _get_variation_classes(block, vast_dir)]
+        classes = [cls for cls, _params, _ref in _get_variation_classes(block, vast_dir)]
     except Exception as exc:  # noqa: BLE001 - an unresolvable plugin is reported, not raised
         return {"markers": [], "files": {}, "errors": [f"variation types: {exc}"]}
     return collect_contributions(config, classes, vast_dir)

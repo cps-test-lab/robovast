@@ -38,6 +38,7 @@ from robovast.client.status import failure_detail
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
+from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
 from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
                      missing_input_error)
@@ -1259,6 +1260,9 @@ def _get_variation_classes(scenario_config, vast_dir=""):
     entry point or by a local ``<path>.py:<Class>`` file reference resolved
     relative to ``vast_dir`` (parity with search strategies/extractors and
     results postprocessing).
+
+    Returns ``(variation_class, parameters, ref)`` per entry, *ref* being the name as the
+    ``.vast`` wrote it -- what a message quotes to point a reader back into the file.
     """
 
     # Get the variation list from settings
@@ -1300,7 +1304,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
             # Each item in the list should be a dict with one key (the class name)
             for class_name in item.keys():
                 if class_name in available_classes:
-                    variation_classes.append((available_classes[class_name], item[class_name]))
+                    variation_classes.append((available_classes[class_name], item[class_name], class_name))
                 elif is_file_ref(class_name):
                     # Local '<path>.py:<Class>' reference relative to the .vast dir.
                     variation_class = load_ref(class_name, 'robovast.variation_types', vast_dir)
@@ -1308,7 +1312,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
                     if errors:
                         raise ValueError(
                             f"Invalid variation plugin '{class_name}': {'; '.join(errors)}")
-                    variation_classes.append((variation_class, item[class_name]))
+                    variation_classes.append((variation_class, item[class_name], class_name))
                 else:
                     error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
                     if not available_classes:
@@ -2057,14 +2061,14 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     )
 
         _check_declared_contracts(
-            config, variation_classes_and_parameters,
+            config, [(cls, params) for cls, params, _ref in variation_classes_and_parameters],
             existing_scenario_parameters, parameters, vast_dir)
 
         current_configs = [{
             'name': config['name'],
             'config': config_dict}]
 
-        for variation_class, variation_parameters in variation_classes_and_parameters:
+        for variation_class, variation_parameters, variation_ref in variation_classes_and_parameters:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             # Auxiliary container: if the plugin declares one, the active backend
@@ -2081,18 +2085,23 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except (VariationInfeasibleError, VariationConfigError) as exc:
-                # Name the config block here -- neither execute_variation nor the plugin
-                # knows it, but it is exactly what a reader needs to act on the message
-                # (which config, not just which plugin/why), whether this propagates
-                # (batch mode) or is only logged before the config is dropped (search).
+            except (VariationInfeasibleError, VariationConfigError, VariationFailed) as exc:
+                # Name the config block and the .vast line here -- neither execute_variation
+                # nor the plugin knows either, and they are exactly what a reader needs to
+                # act on the message (which config, which line, not just which plugin/why),
+                # whether this propagates (batch mode) or is only logged before the config
+                # is dropped (search).
                 #
-                # Both classes, and the type is preserved: a draw a plugin refuses and a
-                # draw no arrangement realizes are equally unrunnable, so a search skips
+                # All three classes, and the type is preserved: a draw a plugin refuses and
+                # a draw no arrangement realizes are equally unrunnable, so a search skips
                 # both -- while a batch, which tolerates neither, still gets the message
-                # that fits its case.
-                named_exc = type(exc)(
-                    f"config '{config['name']}': {exc}", config_name=config['name'])
+                # that fits its case. A plugin that broke is never skipped.
+                line = variation_line(variation_file, config['name'], variation_ref)
+                where = f"{os.path.basename(variation_file)}:{line}: " if line else ""
+                named = f"{where}config '{config['name']}': {exc}"
+                if isinstance(exc, VariationFailed):
+                    raise VariationFailed(named) from exc
+                named_exc = type(exc)(named, config_name=config['name'])
                 if not tolerate_infeasible:
                     raise named_exc from exc
                 # This parameter draw cannot be realized (e.g. ObstacleVariation lost its
