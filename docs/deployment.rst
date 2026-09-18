@@ -192,6 +192,32 @@ packages against the client's 13. See :ref:`client`.
 broken, ``kubectl port-forward svc/robovast-service 8800:8800`` puts one back on the
 conventional port and every client finds it there.
 
+What runs in the service pod
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Three containers, one port. ``robovast-service`` is the control plane -- the API, the web
+UI, the campaign driver -- and ``robovast-data`` the data plane, the tar streams pods
+exchange with the service (:doc:`http_api`, "Addressing files"). Both are the same
+image, both listen on Unix sockets in a shared in-memory volume, and ``robovast-front``,
+an nginx, owns port 8800 and routes ``/data/`` to the one and everything else to the
+other. The Service and the Ingress see one port, exactly as before.
+
+The split exists so that bulk bytes never share a process with the control plane: a
+dozen pods delivering gigabytes of run output at once slow each other down and nothing
+else, because the data container has its own CPU and memory limits and the front streams
+through it with request and response buffering off. Proxying through the control plane
+instead would copy every uploaded byte through the event loop the split is meant to
+protect; a second published port would be a second thing to reach, publish and secure.
+The data container is given the results volume and the access-token Secret and nothing
+else -- no workspaces, no cluster configuration, no other credential -- and verifies the
+scoped tokens the control plane mints for pods with that shared secret alone, so the two
+processes share nothing but the disk and a restart of either changes nothing for the other.
+
+A ``vast serve`` on your own machine has no front: it mounts the same data routes into its
+one process on its one port. There the isolation buys nothing and a second process would
+cost every client a port. The front's configuration is rendered by ``setup`` and
+``upgrade`` into a ConfigMap and never edited on the cluster.
+
 Keeping the service up to date
 ------------------------------
 

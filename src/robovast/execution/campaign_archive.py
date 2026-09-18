@@ -24,14 +24,19 @@ One place produces the campaign archive for both directions of "share":
 * :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the same archive
   as an on-the-fly ``pigz`` stream with **no tar on disk** — used to push a
   campaign to an external share provider (upload-to-share, cluster) and to serve
-  the ``/campaigns/{id}/archive`` download, both of which run against ~1TB
+  the ``/data/campaigns/{id}/archive`` download, both of which run against ~1TB
   campaigns where materialising a compressed copy would blow the pod's scratch.
 
-Both read a **local directory**: upload-to-share streams the campaign already on
-the driver's scratch; the download streams the dir ``fetch_campaign`` materialises
-from the object store. Symlinks (the ``<config>/<run>/job`` links) are preserved as
+All of them read a **local directory** -- the campaign's home on every lane is the
+service's results tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
 symlink members (``dereference=False``) and not recursed into, so the archive is
 navigable without duplicating ``_jobs/`` under every run.
+
+Two further streams feed the pods a campaign runs in, and are what makes a tar the
+transport rather than a per-file protocol: :func:`iter_inputs_tar` is what a job pod
+extracts into its ``/config``, and :func:`stage_include` is the selection a
+postprocessing pod asks the archive for. A tar carries executable bits and symlinks
+natively, so nothing has to be restored on the other side.
 """
 
 import contextlib
@@ -92,13 +97,23 @@ def add_snapshot_marker(tar: tarfile.TarFile, campaign_id: str, **facts) -> None
     tar.addfile(info, io.BytesIO(payload))
 
 
-def _make_filter(exclude, on_member=None):
+def _rel_of(arcname: str) -> str:
+    """The campaign-relative path of a member named ``<campaign>/<rel>`` (``""`` for the root)."""
+    _, _, rel = arcname.partition("/")
+    return rel
+
+
+def _make_filter(exclude, on_member=None, include=None):
     """Return a ``tarfile.add`` filter dropping any member under an *exclude* name.
 
     Excluding a *directory* prunes its whole subtree: ``tarfile.add`` does not
     recurse into a member whose filter returns ``None``. That is how a rebuildable
     cache, or a legacy staging copy of derived data, is kept out of a downloaded
     campaign.
+
+    *include*, when given, is a :func:`stage_include`-shaped predicate over the
+    campaign-relative path and whether the member is a directory; a member it refuses is
+    dropped the same way, so a refused directory is pruned rather than walked.
 
     *on_member*, when given, is called with each **kept** member's byte size as it
     is added. It is the source-side counter behind the upload progress bar: the
@@ -109,7 +124,7 @@ def _make_filter(exclude, on_member=None):
     for a number the first walk has in hand.
     """
     exclude = frozenset(exclude or ())
-    if not exclude and on_member is None:
+    if not exclude and on_member is None and include is None:
         return None
 
     def _filter(tarinfo):
@@ -117,6 +132,10 @@ def _make_filter(exclude, on_member=None):
         # path component matches an excluded name.
         if exclude and exclude.intersection(tarinfo.name.split("/")):
             return None
+        if include is not None:
+            rel = _rel_of(tarinfo.name)
+            if rel and not include(rel, tarinfo.isdir()):
+                return None
         if on_member is not None:
             # Directories and symlinks carry size 0, so this counts file payload only --
             # the same bytes `campaign_source_bytes` sums.
@@ -165,14 +184,15 @@ def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
 
 
 def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude,
-                       on_member=None) -> None:
+                       on_member=None, include=None) -> None:
     """Add the whole campaign tree under ``<campaign-id>/`` into *tar*.
 
     Relies on the TarFile's ``dereference=False`` (the default) so ``job`` symlinks
     are stored as symlink members and not followed/recursed.
     """
     arcname = os.path.basename(os.path.normpath(campaign_root))
-    tar.add(campaign_root, arcname=arcname, filter=_make_filter(exclude, on_member))
+    tar.add(campaign_root, arcname=arcname,
+            filter=_make_filter(exclude, on_member, include))
 
 
 class _LiveFile(io.RawIOBase):
@@ -217,7 +237,7 @@ class _LiveFile(io.RawIOBase):
             super().close()
 
 
-def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
+def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude, include=None) -> None:
     """Add a campaign that is **still being written** into *tar*, member by member.
 
     ``TarFile.add`` walks the tree itself and lets an ``OSError`` from any single file
@@ -245,6 +265,9 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
             if entry.name in exclude:
                 continue
             child = f"{arc}/{entry.name}"
+            if include is not None and not include(
+                    _rel_of(child), entry.is_dir(follow_symlinks=False)):
+                continue
             try:
                 if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
                     # Both are payload-free members: a symlink is stored as a link (the
@@ -395,21 +418,173 @@ def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=N
 
 
 def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK,
-                      snapshot: "dict | None" = None):
+                      snapshot: "dict | None" = None, include=None):
     """Generator yielding gzip-archive bytes of the local directory *campaign_root*.
 
     *snapshot* — a dict of facts, possibly empty — says the campaign is **still running**:
     the tree is then read tolerantly (:func:`_add_live_tree`) and :data:`SNAPSHOT_MEMBER`
     is added carrying those facts, so what lands can never be mistaken for a finished
     campaign. ``None`` is the finished campaign, added the strict way.
+
+    *include* narrows the tree to a selection (:func:`stage_include`); ``None`` is all
+    of it.
+
+    The tree is always read tolerantly (:func:`_add_live_tree`), whether or not it is
+    marked: a finished campaign is re-postprocessed in place, and a file that changes
+    under the walk must cost one member rather than the download -- past the first byte
+    the status line is already 200 and a failure reaches the caller as a truncated body.
+    On a tree nothing is writing to, the tolerant walk produces the same archive.
     """
     campaign_id = os.path.basename(os.path.normpath(str(campaign_root)))
 
     def _add(tar):
-        if snapshot is None:
-            _add_campaign_tree(tar, campaign_root, exclude)
-            return
-        _add_live_tree(tar, campaign_root, exclude)
-        add_snapshot_marker(tar, campaign_id, **snapshot)
+        _add_live_tree(tar, campaign_root, exclude, include=include)
+        if snapshot is not None:
+            add_snapshot_marker(tar, campaign_id, **snapshot)
 
     return iter_tar(_add, chunk_size)
+
+
+def iter_tree_tar(root: str, chunk_size: int = _CHUNK):
+    """Generator yielding gzip-archive bytes of *root*'s contents, relative to *root*.
+
+    No top-level segment: what a pod extracts into a mount point lands at the mount
+    point. Tolerant like :func:`iter_inputs_tar`, and for the same reason.
+    """
+    return iter_tar(lambda tar: _add_tree_flat(tar, os.path.normpath(str(root))), chunk_size)
+
+
+#: Directory names holding rosbags, excluded by :func:`stage_include` when the conversion
+#: does not read them. These are the ``bag_dir`` values the rosbag batch map of
+#: ``robovast.results_processing.postprocessing`` defaults to (``rosbag2`` for the per-run
+#: bag, ``logs/rosout_bag`` for the infrastructure one); matched as path segments, which
+#: covers ``logs/rosout_bag`` without depending on where under the run it sits.
+BAG_DIR_NAMES = ("rosbag2", "rosout_bag")
+
+#: The phase file a postprocessing pod is about to write, which it must not be handed a
+#: copy of. The conversion APPENDS to it, so a previous attempt's copy would become the
+#: head of this attempt's log; and it is the file the Job's log is published to while it
+#: runs, so staging it back would fold this attempt's own head into itself.
+NOT_STAGED_LOG = "_execution/postprocessing.log"
+
+#: The campaign's input tree and the composer's per-job files: what a job pod is given.
+INPUT_DIRS = ("_config", "_transient")
+
+
+def stage_include(skip_bags: bool = False, batch_jobs: str = ""):
+    """The selection a postprocessing pod is given of a campaign.
+
+    A predicate ``(rel, is_dir) -> bool`` over campaign-relative paths, for
+    :func:`iter_campaign_tar`'s *include*. A refused directory is pruned whole.
+
+    The probe directory is excluded unconditionally. A calibration probe is deliberately
+    not a run, so its bag is not campaign data: converting it costs a bag's work per node,
+    and an interrupted probe's unfinalized bag fails a step on something nothing reads.
+    Deciding it here rather than in a skip list is what keeps it decided once -- what the
+    pod never receives it cannot convert, cannot fail on, and does not pay to download.
+
+    Only the probe directory, never the reserved directories as a set: the others hold
+    data the pod needs, and ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log
+    bag, so excluding them wholesale would drop every ``/rosout`` record in the campaign.
+
+    The two log exclusions are :data:`NOT_STAGED_LOG` and the archived sections of a
+    repeatable phase, which are the immutable history of the campaign log and nothing in
+    the pod reads.
+
+    *batch_jobs* narrows ``_jobs/`` to one batch's artifacts (``batch-3``, or
+    ``batch-3/reps-5`` for a repetitions group). Only ``_jobs/`` is narrowed, and that is
+    the whole of the saving: the bags live there, while a run directory holds its verdict,
+    its parameters and a ``job`` symlink into the batch that produced it. The match is a
+    prefix of the tag rather than its first segment because a run of a repetitions group
+    links to ``_jobs/batch-3/reps-5`` exactly; excluding what a staged run's ``job`` link
+    points at would leave the link dangling, which reads downstream as a run whose
+    artifacts were lost rather than as one this pod was never given.
+    """
+    from robovast.common.campaign_data import PROBE_DIR  # noqa: PLC0415
+    from robovast.common.campaign_logs import SECTIONS_DIR  # noqa: PLC0415
+    sections_prefix = f"_execution/{SECTIONS_DIR}/"
+    wanted_jobs = f"_jobs/{batch_jobs.strip('/')}/" if batch_jobs else ""
+
+    def include(rel: str, is_dir: bool) -> bool:
+        parts = rel.split("/")
+        if parts[0] == PROBE_DIR:
+            return False
+        if rel == NOT_STAGED_LOG or (rel + "/").startswith(sections_prefix):
+            return False
+        if skip_bags and any(p in BAG_DIR_NAMES for p in parts):
+            return False
+        if wanted_jobs and parts[0] == "_jobs":
+            if is_dir:
+                # Keep a directory on the way down to the wanted batch as well as one
+                # under it; prune a sibling batch whole.
+                here = rel + "/"
+                return wanted_jobs.startswith(here) or here.startswith(wanted_jobs)
+            return rel.startswith(wanted_jobs)
+        return True
+
+    return include
+
+
+def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CHUNK):
+    """Generator yielding the gzip tar a job pod extracts into its ``/config``.
+
+    The campaign's :data:`INPUT_DIRS` with that leading segment stripped, so ``_config/x``
+    lands at ``x``; then, for each ``(config_name, rel)`` in *config_files*, the cell's
+    ``<config>/_config/<rel>`` as ``<rel>``. Later members win on extraction, which is
+    what makes a cell's copy land on the campaign's -- the packer keeps one file-owning
+    configuration per job, so which copy wins is never in question.
+
+    Named per declared path rather than the cell's ``_config/`` wholesale, because that
+    directory also holds the cell's *records* -- ``config.yaml``, ``scenario.config``,
+    ``sim.config``, ``sut.config`` -- and ``scenario.config`` at ``/config/scenario.config``
+    is the entrypoint's default parameter file. Composition knows exactly which paths are
+    inputs, so they are named rather than filtered out by a list that would have to grow
+    with every new record.
+
+    Members are added tolerantly (:func:`_add_live_tree`'s rules): the composer writes a
+    batch's files as the campaign runs, and a file that vanished between the listing and
+    the read costs one member, not the pod.
+    """
+    root = os.path.normpath(str(campaign_root))
+
+    def _add(tar):
+        for top in INPUT_DIRS:
+            src = os.path.join(root, top)
+            if not os.path.isdir(src):
+                continue
+            _add_tree_flat(tar, src)
+        for config_name, rel in (config_files or ()):
+            src = os.path.join(root, config_name, "_config", rel)
+            try:
+                with open(src, "rb") as raw:
+                    info = tar.gettarinfo(arcname=rel, fileobj=raw)
+                    tar.addfile(info, _LiveFile(raw, info.size))
+            except OSError:
+                logger.debug("Skipping %s: not present when the inputs were staged", src)
+
+    return iter_tar(_add, chunk_size)
+
+
+def _add_tree_flat(tar: tarfile.TarFile, src: str) -> None:
+    """Add every entry under *src* into *tar* relative to *src* itself (no top segment)."""
+    stack = [(src, "")]
+    while stack:
+        path, arc = stack.pop()
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            child = f"{arc}/{entry.name}" if arc else entry.name
+            try:
+                if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
+                    tar.addfile(tar.gettarinfo(entry.path, arcname=child))
+                    if not entry.is_symlink():
+                        stack.append((entry.path, child))
+                    continue
+                with open(entry.path, "rb") as raw:
+                    info = tar.gettarinfo(arcname=child, fileobj=raw)
+                    tar.addfile(info, _LiveFile(raw, info.size))
+            except OSError:
+                logger.debug("Skipping %s: it changed while the inputs were staged",
+                             entry.path)

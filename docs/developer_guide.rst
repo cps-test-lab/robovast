@@ -1984,7 +1984,7 @@ Control operations
   loses the campaign: it stays ``finished`` and the reason is recorded on
   ``share_error`` (durable). Local backends write the ``tar.gz`` to
   ``<results>/_archives/`` instead; cluster backends stream it to the share provider
-  with no on-disk copy. The download counterpart is the ``/campaigns/{id}/archive``
+  with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
   stream (the postprocessed campaign, tarred on the fly from the object store).
 * ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
   campaign, from the stored campaign alone (works after a service restart, no live

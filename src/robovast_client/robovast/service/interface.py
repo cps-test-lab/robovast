@@ -1603,6 +1603,32 @@ class StagedArchive(BaseModel):
     size: int = 0
 
 
+class ArchiveSelection(BaseModel):
+    """Which part of a campaign an archive carries.
+
+    The default is the whole campaign, minus staging. A postprocessing pod asks for what its
+    conversion reads: ``stage`` drops the calibration probes, the log this pod will write
+    and the archived log sections; ``skip_bags`` drops the rosbags when the conversion
+    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch. The selection is
+    made where the bytes are, not where they land: what the pod is never given it cannot
+    convert, cannot fail on and does not pay to download.
+    """
+
+    stage: bool = False
+    skip_bags: bool = False
+    batch_jobs: str = ""
+
+
+class OutputsIngested(BaseModel):
+    """What a streamed tar of outputs left in a campaign or a staged slot."""
+
+    files: int = 0
+    bytes: int = 0
+    #: Members refused rather than written -- a path leaving the tree, a hard link, a
+    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    refused: list[str] = Field(default_factory=list)
+
+
 class ImportCampaignRequest(BaseModel):
     """Which campaign archive to take in, and from where. Exactly one source.
 
@@ -2432,11 +2458,34 @@ class Routes:
         # having it beside the retrigger rather than inside it.
         return f"/campaigns/{campaign_id}/retrigger/check"
 
+    #: The data plane: every route that moves a campaign's or a slot's bytes as a tar
+    #: stream. One prefix, so a front can hand it to its own process and a pod's token can
+    #: be confined to it (``auth.scope_allows``). The paths below carry the prefix in full:
+    #: the data app answers them at the same address whether it is mounted into the
+    #: control plane's app or served on its own behind a front.
+    DATA = "/data"
+
     @staticmethod
     def campaign_archive(campaign_id: str) -> str:
-        # The postprocessed tar.gz, streamed from the object store. Named here like every
+        # The campaign as a tar.gz, streamed from the service's tree. Named here like every
         # other path so the MCP's download link and the route serving it are one string.
-        return f"/campaigns/{campaign_id}/archive"
+        return f"{Routes.DATA}/campaigns/{campaign_id}/archive"
+
+    @staticmethod
+    def campaign_inputs(campaign_id: str) -> str:
+        # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/inputs"
+
+    @staticmethod
+    def campaign_outputs(campaign_id: str) -> str:
+        # Where a pod delivers what it produced. A control route on purpose: `/results`
+        # has no write verb, and must not grow one.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/outputs"
+
+    @staticmethod
+    def staged(slot: str) -> str:
+        # A scratch tree the control plane stages for one pod, by its slot name.
+        return f"{Routes.DATA}/staged/{slot}"
 
     @staticmethod
     def campaign_logs(campaign_id: str) -> str:
@@ -3070,21 +3119,66 @@ class RobovastInterface(ABC):
         external share copy (if any) is never touched — it is a separate system.
         """
 
+    # -- the data plane: tar streams in and out of the campaign tree --
+    #
+    # These five move bytes and nothing else. They are served by the data app
+    # (:mod:`robovast.service.data_app`), which reads the results tree directly rather
+    # than through a transport, so a pod's upload never shares a process with the
+    # control plane; the HTTP client reaches them under ``Routes.DATA``.
+
     @abstractmethod
-    def campaign_tar_stream(self, campaign_id: str):
-        """Yield the campaign as a ``tar.gz``, in chunks, for ``GET /campaigns/{id}/archive``.
+    def campaign_tar_stream(self, campaign_id: str,
+                            selection: "ArchiveSelection | None" = None):
+        """Yield the campaign as a ``tar.gz``, in chunks, for ``GET .../archive``.
 
         What comes out is the campaign as this service holds it -- postprocessed, if it
         has been -- minus the internal ``_postproc/`` staging, so what lands is the clean
-        campaign layout. Streamed on both lanes and buffered by neither: the cluster tars
-        objects as it fetches them, the local lane tars its own directory into the
-        response.
+        campaign layout. *selection* narrows it (:class:`ArchiveSelection`); ``None`` is
+        the whole campaign. Streamed, never buffered: the tree is tarred into the
+        response as it is read.
 
         On the interface rather than only on the lane that first needed it: this was a
         cluster-only method the HTTP route probed for with ``hasattr``, so a local service
         answered 409 and the web UI hid its download button there. Which lane a service
         runs is not what decides whether a caller can be handed a file.
         """
+
+    @abstractmethod
+    def campaign_inputs_tar_stream(self, campaign_id: str,
+                                   config_files: "list[tuple[str, str]] | None" = None):
+        """Yield the tar a job pod extracts into its ``/config``.
+
+        The campaign's ``_config/`` and ``_transient/`` with those two segments stripped,
+        so the members land where the containers expect them; plus, for each
+        ``(config_name, rel)`` in *config_files*, the cell's ``<config>/_config/<rel>``
+        as ``<rel>`` -- what a configuration declared as its own input, staged under the
+        campaign-wide name the containers read. Executable bits and symlinks are members
+        of the tar, so nothing has to be restored on the other side.
+        """
+
+    @abstractmethod
+    def ingest_campaign_outputs(self, campaign_id: str, stream) -> OutputsIngested:
+        """Extract a tar *stream* of run outputs into the campaign's directory.
+
+        The last writer wins, member by member: the containers of one pod share an
+        output tree and each contributes its own files to it. Refused with a
+        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
+        ended -- outputs arriving after the verdict would change a record nothing reads
+        again. What a pod never writes -- the campaign's own store, the driver's logs --
+        is refused per member and reported, never written.
+        """
+
+    @abstractmethod
+    def staged_tar_stream(self, slot: str, path: str = ""):
+        """Yield a staged slot -- or *path* within it -- as a ``tar.gz``.
+
+        A slot is a scratch tree the control plane puts down for one pod (a build
+        context, an exec pod's workspace); it is named by the caller and read once.
+        """
+
+    @abstractmethod
+    def ingest_staged(self, slot: str, stream) -> OutputsIngested:
+        """Extract a tar *stream* into the staged slot *slot*, creating it."""
 
     def campaign_archive_name(self, campaign_id: str) -> str:
         """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.

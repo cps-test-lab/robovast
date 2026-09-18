@@ -64,13 +64,6 @@ ENV_SKIP_BAGS = "ROBOVAST_STAGE_SKIP_BAGS"
 #: discriminates the Job, so there is one tag per batch rather than a second naming of it.
 ENV_BATCH_JOBS = "ROBOVAST_STAGE_BATCH_JOBS"
 
-#: Directory names holding rosbags, excluded when :data:`ENV_SKIP_BAGS` is set. These are
-#: the ``bag_dir`` values ``robovast.results_processing.postprocessing``'s rosbag batch map
-#: defaults to (``rosbag2`` for the per-run bag, ``logs/rosout_bag`` for the infrastructure
-#: one); the map is private, so they are named here and matched as path segments, which
-#: covers ``logs/rosout_bag`` without depending on where under the run it sits.
-BAG_DIR_NAMES = ("rosbag2", "rosout_bag")
-
 #: Exit code -> what it means, so a caller reading the pod's status can say which failure it
 #: was without parsing a log that a failing stage may never have written.
 #:
@@ -114,31 +107,6 @@ def cluster_config_from_env():
     return cfg
 
 
-#: The phase file this pod is about to write, which it must not be handed a copy of.
-#:
-#: The conversion APPENDS to it, so a previous attempt's copy would become the head of this
-#: attempt's log -- and did: a postprocess whose conversion failed showed, as its account,
-#: the image-pull failure of the attempt before it. It is also the file the Job's log is
-#: published to while it runs, so staging it back would fold this attempt's own head into
-#: itself.
-NOT_STAGED_LOG = "_execution/postprocessing.log"
-
-def not_staged_sections() -> str:
-    """The prefix holding finished sections of earlier runs of a repeatable phase.
-
-    Not staged into this pod either. They are the immutable history of the campaign log,
-    read only by whoever streams it, and nothing here produces or consumes one -- so
-    staging them would transfer bytes the pod cannot use and hand the tail upload a second
-    copy to publish.
-
-    A function rather than a constant because it needs ``robovast.common``, and this
-    module's ``robovast`` imports are deliberately below module scope: an unimportable
-    package must exit with a diagnosis rather than a traceback from the interpreter.
-    """
-    from robovast.common.campaign_logs import SECTIONS_DIR  # noqa: PLC0415
-    return f"_execution/{SECTIONS_DIR}/"
-
-
 #: The one subtree of a campaign staged separately, with its executable bits restored --
 #: see :func:`build_include`'s *exclude_config* and ``main``'s two ``download_prefix``
 #: calls.
@@ -148,56 +116,22 @@ CONFIG_DIR = "_config"
 def build_include(skip_bags: bool, batch_jobs: str = "", *, exclude_config: bool = False):
     """Return the ``download_prefix`` predicate deciding what a pod is given.
 
-    Called with each object's key **relative to the campaign prefix**, so it matches the
-    campaign-relative layout directly.
-
-    The probe directory is excluded unconditionally. A calibration probe is deliberately not
-    a run, so its bag is not campaign data: converting it costs a bag's work per node, and
-    an interrupted probe's unfinalized bag fails a step on something nothing reads. Deciding
-    it here rather than in a skip list is what keeps it decided once -- what the pod never
-    receives it cannot convert, cannot fail on, and does not pay to download.
-
-    Only the probe directory, never the reserved directories as a set: the others hold data
-    the pod needs, and ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log bag, so
-    excluding them wholesale would drop every ``/rosout`` record in the campaign.
-
-    The two log exclusions are :data:`NOT_STAGED_LOG` and :func:`not_staged_sections`.
-
-    *batch_jobs* narrows ``_jobs/`` to one batch's artifacts (see :data:`ENV_BATCH_JOBS`).
-    Only ``_jobs/`` is narrowed, and that is the whole of the saving: the bags live there,
-    while a run directory holds its verdict, its parameters and a ``job`` symlink into the
-    batch that produced it. Narrowing the run directories too would need this pod to know
-    which configurations were in the batch, and would buy the difference between a few
-    kilobytes and a few kilobytes.
-
-    The symlink is why the match is a prefix of the tag rather than its first segment: a
-    repetitions group writes under ``_jobs/batch-3/reps-5``, and a run of it links to that
-    path exactly. Excluding what a staged run's ``job`` link points at would leave the link
-    dangling, which reads downstream as a run whose artifacts were lost rather than as one
-    this pod was never given.
+    Called with each object's key **relative to the campaign prefix**. The selection
+    itself is :func:`robovast.execution.campaign_archive.stage_include`, the one rule for
+    what a postprocessing pod reads; this adapts it to a per-object listing, where every
+    key is a file.
 
     *exclude_config*, set for the bulk (bag-and-CSV-dominated) fetch once :data:`CONFIG_DIR`
     is staged on its own with its executable bits restored -- see ``main``. Without this the
     bulk fetch would re-fetch the same handful of files a second time for no benefit.
     """
-    from robovast.common.campaign_data import PROBE_DIR  # noqa: PLC0415
-    sections_prefix = not_staged_sections()
-
-    wanted_jobs = f"_jobs/{batch_jobs.strip('/')}/" if batch_jobs else ""
+    from robovast.execution.campaign_archive import stage_include  # noqa: PLC0415
+    selected = stage_include(skip_bags=skip_bags, batch_jobs=batch_jobs)
 
     def include(rel: str) -> bool:
-        parts = rel.split("/")
-        if parts[0] == PROBE_DIR:
+        if exclude_config and rel.split("/")[0] == CONFIG_DIR:
             return False
-        if exclude_config and parts[0] == CONFIG_DIR:
-            return False
-        if rel == NOT_STAGED_LOG or rel.startswith(sections_prefix):
-            return False
-        if skip_bags and any(p in BAG_DIR_NAMES for p in parts[:-1]):
-            return False
-        if wanted_jobs and parts[0] == "_jobs" and not rel.startswith(wanted_jobs):
-            return False
-        return True
+        return selected(rel, False)
 
     return include
 

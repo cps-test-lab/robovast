@@ -158,6 +158,7 @@ env-file = "robovast.common.env_file:load_env_file"
 # results reader. They attach to the client's root group like any other plugin, so a
 # client-only install simply does not have them rather than having them and failing.
 serve = "robovast.common.cli.core_commands:serve"
+serve-data = "robovast.common.cli.core_commands:serve_data"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 results = "robovast.results_processing.cli:results"
