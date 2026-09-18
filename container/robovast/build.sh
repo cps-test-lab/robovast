@@ -338,10 +338,28 @@ src_context() {
   echo "$label source: $src (local checkout)"
   local staged="$SRC_STAGING/$stage"
   mkdir -p "$staged" || return 1
+  # The manifest of external assets goes in -- the Dockerfile reads it to refuse any that
+  # arrived -- and the assets it names come out, because a developer's checkout has fetched
+  # them where a clone has not: a Spot policy or a converted mesh that the source repository
+  # does not publish must not ride into a published image through this hatch.
   rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
         --exclude='*.egg-info' --exclude='build/' --exclude='install/' --exclude='log/' \
-        --exclude='external/' --exclude='docs/build/' \
+        --exclude='docs/build/' \
         "${src%/}/" "$staged/" || return 1
+  if [[ -f "$staged/external/external_assets.yaml" ]]; then
+    python3 - "$staged" <<'PY' || return 1
+import pathlib, sys, yaml
+root = pathlib.Path(sys.argv[1])
+resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]
+for target in (t for r in resources for t in r.get("targets", [])):
+    path = root / target
+    if path.is_dir():
+        import shutil
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+PY
+  fi
   SRC_CONTEXT=(--build-context "$stage=$staged")
 }
 
