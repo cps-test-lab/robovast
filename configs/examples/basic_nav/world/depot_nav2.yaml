@@ -33,6 +33,9 @@ components:
   - spawn_robot: {model: turtlebot4, pose: {position: {x: -8.0, y: 0.0}, orientation: {yaw: 0.0}}}
     name: robot
     components:
+      # The Gazebo half is nav2's minimal TB4 sim, which drives a plain Twist on cmd_vel; the base
+      # takes the same, so one nav2 config drives both. (The robot takes a TwistStamped there.)
+      - diff_drive: {stamped_cmd_vel: false, unstamped_cmd_vel_topic: ""}
       # Ground-truth leaf frame map -> turtlebot4_base_link_gt for offline path evaluation (not
       # wired into localization). Mirrors Gazebo's turtlebot4_base_link_gt. A component of the
       # robot, which is where it reads its base pose and its frame name from -- and which also puts
@@ -41,8 +44,7 @@ components:
       # docs/architecture.rst).
       - ground_truth_pose: {}
   # Publishes /clock, /odom, odom->base_link, /scan (rplidar_link), /joint_states, and subscribes
-  # /cmd_vel (a TwistStamped, as the robot takes it; files/nav2_params.yaml enables stamped commands)
-  # -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
+  # /cmd_vel -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
   # robot_state_publisher over the TB4 URDF, which publishes base_link and every link below it
   # (including the sensor mounts) from the model; two publishers for one static transform is a TF
   # conflict. The bridge keeps what only the simulator knows: odom->base_link and the clock.

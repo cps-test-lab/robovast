@@ -14,8 +14,6 @@
 
 amcl:
   ros__parameters:
-    # nav2's default is a plain Twist; the TurtleBot 4 takes a TwistStamped.
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     base_frame_id: "base_link"
     odom_frame_id: "odom"
@@ -58,7 +56,6 @@ amcl:
 
 bt_navigator:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     global_frame: map
     robot_base_frame: base_link
@@ -76,7 +73,6 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
@@ -120,7 +116,6 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      enable_stamped_cmd_vel: true
       use_sim_time: True
       update_frequency: 5.0
       publish_frequency: 2.0
@@ -164,7 +159,6 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      enable_stamped_cmd_vel: true
       use_sim_time: True
       update_frequency: 1.0
       publish_frequency: 1.0
@@ -199,7 +193,6 @@ global_costmap:
 
 planner_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     expected_planner_frequency: 20.0
     planner_plugins: ["GridBased"]
@@ -211,7 +204,6 @@ planner_server:
 
 behavior_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     local_costmap_topic: local_costmap/costmap_raw
     global_costmap_topic: global_costmap/costmap_raw
@@ -236,7 +228,6 @@ behavior_server:
 
 map_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     use_sim_time: True
     yaml_filename: ""   # set from the launch file
 
@@ -254,7 +245,6 @@ map_server:
 
 smoother_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
@@ -264,7 +254,6 @@ smoother_server:
 
 waypoint_follower:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     loop_rate: 20
     stop_on_failure: false
     action_server_result_timeout: 900.0
@@ -276,7 +265,6 @@ waypoint_follower:
 
 route_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     # The graph_filepath does not need to be specified since it going to be set by defaults in launch.
     # If you'd rather set it in the yaml, remove the default "graph" value in the launch file(s).
     # file & provide full path to map below. If graph config or launch default is provided, it is used
@@ -300,7 +288,6 @@ route_server:
 
 velocity_smoother:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     smoothing_frequency: 20.0
     stamp_smoothed_velocity_with_smoothing_time: False
     scale_velocities: False
@@ -316,7 +303,6 @@ velocity_smoother:
 
 collision_monitor:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
@@ -348,7 +334,6 @@ collision_monitor:
 
 docking_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     controller_frequency: 50.0
     initial_perception_timeout: 5.0
     wait_charge_timeout: 5.0
