@@ -1726,7 +1726,8 @@ speed the robot marker can sit slightly ahead of its window — that offset is t
 own resolution, not drift. *This panel ships with the*
 ``robovast_nav`` *package* (not the core UI) as a package-provided panel — see below — so
 it is available whenever ``robovast_nav`` is installed; the ``.vast`` still references it
-as plain ``- costmap:``.
+as plain ``- costmap:``. The same package draws the same picture onto a rendered video of
+the run (:ref:`the costmap video overlay <costmap-video-overlay>`).
 
 .. _camera-panel:
 
@@ -2151,6 +2152,37 @@ The run-view costmap panel fetches the frame nearest the current time from the c
 geometry is visible to an LLM via MCP ``describe_campaign_data`` (the ``costmaps`` table
 description carries the map's size in meters, resolution, layers, and delivery), so it can
 reason about the run without decoding grids.
+
+.. _costmap-video-overlay:
+
+**The same panel on a rendered video.** ``robovast_nav`` registers the panel a second
+time, as a ``costmap`` overlay for ``roqsim render`` (roqsim's ``roqsim.render_overlays``
+entry-point group), so a video of the recorded simulation carries the costmap view as an
+inset in a corner, in step with the picture because both sides carry simulated seconds:
+
+.. code-block:: bash
+
+   roqsim render --state run.npz --from onset --overlay costmap --out clip.mp4
+   roqsim render --state run.npz --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
+       "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"},
+                  "poses": {"table": "poses"}}}}' --out clip.mp4
+
+It draws what the panel draws -- the layers, the driven trail, the robot -- plus the
+configuration's planned path, goal and obstacles (``planned_path``, ``goal``,
+``obstacles``, each ``true`` unless turned off), with the panel's palette and draw order.
+``layers`` is the panel's binding, so a set that works in the web UI works here; a layer may
+name a map ``file`` (campaign-relative) instead of a ``topic``. With no ``layers`` stated, the
+panel's default layers are taken as far as the run recorded them -- a campaign that stored only
+its global costmap gets that one, and the choice is logged -- while a stated binding is held to
+the letter. It reads **files, not the
+service**: ``costmaps.csv`` and ``poses.csv`` beside the recording, and the campaign's
+``_transient/configurations.yaml``, laid out as the campaign directory is
+(``<campaign>/<config>/<run>/``) -- so a run fetched to disk, or a campaign archive, is enough.
+A file it needs and cannot find is refused by name, together with the postprocessing step that
+writes it; a costmap in a frame the poses do not carry (the local costmap is in ``odom``) is
+refused naming the frames present; and a layer whose nearest frame is further from the
+cursor than two of its publish periods is withheld and said in the picture, as the panel does
+(``stale_after`` sets the window in seconds).
 
 Development
 -----------
