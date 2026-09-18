@@ -770,7 +770,9 @@ reads the JSON, and keeps it for the length of one poll interval. So nothing run
 container between reads, nothing is emitted into any log, nothing is written into the results,
 and a campaign nobody is watching is never asked at all. N watchers cost one check per
 interval, and the read happens off the request thread — a wedged container cannot slow a
-status read even by its own timeout.
+status read even by its own timeout. Every running job that carries a run is asked, a
+node-calibration probe included: the read runs inside the simulator's container and counts
+against its memory, and a probe that was not asked would size the simulator without it.
 
 **The contract, and all of it.** A simulator's reply carries ``findings``, each
 

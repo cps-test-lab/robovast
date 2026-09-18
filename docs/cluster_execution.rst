@@ -1635,7 +1635,10 @@ How the figure is found:
 
 * **One probe per node, and it is never a campaign run.** It writes to ``_calibration/<node-id>/``
   — a reserved directory nothing walks looking for runs — so it cannot enter the results in
-  the first place. A campaign of 50 runs still delivers 50.
+  the first place. Every container of the probe writes there: the scenario's results, the
+  job artifacts, and what a sidecar writes per run (a simulator's recording and pose
+  record), each of which is named by its own variable and every one of which the probe
+  points at its own directory. A campaign of 50 runs still delivers 50.
 * **A probe is listed, marked, and counted apart.** It holds real capacity on a real node, so
   it carries the campaign's labels and appears in the job listing — as ``kind: calibration``,
   named for the node it measures, and outside every figure in ``JobCounts``, which a reader
@@ -1749,13 +1752,15 @@ or OOM-killed at all — a memory ceiling that binds kills rather than slows, so
 Both counters come from the same file the sizing is read from.
 
 **A probe that loses a workload container stops the campaign, naming that container.** Those
-containers are native sidecars, so one that dies is *restarted* rather than ending the job:
-the probe goes on sampling a stack that keeps dying, holds its node while it does, and what
-is read out of it at the end measures the restart loop rather than a trial — surfacing as
-whichever statistic that fragment fails, with the container's own error nowhere in it. A
-probe runs one of the campaign's own configurations, so this is not a flaky trial to
-re-sample: every run would meet the same fault. The campaign therefore ends on the crash
-itself, and what the container printed before it died is captured in
+containers are native sidecars, so one that dies is *restarted* rather than ending the job.
+The instance that comes back starts nothing — a workload brought back mid-trial would run a
+fresh world under a stack still on the old one, so the sidecar entrypoint refuses a second
+start in the same pod — and the probe would go on sampling a stack with a hole in it, hold
+its node while it did, and what was read out of it at the end would measure the gap rather
+than a trial, surfacing as whichever statistic that fragment fails with the container's own
+error nowhere in it. A probe runs one of the campaign's own configurations, so this is not a
+flaky trial to re-sample: every run would meet the same fault. The campaign therefore ends
+on the crash itself, and what the container printed before it died is captured in
 ``_execution/container_failures.json``, beside the probe's own output under
 ``_calibration/<node-id>/``.
 

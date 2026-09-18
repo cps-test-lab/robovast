@@ -3721,14 +3721,20 @@ class LocalTransport(RobovastInterface):
 
         No target: the health read resolves its own, because the container it belongs in is the
         simulator's and not the job's.
+
+        A node-calibration probe **is** asked, exactly as a run job is. The probe runs one real
+        configuration in the job shape so that what it measures stands for what the jobs will
+        use -- and this read is part of that shape: it is a process the service starts *inside the
+        simulator's container*, charged to the simulator's memory, on every interval somebody is
+        watching. A probe spared it would be sized without it, and the jobs would then meet, on top
+        of a limit that has no room for it, the one cost the probe never saw. The postprocessing
+        conversion is the job that genuinely carries no run.
         """
         out = []
         for job in self.list_jobs(campaign_id).jobs:
             if job.status != "running":
                 continue
-            # A probe and a postprocessing conversion are running jobs that carry no run, so
-            # there is no run health to ask them for and the target below cannot resolve.
-            if job.kind in (JobKind.CALIBRATION, JobKind.POSTPROCESSING):
+            if job.kind == JobKind.POSTPROCESSING:
                 continue
             try:
                 target, run_dir = self._job_state_target(

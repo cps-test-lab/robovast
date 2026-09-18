@@ -270,20 +270,25 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
       keeps the scenario's results out of the run tree;
     * ``OUTPUT_DIR``, which keeps the job artifacts -- the monitor CSVs this exists to read --
       out of it too;
+    * ``RUN_OUTPUT_DIR``, which keeps what a **sidecar** writes per run out of it: a
+      simulator's recording and pose record resolve against this variable and nothing else
+      (see :func:`_run_output_dir_env`), so a probe that inherited the job's value wrote the
+      simulator's records of the probe into ``/out/<config>/<run>`` -- a campaign result that no
+      trial produced, overwritten only if that run happened to be scheduled later;
     * :data:`TICK_LOG_FLAG` on :data:`SCENARIO_PARAMS_ENV` -- the one difference that adds
       something rather than isolating something, and the reason it is confined to the probe:
       it is per-tick instrumentation on the trial's hot path, and the run that has to be
       validated is the one deciding the allocation.
 
-    Both output overrides are needed: they govern different halves of what a job writes, and
-    changing only one leaves the probe writing into a real campaign run directory.
+    All three output overrides are needed: each governs a different part of what a job
+    writes, and changing fewer leaves the probe writing into a real campaign run directory.
 
     Rewritten across **every** container, not only the main one: the sidecars are handed the
     same extra env, and a sidecar still writing to the old ``OUTPUT_DIR`` would put the
     simulator's and the system under test's own CSVs -- the two that matter most here -- back
     into the run tree.
 
-    Beside those three, two pieces of **identity**, which no container reads and which
+    Beside those four, two pieces of **identity**, which no container reads and which
     therefore leave the measurement untouched:
 
     * the :data:`~.manifests.JOB_KIND_LABEL` label, on the Job and on the pod template, so
@@ -304,7 +309,8 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     template_meta.setdefault("labels", {})[JOB_KIND_LABEL] = CALIBRATION_JOB_KIND
     template_meta.setdefault("annotations", {})["job-name-full"] = display_name
     spec = manifest["spec"]["template"]["spec"]
-    overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir}
+    overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir,
+                 "RUN_OUTPUT_DIR": output_dir}
     for container in list(spec.get("containers") or []) + list(spec.get("initContainers") or []):
         for entry in container.get("env") or []:
             if entry.get("name") in overrides and "value" in entry:

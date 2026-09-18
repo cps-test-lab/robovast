@@ -44,6 +44,43 @@ exec 2>&1
 
 log "Secondary container starting ($(hostname))..."
 log "Running as UID: $(id -u), GID: $(id -g)..."
+
+# The sockets the scenario drives the sidecars over, and a per-pod scratch space: an emptyDir on
+# the cluster, a per-job tmpfs locally, so what one container instance leaves here the next
+# instance in the SAME pod finds and the next job never does.
+IPC_DIR="${IPC_DIR:-/ipc}"
+
+# A second instance of this container starts NOTHING.
+#
+# A workload container that dies is restarted by the kubelet -- `restartPolicy: Always` is the
+# only policy a native sidecar may carry, and the sidecar shape is what starts the simulator
+# before the scenario and ends the pod with it. So the restart itself cannot be refused. What can
+# be refused is the workload: a simulator brought back mid-trial starts a fresh world under a
+# stack that is still running the old one, and every result from that moment is about the
+# restart and not about the trial. The trial ended when the first instance died. This instance
+# says so, keeps the evidence the dead one left in /out, and waits to be ended: the runner reads
+# the restart off the pod and deletes the job, recording the run as invalid with what the
+# container died of.
+#
+# It HOLDS rather than exiting, and that is forensic rather than cosmetic. The runner reads what
+# the container died of from the pod's `last_state.terminated`, which names the first instance's
+# end (OOMKilled, exit 137) for exactly as long as this instance keeps running. An exit here would
+# be followed by another kubelet restart, after which that field names this script's own exit
+# and the record says the guard died, not the simulator.
+_STARTED_MARKER="${IPC_DIR}/.${CONTAINER_NAME}.started"
+if [ -e "${_STARTED_MARKER}" ]; then
+    log "ERROR: ${CONTAINER_NAME} is a restarted container: an earlier instance started at $(cat "${_STARTED_MARKER}") and died, and the trial died with it. Not starting the workload again; waiting for the runner to end this job."
+    if [ -x /tmp/s3_upload.sh ]; then
+        log "Uploading what the earlier ${CONTAINER_NAME} instance left..."
+        /tmp/s3_upload.sh || log "WARNING: ${CONTAINER_NAME} upload after a restart failed"
+    fi
+    trap 'exit 0' TERM INT
+    while true; do
+        sleep 3600 &
+        wait $! || true
+    done
+fi
+date -u +%Y-%m-%dT%H:%M:%SZ > "${_STARTED_MARKER}"
 # Set up the ROS overlay first (when present) so the ROS server runner
 # (scenario_execution_server_ros / ros2) is on PATH for the check below: it only
 # lands there once the ROS overlay and the /ws workspace are sourced, so checking
@@ -75,7 +112,7 @@ fi
 # what breaks its liveness. Hence: state it here, for whatever image runs.
 export PYTHONUNBUFFERED=1
 
-SOCKET="/ipc/${CONTAINER_NAME}"
+SOCKET="${IPC_DIR}/${CONTAINER_NAME}"
 
 # Which distributions this container holds -- ONLY that, not the pod's host facts, which the
 # main container already recorded and which are the same pod. The packages are what differ, and
@@ -184,7 +221,8 @@ run_child() {
     done
     # A clean finish while the pod runs on is a container with nothing left to do, not one that is
     # allowed to leave. A FAILURE still exits: the restart the kubelet then performs is a true
-    # signal, and invalidating that trial is the right outcome.
+    # signal, the instance it starts refuses the workload (the marker check at the top), and
+    # invalidating that trial is the right outcome.
     if [ "${_rc}" -eq 0 ] && [ -z "${_terminating}" ]; then
         _hold
     fi

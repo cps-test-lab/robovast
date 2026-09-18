@@ -1675,6 +1675,16 @@ def check_campaign_inputs(campaign_data):
         raise missing_input_error(missing)
 
 
+def render_secondary_entrypoint(*, cluster=False) -> str:
+    """The sidecar entrypoint as it is shipped to a campaign: the shared blocks substituted."""
+    content = files('robovast.execution.data').joinpath('secondary_entrypoint.sh').read_text(
+        encoding='utf-8')
+    content = content.replace('# @@INIT_BLOCK@@',
+                              _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK)
+    content = content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
+    return content.replace('# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
+
+
 def render_entrypoint(*, cluster=False, instance_type_command=None):
     """The container entrypoint script, with its lane-specific blocks substituted.
 
@@ -1801,23 +1811,14 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     campaign_transient_dir = os.path.join(out_dir, "_transient")
     os.makedirs(campaign_transient_dir, exist_ok=True)
 
-    init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
     entrypoint_dst = os.path.join(campaign_transient_dir, "entrypoint.sh")
     with open(entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(render_entrypoint(cluster=cluster,
                                  instance_type_command=instance_type_command))
 
-    # Copy secondary_entrypoint.sh into _transient/ (with init block replacement)
-    secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))
-    with open(secondary_entrypoint_src, 'r', encoding='utf-8') as f:
-        secondary_entrypoint_content = f.read()
-    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
-    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
-    secondary_entrypoint_content = secondary_entrypoint_content.replace(
-        '# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
     secondary_entrypoint_dst = os.path.join(campaign_transient_dir, "secondary_entrypoint.sh")
     with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
-        f.write(secondary_entrypoint_content)
+        f.write(render_secondary_entrypoint(cluster=cluster))
 
     # Copy collect_sysinfo.py into _transient/
     collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
