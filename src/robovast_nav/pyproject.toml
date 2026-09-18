@@ -5,6 +5,9 @@ description = "Navigation-specific variation types for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast_nav"}]
 # The costmap run-view panel ships as a built Module-Federation remote (see web/), served by the
 # robovast service from this package data. Built by `npm --prefix web install && npm --prefix web run
