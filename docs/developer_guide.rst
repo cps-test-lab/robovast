@@ -584,9 +584,12 @@ outside what it accepts, a
 arrangement realizes — is reported as its message alone, naming the plugin and the config
 block. Any other exception escaping ``variation()`` is a bug, and is reported as
 ``Variation failed. <Class>: <exception>`` followed by the tail of the traceback: the file,
-line and source of the frame it was raised in. That text is the same on the CLI, in the MCP
-tools (``validate_project``, ``preview_configurations``) and in the web UI's config editor,
-so the line to fix is in front of whoever is authoring the plugin.
+line and source of the frame it was raised in. Either report is prefixed with the ``.vast``
+line the variation is written on and the config block that ran it
+(``campaign.vast:10: config 'cell1': …``), so the entry to edit is named as well as the
+code. That text is the same on the CLI, in the MCP tools (``validate_project``,
+``preview_configurations``) and in the web UI's config editor, so the line to fix is in
+front of whoever is authoring the plugin.
 
 .. note::
 

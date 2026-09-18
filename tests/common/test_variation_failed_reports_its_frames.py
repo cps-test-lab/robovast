@@ -80,7 +80,7 @@ def test_the_message_names_the_plugin_the_file_the_line_and_the_source(tmp_path)
     with pytest.raises(VariationFailed) as excinfo:
         generate_scenario_variations(str(vast), use_cache=False)
     message = str(excinfo.value)
-    assert message.startswith("Variation failed. Broken: 'no such slot'")
+    assert message.startswith("campaign.vast:6: config 'cell0': Variation failed. Broken: 'no such slot'")
     assert 'broken.py", line 5, in variation' in message
     assert 'raise KeyError("no such slot")' in message
 
