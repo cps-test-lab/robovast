@@ -597,6 +597,29 @@ def test_a_probe_asks_the_scenario_runner_to_report_on_itself(monkeypatch):
     assert TICK_LOG_FLAG in params["value"]
 
 
+def test_a_probe_keeps_every_container_out_of_the_run_tree(monkeypatch):
+    """Three variables name where a job writes, and a sidecar's per-run artifacts resolve against
+    the third: a simulator's recording lands under ``RUN_OUTPUT_DIR``, and a probe that inherited
+    the job's value put the probe's records into a real run directory -- a campaign result no
+    trial produced. Every container, because the sidecars are the ones that write per run."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    r = _runner(monkeypatch)
+    base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    probe = probe_manifest(base, job_name="probe-n1", params_file="/config/p.yaml",
+                           output_dir="/out/_calibration/n1",
+                           display_name="calibration probe · n1")
+    spec = probe["spec"]["template"]["spec"]
+    containers = list(spec.get("containers") or []) + list(spec.get("initContainers") or [])
+    seen = set()
+    for container in containers:
+        for entry in container.get("env") or []:
+            if entry["name"] in ("OUTPUT_DIR", "RUN_OUTPUT_DIR"):
+                seen.add(entry["name"])
+                assert entry["value"] == "/out/_calibration/n1", (container["name"], entry)
+    assert seen == {"OUTPUT_DIR", "RUN_OUTPUT_DIR"}, "the base job must carry both to prove it"
+
+
 def test_a_campaign_run_is_not_asked_to(monkeypatch):
     """Per-tick instrumentation on the trial's hot path, so every run paying for it is a cost
     with no reader: only the probe's file is ever read."""
