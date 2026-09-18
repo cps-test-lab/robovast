@@ -57,6 +57,11 @@ nav2_control_loop_rate = "robovast_nav.health_checks:ControlLoopRate"
 [tool.poetry.plugins."robovast.mcp_plugins"]
 nav = "robovast_nav.mcp_plugin:NavMCPPlugin"
 
+# The run view's costmap panel as an inset on a rendered video: `roqsim render --overlay costmap`.
+# A name in roqsim's documented entry-point group, nothing imported from it.
+[tool.poetry.plugins."roqsim.render_overlays"]
+costmap = "robovast_nav.video_overlay:CostmapOverlay"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

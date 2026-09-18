@@ -19,7 +19,10 @@ pip install "robovast[nav]"
 Each run comes back with a web view of the trajectory on the map, the costmap as the stack
 saw it, and the Nav2 behaviour tree as it ticked; a health check flags a control loop that
 could not keep its rate. An AI agent connected to the service can read the same map,
-trajectory and path deviation for any run.
+trajectory and path deviation for any run. A video rendered from a run's recording carries the
+same costmap view as an inset (`roqsim render --overlay costmap`): the map, the costmaps, the
+driven trail and the robot, plus the planned path, goal and obstacles, read from the
+postprocessed files beside the recording.
 
 ## Is this the package for me?
 
