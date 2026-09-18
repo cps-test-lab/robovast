@@ -14,8 +14,7 @@
 
 amcl:
   ros__parameters:
-    # Stamped commands on every node that touches cmd_vel, as the TurtleBot 4's own nav2 config
-    # sets it: the base takes a TwistStamped on cmd_vel, like the robot.
+    # nav2's default is a plain Twist; the TurtleBot 4 takes a TwistStamped.
     enable_stamped_cmd_vel: true
     use_sim_time: True
     base_frame_id: "base_link"
