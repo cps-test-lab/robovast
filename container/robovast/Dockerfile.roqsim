@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=1b1958519b6b4288e2ce5c17a922e1b6aa48368d
+ARG ROQSIM_REF=b3d8b689f66cd5ebf032748102647aa80ede9931
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
