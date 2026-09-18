@@ -192,9 +192,19 @@ check-lock: ## Fail if poetry.lock does not describe pyproject.toml
 	@command -v poetry >/dev/null 2>&1 || { echo "❌ poetry is not installed. Install with: pip install poetry==1.8.2"; exit 1; }
 	@poetry check --lock || { echo ""; echo "Fix with: poetry lock --no-update"; exit 1; }
 
+# Both bundles are package data that git ignores, and nothing in a Python build makes them:
+# a wheel built without them installs a UI that serves the API alone, and nav panel types
+# with no assets behind them. The nav tree goes first so that check-mf-runtime finds its
+# node_modules and compares the two Module-Federation runtimes instead of skipping.
+.PHONY: frontend
+frontend: ## Build the web UI and the nav panel remote, the two bundles the wheels carry
+	cd src/robovast_nav/web && npm ci && npm run build
+	cd frontend/ui && npm ci && npm run build
+
 .PHONY: ui-stage
 ui-stage: check-mf-runtime ## Copy the built web UI into the package so the wheel carries it
-	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: cd frontend/ui && npm ci && npm run build"; exit 1; }
+	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: make frontend"; exit 1; }
+	@test -f src/robovast_nav/robovast_nav/web/dist/remoteEntry.js || { echo "the nav panel remote is not built. Run: make frontend"; exit 1; }
 	rm -rf src/robovast/_ui
 	cp -r frontend/ui/dist src/robovast/_ui
 	@echo "staged the web UI into src/robovast/_ui for the wheel"
@@ -202,9 +212,10 @@ ui-stage: check-mf-runtime ## Copy the built web UI into the package so the whee
 .PHONY: build
 build: ui-stage
 	poetry build
+	cd src/robovast_client && poetry build
+	cd src/robovast_sim_roqsim && poetry build
 	cd src/robovast_nav && poetry build
 	cd src/robovast_cluster && poetry build
-	cd src/robovast_client && poetry build
 
 .PHONY: release-images
 release-images:
@@ -275,7 +286,7 @@ publish-client-test:
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
 	@cd src/robovast_client && \
 		base=$$(poetry version -s) && \
-		stamp=$$(python3 ../../tools/next_testpypi_version.py robovast-client "$$base") && \
+		stamp=$$(python3 ../../tools/next_testpypi_version.py "$$base" robovast-client) && \
 		echo "Rehearsing as $$stamp; pyproject.toml stays at $$base." && \
 		trap 'poetry version "$$base" >/dev/null' EXIT && \
 		poetry version "$$stamp" >/dev/null && \
@@ -394,46 +405,62 @@ publish-client: build-client
 	cd src/robovast_client && poetry publish
 
 # Post-release stamped and repeatable, for the same reason publish-client-test is; see the
-# comment there and tools/next_testpypi_version.py. Each distribution gets its own number
-# because each has its own TestPyPI history -- they share a version in the tree, not
-# necessarily on the index. It does NOT depend on `build`, which builds all four at the
-# tree's plain version; only the two published here are stamped and built.
+# comment there and tools/next_testpypi_version.py. One stamp for all five, because
+# `robovast` requires its siblings at exactly the version being released: a number free on
+# every one of their TestPyPI histories is the only one the pin can resolve to. The root's
+# path dependencies are rewritten to that pin the way the publish workflow does it
+# (tools/pin_released_siblings.py), so the rehearsal uploads the wheel the release will --
+# a path dependency reaches the metadata as a direct reference, which the index refuses.
 #
-# robovast first, then robovast-nav, which requires it: nav's `robovast = "^2.0.0"` is a
-# range, so it accepts the stamped robovast, but the release has to be on the index by the
-# time nav's install is resolved.
+# Order follows the dependency edges: client and sim-roqsim (pinned by robovast), then
+# robovast, then nav and cluster (which require it) -- each has to be on the index by the
+# time the next one's install is resolved. It does NOT depend on `build`, which builds at
+# the tree's plain version; every manifest is restored on the way out, including on failure.
 #
 # DRY_RUN=1 stamps and builds but uploads nothing -- the check for "what would this
-# publish, and does the stamp come back off afterwards?" that costs no version.
+# publish, and do the manifests come back afterwards?" that costs no version.
 .PHONY: publish-test
 publish-test: ui-stage
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
-	@set -e; for spec in "robovast:." "robovast-nav:src/robovast_nav"; do \
+	@set -e; \
+	base=$$(poetry version -s); \
+	stamp=$$(python3 tools/next_testpypi_version.py "$$base" robovast robovast-client robovast-nav robovast-cluster robovast-sim-roqsim); \
+	echo "Rehearsing the set as $$stamp; every pyproject.toml stays at $$base."; \
+	for spec in "robovast-client:src/robovast_client" "robovast-sim-roqsim:src/robovast_sim_roqsim" "robovast:." "robovast-nav:src/robovast_nav" "robovast-cluster:src/robovast_cluster"; do \
 		dist=$${spec%%:*}; dir=$${spec#*:}; \
-		echo "Publishing $$dist to TestPyPI..."; \
+		echo "Publishing $$dist $$stamp to TestPyPI..."; \
 		( cd "$$dir" && \
-			base=$$(poetry version -s) && \
-			stamp=$$($(CURDIR)/tools/next_testpypi_version.py "$$dist" "$$base") && \
-			echo "Rehearsing as $$stamp; pyproject.toml stays at $$base." && \
-			trap 'poetry version "$$base" >/dev/null' EXIT && \
+			cp pyproject.toml pyproject.toml.rehearsal && \
+			trap 'mv pyproject.toml.rehearsal pyproject.toml' EXIT && \
 			poetry version "$$stamp" >/dev/null && \
+			{ test "$$dist" != robovast || python3 tools/pin_released_siblings.py "$$stamp"; } && \
 			poetry build && \
 			poetry publish --repository testpypi $(if $(DRY_RUN),--dry-run,) ); \
 	done
 
-
 .PHONY: publish-test-venv
 publish-test-venv:
-	@echo "Testing install from TestPyPI in a fresh venv..."
+	@echo "Testing install of the whole set from TestPyPI in a fresh venv..."
 	rm -rf /tmp/robovast-test-venv
 	python3 -m venv /tmp/robovast-test-venv
 # --no-cache-dir for the reason publish-client-test-venv carries it: pip's cached index
 # page outlives the upload, and the rehearsal would test the release before this one.
+# Third-party dependencies come from PyPI: TestPyPI does not carry them.
 	/tmp/robovast-test-venv/bin/pip install \
 		--no-cache-dir \
 		--index-url https://test.pypi.org/simple/ \
 		--extra-index-url https://pypi.org/simple/ \
-		robovast robovast-nav
+		"robovast[nav,roqsim]" robovast-cluster
+# What the wheels promise as package data and entry points, checked in what was installed.
+	/tmp/robovast-test-venv/bin/python -c "\
+	import importlib.metadata as m, importlib.resources as r; \
+	assert r.files('robovast').joinpath('_ui/index.html').is_file(), 'web UI missing from the robovast wheel'; \
+	assert r.files('robovast_nav').joinpath('web/dist/remoteEntry.js').is_file(), 'nav panel remote missing from the robovast-nav wheel'; \
+	eps = m.entry_points(); \
+	assert 'roqsim' in [e.name for e in eps.select(group='robovast.simulators')], 'roqsim simulator entry point missing'; \
+	assert 'cluster' in [e.name for e in eps.select(group='robovast.execution_backends')], 'cluster execution backend missing'; \
+	print('both bundles and both entry points present')"
 	@echo "Testing vast CLI..."
-	/tmp/robovast-test-venv/bin/vast --help
-	@echo "✅ Install from TestPyPI succeeded!"
+	/tmp/robovast-test-venv/bin/vast --version
+	/tmp/robovast-test-venv/bin/vast cluster setup --help >/dev/null
+	@echo "✅ The set installs from TestPyPI."
