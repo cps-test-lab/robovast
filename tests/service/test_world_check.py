@@ -443,6 +443,25 @@ def test_one_lane_failure_is_reported_once_not_once_per_world(tmp_path, monkeypa
     assert problems[0]["config"] is None, "it is about the campaign, not one cell"
 
 
+def test_the_default_world_is_not_checked_when_every_configuration_replaces_it(tmp_path):
+    """A world that names its mesh per configuration and none by default is refused as
+    authored, and no run ever loads it that way: the verdict would be about a world nobody
+    opens. It is checked as soon as one configuration would run it."""
+    from robovast.service.world_query import _distinct_blocks
+
+    parameters = _parameters()
+    parameters["configuration"] = [
+        {"name": "a", "parameters": {"sim": {"components.floorplan.mesh": "/config/a.stl"}}},
+        {"name": "b", "parameters": {"sim": {"components.floorplan.mesh": "/config/b.stl"}}},
+    ]
+    assert [name for name, _ in _distinct_blocks(parameters, str(tmp_path))] == ["a", "b"]
+
+    parameters["configuration"].append({"name": "c"})
+    assert [name for name, _ in _distinct_blocks(parameters, str(tmp_path))] == [None, "a", "b"]
+
+    assert [name for name, _ in _distinct_blocks(_parameters(), str(tmp_path))] == [None]
+
+
 def test_two_worlds_failing_differently_stay_two_problems(tmp_path, monkeypatch):
     """The collapse must never hide a difference between configurations — which is the
     whole reason the blocks are described one by one."""
