@@ -21,18 +21,19 @@ def _boom():
     raise KeyError("no such slot")
 
 
-def _report(exc, capsys):
+def _report(raise_it, capsys):
+    """What the CLI prints for the exception *raise_it* raises, caught as a verb would."""
     with pytest.raises(SystemExit) as exit_info:
-        handle_cli_exception(exc)
+        try:
+            raise_it()
+        except Exception as e:  # noqa: BLE001 - the handler under test takes them all
+            handle_cli_exception(e)
     assert exit_info.value.code == 1
     return capsys.readouterr().err
 
 
 def test_a_bug_prints_its_type_message_and_frames(capsys):
-    try:
-        _boom()
-    except KeyError as e:
-        err = _report(e, capsys)
+    err = _report(_boom, capsys)
     assert err.startswith("Error: KeyError: 'no such slot'\n")
     assert "in _boom" in err
     assert 'raise KeyError("no such slot")' in err
@@ -40,18 +41,16 @@ def test_a_bug_prints_its_type_message_and_frames(capsys):
 
 
 def test_a_refusal_prints_its_message_alone(capsys):
-    try:
+    def refuse():
         raise CampaignConfigError("the .vast names no scenario file")
-    except CampaignConfigError as e:
-        err = _report(e, capsys)
-    assert err == "Error: the .vast names no scenario file\n"
+    assert _report(refuse, capsys) == "Error: the .vast names no scenario file\n"
 
 
 def test_what_a_service_said_is_printed_as_it_arrived(capsys):
     """The detail may itself carry frames, rendered on the service; nothing is added."""
-    detail = "Variation failed. Broken: 'x'\n\nTraceback (most recent call last):\n  File \"p.py\", line 3, in variation"
-    try:
+    detail = ("Variation failed. Broken: 'x'\n\nTraceback (most recent call last):\n"
+              "  File \"p.py\", line 3, in variation")
+
+    def answer():
         raise ServiceError(400, detail)
-    except ServiceError as e:
-        err = _report(e, capsys)
-    assert err == f"Error: {detail}\n"
+    assert _report(answer, capsys) == f"Error: {detail}\n"
