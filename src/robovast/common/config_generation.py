@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
+from robovast.client.status import failure_detail
+
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
@@ -43,7 +45,7 @@ from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
-from .variation.base_variation import (VariationConfigError,
+from .variation.base_variation import (VariationConfigError, VariationFailed,
                                        VariationInfeasibleError)
 from .variation.loader import _validate_variation_class
 
@@ -210,10 +212,15 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
         progress_update_callback(msg)
         raise VariationInfeasibleError(msg, config_name=e.config_name) from e
     except Exception as e:
+        # A bug in the plugin. The progress line names it; the exception carries the frames,
+        # rendered here, once: the surfaces it reaches print an exception's message and
+        # nothing else, so the file and line it broke at are only ever seen if the message
+        # holds them (see VariationFailed).
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
         progress_update_callback(msg)
-        raise RuntimeError(msg) from e
+        raise VariationFailed(
+            f"Variation failed. {variation_class.__name__}: {failure_detail(e)}") from e
 
     # Check if configs is None and return empty list
     if configs is None:

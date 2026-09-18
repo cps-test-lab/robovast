@@ -735,7 +735,10 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     The exception message first (it carries the actionable part — e.g. the
     "Available configs:" list), then the tail of the traceback for genuine bugs.
     Shared by the local worker and the in-process cluster worker so both record
-    failures the same way.
+    failures the same way. Also what a raising site uses to make a message complete
+    where no one surface will render the frames (a plugin bug caught in composition
+    reaches the CLI, the MCP tools and the service alike as a bare message): the
+    exception it then raises opts out below, so the frames are carried once.
 
     The frames are formatted *without* the trailing ``Type: message`` line, because
     that line is the message already printed above it: appending the raw

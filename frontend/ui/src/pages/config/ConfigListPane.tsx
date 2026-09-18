@@ -32,7 +32,12 @@ export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
           {preview.configs} configs · {preview.total_trials} trials
         </Typography>
       ) : null}
-      {previewErr ? <Alert severity="error">{previewErr}</Alert> : null}
+      {previewErr ? (
+        // pre-wrap: a plugin that broke reports the frames it broke in, one per line.
+        <Alert severity="error" sx={{ whiteSpace: 'pre-wrap' }}>
+          {previewErr}
+        </Alert>
+      ) : null}
       {preview ? (
         <Paper sx={{ p: 0.5, overflow: 'auto', flexGrow: 1, minHeight: 0 }}>
           <List dense disablePadding>
