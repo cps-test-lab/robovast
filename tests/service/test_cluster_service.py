@@ -24,7 +24,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
                                                                    aux_pod_name,
                                                                    build_aux_pod_manifest)
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
-from robovast.service.interface import CreateCampaignRequest
+from robovast.service.interface import CreateCampaignRequest, JobKind
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -2633,6 +2633,24 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
     # that has never heard of it.
     assert cs._job_state_target("camp-1", "scenario-abc", "simulation")[0] == (
         "scenario-abc-x9", "simulation")
+
+
+def test_the_health_pull_asks_a_calibration_probe_as_it_asks_a_run(cs, monkeypatch):
+    """The probe runs one real configuration in the job shape so that its measurement stands for
+    the jobs' -- and the health read is part of that shape: a process the service starts inside
+    the simulator's container, charged to the simulator's memory. A probe spared it is sized
+    without it, and every job then meets, over a limit with no room for it, the one cost the probe
+    never saw. The postprocessing conversion is the job that carries no run, and stays skipped."""
+    pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
+    _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
+    monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
+        types.SimpleNamespace(job_name="scenario-abc", status="running",
+                              kind=JobKind.CALIBRATION),
+        types.SimpleNamespace(job_name="scenario-pp", status="running",
+                              kind=JobKind.POSTPROCESSING),
+    ]))
+
+    assert [name for name, *_ in cs._health_targets("camp-1")] == ["scenario-abc"]
 
 
 def test_a_role_in_a_native_sidecar_is_found(cs, monkeypatch):

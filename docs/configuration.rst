@@ -1532,6 +1532,11 @@ per *field*, so a ``.vast`` stating only ``cpu`` keeps the deployment's ``memory
 **What it measures.** CPU and memory, both from the same probe. CPU is read at a percentile
 that depends on the container's role; memory is read at the **maximum** for every role,
 because exceeding a CPU reservation slows a container while exceeding a memory one kills it.
+The probe is a run in the job shape, and is treated as one all the way: while somebody is
+watching the campaign, the service asks the probe's simulator for its health exactly as it asks
+a run's (:doc:`mcp`, "How it is asked"). That read is a process started inside the simulator's
+container and charged to its memory, so it is part of what the simulator's limit must clear,
+and a probe spared it would be sized without it.
 
 **How the measurement becomes an allocation** is a per-container ``calibration`` block, every
 field optional and defaulted from the role and the deployment:
