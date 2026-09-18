@@ -5,6 +5,9 @@ description = "The roqsim simulator backend for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast_sim_roqsim"}]
 
 [tool.poetry.dependencies]

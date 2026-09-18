@@ -1,10 +1,13 @@
 [tool.poetry]
 name = "robovast"
 version = "2.1.0"
-description = "RoboVast project"
+description = "Variation Automation and Scalable Testing for Robotic Systems: vary a scenario, run the sweep as recorded simulation runs on Docker or Kubernetes, query the results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast", from = "src"}]
 # The built web UI, staged into the package by `make ui-stage` (which `build`
 # runs). Needs an explicit include because the source is git-ignored and poetry

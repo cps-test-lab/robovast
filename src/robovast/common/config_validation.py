@@ -927,7 +927,7 @@ def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins
         problems.append(_problem("variation", str(e), config=name, field="variations"))
 
     # Per-variation parameter schema (each plugin's optional CONFIG_CLASS).
-    for variation_class, variation_params in variation_classes:
+    for variation_class, variation_params, _ref in variation_classes:
         config_class = getattr(variation_class, "CONFIG_CLASS", None)
         if config_class is not None and isinstance(variation_params, dict):
             try:

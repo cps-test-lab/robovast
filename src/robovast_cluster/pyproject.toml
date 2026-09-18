@@ -5,6 +5,9 @@ description = "The Kubernetes execution lane for RoboVAST: cluster campaigns, de
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 # Ships into the `robovast` namespace rather than a name of its own, so the import paths
 # do not change: `robovast/` and `robovast/execution/` carry no `__init__.py` in either
 # distribution, which makes them PEP 420 namespace packages and lets the two trees merge.

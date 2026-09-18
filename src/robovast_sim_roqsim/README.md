@@ -1,8 +1,15 @@
-# robovast_sim_roqsim
+# robovast-sim-roqsim
 
-The [roqsim](https://github.com/cps-test-lab/roqsim) (MuJoCo) simulator backend for RoboVAST.
+**A physics simulator for your robot tests, selected by one word.**
 
-Registers one `robovast.simulators` entry point, so a campaign selects the simulator by name:
+[RoboVAST](https://cps-test-lab.github.io/robovast/) runs robot software through hundreds of
+varied, recorded simulation runs — and needs something to simulate them in.
+[roqsim](https://github.com/cps-test-lab/roqsim) is a MuJoCo-based simulator with a ROS 2
+bridge and ready-made robots (wheeled bases such as the TurtleBot 4, arms and grippers,
+quadrupeds, humanoids), sensors (lidar, cameras, depth, IMU, force-torque), generated
+floorplans and walking pedestrians, built to run headless and in numbers. This package makes
+it a RoboVAST backend: a campaign names it, and the image, the command, the recording setup
+and how the run is driven and observed all follow.
 
 ```yaml
 execution:
@@ -13,30 +20,23 @@ execution:
       config: worlds/depot.yaml
 ```
 
-Everything else — the image, the command, the GL/record environment, which files the world is
-made of — comes from the backend rather than from the `.vast`.
-
-## Installation
-
-It ships as a RoboVAST extra:
-
 ```bash
-pip install 'robovast[roqsim]'
+pip install "robovast[roqsim]"
 ```
 
-`pip install robovast` deliberately gets you nothing from here: RoboVAST names no simulator, so a
-backend is always something you add. The default service/controller image installs this extra,
-which is what lets `backend: roqsim` resolve on a cluster without the campaign shipping anything.
+## Is this the package for me?
 
-### From source
+Yes, if you want a simulator that comes with the robots and sensors already in it, so that a
+campaign is about *your* stack and *your* variation rather than about building a world first.
+Your own worlds, robot models and plugins travel with the project; the simulator does not
+have to.
 
-```bash
-pip install -e .
-```
+RoboVAST itself names no simulator — `pip install robovast` gets you nothing from here — so a
+backend is always something you add: this one, or your own, the same way.
 
-## Scope
+Documentation: [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/),
+"Simulators"; roqsim itself at [cps-test-lab.github.io/roqsim](https://cps-test-lab.github.io/roqsim/).
 
-This package must import **without roqsim installed** — it runs in the long-lived RoboVAST
-service process, which has no reason to carry a MuJoCo runtime. It declares strings and container
-specs; anything that genuinely needs the simulator (such as enumerating the files a world is built
-from) runs inside roqsim's own image.
+## Licence
+
+Apache-2.0.
