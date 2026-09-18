@@ -231,7 +231,8 @@ remember and map onto their situation:
   reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
   span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
-  gets one held by the container-exec manager and reaped on idleness, and a local service
+  gets one held by the container-exec manager, idle only once every holder has released it
+  and reaped after that, and a local service
   needs none because ``docker`` on the host is the fallback. When none of those applies —
   composing in a process with no backend and no ``docker`` — the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the

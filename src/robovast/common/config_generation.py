@@ -980,6 +980,18 @@ def _check_config_file_paths(configs, scenario_file):
                     f"subdirectory, or rename it.")
 
 
+def _query_key(query) -> str:
+    """What a :class:`~robovast.common.simulators.ContainerQuery` asks, as one string.
+
+    Two queries with the same image, command and documents ask the same question of the same
+    simulator and get the same answer; the key is that and nothing more, so a backend whose
+    query does carry a block's overrides is still asked once per distinct set of them.
+    """
+    from dataclasses import asdict  # pylint: disable=import-outside-toplevel
+    return json.dumps({"spec": asdict(query.spec), "command": list(query.command),
+                       "documents": query.documents}, sort_keys=True, default=str)
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
                                image_project=None, image_project_tag=None,
@@ -995,6 +1007,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     and the **union** of the worlds those blocks name joins ``run_files`` -- once per
     distinct block, since a campaign varying its world has several and each has to be
     mounted for the simulator to open it.
+
+    Where the backend answers with a question for the simulator's image, each distinct
+    question is asked once. A query may depend on less than the block it is asked for -- one
+    naming only the world, while the block also carries an override that swaps a mesh -- and
+    a sweep varying such an override is then one question however many blocks it has. Each
+    ask is a container round trip, which is what makes the distinction worth keeping.
 
     Errors are raised when the campaign actually uses the channel and swallowed when it does
     not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
@@ -1037,15 +1055,20 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     # because `sim_input_files` owns both halves. Nothing between the two catches, so the
     # exception the caller re-raises is the original, with whatever next_step it carries.
     query_failed = []
+    answers: dict = {}
 
     def ask(query):
+        key = _query_key(query)
+        if key in answers:
+            return answers[key]
         try:
-            return _run_input_files_query(
+            answers[key] = _run_input_files_query(
                 query, vast_dir, image_project=image_project,
                 image_project_tag=image_project_tag)
         except BaseException:
             query_failed.append(True)
             raise
+        return answers[key]
 
     for block in seen_blocks:
         query_failed.clear()
