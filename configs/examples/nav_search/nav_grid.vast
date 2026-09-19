@@ -32,10 +32,10 @@ configuration:
   - ParameterVariationList:
       sim: components.barrier.instances
       values:
-      - [{pos: [0.0, -2.60], size: [0.2, 4.8, 1.0]}, {pos: [0.0, 2.60], size: [0.2, 4.8, 1.0]}]
-      - [{pos: [0.0, -2.70], size: [0.2, 4.6, 1.0]}, {pos: [0.0, 2.70], size: [0.2, 4.6, 1.0]}]
-      - [{pos: [0.0, -2.80], size: [0.2, 4.4, 1.0]}, {pos: [0.0, 2.80], size: [0.2, 4.4, 1.0]}]
-      - [{pos: [0.0, -2.90], size: [0.2, 4.2, 1.0]}, {pos: [0.0, 2.90], size: [0.2, 4.2, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.60}}, size: [0.2, 4.8, 1.0]}, {pose: {position: {x: 0.0, y: 2.60}}, size: [0.2, 4.8, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.70}}, size: [0.2, 4.6, 1.0]}, {pose: {position: {x: 0.0, y: 2.70}}, size: [0.2, 4.6, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.80}}, size: [0.2, 4.4, 1.0]}, {pose: {position: {x: 0.0, y: 2.80}}, size: [0.2, 4.4, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.90}}, size: [0.2, 4.2, 1.0]}, {pose: {position: {x: 0.0, y: 2.90}}, size: [0.2, 4.2, 1.0]}]
   # When the pedestrian is at the crossing, relative to the robot's arrival. Dwell shifts
   # the patrol's phase, so this is the encounter timing -- the factor that makes the
   # failure region a band rather than a threshold.
