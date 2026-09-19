@@ -71,8 +71,10 @@ class AdmittedJobs:
     per round answers for all of them, which is what keeps a large batch cheap to watch.
     With no *admission* queue every Job is created at once, unpinned.
 
-    *list_remaining*, when given, answers which of a list of created Job names still run;
-    it defaults to :func:`running_jobs` over *label_selector*.
+    *list_remaining* answers which of a list of created Job names still run, and
+    *read_blocked* which of this owner's pods cannot start; they default to
+    :func:`running_jobs` and :func:`~.cluster_execution.blocked_and_contended_reasons` over
+    *label_selector*.
     """
 
     def __init__(self, *, admission, owner: str, batch_api, core_api, namespace: str,
@@ -80,6 +82,7 @@ class AdmittedJobs:
                  blocked_grace: float = BLOCKED_GRACE_SECONDS,
                  contended_grace: float = CONTENDED_GRACE_SECONDS,
                  list_remaining: Optional[Callable] = None,
+                 read_blocked: Optional[Callable] = None,
                  clock: Optional[Callable[[], float]] = None):
         self.admission = admission
         self.owner = owner
@@ -91,6 +94,8 @@ class AdmittedJobs:
         self.contended_grace = contended_grace
         self._list_remaining = list_remaining or (
             lambda names: running_jobs(batch_api, namespace, label_selector, names))
+        self._read_blocked = read_blocked or (
+            lambda: blocked_and_contended_reasons(core_api, namespace, label_selector))
         # Looked up per call unless given, so a test that patches the clock is obeyed.
         self._clock = clock or (lambda: time.monotonic())  # pylint: disable=unnecessary-lambda
         # Created directly, where there is no queue to say so.
@@ -117,6 +122,15 @@ class AdmittedJobs:
             return
         self.admission.submit(self.owner, items, **admission_kwargs)
 
+    def adopt(self, names) -> None:
+        """Track Jobs that exist already and were never admitted by this tracker.
+
+        A resumed caller meets its earlier attempt's Jobs still running. They hold real
+        capacity on a real node, so admitting them again would charge the cluster twice for
+        one pod; they are counted as created and waited for.
+        """
+        self._created.extend(n for n in names if n not in self._created)
+
     def poll(self, ignore_blocked=()) -> Round:
         """One round: create what has room, then read which Jobs run, finished or wait.
 
@@ -130,6 +144,7 @@ class AdmittedJobs:
             self.admission.drain()
             states = self.admission.states(self.owner)
             created = [n for n, st in states.items() if st == CREATED]
+            created += [n for n in self._created if n not in states]
             planned = sum(1 for st in states.values() if st == PLANNED)
         else:
             created, planned = list(self._created), 0
@@ -150,8 +165,7 @@ class AdmittedJobs:
         """``(blocked, contended, error)`` among *created*; ``(None, {}, why)`` when
         unreadable."""
         try:
-            blocked, contended = blocked_and_contended_reasons(
-                self.core_api, self.namespace, self.label_selector)
+            blocked, contended = self._read_blocked()
         except Exception as exc:  # noqa: BLE001 - "unknown" this round, never "nothing blocked"
             return None, {}, str(exc)
         # CREATED names only, and only this owner's: the selector may be wider than this

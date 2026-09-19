@@ -142,9 +142,15 @@ class DataPlane:
         snapshot = dict(facts or {}) if live else None
         include = None
         if selection is not None and (selection.stage or selection.skip_bags
-                                      or selection.batch_jobs):
+                                      or selection.batch_jobs or selection.part):
             include = campaign_archive.stage_include(skip_bags=selection.skip_bags,
                                                      batch_jobs=selection.batch_jobs)
+            if selection.part:
+                staged = include
+                in_part = campaign_archive.part_include(str(campaign_dir), selection.part)
+
+                def include(rel, is_dir):  # pylint: disable=function-redefined
+                    return staged(rel, is_dir) and in_part(rel, is_dir)
         return campaign_archive.iter_campaign_tar(
             str(campaign_dir),
             exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
@@ -287,22 +293,22 @@ def data_router(source):
     @router.get(Routes.campaign_archive("{campaign_id}"))
     def download_campaign_archive(campaign_id: str, stage: bool = False,
                                   skip_bags: bool = False, batch_jobs: str = "",
-                                  uncompressed: bool = False):
+                                  uncompressed: bool = False, part: str = ""):
         """Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
 
         Backs ``vast campaign download``, the web UI's download button and the
         postprocessing pod's stage, which asks for the plain tar, being in the cluster.
         What comes out is the campaign as this service holds
         it -- postprocessed if it has been, raw if it has not; derived data is an addition
-        to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
-        ``batch_jobs`` narrow it to what a postprocessing pod reads
+        to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
+        ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
         (:class:`ArchiveSelection`).
 
         Nothing is buffered and no scratch is used: the tree is tarred into the response
         as it is read. Decisive for campaigns that run to terabytes.
         """
         selection = ArchiveSelection(stage=stage, skip_bags=skip_bags, batch_jobs=batch_jobs,
-                                     uncompressed=uncompressed)
+                                     uncompressed=uncompressed, part=part)
         # The name before the stream: a running campaign is offered as
         # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
         # -- which saves whatever this says and never sees the marker inside the archive.

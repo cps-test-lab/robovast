@@ -159,6 +159,11 @@ KNOWN: dict[str, Known] = {
         "the service's own environment.", Sensitivity.SERVER_ONLY),
     "ROBOVAST_NODE_CALIBRATION": Known(
         _CLUSTER, "Whether per-node capacity is calibrated rather than assumed."),
+    "ROBOVAST_POSTPROCESS_MAX_PARALLEL": Known(
+        _CLUSTER, "A cap on how many Jobs one campaign's postprocessing is split into; 1 "
+        "runs it in one Job. Unset, it is split into as many parts as the cluster could run "
+        "at once. Set in the operator's .env and applied by 'vast cluster setup' and "
+        "'vast service upgrade'."),
     "ROBOVAST_NODE_HEADROOM_CPU": Known(
         _CLUSTER, "CPU held back on each node when placing campaign Jobs."),
     "ROBOVAST_NODE_HEADROOM_MEMORY": Known(

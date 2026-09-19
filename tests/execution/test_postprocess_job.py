@@ -193,7 +193,7 @@ def test_two_conversions_of_one_campaign_get_different_job_names():
     WHICH conversion it is.
     """
     names = {pj.build_manifest("camp-2026-08-25-1234", "img", steps(), "ns",
-                               discriminator=d)["metadata"]["name"]
+                               role=pj.JobRole.search_batch(d, []))["metadata"]["name"]
              for d in ("batch-0", "batch-1", "batch-2")}
     assert len(names) == 3, f"batches collided on one Job name: {names}"
 
@@ -203,7 +203,7 @@ def test_the_same_conversion_keeps_a_stable_name():
     launching a second copy of it -- the behaviour the 409 fallthrough exists for."""
     def name(disc):
         return pj.build_manifest("camp-x", "img", steps(), "ns",
-                                 discriminator=disc)["metadata"]["name"]
+                                 role=pj.JobRole.search_batch(disc, []))["metadata"]["name"]
     assert name("batch-3") == name("batch-3")
 
 
@@ -222,7 +222,7 @@ def test_long_campaign_ids_stay_within_the_label_limit_and_stay_distinct():
     names = set()
     for disc in ("batch-0", "batch-1", "batch-10", "batch-1-reps-3", "batch-1-reps-5"):
         n = pj.build_manifest(long_id, "img", steps(), "ns",
-                              discriminator=disc)["metadata"]["name"]
+                              role=pj.JobRole.search_batch(disc, []))["metadata"]["name"]
         assert len(n) <= 63, f"{n} is {len(n)} chars"
         names.add(n)
     assert len(names) == 5, f"truncation collapsed distinct conversions: {names}"
@@ -274,10 +274,12 @@ def test_the_stage_asks_for_what_the_pod_reads():
     for a per-batch Job -- with the tag quoted, since `/` is part of a repetitions group's."""
     with_bags = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns"))["command"][-1]
     without = _stage(pj.build_manifest("c1", None, [], "ns"))["command"][-1]
-    batch = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns", batch_commands=[],
-                                     discriminator="batch-3/reps-5"))["command"][-1]
+    batch = _stage(pj.build_manifest(
+        "c1", "img:1", _CMDS, "ns",
+        role=pj.JobRole.search_batch("batch-3/reps-5", [])))["command"][-1]
     campaign_level = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns",
-                                              discriminator="batch-3"))["command"][-1]
+                                              role=pj.JobRole.search_batch("batch-3", []))
+                            )["command"][-1]
 
     assert "skip_bags=false" in with_bags and "batch_jobs" not in with_bags
     assert "skip_bags=true" in without
@@ -473,7 +475,7 @@ def test_another_containers_exit_code_is_reported_as_the_number():
 
 
 class _FakeBatch:
-    """Enough of BatchV1Api to drive _adopt_or_replace."""
+    """Enough of BatchV1Api to drive adopt_or_replace."""
 
     def __init__(self, active=None, missing=False):
         self.active, self.missing = active, missing
@@ -534,7 +536,7 @@ def test_a_running_job_is_adopted_not_replaced():
 
     # Reported as adoption rather than as bare success: the caller has to know it is a
     # waiter on someone else's Job, because that decides what it may write and delete.
-    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_ADOPTED
+    assert pj.adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
 
@@ -545,7 +547,7 @@ def test_a_finished_job_is_replaced_rather_than_waited_on():
     """
     batch = _FakeBatch(active=None)
 
-    assert pj._adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert pj.adopt_or_replace(batch, _FakeCore(), 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
 
 
@@ -558,9 +560,9 @@ def test_an_active_job_whose_pod_cannot_start_is_replaced_not_adopted():
     batch = _FakeBatch(active=1)
     core = _FakeCore(pods=[_unpullable_pod()])
 
-    assert pj._adopt_or_replace(batch, core, 'ns', 'job-x', {}) == pj._JOB_RECREATED
+    assert pj.adopt_or_replace(batch, core, 'ns', 'job-x', {}) == pj._JOB_RECREATED
     assert batch.calls.index('delete') < batch.calls.index('create')
-    assert not pj._live_job(batch, core, 'ns', 'job-x')
+    assert not pj.live_job(batch, core, 'ns', 'job-x')
 
 
 def test_a_job_queued_behind_a_busy_cluster_is_still_adopted():
@@ -579,7 +581,7 @@ def test_a_job_queued_behind_a_busy_cluster_is_still_adopted():
                                   'container_statuses': [cs]})()})()
     batch = _FakeBatch(active=1)
 
-    assert pj._adopt_or_replace(batch, _FakeCore(pods=[pod]), 'ns', 'job-x',
+    assert pj.adopt_or_replace(batch, _FakeCore(pods=[pod]), 'ns', 'job-x',
                                 {}) == pj._JOB_ADOPTED
     assert 'delete' not in batch.calls
 
@@ -842,12 +844,14 @@ def test_a_search_batch_is_sized_by_the_same_block(monkeypatch):
     so a conversion left at the default here would be the one place a campaign's declared
     size did not apply -- on the path that runs it most.
     """
-    batch = _manifest(batch_commands=[], convert_resources={"cpu": 6, "memory": "12Gi"})
+    batch = _manifest(role=pj.JobRole.search_batch("", []),
+                      convert_resources={"cpu": 6, "memory": "12Gi"})
     containers = _containers(batch)
     assert containers["convert"]["resources"]["requests"]["cpu"] == "6"
     assert _pod_charge(batch, "cpu") == 6
     # And the same floor applies in this shape, for the same reason.
-    small = _manifest(batch_commands=[], convert_resources={"cpu": 1, "memory": "512Mi"})
+    small = _manifest(role=pj.JobRole.search_batch("", []),
+                      convert_resources={"cpu": 1, "memory": "512Mi"})
     assert _pod_charge(small, "cpu") == to_cores(pj.POSTPROCESS_HOST_FLOOR["cpu"])
 
 
@@ -886,7 +890,7 @@ def test_one_step_cannot_edit_another_steps_resources():
 def test_the_host_step_is_raised_because_the_campaigns_own_code_runs_there():
     """The figure has to reach the host step, not only the conversion.
 
-    ``run_host_postprocessing`` runs the ordinary pipeline with *only* the rosbag steps
+    ``run_host_postprocessing`` runs the ordinary pipeline with *only* the image steps
     skipped, so everything else a campaign declared happens there: its own metric plugins,
     metadata, publication, the health checks. Those are precisely the steps whose appetite
     RoboVAST cannot know. A knob that sized only the conversion would leave them pinned at a
@@ -1122,7 +1126,7 @@ def _waiting_on_a_job(monkeypatch, batch, core=None):
 
     core = core or mock.Mock()
     monkeypatch.setattr(pj, "publish_live_log", lambda *a, **k: False)
-    monkeypatch.setattr(pj, "_POLL_SECONDS", 0)
+    monkeypatch.setattr(pj, "POLL_SECONDS", 0)
     return [
         mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"),
         mock.patch("kubernetes.client.CoreV1Api", return_value=core),
@@ -1228,14 +1232,14 @@ def test_a_failed_jobs_log_is_published_before_its_verdict_is_returned(monkeypat
     batch = mock.Mock()
     batch.read_namespaced_job_status.return_value = _job_status(active=0, failed=1)
     published = []
-    monkeypatch.setattr(pj, "_POLL_SECONDS", 0)
+    monkeypatch.setattr(pj, "POLL_SECONDS", 0)
     with mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
             mock.patch("kubernetes.client.CoreV1Api", return_value=_failed_pod_core()), \
             mock.patch("kubernetes.client.BatchV1Api", return_value=batch), \
             mock.patch("robovast.execution.cluster_execution.cluster_execution."
                        "resolve_pull_secret", return_value=""):
         monkeypatch.setattr(pj, "publish_live_log",
-                            lambda core, root, ns, name: published.append(root) or True)
+                            lambda core, root, ns, name, prefix="": published.append(root) or True)
         ok, _message = pj.run_conversion_job(mock.Mock(), "camp", "/results/camp", "ns",
                                              "img", CMDS, token=_TOKEN)
 
@@ -1554,14 +1558,14 @@ def test_a_per_batch_job_sizes_only_its_own_batch(tmp_path):
     `_jobs/` is where the bags are: the batch's own is what its stage will extract."""
     root = _tree(tmp_path)
 
-    assert pj._stage_bytes(str(root), skip_bags=False, batch_jobs="batch-3") == \
+    assert pj.stage_bytes(str(root), skip_bags=False, batch_jobs="batch-3") == \
         8192 + 512 + 4096
 
 
 def test_a_whole_campaign_job_sizes_the_whole_tree(tmp_path):
     root = _tree(tmp_path)
 
-    assert pj._stage_bytes(str(root), skip_bags=False, batch_jobs="") == \
+    assert pj.stage_bytes(str(root), skip_bags=False, batch_jobs="") == \
         8192 + 512 + 4096 + 2048
 
 
@@ -1569,10 +1573,10 @@ def test_bags_are_not_reserved_for_when_the_pod_will_not_stage_them(tmp_path):
     """No conversion container means no bag is staged, so none is reserved for."""
     root = _tree(tmp_path)
 
-    assert pj._stage_bytes(str(root), skip_bags=True, batch_jobs="") == 512
+    assert pj.stage_bytes(str(root), skip_bags=True, batch_jobs="") == 512
 
 
 def test_a_tree_that_cannot_be_walked_leaves_the_floor_standing(tmp_path):
     """Sizing is advisory: it must never be why a campaign is not postprocessed."""
-    assert pj._stage_bytes(str(tmp_path / "gone"), skip_bags=False, batch_jobs="") == 0
+    assert pj.stage_bytes(str(tmp_path / "gone"), skip_bags=False, batch_jobs="") == 0
     assert to_bytes(pj.stage_ephemeral_request(0)) == to_bytes(pj.POSTPROCESS_EPHEMERAL_FLOOR)

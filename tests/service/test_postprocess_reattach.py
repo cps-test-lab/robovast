@@ -254,6 +254,7 @@ def test_startup_reattaches_to_what_it_finds(monkeypatch):
     monkeypatch.setattr(ClusterService, "resume_interrupted_campaigns", lambda self: {})
     monkeypatch.setattr(postprocess_reattach, "live_campaign_postprocessing",
                         lambda service: {_CAMPAIGN: "robovast-postproc-x"})
+    monkeypatch.setattr(postprocess_reattach, "live_split_postprocessing", lambda service: {})
     attached = []
     monkeypatch.setattr(ClusterService, "reattach_postprocessing",
                         lambda self, cid, job: attached.append((cid, job)) or True)
@@ -299,3 +300,46 @@ def test_the_service_does_not_wait_for_the_cluster_before_answering(monkeypatch,
 
     assert ClusterService.reattach_live_postprocessing(service) == "thread"
     assert started["service"] is service
+
+
+# -- a split postprocess ------------------------------------------------------
+
+
+def _split_service(tmp_path, campaign, part_names, force=False, skip=()):
+    from robovast.execution.cluster_execution.postprocess_parts import Part, write_plan
+
+    service = _FakeService(tmp_path, campaign)
+    service.campaign_dir = lambda cid: tmp_path / cid
+    write_plan(str(tmp_path / campaign), [Part(name=n) for n in part_names],
+               force=force, skip=skip)
+    service.resumed = []
+    service.resume_postprocessing = (
+        lambda cid, force=False, skip=(): service.resumed.append((cid, force, list(skip)))
+        or True)
+    return service
+
+
+def test_a_split_with_a_part_still_running_is_resumed_with_its_options(listed, tmp_path):
+    """A part is not the campaign's postprocess, but its split is: the postprocess is
+    started again with what it was asked for, and waits for the parts still running."""
+    from robovast.execution.cluster_execution.postprocess_parts import (Part,
+                                                                         part_job_names)
+
+    service = _split_service(tmp_path, _CAMPAIGN, ["m0", "m1"], force=True,
+                             skip=["rosbags_to_webm"])
+    running = part_job_names(_CAMPAIGN, [Part(name="m1")])[0]
+    listed["jobs"] = _jobs((_CAMPAIGN, running))
+
+    assert postprocess_reattach.reattach_all(service) == {_CAMPAIGN: "2 part(s)"}
+    assert service.resumed == [(_CAMPAIGN, True, ["rosbags_to_webm"])]
+    assert service.reattached == []
+
+
+def test_a_recorded_split_with_nothing_running_is_left_alone(listed, tmp_path):
+    """The record outlives the split; only a live part makes it owed."""
+    service = _split_service(tmp_path, _CAMPAIGN, ["m0"])
+    listed["jobs"] = _jobs((_CAMPAIGN, postprocess_job._short_job_name(  # noqa: SLF001
+        "robovast-postproc-", _CAMPAIGN, discriminator="g2")))
+
+    assert postprocess_reattach.reattach_all(service) == {}
+    assert service.resumed == []

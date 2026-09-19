@@ -366,7 +366,7 @@ def test_a_host_pass_whose_outputs_could_not_be_delivered_is_a_failed_postproces
     monkeypatch.setenv(pod_access.TOKEN_ENV, TOKEN)
     monkeypatch.delenv(postprocess_host.ENV_COMMANDS, raising=False)
 
-    def _derive(dest, campaign_id, force=False, skip=None):
+    def _derive(dest, campaign_id, force=False, skip=None, skip_map=False):
         (campaign / "cfg").mkdir()
         (campaign / "cfg" / "poses.csv").write_text("x\n")
         return True, "postprocessing complete"
@@ -394,7 +394,7 @@ def test_a_failing_host_pass_leaves_its_traceback_in_the_campaign_log(monkeypatc
     monkeypatch.setenv(pod_access.TOKEN_ENV, TOKEN)
     monkeypatch.delenv(postprocess_host.ENV_COMMANDS, raising=False)
 
-    def _derive(dest, campaign_id, force=False, skip=None):
+    def _derive(dest, campaign_id, force=False, skip=None, skip_map=False):
         sorted(["a", None])
 
     monkeypatch.setattr("robovast.execution.cluster_execution.postprocess_job."
@@ -405,3 +405,34 @@ def test_a_failing_host_pass_leaves_its_traceback_in_the_campaign_log(monkeypatc
     log = (campaign / "_execution" / "postprocessing.log").read_text()
     assert "Traceback (most recent call last)" in log
     assert "_derive" in log and "TypeError" in log
+
+
+def test_a_part_delivers_its_own_log_and_provenance(monkeypatch, tmp_path, plane, caplog):
+    """Every part of a split writes the same kinds of file; each writes its own, so the
+    parts' deliveries never replace each other's."""
+    import logging
+
+    from robovast.execution.campaign_archive import part_file
+
+    caplog.set_level(logging.INFO, logger="robovast")
+
+    campaign = tmp_path / "camp"
+    (campaign / "_execution").mkdir(parents=True)
+    monkeypatch.setenv(pod_access.CAMPAIGN_ID_ENV, "camp")
+    monkeypatch.setenv(postprocess_host.ENV_STAGE_DEST, str(tmp_path))
+    monkeypatch.setenv(pod_access.DATA_URL_ENV, DATA_URL)
+    monkeypatch.setenv(pod_access.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(postprocess_host.ENV_COMMANDS, json.dumps(["run_log"]))
+    monkeypatch.setenv(postprocess_host.ENV_PART, "m3")
+
+    def _derive(root, commands, force):
+        assert commands == ["run_log"]
+        return True, "batch derived", [{"output": "cfg/0/run_log.csv", "plugin": "run_log"}]
+
+    monkeypatch.setattr(postprocess_host, "_derive_batch", _derive)
+
+    assert postprocess_host.main() == 0
+    record = part_file("m3", "host.provenance.json")
+    assert record in plane.sent and part_file("m3", "postprocessing.log") in plane.sent
+    assert json.loads(plane.members[0][record])["entries"][0]["plugin"] == "run_log"
+    assert "_execution/postprocessing.log" not in plane.sent

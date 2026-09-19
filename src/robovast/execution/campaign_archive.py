@@ -560,6 +560,82 @@ def stage_include(skip_bags: bool = False, batch_jobs: str = ""):
     return include
 
 
+#: Where the planner of a split postprocess records, per part, which runs and which
+#: scenario jobs that part's pod stages (:func:`write_part`, :func:`part_include`).
+PARTS_DIR = "_execution/postprocess_parts"
+
+_PART_NAME = "abcdefghijklmnopqrstuvwxyz0123456789-"
+
+
+def _part_path(campaign_root: str, part: str) -> str:
+    if not part or len(part) > 40 or any(c not in _PART_NAME for c in part):
+        raise ValueError(f"not a part name: {part!r}")
+    return os.path.join(campaign_root, *PARTS_DIR.split("/"), f"{part}.json")
+
+
+def part_file(part: str, name: str) -> str:
+    """Campaign-relative path of *part*'s own copy of a file every part would write.
+
+    A split postprocess delivers each part's outputs into the one campaign directory, and a
+    file every pod writes -- its log, its provenance record, its usage record -- would be
+    replaced by whichever part delivered last. So a part writes its own, named for it.
+    """
+    _part_path("", part)          # validates the name
+    return f"{PARTS_DIR}/{part}.{name}"
+
+
+def in_part(rel: str, part: str, name: str) -> str:
+    """*rel* for a pod that is no part, or *part*'s own copy of it (:func:`part_file`)."""
+    return part_file(part, name) if part else rel
+
+
+def write_part(campaign_root: str, part: str, runs, jobs) -> str:
+    """Record that *part* stages *runs* (``config/run``) and *jobs* (``_jobs/...``)."""
+    path = _part_path(campaign_root, part)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"runs": sorted(runs), "jobs": sorted(jobs)}, f, indent=1)
+    return path
+
+
+def part_include(campaign_root: str, part: str):
+    """The part of the campaign *part* stages: its runs, their jobs, and everything else.
+
+    A predicate like :func:`stage_include`'s, and ANDed with it. A run directory of another
+    part, or a job directory under ``_jobs/`` another part owns, is pruned; everything
+    that is neither -- the campaign's ``_config``, ``_execution``, ``_transient``, its
+    record, a configuration's own files -- is staged by every part, because a run-scoped
+    step reads it (see ``BasePostprocessingPlugin.scope``).
+
+    Raises ``KeyError`` for a part nobody planned: a pod asking for it would otherwise
+    stage the whole campaign and convert it again.
+    """
+    from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS  # noqa: PLC0415
+
+    try:
+        with open(_part_path(campaign_root, part), encoding="utf-8") as f:
+            members = json.load(f)
+    except FileNotFoundError as exc:
+        raise KeyError(f"no postprocessing part {part!r} was planned") from exc
+    runs = set(members.get("runs") or ())
+    jobs = [j.strip("/") + "/" for j in members.get("jobs") or ()]
+
+    def include(rel: str, is_dir: bool) -> bool:
+        parts = rel.split("/")
+        if parts[0] == "_jobs":
+            if is_dir:
+                # Keep a directory on the way down to a wanted job as well as one under it.
+                here = rel + "/"
+                return any(j.startswith(here) or here.startswith(j) for j in jobs)
+            return any(rel.startswith(j) for j in jobs)
+        if (parts[0] in RESERVED_CAMPAIGN_DIRS or parts[0].startswith(".")
+                or len(parts) < 2 or not parts[1].isdigit()):
+            return True
+        return f"{parts[0]}/{parts[1]}" in runs
+
+    return include
+
+
 def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CHUNK):
     """Generator yielding the plain tar a job pod extracts into its ``/config``.
 

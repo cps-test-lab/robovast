@@ -314,3 +314,30 @@ def test_an_upload_is_read_compressed_or_not(client, root):
                           content=_tar([(f"cell-a/{n}/test.xml", b"<testsuite/>")], gz=gz))
         assert resp.status_code == 200, resp.text
         assert (root / _CAMPAIGN / "cell-a" / str(n) / "test.xml").exists()
+
+
+def test_a_part_is_given_its_runs_and_nothing_of_another_parts(client, root):
+    from robovast.execution.campaign_archive import write_part
+
+    campaign = root / _CAMPAIGN
+    for run in ("0", "1"):
+        (campaign / "cell-a" / run).mkdir()
+        (campaign / "cell-a" / run / "test.xml").write_text("<t/>")
+        job = campaign / "_jobs" / "batch-0" / f"job-{run}"
+        job.mkdir(parents=True)
+        (job / "log.txt").write_text("x\n")
+    write_part(str(campaign), "m1", ["cell-a/1"], ["_jobs/batch-0/job-1"])
+
+    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m1",
+                                                                 "uncompressed": True})
+    assert resp.status_code == 200, resp.text
+    names = set(_names(resp.content))
+    assert f"{_CAMPAIGN}/cell-a/1/test.xml" in names
+    assert f"{_CAMPAIGN}/_jobs/batch-0/job-1/log.txt" in names
+    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
+    assert not any("cell-a/0/" in n or "job-0/" in n for n in names)
+
+
+def test_a_part_nobody_planned_is_not_found(client):
+    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m9"})
+    assert resp.status_code == 404

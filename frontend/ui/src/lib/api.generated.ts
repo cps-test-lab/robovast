@@ -1041,8 +1041,8 @@ export interface paths {
          *     postprocessing pod's stage, which asks for the plain tar, being in the cluster.
          *     What comes out is the campaign as this service holds
          *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
-         *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
-         *     ``batch_jobs`` narrow it to what a postprocessing pod reads
+         *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
+         *     ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
          *     (:class:`ArchiveSelection`).
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
@@ -6207,6 +6207,7 @@ export interface operations {
                 skip_bags?: boolean;
                 batch_jobs?: string;
                 uncompressed?: boolean;
+                part?: string;
             };
             header?: never;
             path: {

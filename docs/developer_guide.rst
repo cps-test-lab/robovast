@@ -1149,6 +1149,15 @@ Postprocessing plugins are Python functions that process run result directories 
 
 **Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each run folder (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
 
+**Steps that work run by run:** a plugin whose output for a run depends only on that run, the
+scenario jobs it links, the other runs of those jobs and the campaign-level inputs
+(``_config``, ``_execution``, ``_transient``) declares ``scope = "run"``. A cluster may then run
+it on parts of the campaign in parallel (:ref:`deployment-postprocess-parallel`): every part
+is a set of whole scenario jobs with their runs, and the step must write only into those. The
+default, ``scope = "campaign"``, runs the step once over the whole tree. Only the leading run of
+run-scoped steps is split -- a run-scoped step listed after a campaign-scoped one runs after
+it, over the whole tree.
+
 **Steps that run in the campaign's execution image:** some work can only happen in the image the
 runs used — deserializing a bag needs the message definitions of the custom types it recorded. Such
 a plugin derives from

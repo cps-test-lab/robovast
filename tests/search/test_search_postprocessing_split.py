@@ -22,6 +22,7 @@ but *which command goes where* is pure and is where the bug was.
 
 import pytest
 
+from robovast.execution.cluster_execution.postprocess_job import JobRole as _JobRole
 from robovast.execution.controller import split_container_postprocessing
 
 
@@ -198,7 +199,7 @@ def test_the_conversion_runs_the_job_against_the_campaign(monkeypatch, campaign_
         return True, 'rosbag conversion complete'
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m))
+                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m, _JobRole))
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
     obj.backend = _Backend()
@@ -219,7 +220,7 @@ def test_a_job_that_failed_does_not_stop_the_batch(monkeypatch, campaign_root):
     monkeypatch.setattr(
         ctrl, '_conversion_job_runner',
         lambda: (lambda *a, **kw: (calls.append('job') or (False, 'boom')),
-                 lambda root: 'img', lambda m, _p: m))
+                 lambda root: 'img', lambda m, _p: m, _JobRole))
 
     class _Backend:
         cluster_config = object()
@@ -251,11 +252,11 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch, campaign_
     seen = []
 
     def _fake_job(*a, **kw):
-        seen.append(kw.get('discriminator'))
+        seen.append(kw['role'].discriminator)
         return True, 'rosbag conversion complete'
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m))
+                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m, _JobRole))
 
     class _Backend:
         cluster_config = object()
@@ -338,7 +339,7 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
     monkeypatch.setattr(
         ctrl, '_conversion_job_runner',
         lambda: (lambda *a, **kw: (False, 'conversion exited 1'),
-                 lambda root: 'img', lambda m, _p: m))
+                 lambda root: 'img', lambda m, _p: m, _JobRole))
 
     class _Backend:
         cluster_config = object()
@@ -375,7 +376,7 @@ def test_a_batch_conversion_runs_at_the_campaigns_declared_size(monkeypatch, tmp
         return True, "rosbag conversion complete"
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m))
+                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m, _JobRole))
 
     class _Backend:
         cluster_config = object()
@@ -398,7 +399,7 @@ def _controller_with_backend(monkeypatch, campaign_root, backend, job_ok=True):
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
                         lambda: (lambda *a, **kw: (job_ok, 'batch postprocessing complete'),
-                                 lambda root: 'img', lambda m, _p: m))
+                                 lambda root: 'img', lambda m, _p: m, _JobRole))
     monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
                         lambda *a, **kw: None)
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
@@ -501,7 +502,7 @@ def test_the_batch_carries_its_own_command_list_to_the_pod(monkeypatch, campaign
         return True, 'batch postprocessing complete'
 
     monkeypatch.setattr(ctrl, '_conversion_job_runner',
-                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m))
+                        lambda: (_fake_job, lambda root: 'img', lambda m, _p: m, _JobRole))
     monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
                         lambda *a, **kw: None)
 
@@ -514,5 +515,5 @@ def test_the_batch_carries_its_own_command_list_to_the_pod(monkeypatch, campaign
                           {'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}]
     obj._run_postprocessing('b')
 
-    assert seen['batch_commands'] == [{'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}], (
+    assert seen['role'].host_commands == [{'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}], (
         "the pod must run the batch's own half, not whatever it would look up")

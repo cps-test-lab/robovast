@@ -42,15 +42,17 @@ class _Batch:
 
 
 def _tracker(admission=None, remaining=None, blocked=None, clock=None, **kw):
+    state = {"blocked": blocked if blocked is not None else ({}, {})}
+
+    def _read_blocked():
+        if state["blocked"] is None:
+            raise RuntimeError("unreadable")
+        return dict(state["blocked"][0]), dict(state["blocked"][1])
+
     tracker = aj.AdmittedJobs(admission=admission, owner="camp", batch_api=None, core_api=None,
                               namespace="ns", label_selector="jobgroup=g",
                               list_remaining=remaining or (lambda names: []),
-                              clock=clock, **kw)
-    state = {"blocked": blocked if blocked is not None else ({}, {})}
-    tracker._blocked = lambda created: (  # pylint: disable=protected-access
-        (None, {}, "unreadable") if state["blocked"] is None
-        else ({k: v for k, v in state["blocked"][0].items() if k in created},
-              dict(state["blocked"][1]), ""))
+                              read_blocked=_read_blocked, clock=clock, **kw)
     return tracker, state
 
 
@@ -122,7 +124,7 @@ def test_an_unreadable_round_keeps_every_timer():
     state["blocked"] = None
     now[0] = 50.0
     rnd = tracker.poll()
-    assert rnd.blocked is None and rnd.blocked_error == "unreadable"
+    assert rnd.blocked is None and "unreadable" in rnd.blocked_error
     assert tracker.blocked_since == {"a": 0.0}
 
 

@@ -406,9 +406,8 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
             if plugin_name in skip_names:
                 continue
             params = dict({} if isinstance(cmd, str) else (cmd[plugin_name] or {}))
-            if params.get("workers") is not None:
-                workers.add(int(params.pop("workers")))
-            params.pop("workers", None)
+            if params.pop("workers", None) is not None:
+                workers.add(int(cmd[plugin_name]["workers"]))
             for group in conversion_groups(**params):
                 bag_dir_plugins.setdefault(group["bag_dir"], []).extend(
                     p for p in group["plugins"] if p.get("type") not in skipped_types)
@@ -581,6 +580,11 @@ def postprocess_convert_resources(config_path, resolver=None) -> dict:
 #: half.
 STAGED_PROVENANCE = "_execution/image_provenance.json"
 
+#: The name a part of a split postprocess gives its own provenance records, one for its
+#: image steps and one for its host steps (``campaign_archive.part_file``); every one of
+#: them is read with :data:`STAGED_PROVENANCE`.
+PART_PROVENANCE_SUFFIX = "provenance.json"
+
 
 def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
     """Provenance recorded by a stage that ran outside this process, or ``[]``.
@@ -590,17 +594,25 @@ def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
     description of work that already succeeded, and failing the campaign because its
     description could not be read would turn a complete result into a failed one.
     """
-    path = Path(campaign_dir) / STAGED_PROVENANCE
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) or {}
-    except (OSError, json.JSONDecodeError) as e:
-        logging.getLogger(__name__).warning(
-            "Could not read staged provenance %s: %s", path, e)
-        return []
-    entries = data.get("entries")
-    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    from robovast.execution.campaign_archive import PARTS_DIR  # noqa: PLC0415
+
+    paths = [Path(campaign_dir) / STAGED_PROVENANCE]
+    # A split postprocess: each part recorded what its own steps produced.
+    paths += sorted((Path(campaign_dir) / PARTS_DIR).glob(f"*.{PART_PROVENANCE_SUFFIX}"))
+    entries = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) or {}
+        except (OSError, json.JSONDecodeError) as e:
+            logging.getLogger(__name__).warning(
+                "Could not read staged provenance %s: %s", path, e)
+            continue
+        found = data.get("entries")
+        if isinstance(found, list):
+            entries.extend(e for e in found if isinstance(e, dict))
+    return entries
 
 
 def _write_postprocessing_provenance_yaml(
@@ -765,6 +777,34 @@ def needs_execution_image(command, config_dir: str, plugins=None) -> bool:
     return bool(getattr(plugin, "needs_execution_image", False))
 
 
+def split_postprocessing(commands, config_dir: str, plugins=None) -> Tuple[List, List]:
+    """``(map, reduce)``: the steps that may run on a part of the campaign, and the rest.
+
+    *map* is the longest prefix of *commands* whose plugins declare ``scope = "run"``
+    (:attr:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.scope`);
+    *reduce* is everything after it, in order. A run-scoped step listed after a
+    campaign-scoped one stays in *reduce*: it may read what that step wrote, so it runs
+    after it, over the whole tree. That is the only ordering rule, and it never reorders a
+    step. A step that cannot be resolved is campaign-scoped: it fails loudly where it runs.
+    """
+    commands = list(commands)
+    for index, command in enumerate(commands):
+        if _scope(command, config_dir, plugins) != "run":
+            return commands[:index], commands[index:]
+    return commands, []
+
+
+def _scope(command, config_dir: str, plugins=None) -> str:
+    name, _ = _name_and_params(command)
+    if name in ROSBAG_BATCH_NAMES:
+        name = "rosbags_process"
+    try:
+        plugin = resolve_postprocessing_plugin(name, config_dir, plugins)
+    except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError):
+        return "campaign"
+    return getattr(plugin, "scope", "campaign")
+
+
 def image_steps(commands, config_dir: str, ctx) -> list:
     """The commands to run in the execution image for *commands*, as the lane in *ctx* sees it.
 
@@ -806,6 +846,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         campaign: Optional[str] = None,
         should_stop=None,
         skip_image_steps: bool = False,
+        skip_map_steps: bool = False,
 ):
     """Run postprocessing commands on **one campaign's** run results.
 
@@ -832,6 +873,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip_image_steps: Leave out every step that runs in the execution image, because
             something else already ran them -- a cluster postprocessing Job's image
             container, before this runs beside it.
+        skip_map_steps: Leave out the steps a split postprocess already ran on each part of
+            the campaign (the *map* of :func:`split_postprocessing`), so this runs the rest
+            and completes the campaign.
         should_stop: Predicate polled to abandon the work early, for a campaign whose
             operator stopped it while this was running. Checked between steps *and*
             handed to the steps that can honour it mid-flight (the containerised rosbag
@@ -940,6 +984,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     plugins = load_postprocessing_plugins()
     commands = campaign_postprocessing_commands(vast_path, skip=skip, skip_rosout=skip_rosout,
                                                 output=output)
+    if skip_map_steps:
+        commands = split_postprocessing(commands, config_dir, plugins)[1]
     if skip_image_steps:
         commands = [c for c in commands
                     if not needs_execution_image(c, config_dir, plugins)]
