@@ -379,3 +379,28 @@ def test_a_host_pass_whose_outputs_could_not_be_delivered_is_a_failed_postproces
 
     assert postprocess_host.main() == 1
     assert "could not be delivered" in capsys.readouterr().err
+
+
+def test_a_failing_host_pass_leaves_its_traceback_in_the_campaign_log(monkeypatch, tmp_path):
+    """The pod is deleted once it exits, so the POSTPROCESSING section is the only place a
+    failure can be read afterwards -- and a bare "TypeError: ..." names neither the file nor
+    the line that raised it."""
+    campaign = tmp_path / "camp"
+    (campaign / "_execution").mkdir(parents=True)
+    monkeypatch.setenv(pod_access.CAMPAIGN_ID_ENV, "camp")
+    monkeypatch.setenv(postprocess_host.ENV_STAGE_DEST, str(tmp_path))
+    monkeypatch.setenv(pod_access.DATA_URL_ENV, DATA_URL)
+    monkeypatch.setenv(pod_access.TOKEN_ENV, TOKEN)
+    monkeypatch.delenv(postprocess_host.ENV_COMMANDS, raising=False)
+
+    def _derive(dest, campaign_id, force=False, skip=None):
+        sorted(["a", None])
+
+    monkeypatch.setattr("robovast.execution.cluster_execution.postprocess_job."
+                        "run_host_postprocessing", _derive)
+    monkeypatch.setattr(postprocess_host, "_deliver", lambda *_a, **_k: None)
+
+    assert postprocess_host.main() == 1
+    log = (campaign / "_execution" / "postprocessing.log").read_text()
+    assert "Traceback (most recent call last)" in log
+    assert "_derive" in log and "TypeError" in log
